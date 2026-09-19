@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bgLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#F6F5F2" />
+    </linearGradient>
+    <linearGradient id="strokeLight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2D2240" />
+      <stop offset="100%" stop-color="#1B1724" />
+    </linearGradient>
+    <linearGradient id="purpleAccent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#9065F9" />
+      <stop offset="100%" stop-color="#6D28D9" />
+    </linearGradient>
+    <!-- 滤镜区域放大到 140%，并让圆角矩形内缩，保证投影不会被 1024 画布裁掉 -->
+    <filter id="lightShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#201E1C" flood-opacity="0.10" />
+    </filter>
+  </defs>
+
+  <!-- 应用内品牌标（浅色）：带圆角的完整图标，用于侧边栏 / 首页等处。
+       与桌面前景层不同，这里保留圆角与投影，因为它是在应用内以「图片」呈现。 -->
+  <rect x="80" y="80" width="864" height="864" rx="204" ry="204" fill="url(#bgLight)" stroke="#E8E6DF" stroke-width="3" filter="url(#lightShadow)" />
+
+  <g id="lightSchemeC">
+    <circle cx="666" cy="336" r="66" fill="none" stroke="url(#strokeLight)" stroke-width="26" />
+    <line x1="620" y1="382" x2="560" y2="442" stroke="url(#strokeLight)" stroke-width="26" stroke-linecap="round" />
+    <line x1="578" y1="424" x2="518" y2="484" stroke="url(#strokeLight)" stroke-width="26" stroke-linecap="round" />
+    <path d="M 560 442
+             C 610 500, 615 560, 560 615
+             C 525 650, 480 635, 455 605"
+          fill="none" stroke="url(#strokeLight)" stroke-width="26" stroke-linecap="round" />
+    <path d="M 518 484
+             C 475 525, 435 550, 395 588
+             C 370 612, 375 640, 410 655
+             C 435 665, 465 645, 490 620"
+          fill="none" stroke="url(#strokeLight)" stroke-width="26" stroke-linecap="round" />
+    <path d="M 540 480 Q 565 525 515 570"
+          fill="none" stroke="#7C3AED" stroke-width="16" stroke-linecap="round" opacity="0.85" />
+    <path d="M 430 540
+             C 380 490, 410 400, 490 395
+             C 530 392, 560 415, 570 435"
+          fill="none" stroke="#7C3AED" stroke-width="22" stroke-linecap="round" />
+    <path d="M 535 435 L 575 435 L 575 395"
+          fill="none" stroke="#7C3AED" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" />
+    <circle cx="420" cy="495" r="30" fill="url(#purpleAccent)" />
+    <path d="M 378 610
+             C 350 635, 300 660, 260 740
+             C 290 735, 335 710, 350 670
+             C 365 700, 370 705, 385 660 Z"
+          fill="#1C1824" />
+    <path d="M 320 710
+             C 280 730, 260 740, 255 745
+             C 260 735, 280 695, 310 675 Z"
+          fill="#7C3AED" opacity="0.6" />
+  </g>
+</svg>

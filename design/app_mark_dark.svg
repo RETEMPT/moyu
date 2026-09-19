@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bgDark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#222226" />
+      <stop offset="100%" stop-color="#121214" />
+    </linearGradient>
+    <filter id="neonGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="16" result="blur1" />
+      <feGaussianBlur stdDeviation="30" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur2" />
+        <feMergeNode in="blur1" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+    <filter id="darkShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="20" flood-color="#000000" flood-opacity="0.55" />
+    </filter>
+  </defs>
+
+  <!-- 应用内品牌标（深色）：带圆角的完整图标。 -->
+  <rect x="80" y="80" width="864" height="864" rx="204" ry="204" fill="url(#bgDark)" stroke="#2D2D35" stroke-width="2" filter="url(#darkShadow)" />
+
+  <g stroke="#9333EA" opacity="0.45" filter="url(#neonGlow)">
+    <circle cx="666" cy="336" r="66" fill="none" stroke-width="36" />
+    <line x1="620" y1="382" x2="560" y2="442" stroke-width="36" stroke-linecap="round" />
+    <line x1="578" y1="424" x2="518" y2="484" stroke-width="36" stroke-linecap="round" />
+    <path d="M 560 442 C 610 500, 615 560, 560 615 C 525 650, 480 635, 455 605" fill="none" stroke-width="36" stroke-linecap="round" />
+    <path d="M 518 484 C 475 525, 435 550, 395 588 C 370 612, 375 640, 410 655 C 435 665, 465 645, 490 620" fill="none" stroke-width="36" stroke-linecap="round" />
+    <path d="M 430 540 C 380 490, 410 400, 490 395 C 530 392, 560 415, 570 435" fill="none" stroke-width="30" stroke-linecap="round" />
+    <circle cx="420" cy="495" r="34" fill="#9333EA" />
+  </g>
+
+  <g id="darkSchemeC">
+    <circle cx="666" cy="336" r="66" fill="none" stroke="#FFFFFF" stroke-width="24" />
+    <line x1="620" y1="382" x2="560" y2="442" stroke="#FFFFFF" stroke-width="24" stroke-linecap="round" />
+    <line x1="578" y1="424" x2="518" y2="484" stroke="#FFFFFF" stroke-width="24" stroke-linecap="round" />
+    <path d="M 560 442
+             C 610 500, 615 560, 560 615
+             C 525 650, 480 635, 455 605"
+          fill="none" stroke="#FFFFFF" stroke-width="24" stroke-linecap="round" />
+    <path d="M 518 484
+             C 475 525, 435 550, 395 588
+             C 370 612, 375 640, 410 655
+             C 435 665, 465 645, 490 620"
+          fill="none" stroke="#FFFFFF" stroke-width="24" stroke-linecap="round" />
+    <path d="M 540 480 Q 565 525 515 570"
+          fill="none" stroke="#C084FC" stroke-width="16" stroke-linecap="round" />
+    <path d="M 430 540
+             C 380 490, 410 400, 490 395
+             C 530 392, 560 415, 570 435"
+          fill="none" stroke="#C084FC" stroke-width="22" stroke-linecap="round" />
+    <path d="M 535 435 L 575 435 L 575 395"
+          fill="none" stroke="#C084FC" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" />
+    <circle cx="420" cy="495" r="30" fill="#A855F7" stroke="#E9D5FF" stroke-width="4" />
+    <path d="M 378 610
+             C 350 635, 300 660, 260 740
+             C 290 735, 335 710, 350 670
+             C 365 700, 370 705, 385 660 Z"
+          fill="#09080A" stroke="#3A284C" stroke-width="3" />
+  </g>
+</svg>

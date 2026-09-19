@@ -1,0 +1,20 @@
+{
+  "app": {
+    "bundleName": "com.example.myapplication",
+    "vendor": "example",
+    "versionCode": 1000000,
+    "versionName": "1.0.0",
+    "buildVersion": "1",
+    "icon": "$media:layered_image",
+    "label": "$string:app_name",
+    // 备用图标：应用内热切换主题时由 bundleManager.setAlternateIcon('theme_dark') 切换。
+    // 传空字符串 '' 即恢复为上面的默认图标。
+    // 注意：alternateIcons 自 API 26 起可用，低版本设备需在代码里做运行时降级。
+    "alternateIcons": [
+      {
+        "name": "theme_dark",
+        "icon": "$media:layered_image_dark"
+      }
+    ]
+  }
+}
