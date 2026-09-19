@@ -1,0 +1,16 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+# tools/generate-icons.mjs 的光栅化中转目录，正常跑完会自行删除
+/.tmp-icons
+/.build.log
+/.codegenie/

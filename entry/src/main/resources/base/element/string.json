@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "墨语 · 本地优先的双链知识库"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "墨语主入口"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "墨语"
+    }
+  ]
+}
