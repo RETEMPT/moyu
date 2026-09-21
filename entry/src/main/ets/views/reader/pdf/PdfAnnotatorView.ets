@@ -33,6 +33,7 @@ export struct PdfAnnotatorView {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
   @Prop @Watch('onCurrentPageChanged') currentPage: number = 1;
   @Prop barsVisible: boolean = true;
+  @Prop isContinuousScroll: boolean = true;
   onSaved: (note: NoteItem, content: string) => void = () => {};
   onSaveStateChange: (state: string) => void = () => {};
 
@@ -281,31 +282,69 @@ export struct PdfAnnotatorView {
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
-      // ---- 底层：多页 A4 视口 (可缩放、连续滚屏) ----
-      Scroll(this.scroller) {
-        Column({ space: 24 }) {
-          ForEach(this.pages, (pm: PdfPageModel) => {
+      if (this.isContinuousScroll) {
+        // ---- 连续排版视口 (可缩放、连续滚屏) ----
+        Scroll(this.scroller) {
+          Column({ space: 24 }) {
+            ForEach(this.pages, (pm: PdfPageModel) => {
+              PdfPageCanvas({
+                pageModel: pm,
+                strokes: this.pageStrokes[pm.pageIndex] || [],
+                isAnnotateMode: this.isAnnotateMode,
+                tool: this.currentTool,
+                selectedColor: this.selectedColor,
+                selectedWidth: this.selectedWidth,
+                isDarkMode: this.isDarkMode,
+                onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
+                onEraseAtPoint: (u: number, v: number) => this.handleEraseAtPoint(pm.pageIndex, u, v)
+              })
+            }, (pm: PdfPageModel) => `page_${pm.pageIndex}`)
+          }
+          .width(`${100 * this.zoomScale}%`)
+          .padding({ left: 32, right: 32, top: 24, bottom: 96 })
+          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+        }
+        .width('100%')
+        .height('100%')
+        .scrollBar(BarState.Auto)
+        .backgroundColor(this.palette().canvas)
+        .transition(
+          TransitionEffect.OPACITY
+            .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+        )
+      } else {
+        // ---- 单页排版视口 (单页居中、翻页聚焦) ----
+        Column() {
+          if (this.pages[this.currentPageIdx]) {
             PdfPageCanvas({
-              pageModel: pm,
-              strokes: this.pageStrokes[pm.pageIndex] || [],
+              pageModel: this.pages[this.currentPageIdx],
+              strokes: this.pageStrokes[this.currentPageIdx] || [],
               isAnnotateMode: this.isAnnotateMode,
               tool: this.currentTool,
               selectedColor: this.selectedColor,
               selectedWidth: this.selectedWidth,
               isDarkMode: this.isDarkMode,
               onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
-              onEraseAtPoint: (u: number, v: number) => this.handleEraseAtPoint(pm.pageIndex, u, v)
+              onEraseAtPoint: (u: number, v: number) => this.handleEraseAtPoint(this.currentPageIdx, u, v)
             })
-          }, (pm: PdfPageModel) => `page_${pm.pageIndex}`)
+            .transition(
+              TransitionEffect.OPACITY
+                .combine(TransitionEffect.scale({ x: 0.98, y: 0.98 }))
+                .animation({ duration: AnimationTokens.DURATION_PAGE_TRANSITION, curve: AnimationTokens.CURVE_STANDARD })
+            )
+          }
         }
-        .width(`${100 * this.zoomScale}%`)
-        .padding({ left: 32, right: 32, top: 24, bottom: 96 })
-        .animation({ curve: curves.springMotion(0.28, 0.76) })
+        .width('100%')
+        .height('100%')
+        .justifyContent(FlexAlign.Center)
+        .alignItems(HorizontalAlign.Center)
+        .padding({ top: 16, bottom: 80 })
+        .backgroundColor(this.palette().canvas)
+        .transition(
+          TransitionEffect.OPACITY
+            .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+        )
       }
-      .width('100%')
-      .height('100%')
-      .scrollBar(BarState.Auto)
-      .backgroundColor(this.palette().canvas)
     }
     .width('100%')
     .height('100%')

@@ -9,7 +9,7 @@
  *
  * 视觉规范：半透明暗化遮罩 + 居中毛玻璃圆角卡片 + 品牌强调色 + 暗黑模式适配。
  */
-import { ColorPalette, TypographyTokens, LayoutTokens } from '../../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, LayoutTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { NoteItem } from '../../../common/types/NoteItem';
 
@@ -311,12 +311,21 @@ export struct HuaweiDocActionDialog {
       .shadow({ radius: 24, color: this.isDarkMode ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.18)', offsetY: 6 })
       .border({ width: 1, color: this.palette().borderSubtle })
       .hitTestBehavior(HitTestMode.Block)
+      .transition(
+        TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
+          .combine(TransitionEffect.OPACITY)
+          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+      )
     }
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
     .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.35)')
+    .transition(
+      TransitionEffect.OPACITY
+        .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+    )
     .onClick(() => this.onClose())
   }
 }

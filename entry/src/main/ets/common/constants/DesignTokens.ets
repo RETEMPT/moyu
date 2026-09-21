@@ -136,9 +136,13 @@ export class TypographyTokens {
 
 export class AnimationTokens {
   static readonly DURATION_FAST: number = 180;
-  static readonly DURATION_NORMAL: number = 260;
+  static readonly DURATION_NORMAL: number = 250;
+  static readonly DURATION_SPLIT: number = 280;
+  static readonly DURATION_PAGE_TRANSITION: number = 300;
   static readonly SCALE_PRESSED: number = 0.97;
   static readonly SCALE_LIFTED: number = 1.02;
+  static readonly SCALE_MODAL_ENTER: number = 0.94;
+  static readonly CURVE_STANDARD: Curve = Curve.FastOutSlowIn;
 }
 
 export class ResourceTypeTokens {
