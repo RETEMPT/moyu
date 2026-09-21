@@ -15,17 +15,23 @@ import { LinkGraph, Backlink, UnresolvedLink } from '../common/types/LinkGraph';
 import { MarkdownOutlineItem } from '../common/types/MarkdownOutlineItem';
 import { WorkspaceStats } from '../common/types/WorkspaceStats';
 import { DocumentTransferResult, MarkdownDocument } from '../common/types/MarkdownDocument';
+import { TodoItem, DayNote } from '../common/types/TodoItem';
 import {
+  CATEGORY_UNFILED,
   FILTER_ALL,
   NAV_AI,
   NAV_CANVAS,
   NAV_GRAPH,
   NAV_HOME,
   NAV_LIBRARY,
-  SAVE_IDLE
+  NAV_TODO,
+  NAV_TRASH,
+  SAVE_IDLE,
+  TRASH_RETENTION_DAYS
 } from '../common/constants/WorkspaceConstants';
 import { NoteStorageService } from '../services/NoteStorageService';
 import { NoteSearchService } from '../services/NoteSearchService';
+import { TodoStorageService } from '../services/TodoStorageService';
 import { buildSpaces } from '../services/WorkspaceBuilder';
 import { defaultProjects, seedNotes } from '../common/seed/SeedContent';
 import { AppShell } from '../views/layout/AppShell';
@@ -33,7 +39,10 @@ import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
 import { LibraryWorkspace } from '../views/workspace/LibraryWorkspace';
 import { GraphWorkspace } from '../views/workspace/GraphWorkspace';
 import { PendingWorkspace } from '../views/workspace/PendingWorkspace';
+import { TodoWorkspace } from '../views/workspace/TodoWorkspace';
+import { TrashWorkspace } from '../views/workspace/TrashWorkspace';
 import { ReaderWorkspace } from '../views/reader/ReaderWorkspace';
+import { HuaweiDocWorkspace } from '../views/reader/huawei/HuaweiDocWorkspace';
 import { ContextDrawer, CONTEXT_TAB_OUTLINE } from '../views/context/ContextDrawer';
 import { QuickSearchDialog } from '../views/explore/QuickSearchDialog';
 import { AppearanceSheet } from '../views/settings/AppearanceSheet';
@@ -73,10 +82,15 @@ struct Index {
   @State customProjects: SpaceFolder[] = defaultProjects();
   @State spaces: SpaceFolder[] = [];
   @State notes: NoteItem[] = [];
+  @State trash: NoteItem[] = [];
   @State linkGraph: LinkGraph = EMPTY_GRAPH;
   @State stats: WorkspaceStats = EMPTY_STATS;
 
-  // ---- 研读态 ----
+  // ---- 待办日历 ----
+  @State todos: TodoItem[] = [];
+  @State dayNotes: DayNote[] = [];
+
+  // ---- 研读态 (速记与 Markdown 随笔) ----
   @State readingOpen: boolean = false;
   @State readingNote: NoteItem = EMPTY_NOTE;
   @State annotationPaneOpen: boolean = false;
@@ -84,6 +98,10 @@ struct Index {
   @State outlineItems: MarkdownOutlineItem[] = [];
   @State jumpToken: number = 0;
   @State jumpLine: number = -1;
+
+  // ---- 独立全屏文档态 (PDF / 试卷 / 稿纸手写) ----
+  @State fullScreenDocOpen: boolean = false;
+  @State fullScreenDocNote: NoteItem = EMPTY_NOTE;
 
   // ---- 全局浮层 ----
   @State searchVisible: boolean = false;
@@ -95,6 +113,7 @@ struct Index {
 
   private storage: NoteStorageService = new NoteStorageService();
   private searchService: NoteSearchService = new NoteSearchService();
+  private todoStorage: TodoStorageService = new TodoStorageService();
   private toastTimer: number = -1;
   private bootstrapped: boolean = false;
 
@@ -139,6 +158,57 @@ struct Index {
     this.activeSpaceId = '';
     this.persistSnapshot();
     this.refreshGraph();
+    await this.loadTrash(context);
+    await this.loadTodos(context);
+  }
+
+  /**
+   * 载入回收站，并自动彻底删除已超过保留期的笔记。
+   * 超期判定以 deletedAt 为准；缺失 deletedAt 的异常条目按「刚删除」处理，不误删。
+   */
+  private async loadTrash(context: common.UIAbilityContext): Promise<void> {
+    try {
+      const stored: NoteItem[] = await this.storage.loadTrash(context);
+      const now: number = Date.now();
+      const keep: NoteItem[] = [];
+      const expiredIds: string[] = [];
+      for (let i = 0; i < stored.length; i++) {
+        const rawDeletedAt: number | undefined = stored[i].deletedAt;
+        const deletedAt: number = rawDeletedAt === undefined ? now : rawDeletedAt;
+        const ageDays: number = (now - deletedAt) / (24 * 60 * 60 * 1000);
+        if (ageDays > TRASH_RETENTION_DAYS) {
+          expiredIds.push(stored[i].id);
+        } else {
+          keep.push(stored[i]);
+        }
+      }
+      this.trash = keep;
+      for (let i = 0; i < expiredIds.length; i++) {
+        try {
+          await this.storage.delete(context, expiredIds[i]);
+        } catch (error) {
+          console.error(`超期笔记文件清理失败 (${expiredIds[i]}): ${JSON.stringify(error)}`);
+        }
+      }
+      if (expiredIds.length > 0) {
+        await this.persistTrash();
+      }
+    } catch (error) {
+      console.error(`回收站加载失败: ${JSON.stringify(error)}`);
+      this.trash = [];
+    }
+  }
+
+  /** 载入待办与日期备忘（各自独立于笔记快照存储） */
+  private async loadTodos(context: common.UIAbilityContext): Promise<void> {
+    try {
+      this.todos = await this.todoStorage.loadTodos(context);
+      this.dayNotes = await this.todoStorage.loadDayNotes(context);
+    } catch (error) {
+      console.error(`待办数据加载失败: ${JSON.stringify(error)}`);
+      this.todos = [];
+      this.dayNotes = [];
+    }
   }
 
   /** 把项目列表落盘。所有增删改项目的操作都必须调它，否则重启即丢。 */
@@ -375,7 +445,27 @@ struct Index {
     this.clearUndo();
   }
 
+  /** 判断是否为重度文档（PDF / 试卷 / Doc / 稿纸 / 手写笔记），需要唤起全屏华为风工作台 */
+  private isHeavyDocument(note: NoteItem): boolean {
+    const t = note.type.toLowerCase();
+    const cat = note.category;
+    return t === 'pdf' || t === 'doc' || t === 'docx' || t === 'canvas' || t === '白板' ||
+      t === '白纸笔记' || t === 'handwriting' || t === '稿纸' || cat === '试卷题库' ||
+      note.id === 'note-seed-exam' || note.id === 'note-seed-pdf' || note.id === 'note-seed-handwriting';
+  }
+
   private openNote(note: NoteItem): void {
+    if (this.isHeavyDocument(note)) {
+      // PDF / 试卷 / 稿纸手写：进入独立全屏华为风阅读器工作台
+      animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+        this.fullScreenDocNote = note;
+        this.fullScreenDocOpen = true;
+        this.activeNoteId = note.id;
+        this.readingOpen = false;
+      });
+      return;
+    }
+    // 速记与常规 Markdown 随笔：保持在三栏式 AppShell 内打开
     animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
       this.readingNote = note;
       this.readingOpen = true;
@@ -383,6 +473,7 @@ struct Index {
       this.outlineItems = [];
       this.saveState = SAVE_IDLE;
       this.annotationPaneOpen = false;
+      this.fullScreenDocOpen = false;
     });
   }
 
@@ -566,9 +657,7 @@ struct Index {
   }
 
   private async deleteNote(noteId: string): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    // 先把被删对象和它的原始位置抓下来，撤销时要按原顺序插回去，
-    // 否则撤回后的笔记会跑到列表最前面，用户会以为「撤销把顺序弄乱了」。
+    // 软删除：移入回收站（可恢复），保留沙箱 .md 文件——只有「彻底删除」才真正移除文件。
     let removed: NoteItem | null = null;
     let removedIndex: number = -1;
     for (let i = 0; i < this.notes.length; i++) {
@@ -578,55 +667,349 @@ struct Index {
         break;
       }
     }
-    try {
-      await this.storage.delete(context, noteId);
-    } catch (error) {
-      console.error(`笔记文件删除失败: ${JSON.stringify(error)}`);
+    if (removed === null) {
+      this.notify('目标资料不存在');
+      return;
     }
+    const trashed: NoteItem = removed;
+    trashed.deletedAt = Date.now();
     this.notes = this.notes.filter((n: NoteItem) => n.id !== noteId);
+    this.trash = [trashed].concat(this.trash);
     if (this.readingOpen && this.readingNote.id === noteId) {
       this.readingOpen = false;
       this.activeNoteId = '';
+      this.outlineItems = [];
+    }
+    if (this.fullScreenDocOpen && this.fullScreenDocNote.id === noteId) {
+      this.fullScreenDocOpen = false;
+      this.activeNoteId = '';
     }
     this.persistSnapshot();
+    this.persistTrash();
     this.rebuildSpaces();
     this.refreshGraph();
 
-    if (removed === null) {
-      this.notify('已删除资料');
-      return;
-    }
-    const restoreNote: NoteItem = removed;
     const restoreIndex: number = removedIndex;
-    this.notifyUndoable(`已删除「${restoreNote.title}」`, () => {
-      this.restoreNote(restoreNote, restoreIndex);
+    this.notifyUndoable(`已将「${trashed.title}」移入回收站`, () => {
+      this.undoSoftDelete(trashed, restoreIndex);
     });
   }
 
-  /**
-   * 撤销删除：把笔记按原下标插回列表，并把沙箱里的 .md 正文重新写出来。
-   * 文件写入是异步的，失败不阻断列表还原——元数据已在，正文可由下次保存补齐。
-   */
-  private restoreNote(note: NoteItem, index: number): void {
+  /** 撤销软删除：从回收站移除并按原下标插回资料库，deletedAt 清空即恢复为正常笔记。 */
+  private undoSoftDelete(note: NoteItem, index: number): void {
+    this.trash = this.removeById(this.trash, note.id);
+    note.deletedAt = undefined;
     const next: NoteItem[] = this.notes.slice();
     const at: number = (index >= 0 && index <= next.length) ? index : next.length;
     next.splice(at, 0, note);
     this.notes = next;
-    this.rebuildSpaces();
     this.persistSnapshot();
+    this.persistTrash();
+    this.rebuildSpaces();
     this.refreshGraph();
-    this.rewriteNoteFile(note);
     this.notify(`已恢复「${note.title}」`);
   }
 
-  /** 把一篇笔记的正文重新写回沙箱 .md，供撤销删除后调用。失败只记日志，不回滚内存状态。 */
-  private async rewriteNoteFile(note: NoteItem): Promise<void> {
+  /** 从回收站恢复到资料库（回收站视图的「恢复」按钮）。 */
+  private async restoreFromTrash(note: NoteItem): Promise<void> {
+    this.trash = this.removeById(this.trash, note.id);
+    note.deletedAt = undefined;
+    this.notes = [note].concat(this.notes);
+    this.persistSnapshot();
+    this.persistTrash();
+    this.rebuildSpaces();
+    this.refreshGraph();
+    this.notify(`已恢复「${note.title}」`);
+  }
+
+  /** 彻底删除单篇（不可恢复，需二次确认）：移除回收站条目并删掉沙箱 .md。 */
+  private async purgeNote(note: NoteItem): Promise<void> {
+    const confirmed: boolean = await this.confirmDestructive(`彻底删除「${note.title}」？此操作不可恢复。`);
+    if (!confirmed) {
+      return;
+    }
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    this.trash = this.removeById(this.trash, note.id);
+    try {
+      await this.storage.delete(context, note.id);
+    } catch (error) {
+      console.error(`彻底删除失败 (${note.id}): ${JSON.stringify(error)}`);
+    }
+    await this.persistTrash();
+    this.notify('已彻底删除');
+  }
+
+  /** 清空回收站（不可恢复，需二次确认）。 */
+  private async emptyTrash(): Promise<void> {
+    if (this.trash.length === 0) {
+      return;
+    }
+    const confirmed: boolean =
+      await this.confirmDestructive(`清空回收站？${this.trash.length} 篇笔记将被彻底删除，不可恢复。`);
+    if (!confirmed) {
+      return;
+    }
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const ids: string[] = [];
+    for (let i = 0; i < this.trash.length; i++) {
+      ids.push(this.trash[i].id);
+    }
+    this.trash = [];
+    for (let i = 0; i < ids.length; i++) {
+      try {
+        await this.storage.delete(context, ids[i]);
+      } catch (error) {
+        console.error(`清空回收站失败 (${ids[i]}): ${JSON.stringify(error)}`);
+      }
+    }
+    await this.persistTrash();
+    this.notify('回收站已清空');
+  }
+
+  /** 不可恢复操作的二次确认；对话框不可用时按「取消」处理，绝不误删。 */
+  private async confirmDestructive(message: string): Promise<boolean> {
+    try {
+      const response = await promptAction.showDialog({
+        title: '不可恢复的操作',
+        message: message,
+        buttons: [
+          { text: '取消', color: '#787774' },
+          { text: '彻底删除', color: '#E03E3E' }
+        ]
+      });
+      return response.index === 1;
+    } catch (error) {
+      console.error(`确认对话框显示失败: ${JSON.stringify(error)}`);
+      this.notify('无法显示确认对话框，操作已取消');
+      return false;
+    }
+  }
+
+  private async persistTrash(): Promise<void> {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     try {
-      await this.storage.create(context, note);
+      await this.storage.saveTrash(context, this.trash);
     } catch (error) {
-      console.error(`正文回写失败 (${note.id}): ${JSON.stringify(error)}`);
+      console.error(`回收站保存失败: ${JSON.stringify(error)}`);
+      this.notify('回收站保存失败');
     }
+  }
+
+  private removeById(list: NoteItem[], id: string): NoteItem[] {
+    const result: NoteItem[] = [];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id !== id) {
+        result.push(list[i]);
+      }
+    }
+    return result;
+  }
+
+  private findNoteById(id: string): NoteItem | null {
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].id === id) {
+        return this.notes[i];
+      }
+    }
+    return null;
+  }
+
+  // ==================================================================
+  // 重命名 / 移动分类
+  // ==================================================================
+
+  /** 现有分类去重列表（含「未分类」兜底），供移动弹层选择目标。 */
+  private allCategories(): string[] {
+    const seen: Set<string> = new Set();
+    const result: string[] = [];
+    for (let i = 0; i < this.notes.length; i++) {
+      const category: string = this.notes[i].category.length === 0 ? CATEGORY_UNFILED : this.notes[i].category;
+      if (!seen.has(category)) {
+        seen.add(category);
+        result.push(category);
+      }
+    }
+    return result;
+  }
+
+  /** 把正文首个一级标题替换为新标题；无一级标题时在开头补一个。 */
+  private replaceLeadingHeading(content: string, title: string): string {
+    const lines: string[] = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim().startsWith('# ')) {
+        lines[i] = `# ${title}`;
+        return lines.join('\n');
+      }
+    }
+    return `# ${title}\n\n${content}`;
+  }
+
+  /** 确认重命名：更新标题元数据并同步正文首个 H1，落盘 .md 与快照。 */
+  private async commitRename(note: NoteItem, newTitle: string): Promise<void> {
+    const trimmed: string = newTitle.trim();
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      this.notify('目标笔记不存在');
+      return;
+    }
+    if (trimmed.length === 0 || trimmed === target.title) {
+      return;
+    }
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const nextContent: string = this.replaceLeadingHeading(target.contentDetail, trimmed);
+    target.title = trimmed;
+    target.contentDetail = nextContent;
+    target.updateTime = this.formatTime(new Date());
+    this.notes = this.notes.slice();
+    if (this.readingOpen && this.readingNote.id === target.id) {
+      this.readingNote = target;
+    }
+    if (this.fullScreenDocOpen && this.fullScreenDocNote.id === target.id) {
+      this.fullScreenDocNote = target;
+    }
+    try {
+      await this.storage.saveDocument(context, target, nextContent);
+    } catch (error) {
+      console.error(`重命名后正文落盘失败 (${target.id}): ${JSON.stringify(error)}`);
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.notify(`已重命名为「${trimmed}」`);
+  }
+
+  /** 确认移动：只更新分类元数据并重建项目树（正文不变，无需重写 .md）。 */
+  private async commitMove(note: NoteItem, category: string): Promise<void> {
+    const trimmed: string = category.trim();
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      this.notify('目标笔记不存在');
+      return;
+    }
+    if (trimmed.length === 0) {
+      return;
+    }
+    if (target.category === trimmed) {
+      this.notify(`「${target.title}」已在「${trimmed}」`);
+      return;
+    }
+    target.category = trimmed;
+    this.notes = this.notes.slice();
+    if (this.readingOpen && this.readingNote.id === target.id) {
+      this.readingNote = target;
+    }
+    if (this.fullScreenDocOpen && this.fullScreenDocNote.id === target.id) {
+      this.fullScreenDocNote = target;
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.notify(`已移动到「${trimmed}」`);
+  }
+
+  // ==================================================================
+  // 待办日历
+  // ==================================================================
+
+  /** 全部未完成待办数量，用于侧边栏角标。 */
+  private todoPendingCount(): number {
+    let count: number = 0;
+    for (let i = 0; i < this.todos.length; i++) {
+      if (!this.todos[i].done) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private async persistTodos(): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    try {
+      await this.todoStorage.saveTodos(context, this.todos);
+    } catch (error) {
+      console.error(`待办保存失败: ${JSON.stringify(error)}`);
+      this.notify('待办保存失败');
+    }
+  }
+
+  private async persistDayNotes(): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    try {
+      await this.todoStorage.saveDayNotes(context, this.dayNotes);
+    } catch (error) {
+      console.error(`日期备忘保存失败: ${JSON.stringify(error)}`);
+    }
+  }
+
+  /** 新增一条待办到指定日期。 */
+  private async addTodo(dateKey: string, title: string, noteRefs: string[]): Promise<void> {
+    const now: number = Date.now();
+    const todo: TodoItem = {
+      id: `todo-${now}-${this.todos.length}`,
+      date: dateKey,
+      title: title,
+      done: false,
+      noteRefs: noteRefs.slice(),
+      createdAt: now,
+      updatedAt: now
+    };
+    this.todos = [todo].concat(this.todos);
+    await this.persistTodos();
+    this.notify('已添加待办');
+  }
+
+  /** 切换待办完成态：未完成（红）↔ 已完成（绿）。 */
+  private async toggleTodo(todo: TodoItem): Promise<void> {
+    for (let i = 0; i < this.todos.length; i++) {
+      if (this.todos[i].id === todo.id) {
+        const current: TodoItem = this.todos[i];
+        const next: TodoItem = {
+          id: current.id,
+          date: current.date,
+          title: current.title,
+          done: !current.done,
+          noteRefs: current.noteRefs,
+          createdAt: current.createdAt,
+          updatedAt: Date.now()
+        };
+        this.todos[i] = next;
+        break;
+      }
+    }
+    this.todos = this.todos.slice();
+    await this.persistTodos();
+  }
+
+  /** 删除一条待办。 */
+  private async deleteTodo(todo: TodoItem): Promise<void> {
+    const result: TodoItem[] = [];
+    for (let i = 0; i < this.todos.length; i++) {
+      if (this.todos[i].id !== todo.id) {
+        result.push(this.todos[i]);
+      }
+    }
+    this.todos = result;
+    await this.persistTodos();
+    this.notify('已删除待办');
+  }
+
+  /** 写入某日期的备忘文本（不存在则新建条目）。 */
+  private async updateDayNote(dateKey: string, text: string): Promise<void> {
+    const now: number = Date.now();
+    const entry: DayNote = { date: dateKey, text: text, updatedAt: now };
+    let found: boolean = false;
+    for (let i = 0; i < this.dayNotes.length; i++) {
+      if (this.dayNotes[i].date === dateKey) {
+        this.dayNotes[i] = entry;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      const next: DayNote[] = [entry];
+      this.dayNotes = next.concat(this.dayNotes);
+    } else {
+      this.dayNotes = this.dayNotes.slice();
+    }
+    await this.persistDayNotes();
   }
 
   /**
@@ -767,6 +1150,31 @@ struct Index {
         onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title)
       })
       .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+    } else if (this.activeNav === NAV_TODO) {
+      TodoWorkspace({
+        dayNotes: this.dayNotes,
+        todos: this.todos,
+        notes: this.notes,
+        onAddTodo: (dateKey: string, title: string, noteRefs: string[]) => {
+          this.addTodo(dateKey, title, noteRefs);
+        },
+        onToggleTodo: (todo: TodoItem) => this.toggleTodo(todo),
+        onDeleteTodo: (todo: TodoItem) => this.deleteTodo(todo),
+        onUpdateDayNote: (dateKey: string, text: string) => {
+          this.updateDayNote(dateKey, text);
+        },
+        onOpenNote: (noteId: string) => this.openNoteById(noteId)
+      })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+    } else if (this.activeNav === NAV_TRASH) {
+      TrashWorkspace({
+        trash: this.trash,
+        retentionDays: TRASH_RETENTION_DAYS,
+        onRestore: (note: NoteItem) => this.restoreFromTrash(note),
+        onPurge: (note: NoteItem) => this.purgeNote(note),
+        onEmpty: () => this.emptyTrash()
+      })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_CANVAS) {
       PendingWorkspace({
         title: '白板',
@@ -905,12 +1313,44 @@ struct Index {
         onDeleteNote: (noteId: string) => {
           this.deleteNote(noteId);
         },
+        trashCount: this.trash.length,
+        todoPendingCount: this.todoPendingCount(),
+        onRenameNote: (note: NoteItem, newTitle: string) => {
+          this.commitRename(note, newTitle);
+        },
+        onMoveNote: (note: NoteItem, category: string) => {
+          this.commitMove(note, category);
+        },
         onOpenSettings: () => {
           animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
             this.settingsVisible = true;
           });
         }
       })
+
+      // ---- 华为风独立全屏文档与稿纸工作台 (PDF / 试卷 / 稿纸手写) ----
+      if (this.fullScreenDocOpen) {
+        HuaweiDocWorkspace({
+          note: this.fullScreenDocNote,
+          onClose: () => {
+            animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+              this.fullScreenDocOpen = false;
+              this.activeNoteId = '';
+            });
+          },
+          onSaved: (note: NoteItem, content: string) => this.handleSaved(note, content),
+          onSaveStateChange: (state: string) => {
+            this.saveState = state;
+          }
+        })
+        .width('100%')
+        .height('100%')
+        .transition(
+          TransitionEffect.move(TransitionEdge.BOTTOM)
+            .combine(TransitionEffect.OPACITY)
+            .animation({ curve: curves.springMotion(0.28, 0.76) })
+        )
+      }
 
       if (this.searchVisible) {
         QuickSearchDialog({

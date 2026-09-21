@@ -28,6 +28,8 @@ export struct AppShell {
   @Prop activeNoteId: string = '';
   @Prop sidebarCollapsed: boolean = false;
   @Prop contextPanelOpen: boolean = false;
+  @Prop trashCount: number = 0;
+  @Prop todoPendingCount: number = 0;
 
   onToggleSidebar: () => void = () => {};
   onToggleContext: () => void = () => {};
@@ -44,6 +46,8 @@ export struct AppShell {
   onRenameProject: (oldName: string, newName: string) => void = () => {};
   onDeleteProject: (name: string) => void = () => {};
   onDeleteNote: (noteId: string) => void = () => {};
+  onRenameNote: (note: NoteItem, newTitle: string) => void = () => {};
+  onMoveNote: (note: NoteItem, category: string) => void = () => {};
   onOpenSettings: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
@@ -137,8 +141,12 @@ export struct AppShell {
       onRenameProject: this.onRenameProject,
       onDeleteProject: this.onDeleteProject,
       onDeleteNote: this.onDeleteNote,
+      onRenameNote: this.onRenameNote,
+      onMoveNote: this.onMoveNote,
       onSelectNav: this.onSelectNav,
-      onOpenSettings: this.onOpenSettings
+      onOpenSettings: this.onOpenSettings,
+      trashCount: this.trashCount,
+      todoPendingCount: this.todoPendingCount
     })
   }
 

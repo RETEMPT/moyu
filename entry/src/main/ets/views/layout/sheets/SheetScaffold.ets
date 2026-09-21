@@ -5,7 +5,6 @@
  * 它们的外壳完全一致：半透明遮罩 + 底部圆角卡片 + 同一套出入场动画。
  * 抽成组件后，各个 sheet 只需专注自己的内容，样式改动也只有一处。
  */
-import { curves } from '@kit.ArkUI';
 import { ColorPalette, TypographyTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 
@@ -24,14 +23,7 @@ export struct SheetOverlay {
   @BuilderParam body: () => void = this.emptyBody;
 
   build() {
-    Stack({ alignContent: Alignment.Bottom }) {
-      Column()
-        .width('100%')
-        .height('100%')
-        .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.32)' : 'rgba(0,0,0,0.12)')
-        .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.72) }))
-        .onClick(() => this.onDismiss())
-
+    Column() {
       Column({ space: 8 }) {
         this.body()
       }
@@ -45,15 +37,19 @@ export struct SheetOverlay {
         width: 1,
         color: this.isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
       })
-      .transition(
-        TransitionEffect.move(TransitionEdge.BOTTOM)
-          .combine(TransitionEffect.OPACITY)
-          .animation({ curve: curves.springMotion(0.28, 0.72) })
-      )
+      .onClick(() => {
+        // 消费卡片内的点击，避免冒泡到遮罩导致弹层关闭
+      })
+      .transition(TransitionEffect.move(TransitionEdge.BOTTOM)
+        .combine(TransitionEffect.OPACITY)
+        .animation({ duration: 180, curve: Curve.EaseInOut }))
     }
     .width('100%')
     .height('100%')
-    .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.72) }))
+    .justifyContent(FlexAlign.End)
+    .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.32)' : 'rgba(0,0,0,0.12)')
+    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
+    .onClick(() => this.onDismiss())
   }
 }
 

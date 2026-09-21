@@ -9,7 +9,6 @@
  *   2. 应用色彩模式（影响系统绘制元素）
  *   3. 桌面图标（浅色=白底墨笔，深色=曜石霓虹）
  */
-import { curves } from '@kit.ArkUI';
 import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { ThemeManager } from '../../common/theme/ThemeManager';
@@ -177,7 +176,7 @@ export struct AppearanceSheet {
       .transition(
         TransitionEffect.scale({ x: 0.95, y: 0.95 })
           .combine(TransitionEffect.OPACITY)
-          .animation({ curve: curves.springMotion(0.25, 0.76) })
+          .animation({ duration: 180, curve: Curve.EaseInOut })
       )
       .onClick(() => {
         // 消费卡片内的点击，避免冒泡到遮罩导致面板被关闭
@@ -189,7 +188,7 @@ export struct AppearanceSheet {
     .alignItems(HorizontalAlign.Center)
     .padding({ top: 96 })
     .backgroundColor('rgba(0,0,0,0.25)')
-    .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.25, 0.76) }))
+    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
     .onClick(() => this.onClose())
   }
 }
