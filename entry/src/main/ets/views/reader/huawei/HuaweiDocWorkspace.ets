@@ -650,13 +650,14 @@ export struct HuaweiDocWorkspace {
 
           Blank()
 
-          Text('✕')
+          Button('✕')
+            .type(ButtonType.Normal)
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().inkMuted)
-            .width(24)
-            .height(24)
-            .textAlign(TextAlign.Center)
-            .borderRadius(12)
+            .width(44)
+            .height(44)
+            .padding(0)
+            .borderRadius(22)
             .backgroundColor(this.palette().surfaceSubtle)
             .border({ width: 1, color: this.palette().borderSubtle })
             .onClick(() => {
@@ -1027,13 +1028,14 @@ export struct HuaweiDocWorkspace {
 
           Blank()
 
-          Text('✕')
+          Button('✕')
+            .type(ButtonType.Normal)
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().inkMuted)
-            .width(24)
-            .height(24)
-            .textAlign(TextAlign.Center)
-            .borderRadius(12)
+            .width(44)
+            .height(44)
+            .padding(0)
+            .borderRadius(22)
             .backgroundColor(this.palette().surfaceSubtle)
             .onClick(() => {
               this.jumpDialogOpen = false;
