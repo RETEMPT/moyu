@@ -5,7 +5,7 @@
  * 检索走 NoteSearchService，正文来源是沙箱中的 .md 文件，不依赖任何网络。
  */
 import { common } from '@kit.AbilityKit';
-import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { NoteSearchResult } from '../../common/types/NoteSearchResult';
@@ -191,9 +191,9 @@ export struct QuickSearchDialog {
       .shadow({ radius: 32, color: 'rgba(0,0,0,0.22)' })
       .border({ width: 1, color: this.palette().border })
       .transition(
-        TransitionEffect.scale({ x: 0.95, y: 0.95 })
+        TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
           .combine(TransitionEffect.OPACITY)
-          .animation({ duration: 180, curve: Curve.EaseInOut })
+          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
       )
       .onClick(() => {
         // 消费卡片内的点击，避免冒泡到遮罩导致弹窗被关闭
@@ -205,7 +205,7 @@ export struct QuickSearchDialog {
     .alignItems(HorizontalAlign.Center)
     .padding({ top: 96 })
     .backgroundColor('rgba(0,0,0,0.25)')
-    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
+    .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }))
     .onClick(() => this.onClose())
   }
 }

@@ -18,7 +18,7 @@
  *   4. 双模分屏与统一模态弹窗。
  */
 import { promptAction } from '@kit.ArkUI';
-import { ColorPalette, TypographyTokens, LayoutTokens } from '../../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, LayoutTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { NoteItem } from '../../../common/types/NoteItem';
 import { AnnotationTool } from '../../../common/types/PdfAnnotationTypes';
@@ -147,7 +147,9 @@ export struct HuaweiDocWorkspace {
   private jumpToPage(page: number): void {
     const p = Math.max(1, Math.min(this.totalPages, Math.round(page)));
     this.currentPage = p;
-    this.jumpDialogOpen = false;
+    animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+      this.jumpDialogOpen = false;
+    });
     this.showToast(`已跳转至第 ${this.currentPage} 页`);
   }
 
@@ -198,7 +200,9 @@ export struct HuaweiDocWorkspace {
       .border({ width: 1, color: this.palette().borderSubtle })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
-        this.exitDialogOpen = true;
+        animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+          this.exitDialogOpen = true;
+        });
       })
 
       // 2. 文档标题与 Obsidian 质感格式勋章
@@ -327,7 +331,9 @@ export struct HuaweiDocWorkspace {
         .border({ width: 1, color: this.palette().borderSubtle })
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
-          this.moreMenuOpen = !this.moreMenuOpen;
+          animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+            this.moreMenuOpen = !this.moreMenuOpen;
+          });
         })
       }
     }
@@ -356,7 +362,7 @@ export struct HuaweiDocWorkspace {
     .shadow(this.splitMode === mode ? { radius: 6, color: this.isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.06)', offsetY: 1 } : { radius: 0, color: 'transparent' })
     .hoverEffect(HoverEffect.Highlight)
     .onClick(() => {
-      animateTo({ curve: Curve.EaseInOut }, () => {
+      animateTo({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD }, () => {
         this.splitMode = mode;
       });
     })
@@ -661,7 +667,9 @@ export struct HuaweiDocWorkspace {
             .backgroundColor(this.palette().surfaceSubtle)
             .border({ width: 1, color: this.palette().borderSubtle })
             .onClick(() => {
-              this.moreMenuOpen = false;
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.moreMenuOpen = false;
+              });
             })
         }
         .width('100%')
@@ -671,40 +679,56 @@ export struct HuaweiDocWorkspace {
           Row({ space: 10 }) {
             this.moreActionItem('⭳', '保存沙箱', '持久化落盘', () => {
               this.onSaved(this.note, this.note.contentDetail);
-              this.moreMenuOpen = false;
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.moreMenuOpen = false;
+              });
               this.showToast('文档与批注已保存至本地沙箱');
             })
             this.moreActionItem('↗', '另存为', 'PDF/Docx', () => {
-              this.moreMenuOpen = false;
-              this.activeModal = 'save_as';
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.moreMenuOpen = false;
+                this.activeModal = 'save_as';
+              });
             })
             this.moreActionItem('⇄', '格式转换', 'OCR提取', () => {
-              this.moreMenuOpen = false;
-              this.activeModal = 'convert';
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.moreMenuOpen = false;
+                this.activeModal = 'convert';
+              });
             })
             this.moreActionItem('⧉', '输出长图', '超清拼接', () => {
-              this.moreMenuOpen = false;
-              this.activeModal = 'export_image';
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.moreMenuOpen = false;
+                this.activeModal = 'export_image';
+              });
             })
           }
           .width('100%')
 
           Row({ space: 10 }) {
             this.moreActionItem('⎙', '无线打印', 'A4 规格', () => {
-              this.moreMenuOpen = false;
-              this.activeModal = 'print';
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.moreMenuOpen = false;
+                this.activeModal = 'print';
+              });
             })
             this.moreActionItem('⌕', '全文检索', '关键词查找', () => {
-              this.moreMenuOpen = false;
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.moreMenuOpen = false;
+              });
               this.showToast('已唤起全文关键词检索');
             })
             this.moreActionItem(this.isContinuousScroll ? '☰' : '▯', this.isContinuousScroll ? '连续滚动' : '单页排版', '切换视图', () => {
-              this.isContinuousScroll = !this.isContinuousScroll;
-              this.moreMenuOpen = false;
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.isContinuousScroll = !this.isContinuousScroll;
+                this.moreMenuOpen = false;
+              });
               this.showToast(this.isContinuousScroll ? '已切换为连续纵向滚动' : '已切换为单页排版');
             })
             this.moreActionItem('⎚', '清空批注', '清空本页笔迹', () => {
-              this.moreMenuOpen = false;
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.moreMenuOpen = false;
+              });
               this.clearCurrentPageAnnotations();
             })
           }
@@ -719,6 +743,11 @@ export struct HuaweiDocWorkspace {
       .shadow({ radius: 16, color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)', offsetY: 4 })
       .border({ width: 1, color: this.palette().borderSubtle })
       .hitTestBehavior(HitTestMode.Block)
+      .transition(
+        TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
+          .combine(TransitionEffect.OPACITY)
+          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+      )
     }
     .width('100%')
     .height('100%')
@@ -726,8 +755,14 @@ export struct HuaweiDocWorkspace {
     .alignItems(HorizontalAlign.Center)
     .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.65)' : 'rgba(0,0,0,0.45)')
     .zIndex(220)
+    .transition(
+      TransitionEffect.OPACITY
+        .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+    )
     .onClick(() => {
-      this.moreMenuOpen = false;
+      animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+        this.moreMenuOpen = false;
+      });
     })
   }
 
@@ -864,7 +899,9 @@ export struct HuaweiDocWorkspace {
       .border({ width: 1, color: this.palette().borderSubtle })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
-        this.isContinuousScroll = !this.isContinuousScroll;
+        animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+          this.isContinuousScroll = !this.isContinuousScroll;
+        });
         this.showToast(this.isContinuousScroll ? '已切换为连续滚动视图' : '已切换为单页排版');
       })
 
@@ -883,7 +920,9 @@ export struct HuaweiDocWorkspace {
       .border({ width: 1, color: this.palette().borderSubtle })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
-        this.jumpDialogOpen = true;
+        animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+          this.jumpDialogOpen = true;
+        });
       })
 
       // 6. 沉浸隐藏底栏按钮
@@ -1038,7 +1077,9 @@ export struct HuaweiDocWorkspace {
             .borderRadius(22)
             .backgroundColor(this.palette().surfaceSubtle)
             .onClick(() => {
-              this.jumpDialogOpen = false;
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.jumpDialogOpen = false;
+              });
             })
         }
         .width('100%')
@@ -1067,6 +1108,11 @@ export struct HuaweiDocWorkspace {
       .shadow({ radius: 16, color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)', offsetY: 4 })
       .border({ width: 1, color: this.palette().borderSubtle })
       .hitTestBehavior(HitTestMode.Block)
+      .transition(
+        TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
+          .combine(TransitionEffect.OPACITY)
+          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+      )
     }
     .width('100%')
     .height('100%')
@@ -1074,8 +1120,14 @@ export struct HuaweiDocWorkspace {
     .alignItems(HorizontalAlign.Center)
     .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.65)' : 'rgba(0,0,0,0.45)')
     .zIndex(200)
+    .transition(
+      TransitionEffect.OPACITY
+        .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+    )
     .onClick(() => {
-      this.jumpDialogOpen = false;
+      animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+        this.jumpDialogOpen = false;
+      });
     })
   }
 
@@ -1147,7 +1199,9 @@ export struct HuaweiDocWorkspace {
             .height(36)
             .layoutWeight(1)
             .onClick(() => {
-              this.exitDialogOpen = false;
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.exitDialogOpen = false;
+              });
               this.showToast('已放弃本次修改');
               this.onClose();
             })
@@ -1164,7 +1218,9 @@ export struct HuaweiDocWorkspace {
             .height(36)
             .layoutWeight(1)
             .onClick(() => {
-              this.exitDialogOpen = false;
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.exitDialogOpen = false;
+              });
             })
 
           // 保存并退出 (主确认动作)
@@ -1179,7 +1235,9 @@ export struct HuaweiDocWorkspace {
             .layoutWeight(1.2)
             .onClick(() => {
               this.onSaved(this.note, this.note.contentDetail);
-              this.exitDialogOpen = false;
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.exitDialogOpen = false;
+              });
               this.showToast('文档修改已保存');
               setTimeout(() => {
                 this.onClose();
@@ -1195,6 +1253,11 @@ export struct HuaweiDocWorkspace {
       .shadow({ radius: 24, color: this.isDarkMode ? 'rgba(0,0,0,0.65)' : 'rgba(0,0,0,0.18)', offsetY: 8 })
       .border({ width: 1, color: this.palette().borderSubtle })
       .hitTestBehavior(HitTestMode.Block)
+      .transition(
+        TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
+          .combine(TransitionEffect.OPACITY)
+          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+      )
     }
     .width('100%')
     .height('100%')
@@ -1202,8 +1265,14 @@ export struct HuaweiDocWorkspace {
     .alignItems(HorizontalAlign.Center)
     .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.65)' : 'rgba(0,0,0,0.45)')
     .zIndex(300)
+    .transition(
+      TransitionEffect.OPACITY
+        .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+    )
     .onClick(() => {
-      this.exitDialogOpen = false;
+      animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+        this.exitDialogOpen = false;
+      });
     })
   }
 
@@ -1268,7 +1337,7 @@ export struct HuaweiDocWorkspace {
           .borderRadius(12)
           .backgroundColor(this.palette().surfaceSubtle)
           .onClick(() => {
-            animateTo({ curve: Curve.EaseInOut }, () => {
+            animateTo({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD }, () => {
               this.splitMode = 'none';
             });
           })
@@ -1311,7 +1380,7 @@ export struct HuaweiDocWorkspace {
         .translate({ y: this.barsVisible ? 0 : -56 })
         .opacity(this.barsVisible ? 1 : 0)
         .enabled(this.barsVisible)
-        .animation({ duration: 250, curve: Curve.EaseInOut })
+        .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
 
         // ---- 2. 主视口区（左文档 + 右分屏）----
         Row() {
@@ -1331,6 +1400,7 @@ export struct HuaweiDocWorkspace {
                 note: this.note,
                 currentPage: this.currentPage,
                 barsVisible: this.barsVisible,
+                isContinuousScroll: this.isContinuousScroll,
                 isAnnotateMode: this.isAnnotateMode,
                 currentTool: this.currentTool,
                 selectedColor: this.selectedColor,
@@ -1353,7 +1423,7 @@ export struct HuaweiDocWorkspace {
           }
           .layoutWeight(this.splitMode === 'none' ? 100 : 55)
           .height('100%')
-          .animation({ duration: 250, curve: Curve.EaseInOut })
+          .animation({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD })
 
           // 右侧分屏区
           if (this.splitMode !== 'none') {
@@ -1362,13 +1432,19 @@ export struct HuaweiDocWorkspace {
               .strokeWidth(1)
               .color(this.palette().borderSubtle)
               .height('100%')
+              .transition(
+                TransitionEffect.OPACITY
+                  .animation({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD })
+              )
 
             Column() {
               if (this.splitMode === 'ai') {
                 HuaweiAiSplitPanel({
                   note: this.note,
                   onClose: () => {
-                    this.splitMode = 'none';
+                    animateTo({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                      this.splitMode = 'none';
+                    });
                   }
                 })
               } else if (this.splitMode === 'scratchpad') {
@@ -1380,7 +1456,7 @@ export struct HuaweiDocWorkspace {
             .transition(
               TransitionEffect.move(TransitionEdge.END)
                 .combine(TransitionEffect.OPACITY)
-                .animation({ duration: 250, curve: Curve.EaseInOut })
+                .animation({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD })
             )
           }
         }
@@ -1418,7 +1494,9 @@ export struct HuaweiDocWorkspace {
           note: this.note,
           dialogType: this.activeModal,
           onClose: () => {
-            this.activeModal = '';
+            animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+              this.activeModal = '';
+            });
           },
           onConfirm: (actionType: string, payload: string) => {
             this.showToast(`操作成功：${actionType} (${payload})`);

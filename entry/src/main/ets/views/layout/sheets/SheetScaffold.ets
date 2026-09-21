@@ -5,7 +5,7 @@
  * 它们的外壳完全一致：半透明遮罩 + 底部圆角卡片 + 同一套出入场动画。
  * 抽成组件后，各个 sheet 只需专注自己的内容，样式改动也只有一处。
  */
-import { ColorPalette, TypographyTokens } from '../../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 
 /** 遮罩 + 底部卡片。body 由调用方通过尾随闭包注入。 */
@@ -42,13 +42,13 @@ export struct SheetOverlay {
       })
       .transition(TransitionEffect.move(TransitionEdge.BOTTOM)
         .combine(TransitionEffect.OPACITY)
-        .animation({ duration: 180, curve: Curve.EaseInOut }))
+        .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }))
     }
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.End)
     .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.32)' : 'rgba(0,0,0,0.12)')
-    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
+    .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }))
     .onClick(() => this.onDismiss())
   }
 }
