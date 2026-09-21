@@ -457,24 +457,20 @@ struct Index {
   private openNote(note: NoteItem): void {
     if (this.isHeavyDocument(note)) {
       // PDF / 试卷 / 稿纸手写：进入独立全屏华为风阅读器工作台
-      animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
-        this.fullScreenDocNote = note;
-        this.fullScreenDocOpen = true;
-        this.activeNoteId = note.id;
-        this.readingOpen = false;
-      });
+      this.fullScreenDocNote = note;
+      this.fullScreenDocOpen = true;
+      this.activeNoteId = note.id;
+      this.readingOpen = false;
       return;
     }
     // 速记与常规 Markdown 随笔：保持在三栏式 AppShell 内打开
-    animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
-      this.readingNote = note;
-      this.readingOpen = true;
-      this.activeNoteId = note.id;
-      this.outlineItems = [];
-      this.saveState = SAVE_IDLE;
-      this.annotationPaneOpen = false;
-      this.fullScreenDocOpen = false;
-    });
+    this.readingNote = note;
+    this.readingOpen = true;
+    this.activeNoteId = note.id;
+    this.outlineItems = [];
+    this.saveState = SAVE_IDLE;
+    this.annotationPaneOpen = false;
+    this.fullScreenDocOpen = false;
   }
 
   private openNoteById(noteId: string): void {
@@ -1094,11 +1090,9 @@ struct Index {
           this.openNoteByTitle(title);
         },
         onBack: () => {
-          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
-            this.readingOpen = false;
-            this.activeNoteId = '';
-            this.outlineItems = [];
-          });
+          this.readingOpen = false;
+          this.activeNoteId = '';
+          this.outlineItems = [];
         },
         onToggleAnnotation: () => {
           this.annotationPaneOpen = !this.annotationPaneOpen;
@@ -1108,7 +1102,6 @@ struct Index {
           this.saveState = state;
         }
       })
-      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_HOME) {
       HomeWorkspace({
         stats: this.stats,
@@ -1118,12 +1111,9 @@ struct Index {
         onCreateNote: () => this.createNote('未命名笔记'),
         onImportDocument: () => this.importDocument(),
         onOpenGraph: () => {
-          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
-            this.activeNav = NAV_GRAPH;
-          });
+          this.activeNav = NAV_GRAPH;
         }
       })
-      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_LIBRARY) {
       LibraryWorkspace({
         notes: this.filteredNotes(),
@@ -1141,7 +1131,6 @@ struct Index {
         onCreateNote: () => this.createNote('未命名笔记'),
         onImportDocument: () => this.importDocument()
       })
-      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_GRAPH) {
       GraphWorkspace({
         graph: this.linkGraph,
@@ -1149,7 +1138,6 @@ struct Index {
         onSelectNoteById: (noteId: string) => this.openNoteById(noteId),
         onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title)
       })
-      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_TODO) {
       TodoWorkspace({
         dayNotes: this.dayNotes,
@@ -1165,7 +1153,6 @@ struct Index {
         },
         onOpenNote: (noteId: string) => this.openNoteById(noteId)
       })
-      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_TRASH) {
       TrashWorkspace({
         trash: this.trash,
@@ -1174,7 +1161,6 @@ struct Index {
         onPurge: (note: NoteItem) => this.purgeNote(note),
         onEmpty: () => this.emptyTrash()
       })
-      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_CANVAS) {
       PendingWorkspace({
         title: '白板',
@@ -1185,7 +1171,6 @@ struct Index {
           '白板内容导出为 Markdown'
         ]
       })
-      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else {
       PendingWorkspace({
         title: 'AI 墨客',
@@ -1196,7 +1181,6 @@ struct Index {
           'L1 伴读 / L2 学情 / L3 跨库三层智能体'
         ]
       })
-      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     }
   }
 
@@ -1261,11 +1245,10 @@ struct Index {
           });
         },
         onSelectNav: (navKey: string) => {
-          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
-            this.activeNav = navKey;
-            this.readingOpen = false;
-            this.activeNoteId = '';
-          });
+          this.activeNav = navKey;
+          this.readingOpen = false;
+          this.fullScreenDocOpen = false;
+          this.activeNoteId = '';
         },
         onToggleSpace: (spaceId: string) => {
           animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
@@ -1287,11 +1270,10 @@ struct Index {
           });
         },
         onSelectSpace: (spaceId: string) => {
-          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
-            this.activeSpaceId = this.activeSpaceId === spaceId ? '' : spaceId;
-            this.activeNav = NAV_LIBRARY;
-            this.readingOpen = false;
-          });
+          this.activeSpaceId = this.activeSpaceId === spaceId ? '' : spaceId;
+          this.activeNav = NAV_LIBRARY;
+          this.readingOpen = false;
+          this.fullScreenDocOpen = false;
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onCreateNote: () => this.createNote('未命名笔记'),
@@ -1333,10 +1315,8 @@ struct Index {
         HuaweiDocWorkspace({
           note: this.fullScreenDocNote,
           onClose: () => {
-            animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
-              this.fullScreenDocOpen = false;
-              this.activeNoteId = '';
-            });
+            this.fullScreenDocOpen = false;
+            this.activeNoteId = '';
           },
           onSaved: (note: NoteItem, content: string) => this.handleSaved(note, content),
           onSaveStateChange: (state: string) => {
@@ -1345,11 +1325,6 @@ struct Index {
         })
         .width('100%')
         .height('100%')
-        .transition(
-          TransitionEffect.move(TransitionEdge.BOTTOM)
-            .combine(TransitionEffect.OPACITY)
-            .animation({ curve: curves.springMotion(0.28, 0.76) })
-        )
       }
 
       if (this.searchVisible) {
