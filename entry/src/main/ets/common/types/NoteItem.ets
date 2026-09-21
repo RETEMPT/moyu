@@ -14,5 +14,7 @@ export interface NoteItem {
   strokes?: string;
   scratchpadStrokes?: string;
   pageAnnotations?: string;
+  /** 软删除时间戳（毫秒）。存在且 > 0 表示该笔记在回收站中；未删除时省略。 */
+  deletedAt?: number;
 }
 

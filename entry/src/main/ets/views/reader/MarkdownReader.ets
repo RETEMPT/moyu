@@ -27,11 +27,19 @@ interface TextSegment {
 
 /** 正文块级元素 */
 interface MarkdownBlock {
-  kind: string; // 'heading' | 'paragraph' | 'quote' | 'bullet' | 'ordered' | 'code' | 'divider' | 'gap'
+  kind: string; // 'heading' | 'paragraph' | 'quote' | 'bullet' | 'ordered' | 'task' | 'code' | 'divider' | 'gap'
   level: number;
   text: string;
   /** 该块在正文中的起始行号（0 基），用于大纲锚点定位 */
   line: number;
+  /** 仅 task 块使用：勾选框是否已勾选 */
+  checked?: boolean;
+}
+
+/** 待办行解析结果 */
+interface TaskParse {
+  checked: boolean;
+  text: string;
 }
 
 @Component
@@ -86,10 +94,22 @@ export struct MarkdownReader {
 
   onNoteChanged(propName: string): void {
     if (this.note.id === this.loadedNoteId) {
+      // 同一篇笔记的元数据被外部改动（重命名 / 移动分类）：同步到正文归属副本，
+      // 否则下一次自动保存会用旧的 title/category 把改动覆盖回去。
+      this.syncExternalMeta();
       return;
     }
     // 先落盘上一篇正文，再加载新文档，保证写入的是正确的 .md 文件
     this.switchNote();
+  }
+
+  /** 外部改动同一篇笔记的标题/分类时，同步到本地编辑态，避免自动保存回退 */
+  private syncExternalMeta(): void {
+    if (this.editingNote !== null) {
+      this.editingNote.title = this.note.title;
+      this.editingNote.category = this.note.category;
+    }
+    this.title = this.note.title;
   }
 
   /** 切换笔记：等待上一篇落盘完成后再读取新笔记正文 */
@@ -293,6 +313,12 @@ export struct MarkdownReader {
         result.push({ kind: 'quote', level: 0, text: trimmed.substring(2), line: i });
         continue;
       }
+      // 待办项必须在 bullet 之前判断：`- [ ]` 也以 `- ` 开头
+      const task: TaskParse | null = this.parseTask(trimmed);
+      if (task !== null) {
+        result.push({ kind: 'task', level: 0, text: task.text, line: i, checked: task.checked });
+        continue;
+      }
       if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
         result.push({ kind: 'bullet', level: 0, text: trimmed.substring(2), line: i });
         continue;
@@ -321,6 +347,68 @@ export struct MarkdownReader {
       return index + 2;
     }
     return 0;
+  }
+
+  /**
+   * 解析待办项：`- [ ] 文本` / `- [x] 文本`（`*` 亦可，`[X]` 视为已勾选）。
+   * 非待办项返回 null。方括号后允许紧跟空格或直接结束。
+   */
+  private parseTask(trimmed: string): TaskParse | null {
+    let rest: string = '';
+    if (trimmed.startsWith('- ')) {
+      rest = trimmed.substring(2);
+    } else if (trimmed.startsWith('* ')) {
+      rest = trimmed.substring(2);
+    } else {
+      return null;
+    }
+    let checked: boolean = false;
+    if (rest.startsWith('[ ]')) {
+      checked = false;
+    } else if (rest.startsWith('[x]') || rest.startsWith('[X]')) {
+      checked = true;
+    } else {
+      return null;
+    }
+    // 去掉勾选框标记，再去掉紧随其后的前导空格
+    const text: string = rest.substring(3).replace(/^\s+/, '');
+    const result: TaskParse = { checked: checked, text: text };
+    return result;
+  }
+
+  /** 阅读模式下点击待办：翻转对应行的勾选标记，重解析并触发落盘 */
+  private toggleTask(block: MarkdownBlock): void {
+    if (block.line < 0) {
+      return;
+    }
+    const lines: string[] = this.content.split('\n');
+    if (block.line >= lines.length) {
+      return;
+    }
+    const original: string = lines[block.line];
+    const flipped: string = this.flipCheckbox(original);
+    if (flipped === original) {
+      return;
+    }
+    lines[block.line] = flipped;
+    this.content = lines.join('\n');
+    this.blocks = this.parseBlocks(this.content);
+    this.onOutlineUpdated(this.collectOutline(this.blocks));
+    this.scheduleSave();
+  }
+
+  /** 翻转一行里首个勾选标记：`[ ]`→`[x]`，`[x]`/`[X]`→`[ ]`；无标记则原样返回 */
+  private flipCheckbox(line: string): string {
+    if (line.includes('[ ]')) {
+      return line.replace('[ ]', '[x]');
+    }
+    if (line.includes('[x]')) {
+      return line.replace('[x]', '[ ]');
+    }
+    if (line.includes('[X]')) {
+      return line.replace('[X]', '[ ]');
+    }
+    return line;
   }
 
   /** 把一行拆成普通文本 / [[双链]] / #标签 三类片段 */
@@ -433,6 +521,24 @@ export struct MarkdownReader {
       .padding({ left: 12, top: 2, bottom: 2 })
       .border({ width: { left: 3 }, color: { left: this.palette().border } })
       .margin({ top: 4, bottom: 4 })
+    } else if (block.kind === 'task') {
+      Row({ space: 8 }) {
+        Text(block.checked === true ? '☑' : '☐')
+          .fontSize(TypographyTokens.BODY_LARGE)
+          .fontColor(block.checked === true ? this.palette().accent : this.palette().inkMuted)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => this.toggleTask(block))
+        Column() {
+          this.richLine(block.text, TypographyTokens.BODY_LARGE, FontWeight.Normal,
+            block.checked === true ? this.palette().inkMuted : this.palette().inkPrimary)
+        }
+        .layoutWeight(1)
+        .onClick(() => this.toggleTask(block))
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Top)
+      .padding({ left: 6 })
+      .margin({ top: 2, bottom: 2 })
     } else if (block.kind === 'bullet') {
       Row({ space: 8 }) {
         Text('•')
@@ -616,7 +722,8 @@ export struct MarkdownReader {
               .alignItems(HorizontalAlign.Start)
               .padding({ left: 32, right: 32 })
             }
-          }, (block: MarkdownBlock, index: number) => `${index}-${block.kind}-${block.line}`)
+          }, (block: MarkdownBlock, index: number) =>
+            `${index}-${block.kind}-${block.line}-${block.checked === true ? 1 : 0}`)
         }
         .layoutWeight(1)
         .width('100%')

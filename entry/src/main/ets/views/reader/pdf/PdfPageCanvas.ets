@@ -23,6 +23,7 @@ import {
 export struct PdfPageCanvas {
   @Prop pageModel: PdfPageModel;
   @Prop @Watch('onStrokesChanged') strokes: PageAnnotationStroke[] = [];
+  @Prop isAnnotateMode: boolean = false;
   @Prop tool: AnnotationTool = 'pen';
   @Prop selectedColor: string = '#DC2626';
   @Prop selectedWidth: number = 3;
@@ -136,8 +137,8 @@ export struct PdfPageCanvas {
 
   /** 处理用户在试卷页面上的落笔事件 */
   private handleTouch(event: TouchEvent): void {
-    if (this.tool === 'pan') {
-      // 漫游平移模式下不落墨，让外层 Scroll / 手势接管
+    if (!this.isAnnotateMode || this.tool === 'pan') {
+      // 阅读模式或漫游平移模式下不落墨，让外层 Scroll / 手势接管
       return;
     }
 
@@ -307,7 +308,7 @@ export struct PdfPageCanvas {
       Canvas(this.context)
         .width('100%')
         .height('100%')
-        .hitTestBehavior(this.tool === 'pan' ? HitTestMode.None : HitTestMode.Block)
+        .hitTestBehavior(!this.isAnnotateMode || this.tool === 'pan' ? HitTestMode.None : HitTestMode.Block)
         .onTouch((event: TouchEvent) => this.handleTouch(event))
     }
     .width('100%')

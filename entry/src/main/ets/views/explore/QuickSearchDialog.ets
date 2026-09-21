@@ -5,7 +5,6 @@
  * 检索走 NoteSearchService，正文来源是沙箱中的 .md 文件，不依赖任何网络。
  */
 import { common } from '@kit.AbilityKit';
-import { curves } from '@kit.ArkUI';
 import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
@@ -194,7 +193,7 @@ export struct QuickSearchDialog {
       .transition(
         TransitionEffect.scale({ x: 0.95, y: 0.95 })
           .combine(TransitionEffect.OPACITY)
-          .animation({ curve: curves.springMotion(0.25, 0.76) })
+          .animation({ duration: 180, curve: Curve.EaseInOut })
       )
       .onClick(() => {
         // 消费卡片内的点击，避免冒泡到遮罩导致弹窗被关闭
@@ -206,7 +205,7 @@ export struct QuickSearchDialog {
     .alignItems(HorizontalAlign.Center)
     .padding({ top: 96 })
     .backgroundColor('rgba(0,0,0,0.25)')
-    .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.25, 0.76) }))
+    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
     .onClick(() => this.onClose())
   }
 }

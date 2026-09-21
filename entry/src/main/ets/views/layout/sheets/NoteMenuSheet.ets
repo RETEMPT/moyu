@@ -18,6 +18,8 @@ export struct NoteMenuSheet {
   onClose: () => void = () => {};
   onOpenNote: (note: NoteItem) => void = () => {};
   onDeleteNote: (noteId: string) => void = () => {};
+  onRequestRename: (note: NoteItem) => void = () => {};
+  onRequestMove: (note: NoteItem) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
 
@@ -77,10 +79,20 @@ export struct NoteMenuSheet {
           onAction: () => this.onOpenNote(this.note)
         })
 
+        SheetActionRow({
+          label: '✏️ 重命名',
+          onAction: () => this.onRequestRename(this.note)
+        })
+
+        SheetActionRow({
+          label: '⇄ 移动到项目',
+          onAction: () => this.onRequestMove(this.note)
+        })
+
         DestructiveConfirm({
           triggerLabel: '🗑️ 删除资料',
           question: `确定删除「${this.note.title}」？`,
-          consequence: '删除后本地沙箱文档将同步移除，可在提示条上点「撤销」找回。',
+          consequence: '将移入回收站，可随时恢复；也可在提示条上点「撤销」立即找回。',
           onConfirm: () => this.onDeleteNote(this.note.id)
         })
 

@@ -22,18 +22,19 @@ import {
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
-import { NAV_AI, NAV_CANVAS, NAV_GRAPH, NAV_HOME } from '../../common/constants/WorkspaceConstants';
+import { NAV_AI, NAV_CANVAS, NAV_GRAPH, NAV_HOME, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
 import { noteRenderKey, spaceRenderKey } from '../../common/utils/ForEachKeys';
 import { BrandMark } from '../brand/BrandMark';
-import { SheetOverlay } from './sheets/SheetScaffold';
 import { ProjectMenuSheet } from './sheets/ProjectMenuSheet';
 import { NewProjectSheet } from './sheets/NewProjectSheet';
 import { NewContentSheet } from './sheets/NewContentSheet';
 import { RenameProjectSheet } from './sheets/RenameProjectSheet';
 import { NoteMenuSheet } from './sheets/NoteMenuSheet';
+import { RenameNoteSheet } from './sheets/RenameNoteSheet';
+import { MoveNoteSheet } from './sheets/MoveNoteSheet';
 
-const ROW_HEIGHT: number = 32;
-const FILE_ROW_HEIGHT: number = 30;
+const ROW_HEIGHT: number = 38;
+const FILE_ROW_HEIGHT: number = 36;
 
 @Component
 export struct Sidebar {
@@ -42,6 +43,10 @@ export struct Sidebar {
   @Prop activeNav: string = '';
   @Prop activeSpaceId: string = '';
   @Prop  activeNoteId: string = '';
+  /** 回收站中的笔记数，用于「回收站」导航角标 */
+  @Prop trashCount: number = 0;
+  /** 全部未完成待办数，用于「待办」导航角标 */
+  @Prop todoPendingCount: number = 0;
 
   onToggleSpace: (spaceId: string) => void = () => {};
   onCollapseAllSpaces: () => void = () => {};
@@ -56,6 +61,8 @@ export struct Sidebar {
   onRenameProject: (oldName: string, newName: string) => void = () => {};
   onDeleteProject: (name: string) => void = () => {};
   onDeleteNote: (noteId: string) => void = () => {};
+  onRenameNote: (note: NoteItem, newTitle: string) => void = () => {};
+  onMoveNote: (note: NoteItem, category: string) => void = () => {};
   onSelectNav: (navKey: string) => void = () => {};
   onOpenSettings: () => void = () => {};
 
@@ -73,7 +80,7 @@ export struct Sidebar {
   private suppressRowClick: boolean = false;
 
   // ---- 操作面板与对话框状态 ----
-  @State activeSheet: string = ''; // 'project_menu' | 'new_project' | 'rename_project' | 'new_content' | 'note_menu'
+  @State activeSheet: string = ''; // 'project_menu' | 'new_project' | 'rename_project' | 'new_content' | 'note_menu' | 'rename_note' | 'move_note'
   @State selectedProject: SpaceFolder | null = null;
   @State selectedNote: NoteItem | null = null;
 
@@ -120,6 +127,15 @@ export struct Sidebar {
       return ResourceTypeTokens.COLOR_TASK;
     }
     return ResourceTypeTokens.COLOR_MARKDOWN;
+  }
+
+  /** 现有项目（分类）名列表，供「移动到项目」弹层选择目标 */
+  private categoryNames(): string[] {
+    const result: string[] = [];
+    for (let i = 0; i < this.spaces.length; i++) {
+      result.push(this.spaces[i].name);
+    }
+    return result;
   }
 
   // ------------------------------------------------------------------
@@ -491,7 +507,7 @@ export struct Sidebar {
   // ------------------------------------------------------------------
 
   @Builder
-  navRow(icon: string, label: string, navKey: string) {
+  navRow(icon: string, label: string, navKey: string, badge: number = 0) {
     Row({ space: 8 }) {
       Text(icon)
         .fontSize(TypographyTokens.CAPTION)
@@ -503,12 +519,21 @@ export struct Sidebar {
         .fontColor(this.activeNav === navKey ? this.palette().inkPrimary : this.palette().inkSecondary)
         .fontWeight(this.activeNav === navKey ? FontWeight.Medium : FontWeight.Normal)
         .layoutWeight(1)
+      if (badge > 0) {
+        Text(`${badge}`)
+          .fontSize(TypographyTokens.TINY)
+          .fontColor(Color.White)
+          .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+          .borderRadius(8)
+          .backgroundColor(navKey === NAV_TRASH ? this.palette().inkMuted : this.palette().danger)
+      }
     }
     .width('100%')
-    .height(32)
-    .padding({ left: 8, right: 8 })
-    .borderRadius(6)
+    .height(38)
+    .padding({ left: 10, right: 10 })
+    .borderRadius(8)
     .backgroundColor(this.activeNav === navKey ? this.palette().activeBg : Color.Transparent)
+    .border({ width: { left: this.activeNav === navKey ? 3 : 0 }, color: { left: this.palette().accent } })
     .scale({
       x: this.getItemScale(`nav-${navKey}`),
       y: this.getItemScale(`nav-${navKey}`)
@@ -601,17 +626,46 @@ export struct Sidebar {
         onDeleteNote: (noteId: string) => {
           this.closeSheet();
           this.onDeleteNote(noteId);
+        },
+        onRequestRename: (note: NoteItem) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.selectedNote = note;
+            this.activeSheet = 'rename_note';
+          });
+        },
+        onRequestMove: (note: NoteItem) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.selectedNote = note;
+            this.activeSheet = 'move_note';
+          });
+        }
+      })
+    } else if (this.activeSheet === 'rename_note' && this.selectedNote !== null) {
+      RenameNoteSheet({
+        note: this.selectedNote,
+        onClose: () => this.closeSheet(),
+        onRenameNote: (note: NoteItem, newTitle: string) => {
+          this.closeSheet();
+          this.onRenameNote(note, newTitle);
+        }
+      })
+    } else if (this.activeSheet === 'move_note' && this.selectedNote !== null) {
+      MoveNoteSheet({
+        note: this.selectedNote,
+        categories: this.categoryNames(),
+        onClose: () => this.closeSheet(),
+        onMoveNote: (note: NoteItem, category: string) => {
+          this.closeSheet();
+          this.onMoveNote(note, category);
         }
       })
     }
   }
 
-  /** 弹层的遮罩与卡片外壳，内容由 activeSheetContent 决定。 */
+  /** 弹层内容由 activeSheetContent 挂载对应的 Sheet 组件（各 Sheet 内部均以 SheetOverlay 为根容器）。 */
   @Builder
   sheetOverlay() {
-    SheetOverlay({ onDismiss: () => this.closeSheet() }) {
-      this.activeSheetContent()
-    }
+    this.activeSheetContent()
   }
 
 
@@ -665,21 +719,27 @@ export struct Sidebar {
           Text('全库')
             .fontSize(TypographyTokens.TINY)
             .fontColor(this.palette().inkMuted)
+            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+            .borderRadius(4)
+            .backgroundColor(this.palette().surface)
         }
         .width('100%')
-        .height(32)
-        .padding({ left: 8, right: 8 })
-        .borderRadius(8)
+        .height(38)
+        .padding({ left: 10, right: 10 })
+        .borderRadius(10)
         .backgroundColor(this.palette().surfaceSubtle)
+        .border({ width: 1, color: this.palette().borderSubtle })
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => this.onOpenSearch())
-        .margin({ bottom: 6 })
+        .margin({ bottom: 8 })
 
         // ---- 全局核心功能导航 ----
         Column({ space: 2 }) {
           this.navRow('◍', '知识图谱', NAV_GRAPH)
           this.navRow('⬡', '自由白板', NAV_CANVAS)
           this.navRow('✦', 'AI 墨客', NAV_AI)
+          this.navRow('☑', '待办', NAV_TODO, this.todoPendingCount)
+          this.navRow('🗑', '回收站', NAV_TRASH, this.trashCount)
         }
         .width('100%')
         .margin({ bottom: 8 })
@@ -752,19 +812,27 @@ export struct Sidebar {
         .scrollBar(BarState.Off)
 
         // ---- 底部设置入口 ----
-        Row({ space: 6 }) {
+        Row({ space: 8 }) {
           Text('⚙')
+            .fontSize(TypographyTokens.BODY_REGULAR)
+            .fontColor(this.palette().inkSecondary)
+          Text('外观与数据设置')
             .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkMuted)
-          Text('外观与数据主权')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkMuted)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.palette().inkSecondary)
             .layoutWeight(1)
+          Text('v2.0')
+            .fontSize(TypographyTokens.TINY)
+            .fontColor(this.palette().inkMuted)
+            .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+            .borderRadius(4)
+            .backgroundColor(this.palette().surfaceSubtle)
         }
         .width('100%')
-        .height(32)
-        .padding({ left: 8, right: 8 })
+        .height(38)
+        .padding({ left: 10, right: 10 })
         .borderRadius(8)
+        .backgroundColor(this.palette().surfaceSubtle)
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => this.onOpenSettings())
         .margin({ top: 4, bottom: 6 })

@@ -31,23 +31,45 @@ const STROKE_WIDTHS: number[] = [2, 4, 8];
 @Component
 export struct PdfAnnotatorView {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
+  @Prop @Watch('onCurrentPageChanged') currentPage: number = 1;
+  @Prop barsVisible: boolean = true;
   onSaved: (note: NoteItem, content: string) => void = () => {};
   onSaveStateChange: (state: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
 
   // 交互与工具栏状态
-  @State currentTool: AnnotationTool = 'pen';
-  @State selectedColor: string = '#DC2626';
-  @State selectedWidth: number = 3;
+  @Prop isAnnotateMode: boolean = false;
+  @Prop currentTool: AnnotationTool = 'pen';
+  @Prop selectedColor: string = '#DC2626';
+  @Prop selectedWidth: number = 3;
+  @Prop @Watch('onUndoTriggered') undoTrigger: number = 0;
+  @Prop @Watch('onClearTriggered') clearTrigger: number = 0;
   @State zoomScale: number = 1.0;
   @State currentPageIdx: number = 0;
+
+  // 滚动控制器
+  private scroller: Scroller = new Scroller();
 
   // 批注数据集（按页）
   @State pageStrokes: Record<number, PageAnnotationStroke[]> = {};
   // 撤销历史栈
   private undoStack: PageAnnotationStroke[] = [];
   private saveTimer: number = -1;
+
+  onCurrentPageChanged(): void {
+    const idx = Math.max(0, Math.min(this.pages.length - 1, this.currentPage - 1));
+    this.currentPageIdx = idx;
+    try {
+      this.scroller.scrollTo({
+        xOffset: 0,
+        yOffset: idx * 920,
+        animation: { duration: 300, curve: Curve.EaseInOut }
+      });
+    } catch (e) {
+      // ignore
+    }
+  }
 
   // 模拟真实考研试卷分页排版模型
   @State pages: PdfPageModel[] = [
@@ -201,6 +223,22 @@ export struct PdfAnnotatorView {
     }
   }
 
+  onUndoTriggered(): void {
+    this.handleUndo();
+  }
+
+  onClearTriggered(): void {
+    this.handleClearCurrentPage();
+  }
+
+  /** 清空当前页全部批注 */
+  private handleClearCurrentPage(): void {
+    const pIdx = this.currentPageIdx;
+    this.pageStrokes[pIdx] = [];
+    this.undoStack = this.undoStack.filter((s) => s.pageIndex !== pIdx);
+    this.scheduleSave();
+  }
+
   /** 计划防抖自动落盘 */
   private scheduleSave(): void {
     if (this.saveTimer !== -1) {
@@ -244,12 +282,13 @@ export struct PdfAnnotatorView {
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       // ---- 底层：多页 A4 视口 (可缩放、连续滚屏) ----
-      Scroll() {
+      Scroll(this.scroller) {
         Column({ space: 24 }) {
           ForEach(this.pages, (pm: PdfPageModel) => {
             PdfPageCanvas({
               pageModel: pm,
               strokes: this.pageStrokes[pm.pageIndex] || [],
+              isAnnotateMode: this.isAnnotateMode,
               tool: this.currentTool,
               selectedColor: this.selectedColor,
               selectedWidth: this.selectedWidth,
@@ -267,162 +306,6 @@ export struct PdfAnnotatorView {
       .height('100%')
       .scrollBar(BarState.Auto)
       .backgroundColor(this.palette().canvas)
-
-      // ---- 顶层：华为笔记灵动胶囊悬浮工具栏 (HUD Toolbar) ----
-      Row({ space: 10 }) {
-        // 1. 钢笔模式
-        Row({ space: 4 }) {
-          Text('✎')
-            .fontSize(15)
-            .fontColor(this.currentTool === 'pen' ? '#FFFFFF' : this.palette().inkPrimary)
-          Text('钢笔')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTool === 'pen' ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTool === 'pen' ? '#FFFFFF' : this.palette().inkPrimary)
-        }
-        .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-        .borderRadius(16)
-        .backgroundColor(this.currentTool === 'pen' ? '#2563EB' : this.palette().surfaceSubtle)
-        .onClick(() => {
-          this.currentTool = 'pen';
-          this.selectedColor = '#DC2626';
-          this.selectedWidth = 3;
-        })
-
-        // 2. 荧光笔模式
-        Row({ space: 4 }) {
-          Text('🖍')
-            .fontSize(15)
-            .fontColor(this.currentTool === 'highlighter' ? '#FFFFFF' : this.palette().inkPrimary)
-          Text('荧光')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTool === 'highlighter' ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTool === 'highlighter' ? '#FFFFFF' : this.palette().inkPrimary)
-        }
-        .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-        .borderRadius(16)
-        .backgroundColor(this.currentTool === 'highlighter' ? '#EAB308' : this.palette().surfaceSubtle)
-        .onClick(() => {
-          this.currentTool = 'highlighter';
-          this.selectedColor = '#FACC15';
-          this.selectedWidth = 14;
-        })
-
-        // 3. 橡皮擦模式
-        Row({ space: 4 }) {
-          Text('⌫')
-            .fontSize(15)
-            .fontColor(this.currentTool === 'eraser' ? '#FFFFFF' : this.palette().inkPrimary)
-          Text('橡皮')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTool === 'eraser' ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTool === 'eraser' ? '#FFFFFF' : this.palette().inkPrimary)
-        }
-        .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-        .borderRadius(16)
-        .backgroundColor(this.currentTool === 'eraser' ? '#DC2626' : this.palette().surfaceSubtle)
-        .onClick(() => {
-          this.currentTool = 'eraser';
-        })
-
-        // 4. 漫游/防误触手势模式
-        Row({ space: 4 }) {
-          Text('✋')
-            .fontSize(15)
-            .fontColor(this.currentTool === 'pan' ? '#FFFFFF' : this.palette().inkPrimary)
-          Text('漫游')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTool === 'pan' ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTool === 'pan' ? '#FFFFFF' : this.palette().inkPrimary)
-        }
-        .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-        .borderRadius(16)
-        .backgroundColor(this.currentTool === 'pan' ? '#475569' : this.palette().surfaceSubtle)
-        .onClick(() => {
-          this.currentTool = 'pan';
-        })
-
-        Divider()
-          .vertical(true)
-          .height(18)
-          .color(this.palette().borderSubtle)
-
-        // 5. 墨水调色盘
-        if (this.currentTool === 'pen') {
-          Row({ space: 6 }) {
-            ForEach(PEN_COLORS, (c: string) => {
-              Circle({ width: 18, height: 18 })
-                .fill(c)
-                .stroke(this.selectedColor === c ? '#FFFFFF' : 'transparent')
-                .strokeWidth(2)
-                .shadow({ radius: this.selectedColor === c ? 4 : 0, color: 'rgba(0,0,0,0.3)' })
-                .onClick(() => {
-                  this.selectedColor = c;
-                })
-            }, (c: string) => c)
-          }
-        } else if (this.currentTool === 'highlighter') {
-          Row({ space: 6 }) {
-            ForEach(HIGHLIGHTER_COLORS, (c: string) => {
-              Circle({ width: 18, height: 18 })
-                .fill(c)
-                .stroke(this.selectedColor === c ? '#FFFFFF' : 'transparent')
-                .strokeWidth(2)
-                .onClick(() => {
-                  this.selectedColor = c;
-                })
-            }, (c: string) => c)
-          }
-        }
-
-        // 6. 撤销
-        Text('↩')
-          .fontSize(16)
-          .fontColor(this.palette().inkSecondary)
-          .padding(6)
-          .borderRadius(12)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .onClick(() => this.handleUndo())
-
-        // 7. 缩放指示与控制
-        Row({ space: 4 }) {
-          Text('－')
-            .fontSize(12)
-            .fontColor(this.palette().inkSecondary)
-            .onClick(() => {
-              this.zoomScale = Math.max(0.7, Number((this.zoomScale - 0.15).toFixed(2)));
-            })
-
-          Text(`${Math.round(this.zoomScale * 100)}%`)
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkPrimary)
-            .onClick(() => {
-              this.zoomScale = 1.0;
-            })
-
-          Text('＋')
-            .fontSize(12)
-            .fontColor(this.palette().inkSecondary)
-            .onClick(() => {
-              this.zoomScale = Math.min(2.5, Number((this.zoomScale + 0.15).toFixed(2)));
-            })
-        }
-        .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-        .borderRadius(14)
-        .backgroundColor(this.palette().surfaceSubtle)
-      }
-      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-      .borderRadius(24)
-      .backgroundColor(this.palette().surface)
-      .shadow({
-        radius: 20,
-        color: this.isDarkMode ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.14)',
-        offsetY: 8
-      })
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .margin({ bottom: 20 })
-      .animation({ curve: curves.springMotion(0.28, 0.76) })
     }
     .width('100%')
     .height('100%')
