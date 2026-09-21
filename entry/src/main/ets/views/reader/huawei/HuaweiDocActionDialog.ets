@@ -309,16 +309,13 @@ export struct HuaweiDocActionDialog {
       .backgroundColor(this.palette().surface)
       .shadow({ radius: 24, color: this.isDarkMode ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.18)', offsetY: 6 })
       .border({ width: 1, color: this.palette().borderSubtle })
-      .onClick(() => {
-        // 消费卡片内的点击，避免冒泡到遮罩导致弹窗被关闭
-      })
+      .hitTestBehavior(HitTestMode.Block)
     }
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
     .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.35)')
-    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
     .onClick(() => this.onClose())
   }
 }
