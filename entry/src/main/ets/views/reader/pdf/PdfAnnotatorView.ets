@@ -13,7 +13,7 @@
  *      - 防抖自动落盘至 NoteItem.pageAnnotations
  */
 import { curves } from '@kit.ArkUI';
-import { ColorPalette, TypographyTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, AnimationTokens, LayoutTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { NoteItem } from '../../../common/types/NoteItem';
 import {
@@ -35,8 +35,7 @@ export struct PdfAnnotatorView {
   onSaveStateChange: (state: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-
-  // 交互与工具栏状态
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
   @State currentTool: AnnotationTool = 'pen';
   @State selectedColor: string = '#DC2626';
   @State selectedWidth: number = 3;
@@ -260,7 +259,7 @@ export struct PdfAnnotatorView {
           }, (pm: PdfPageModel) => `page_${pm.pageIndex}`)
         }
         .width(`${100 * this.zoomScale}%`)
-        .padding({ left: 32, right: 32, top: 24, bottom: 96 })
+        .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 24, bottom: 96 })
         .animation({ curve: curves.springMotion(0.28, 0.76) })
       }
       .width('100%')

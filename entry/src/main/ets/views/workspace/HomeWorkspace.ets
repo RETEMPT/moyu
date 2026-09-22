@@ -31,6 +31,7 @@ export struct HomeWorkspace {
   onOpenGraph: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
   @State pressedCardId: string = '';
 
   private palette(): ColorPalette {
@@ -474,7 +475,7 @@ export struct HomeWorkspace {
         .width('100%')
         .constraintSize({ maxWidth: LayoutTokens.CONTENT_MAX_WIDTH + 200 })
         .alignItems(HorizontalAlign.Start)
-        .padding({ left: 32, right: 32, top: 28, bottom: 48 })
+        .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 28, bottom: 48 })
       }
       .width('100%')
       .alignItems(HorizontalAlign.Center)
