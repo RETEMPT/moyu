@@ -17,6 +17,7 @@ export struct NewContentSheet {
   onClose: () => void = () => {};
   onCreateNoteInProject: (title: string, projectName: string, type: string) => void = () => {};
   onImportIntoProject: (projectName: string) => void = () => {};
+  onRequestTemplate: (projectName: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
 
@@ -38,6 +39,10 @@ export struct NewContentSheet {
         SheetActionRow({
           label: '📝 新建笔记',
           onAction: () => this.onCreateNoteInProject('未命名笔记', this.project.name, 'Markdown')
+        })
+        SheetActionRow({
+          label: '📄 从模板新建',
+          onAction: () => this.onRequestTemplate(this.project.name)
         })
         SheetActionRow({
           label: '⬡ 新建白板',

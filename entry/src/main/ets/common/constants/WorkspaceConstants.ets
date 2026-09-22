@@ -13,6 +13,8 @@ export const NAV_AI: string = 'AI墨客';
 /** 待办日历与回收站导航键 */
 export const NAV_TODO: string = '待办';
 export const NAV_TRASH: string = '回收站';
+/** 收藏（置顶/星标）快捷入口导航键 */
+export const NAV_FAVORITE: string = '收藏';
 
 /** 回收站保留天数：超期由 Index 在启动时自动彻底删除 */
 export const TRASH_RETENTION_DAYS: number = 30;

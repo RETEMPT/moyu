@@ -22,7 +22,7 @@ import {
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
-import { NAV_AI, NAV_CANVAS, NAV_GRAPH, NAV_HOME, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
+import { NAV_AI, NAV_CANVAS, NAV_FAVORITE, NAV_GRAPH, NAV_HOME, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
 import { noteRenderKey, spaceRenderKey } from '../../common/utils/ForEachKeys';
 import { BrandMark } from '../brand/BrandMark';
 import { ProjectMenuSheet } from './sheets/ProjectMenuSheet';
@@ -32,6 +32,8 @@ import { RenameProjectSheet } from './sheets/RenameProjectSheet';
 import { NoteMenuSheet } from './sheets/NoteMenuSheet';
 import { RenameNoteSheet } from './sheets/RenameNoteSheet';
 import { MoveNoteSheet } from './sheets/MoveNoteSheet';
+import { TagSheet } from './sheets/TagSheet';
+import { TemplateSheet } from './sheets/TemplateSheet';
 
 const ROW_HEIGHT: number = 38;
 const FILE_ROW_HEIGHT: number = 36;
@@ -47,6 +49,8 @@ export struct Sidebar {
   @Prop trashCount: number = 0;
   /** 全部未完成待办数，用于「待办」导航角标 */
   @Prop todoPendingCount: number = 0;
+  /** 收藏（置顶/星标）笔记数，用于「收藏」导航角标 */
+  @Prop favoriteCount: number = 0;
 
   onToggleSpace: (spaceId: string) => void = () => {};
   onCollapseAllSpaces: () => void = () => {};
@@ -55,6 +59,7 @@ export struct Sidebar {
   onSelectNote: (note: NoteItem) => void = () => {};
   onCreateNote: () => void = () => {};
   onCreateNoteInProject: (title: string, projectName: string, type: string) => void = () => {};
+  onCreateFromTemplate: (templateName: string, projectName: string) => void = () => {};
   /** 在指定项目内发起系统文件导入（PDF / Word / Markdown / 文本），导入后归入该项目 */
   onImportIntoProject: (projectName: string) => void = () => {};
   onCreateProject: (name: string, color: string, icon: string) => void = () => {};
@@ -63,12 +68,12 @@ export struct Sidebar {
   onDeleteNote: (noteId: string) => void = () => {};
   onRenameNote: (note: NoteItem, newTitle: string) => void = () => {};
   onMoveNote: (note: NoteItem, category: string) => void = () => {};
+  onApplyTags: (note: NoteItem, tags: string[]) => void = () => {};
   onSelectNav: (navKey: string) => void = () => {};
   onOpenSettings: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-
-  // ---- 触感与动画状态 ----
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
   @State pressedItemId: string = '';
   @State liftedItemId: string = '';
 
@@ -86,6 +91,11 @@ export struct Sidebar {
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
+  }
+
+  /** 抽屉宽度：手机窄屏按屏宽百分比，避免几乎盖满；宽屏用固定宽度。 */
+  private drawerWidth(): Length {
+    return this.isPhone ? '82%' : LayoutTokens.SIDEBAR_WIDTH;
   }
 
   private submitNewProject(): void {
@@ -525,7 +535,8 @@ export struct Sidebar {
           .fontColor(Color.White)
           .padding({ left: 5, right: 5, top: 1, bottom: 1 })
           .borderRadius(8)
-          .backgroundColor(navKey === NAV_TRASH ? this.palette().inkMuted : this.palette().danger)
+          .backgroundColor(navKey === NAV_TRASH ? this.palette().inkMuted :
+            (navKey === NAV_FAVORITE ? this.palette().warning : this.palette().danger))
       }
     }
     .width('100%')
@@ -613,6 +624,11 @@ export struct Sidebar {
         onImportIntoProject: (projectName: string) => {
           this.closeSheet();
           this.onImportIntoProject(projectName);
+        },
+        onRequestTemplate: (projectName: string) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.activeSheet = 'template';
+          });
         }
       })
     } else if (this.activeSheet === 'note_menu' && this.selectedNote !== null) {
@@ -638,6 +654,12 @@ export struct Sidebar {
             this.selectedNote = note;
             this.activeSheet = 'move_note';
           });
+        },
+        onRequestTags: (note: NoteItem) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.selectedNote = note;
+            this.activeSheet = 'tag_note';
+          });
         }
       })
     } else if (this.activeSheet === 'rename_note' && this.selectedNote !== null) {
@@ -657,6 +679,24 @@ export struct Sidebar {
         onMoveNote: (note: NoteItem, category: string) => {
           this.closeSheet();
           this.onMoveNote(note, category);
+        }
+      })
+    } else if (this.activeSheet === 'tag_note' && this.selectedNote !== null) {
+      TagSheet({
+        note: this.selectedNote,
+        onClose: () => this.closeSheet(),
+        onApplyTags: (note: NoteItem, tags: string[]) => {
+          this.closeSheet();
+          this.onApplyTags(note, tags);
+        }
+      })
+    } else if (this.activeSheet === 'template' && this.selectedProject !== null) {
+      TemplateSheet({
+        projectName: this.selectedProject.name,
+        onClose: () => this.closeSheet(),
+        onPickTemplate: (templateName: string, projectName: string) => {
+          this.closeSheet();
+          this.onCreateFromTemplate(templateName, projectName);
         }
       })
     }
@@ -738,6 +778,7 @@ export struct Sidebar {
           this.navRow('◍', '知识图谱', NAV_GRAPH)
           this.navRow('⬡', '自由白板', NAV_CANVAS)
           this.navRow('✦', 'AI 墨客', NAV_AI)
+          this.navRow('⭐', '收藏', NAV_FAVORITE, this.favoriteCount)
           this.navRow('☑', '待办', NAV_TODO, this.todoPendingCount)
           this.navRow('🗑', '回收站', NAV_TRASH, this.trashCount)
         }
@@ -846,7 +887,7 @@ export struct Sidebar {
         this.sheetOverlay()
       }
     }
-    .width(LayoutTokens.SIDEBAR_WIDTH)
+    .width(this.drawerWidth())
     .height('100%')
     .backgroundColor(this.palette().sidebar)
     .border({ width: { right: 1 }, color: { right: this.palette().borderSubtle } })
