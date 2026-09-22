@@ -29,9 +29,15 @@ export struct ContextDrawer {
   onClose: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
+  }
+
+  /** 面板宽度：手机窄屏铺满，宽屏用固定宽度。 */
+  private panelWidth(): Length {
+    return this.isPhone ? '100%' : LayoutTokens.CONTEXT_PANEL_WIDTH;
   }
 
   @Builder
@@ -98,7 +104,7 @@ export struct ContextDrawer {
       .layoutWeight(1)
       .padding({ top: 8 })
     }
-    .width(LayoutTokens.CONTEXT_PANEL_WIDTH)
+    .width(this.panelWidth())
     .height('100%')
     .padding({ left: 10, right: 10 })
     .backgroundColor(this.palette().sidebar)
