@@ -17,20 +17,31 @@ export class NoteSearchService {
     this.parser = parser;
   }
 
-  async search(context: Context, notes: NoteItem[], query: string): Promise<NoteSearchResult[]> {
-    const normalizedQuery: string = query.trim().toLocaleLowerCase();
-    if (normalizedQuery.length === 0) {
+  async search(context: Context, notes: NoteItem[], query: string, useRegex: boolean = false): Promise<NoteSearchResult[]> {
+    const trimmedQuery: string = query.trim();
+    if (trimmedQuery.length === 0) {
       return [];
+    }
+    const normalizedQuery: string = trimmedQuery.toLocaleLowerCase();
+    // 正则模式下预编译一次；非法正则直接返回空结果，绝不让弹窗崩溃
+    let regex: RegExp | null = null;
+    if (useRegex) {
+      try {
+        regex = new RegExp(trimmedQuery, 'i');
+      } catch (error) {
+        console.error(`非法正则，忽略本次检索: ${JSON.stringify(error)}`);
+        return [];
+      }
     }
     const results: NoteSearchResult[] = [];
     for (const note of notes) {
       const document: MarkdownDocument = await this.readDocument(context, note);
       const parsed: MarkdownParseResult = this.parser.parse(document);
-      const titleMatch: boolean = note.title.toLocaleLowerCase().includes(normalizedQuery);
-      const contentMatch: boolean = document.content.toLocaleLowerCase().includes(normalizedQuery);
+      const titleMatch: boolean = this.matches(note.title, normalizedQuery, regex);
+      const contentMatch: boolean = this.matches(document.content, normalizedQuery, regex);
       const matchedTags: string[] = [];
       for (const tag of parsed.tags) {
-        if (tag.value.toLocaleLowerCase().includes(normalizedQuery)
+        if (this.matches(tag.value, normalizedQuery, regex)
           && matchedTags.indexOf(tag.value) < 0) {
           matchedTags.push(tag.value);
         }
@@ -43,11 +54,19 @@ export class NoteSearchService {
           matchedTitle: titleMatch,
           matchedContent: contentMatch,
           matchedTags,
-          preview: this.preview(document.content, normalizedQuery)
+          preview: this.preview(document.content, normalizedQuery, regex)
         });
       }
     }
     return results;
+  }
+
+  /** 统一匹配：正则模式用 regex.test，否则用大小写不敏感的子串包含 */
+  private matches(text: string, normalizedQuery: string, regex: RegExp | null): boolean {
+    if (regex !== null) {
+      return regex.test(text);
+    }
+    return text.toLocaleLowerCase().includes(normalizedQuery);
   }
 
   async buildLinkGraph(context: Context, notes: NoteItem[]): Promise<LinkGraph> {
@@ -104,9 +123,15 @@ export class NoteSearchService {
     return null;
   }
 
-  private preview(content: string, query: string): string {
+  private preview(content: string, query: string, regex: RegExp | null = null): string {
     const normalizedContent: string = content.replace(/\s+/g, ' ').trim();
-    const position: number = normalizedContent.toLocaleLowerCase().indexOf(query);
+    let position: number;
+    if (regex !== null) {
+      const m: RegExpExecArray | null = regex.exec(normalizedContent);
+      position = m !== null ? m.index : -1;
+    } else {
+      position = normalizedContent.toLocaleLowerCase().indexOf(query);
+    }
     if (position < 0) {
       return normalizedContent.substring(0, 120);
     }

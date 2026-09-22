@@ -16,6 +16,7 @@ export struct SheetOverlay {
   onDismiss: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   @Builder
   emptyBody() {
@@ -37,7 +38,7 @@ export struct SheetOverlay {
       }
       .width('94%')
       .padding(10)
-      .margin({ bottom: 10 })
+      .margin({ bottom: this.isPhone ? 24 : 10 })
       .borderRadius(12)
       .backgroundColor(ThemeHelper.paletteOfDark(this.isDarkMode).surface)
       .shadow({ radius: 16, color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.14)', offsetY: 4 })
@@ -65,6 +66,7 @@ export struct SheetActionRow {
   onAction: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
@@ -78,7 +80,7 @@ export struct SheetActionRow {
         .layoutWeight(1)
     }
     .width('100%')
-    .height(32)
+    .height(this.isPhone ? 44 : 32)
     .padding({ left: 8, right: 8 })
     .borderRadius(6)
     .backgroundColor(this.palette().surfaceSubtle)
@@ -92,11 +94,12 @@ export struct SheetCancelButton {
   onCancel: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   build() {
     Button('取消')
       .width('100%')
-      .height(28)
+      .height(this.isPhone ? 44 : 28)
       .fontSize(TypographyTokens.CAPTION)
       .fontColor(ThemeHelper.paletteOfDark(this.isDarkMode).inkSecondary)
       .backgroundColor(ThemeHelper.paletteOfDark(this.isDarkMode).surfaceSubtle)

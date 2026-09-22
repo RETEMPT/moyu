@@ -15,28 +15,46 @@ import { LinkGraph, Backlink, UnresolvedLink } from '../common/types/LinkGraph';
 import { MarkdownOutlineItem } from '../common/types/MarkdownOutlineItem';
 import { WorkspaceStats } from '../common/types/WorkspaceStats';
 import { DocumentTransferResult, MarkdownDocument } from '../common/types/MarkdownDocument';
+import { TodoItem, DayNote } from '../common/types/TodoItem';
 import {
+  CATEGORY_UNFILED,
   FILTER_ALL,
   NAV_AI,
   NAV_CANVAS,
+  NAV_FAVORITE,
   NAV_GRAPH,
   NAV_HOME,
   NAV_LIBRARY,
-  SAVE_IDLE
+  NAV_TODO,
+  NAV_TRASH,
+  SAVE_IDLE,
+  TRASH_RETENTION_DAYS
 } from '../common/constants/WorkspaceConstants';
 import { NoteStorageService } from '../services/NoteStorageService';
 import { NoteSearchService } from '../services/NoteSearchService';
+import { TodoStorageService } from '../services/TodoStorageService';
 import { buildSpaces } from '../services/WorkspaceBuilder';
-import { defaultProjects, seedNotes } from '../common/seed/SeedContent';
+import { defaultProjects, seedNotes, templateBody } from '../common/seed/SeedContent';
 import { AppShell } from '../views/layout/AppShell';
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
 import { LibraryWorkspace } from '../views/workspace/LibraryWorkspace';
 import { GraphWorkspace } from '../views/workspace/GraphWorkspace';
 import { PendingWorkspace } from '../views/workspace/PendingWorkspace';
+import { TodoWorkspace } from '../views/workspace/TodoWorkspace';
+import { TrashWorkspace } from '../views/workspace/TrashWorkspace';
+import { FavoriteWorkspace } from '../views/workspace/FavoriteWorkspace';
 import { ReaderWorkspace } from '../views/reader/ReaderWorkspace';
 import { ContextDrawer, CONTEXT_TAB_OUTLINE } from '../views/context/ContextDrawer';
 import { QuickSearchDialog } from '../views/explore/QuickSearchDialog';
 import { AppearanceSheet } from '../views/settings/AppearanceSheet';
+import { NameNoteSheet } from '../views/layout/sheets/NameNoteSheet';
+
+/** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
+interface PendingNoteCreate {
+  projectName: string;
+  type: string;
+  defaultName: string;
+}
 
 const EMPTY_NOTE: NoteItem = {
   id: '',
@@ -73,8 +91,13 @@ struct Index {
   @State customProjects: SpaceFolder[] = defaultProjects();
   @State spaces: SpaceFolder[] = [];
   @State notes: NoteItem[] = [];
+  @State trash: NoteItem[] = [];
   @State linkGraph: LinkGraph = EMPTY_GRAPH;
   @State stats: WorkspaceStats = EMPTY_STATS;
+
+  // ---- 待办日历 ----
+  @State todos: TodoItem[] = [];
+  @State dayNotes: DayNote[] = [];
 
   // ---- 研读态 ----
   @State readingOpen: boolean = false;
@@ -88,6 +111,8 @@ struct Index {
   // ---- 全局浮层 ----
   @State searchVisible: boolean = false;
   @State settingsVisible: boolean = false;
+  /** 新建笔记的命名弹层意图；非空即显示 NameNoteSheet。 */
+  @State pendingCreate: PendingNoteCreate | null = null;
   @State toastVisible: boolean = false;
   @State toastMessage: string = '';
   /** 当前 Toast 是否附带「撤销」按钮 */
@@ -95,6 +120,7 @@ struct Index {
 
   private storage: NoteStorageService = new NoteStorageService();
   private searchService: NoteSearchService = new NoteSearchService();
+  private todoStorage: TodoStorageService = new TodoStorageService();
   private toastTimer: number = -1;
   private bootstrapped: boolean = false;
 
@@ -135,10 +161,90 @@ struct Index {
       console.error(`项目列表加载失败: ${JSON.stringify(error)}`);
       this.customProjects = defaultProjects();
     }
+    this.backfillNoteMeta();
     this.rebuildSpaces();
     this.activeSpaceId = '';
     this.persistSnapshot();
     this.refreshGraph();
+    await this.loadTrash(context);
+    await this.loadTodos(context);
+  }
+
+  /**
+   * 为旧数据回填功能6/11 所需的元信息：
+   * tags 从单值 tag 派生；createdAt/updatedAt 用「按现有顺序倒推的分钟数」填充，
+   * 这样排序后的顺序与既有 seed 顺序一致，不会打乱用户熟悉的列表。
+   */
+  private backfillNoteMeta(): void {
+    const base: number = Date.now();
+    let changed: boolean = false;
+    for (let i = 0; i < this.notes.length; i++) {
+      const n: NoteItem = this.notes[i];
+      if (n.updatedAt === undefined) {
+        n.updatedAt = base - i * 60000;
+        changed = true;
+      }
+      if (n.createdAt === undefined) {
+        n.createdAt = n.updatedAt;
+        changed = true;
+      }
+      if (n.tags === undefined) {
+        n.tags = n.tag.length > 0 ? [n.tag] : [];
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.notes = this.notes.slice();
+    }
+  }
+
+  /**
+   * 载入回收站，并自动彻底删除已超过保留期的笔记。
+   * 超期判定以 deletedAt 为准；缺失 deletedAt 的异常条目按「刚删除」处理，不误删。
+   */
+  private async loadTrash(context: common.UIAbilityContext): Promise<void> {
+    try {
+      const stored: NoteItem[] = await this.storage.loadTrash(context);
+      const now: number = Date.now();
+      const keep: NoteItem[] = [];
+      const expiredIds: string[] = [];
+      for (let i = 0; i < stored.length; i++) {
+        const rawDeletedAt: number | undefined = stored[i].deletedAt;
+        const deletedAt: number = rawDeletedAt === undefined ? now : rawDeletedAt;
+        const ageDays: number = (now - deletedAt) / (24 * 60 * 60 * 1000);
+        if (ageDays > TRASH_RETENTION_DAYS) {
+          expiredIds.push(stored[i].id);
+        } else {
+          keep.push(stored[i]);
+        }
+      }
+      this.trash = keep;
+      for (let i = 0; i < expiredIds.length; i++) {
+        try {
+          await this.storage.delete(context, expiredIds[i]);
+        } catch (error) {
+          console.error(`超期笔记文件清理失败 (${expiredIds[i]}): ${JSON.stringify(error)}`);
+        }
+      }
+      if (expiredIds.length > 0) {
+        await this.persistTrash();
+      }
+    } catch (error) {
+      console.error(`回收站加载失败: ${JSON.stringify(error)}`);
+      this.trash = [];
+    }
+  }
+
+  /** 载入待办与日期备忘（各自独立于笔记快照存储） */
+  private async loadTodos(context: common.UIAbilityContext): Promise<void> {
+    try {
+      this.todos = await this.todoStorage.loadTodos(context);
+      this.dayNotes = await this.todoStorage.loadDayNotes(context);
+    } catch (error) {
+      console.error(`待办数据加载失败: ${JSON.stringify(error)}`);
+      this.todos = [];
+      this.dayNotes = [];
+    }
   }
 
   /** 把项目列表落盘。所有增删改项目的操作都必须调它，否则重启即丢。 */
@@ -222,9 +328,12 @@ struct Index {
   private refreshStats(): void {
     const tags: Set<string> = new Set();
     for (let i = 0; i < this.notes.length; i++) {
-      const tag: string = this.notes[i].tag;
-      if (tag.length > 0) {
-        tags.add(tag);
+      const note: NoteItem = this.notes[i];
+      const list: string[] = note.tags !== undefined ? note.tags : (note.tag.length > 0 ? [note.tag] : []);
+      for (let j = 0; j < list.length; j++) {
+        if (list[j].length > 0) {
+          tags.add(list[j]);
+        }
       }
     }
     this.stats = {
@@ -406,6 +515,38 @@ struct Index {
     this.notify(`「${title}」尚未创建`);
   }
 
+  /** 新建笔记前先弹命名层：记录意图并展示 NameNoteSheet，确认后再真正落地。 */
+  private requestCreateNote(projectName: string, type: string, defaultName: string): void {
+    const pending: PendingNoteCreate = {
+      projectName: projectName,
+      type: type,
+      defaultName: defaultName
+    };
+    animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+      this.pendingCreate = pending;
+    });
+  }
+
+  /** 命名层确认：按意图分发到全局新建或项目内新建。 */
+  private commitPendingCreate(name: string): void {
+    const pending: PendingNoteCreate | null = this.pendingCreate;
+    this.pendingCreate = null;
+    if (pending === null) {
+      return;
+    }
+    if (pending.projectName.length === 0) {
+      this.createNote(name);
+    } else {
+      this.createNoteInProject(name, pending.projectName, pending.type);
+    }
+  }
+
+  /** 命名层默认标题（取自待创建意图）。 */
+  private pendingDefaultName(): string {
+    const pending: PendingNoteCreate | null = this.pendingCreate;
+    return pending !== null ? pending.defaultName : '未命名笔记';
+  }
+
   private async createNote(title: string): Promise<void> {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const now: Date = new Date();
@@ -419,7 +560,10 @@ struct Index {
       tag: '新笔记',
       tagColor: '',
       updateTime: this.formatTime(now),
-      contentDetail: `# ${title}\n\n`
+      contentDetail: `# ${title}\n\n`,
+      tags: ['新笔记'],
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
     };
     this.notes = [note].concat(this.notes);
     try {
@@ -550,7 +694,10 @@ struct Index {
       tag: tag,
       tagColor: '',
       updateTime: this.formatTime(now),
-      contentDetail: `# ${title}\n\n`
+      contentDetail: `# ${title}\n\n`,
+      tags: [tag],
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
     };
     this.notes = [note].concat(this.notes);
     try {
@@ -565,10 +712,44 @@ struct Index {
     this.notify(`已在「${projectName}」创建${type}`);
   }
 
-  private async deleteNote(noteId: string): Promise<void> {
+  /**
+   * 按模板新建（功能10）。
+   * 模板正文预填结构，标题取模板名；空白模板等价于普通新建。
+   */
+  private async createNoteFromTemplate(templateName: string, projectName: string): Promise<void> {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    // 先把被删对象和它的原始位置抓下来，撤销时要按原顺序插回去，
-    // 否则撤回后的笔记会跑到列表最前面，用户会以为「撤销把顺序弄乱了」。
+    const now: Date = new Date();
+    const category: string = projectName.length === 0 ? '未分类' : projectName;
+    const body: string = templateBody(templateName, now);
+    const note: NoteItem = {
+      id: `note-${now.getTime()}`,
+      title: templateName,
+      category: category,
+      type: 'Markdown',
+      previewText: templateName,
+      tag: templateName,
+      tagColor: '',
+      updateTime: this.formatTime(now),
+      contentDetail: body,
+      tags: [templateName],
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
+    };
+    this.notes = [note].concat(this.notes);
+    try {
+      await this.storage.create(context, note);
+    } catch (error) {
+      console.error(`模板正文创建失败: ${JSON.stringify(error)}`);
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.refreshGraph();
+    this.openNote(note);
+    this.notify(`已用「${templateName}」模板新建`);
+  }
+
+  private async deleteNote(noteId: string): Promise<void> {
+    // 软删除：移入回收站（可恢复），保留沙箱 .md 文件——只有「彻底删除」才真正移除文件。
     let removed: NoteItem | null = null;
     let removedIndex: number = -1;
     for (let i = 0; i < this.notes.length; i++) {
@@ -578,55 +759,414 @@ struct Index {
         break;
       }
     }
-    try {
-      await this.storage.delete(context, noteId);
-    } catch (error) {
-      console.error(`笔记文件删除失败: ${JSON.stringify(error)}`);
+    if (removed === null) {
+      this.notify('目标资料不存在');
+      return;
     }
+    const trashed: NoteItem = removed;
+    trashed.deletedAt = Date.now();
     this.notes = this.notes.filter((n: NoteItem) => n.id !== noteId);
+    this.trash = [trashed].concat(this.trash);
     if (this.readingOpen && this.readingNote.id === noteId) {
       this.readingOpen = false;
       this.activeNoteId = '';
+      this.outlineItems = [];
     }
     this.persistSnapshot();
+    this.persistTrash();
     this.rebuildSpaces();
     this.refreshGraph();
 
-    if (removed === null) {
-      this.notify('已删除资料');
-      return;
-    }
-    const restoreNote: NoteItem = removed;
     const restoreIndex: number = removedIndex;
-    this.notifyUndoable(`已删除「${restoreNote.title}」`, () => {
-      this.restoreNote(restoreNote, restoreIndex);
+    this.notifyUndoable(`已将「${trashed.title}」移入回收站`, () => {
+      this.undoSoftDelete(trashed, restoreIndex);
     });
   }
 
-  /**
-   * 撤销删除：把笔记按原下标插回列表，并把沙箱里的 .md 正文重新写出来。
-   * 文件写入是异步的，失败不阻断列表还原——元数据已在，正文可由下次保存补齐。
-   */
-  private restoreNote(note: NoteItem, index: number): void {
+  /** 撤销软删除：从回收站移除并按原下标插回资料库，deletedAt 清空即恢复为正常笔记。 */
+  private undoSoftDelete(note: NoteItem, index: number): void {
+    this.trash = this.removeById(this.trash, note.id);
+    note.deletedAt = undefined;
     const next: NoteItem[] = this.notes.slice();
     const at: number = (index >= 0 && index <= next.length) ? index : next.length;
     next.splice(at, 0, note);
     this.notes = next;
-    this.rebuildSpaces();
     this.persistSnapshot();
+    this.persistTrash();
+    this.rebuildSpaces();
     this.refreshGraph();
-    this.rewriteNoteFile(note);
     this.notify(`已恢复「${note.title}」`);
   }
 
-  /** 把一篇笔记的正文重新写回沙箱 .md，供撤销删除后调用。失败只记日志，不回滚内存状态。 */
-  private async rewriteNoteFile(note: NoteItem): Promise<void> {
+  /** 从回收站恢复到资料库（回收站视图的「恢复」按钮）。 */
+  private async restoreFromTrash(note: NoteItem): Promise<void> {
+    this.trash = this.removeById(this.trash, note.id);
+    note.deletedAt = undefined;
+    this.notes = [note].concat(this.notes);
+    this.persistSnapshot();
+    this.persistTrash();
+    this.rebuildSpaces();
+    this.refreshGraph();
+    this.notify(`已恢复「${note.title}」`);
+  }
+
+  /** 彻底删除单篇（不可恢复，需二次确认）：移除回收站条目并删掉沙箱 .md。 */
+  private async purgeNote(note: NoteItem): Promise<void> {
+    const confirmed: boolean = await this.confirmDestructive(`彻底删除「${note.title}」？此操作不可恢复。`);
+    if (!confirmed) {
+      return;
+    }
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    this.trash = this.removeById(this.trash, note.id);
+    try {
+      await this.storage.delete(context, note.id);
+    } catch (error) {
+      console.error(`彻底删除失败 (${note.id}): ${JSON.stringify(error)}`);
+    }
+    await this.persistTrash();
+    this.notify('已彻底删除');
+  }
+
+  /** 清空回收站（不可恢复，需二次确认）。 */
+  private async emptyTrash(): Promise<void> {
+    if (this.trash.length === 0) {
+      return;
+    }
+    const confirmed: boolean =
+      await this.confirmDestructive(`清空回收站？${this.trash.length} 篇笔记将被彻底删除，不可恢复。`);
+    if (!confirmed) {
+      return;
+    }
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const ids: string[] = [];
+    for (let i = 0; i < this.trash.length; i++) {
+      ids.push(this.trash[i].id);
+    }
+    this.trash = [];
+    for (let i = 0; i < ids.length; i++) {
+      try {
+        await this.storage.delete(context, ids[i]);
+      } catch (error) {
+        console.error(`清空回收站失败 (${ids[i]}): ${JSON.stringify(error)}`);
+      }
+    }
+    await this.persistTrash();
+    this.notify('回收站已清空');
+  }
+
+  /** 不可恢复操作的二次确认；对话框不可用时按「取消」处理，绝不误删。 */
+  private async confirmDestructive(message: string): Promise<boolean> {
+    try {
+      const response = await promptAction.showDialog({
+        title: '不可恢复的操作',
+        message: message,
+        buttons: [
+          { text: '取消', color: '#787774' },
+          { text: '彻底删除', color: '#E03E3E' }
+        ]
+      });
+      return response.index === 1;
+    } catch (error) {
+      console.error(`确认对话框显示失败: ${JSON.stringify(error)}`);
+      this.notify('无法显示确认对话框，操作已取消');
+      return false;
+    }
+  }
+
+  private async persistTrash(): Promise<void> {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     try {
-      await this.storage.create(context, note);
+      await this.storage.saveTrash(context, this.trash);
     } catch (error) {
-      console.error(`正文回写失败 (${note.id}): ${JSON.stringify(error)}`);
+      console.error(`回收站保存失败: ${JSON.stringify(error)}`);
+      this.notify('回收站保存失败');
     }
+  }
+
+  private removeById(list: NoteItem[], id: string): NoteItem[] {
+    const result: NoteItem[] = [];
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].id !== id) {
+        result.push(list[i]);
+      }
+    }
+    return result;
+  }
+
+  private findNoteById(id: string): NoteItem | null {
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].id === id) {
+        return this.notes[i];
+      }
+    }
+    return null;
+  }
+
+  // ==================================================================
+  // 重命名 / 移动分类
+  // ==================================================================
+
+  /** 现有分类去重列表（含「未分类」兜底），供移动弹层选择目标。 */
+  private allCategories(): string[] {
+    const seen: Set<string> = new Set();
+    const result: string[] = [];
+    for (let i = 0; i < this.notes.length; i++) {
+      const category: string = this.notes[i].category.length === 0 ? CATEGORY_UNFILED : this.notes[i].category;
+      if (!seen.has(category)) {
+        seen.add(category);
+        result.push(category);
+      }
+    }
+    return result;
+  }
+
+  /** 把正文首个一级标题替换为新标题；无一级标题时在开头补一个。 */
+  private replaceLeadingHeading(content: string, title: string): string {
+    const lines: string[] = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim().startsWith('# ')) {
+        lines[i] = `# ${title}`;
+        return lines.join('\n');
+      }
+    }
+    return `# ${title}\n\n${content}`;
+  }
+
+  /** 确认重命名：更新标题元数据并同步正文首个 H1，落盘 .md 与快照。 */
+  private async commitRename(note: NoteItem, newTitle: string): Promise<void> {
+    const trimmed: string = newTitle.trim();
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      this.notify('目标笔记不存在');
+      return;
+    }
+    if (trimmed.length === 0 || trimmed === target.title) {
+      return;
+    }
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const nextContent: string = this.replaceLeadingHeading(target.contentDetail, trimmed);
+    target.title = trimmed;
+    target.contentDetail = nextContent;
+    target.updateTime = this.formatTime(new Date());
+    this.notes = this.notes.slice();
+    if (this.readingOpen && this.readingNote.id === target.id) {
+      this.readingNote = target;
+    }
+    try {
+      await this.storage.saveDocument(context, target, nextContent);
+    } catch (error) {
+      console.error(`重命名后正文落盘失败 (${target.id}): ${JSON.stringify(error)}`);
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.notify(`已重命名为「${trimmed}」`);
+  }
+
+  /** 确认移动：只更新分类元数据并重建项目树（正文不变，无需重写 .md）。 */
+  private async commitMove(note: NoteItem, category: string): Promise<void> {
+    const trimmed: string = category.trim();
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      this.notify('目标笔记不存在');
+      return;
+    }
+    if (trimmed.length === 0) {
+      return;
+    }
+    if (target.category === trimmed) {
+      this.notify(`「${target.title}」已在「${trimmed}」`);
+      return;
+    }
+    target.category = trimmed;
+    this.notes = this.notes.slice();
+    if (this.readingOpen && this.readingNote.id === target.id) {
+      this.readingNote = target;
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.notify(`已移动到「${trimmed}」`);
+  }
+
+  // ==================================================================
+  // 收藏（星标）
+  // ==================================================================
+
+  /** 已收藏的笔记列表（回收站中的笔记不在 this.notes 内，无需再排除）。 */
+  private favoriteNotes(): NoteItem[] {
+    const result: NoteItem[] = [];
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].favorite === true) {
+        result.push(this.notes[i]);
+      }
+    }
+    return result;
+  }
+
+  /** 切换收藏态并落盘；同步刷新阅读器与侧栏角标。 */
+  private async toggleFavorite(note: NoteItem): Promise<void> {
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      this.notify('目标笔记不存在');
+      return;
+    }
+    target.favorite = target.favorite !== true;
+    this.notes = this.notes.slice();
+    if (this.readingOpen && this.readingNote.id === target.id) {
+      this.readingNote = target;
+    }
+    await this.persistSnapshot();
+    this.notify(target.favorite ? `已收藏「${target.title}」` : `已取消收藏「${target.title}」`);
+  }
+
+  // ==================================================================
+  // 多标签（功能6）
+  // ==================================================================
+
+  /**
+   * 写回一篇笔记的标签列表。
+   * 同时把单值 tag 同步为首个标签，卡片/侧栏的旧展示位无需改造即可跟着更新。
+   */
+  private async applyTags(note: NoteItem, tags: string[]): Promise<void> {
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      this.notify('目标笔记不存在');
+      return;
+    }
+    const clean: string[] = [];
+    for (let i = 0; i < tags.length; i++) {
+      const t: string = tags[i].trim().replace(/^#/, '');
+      if (t.length === 0) {
+        continue;
+      }
+      let dup: boolean = false;
+      for (let j = 0; j < clean.length; j++) {
+        if (clean[j] === t) {
+          dup = true;
+          break;
+        }
+      }
+      if (!dup) {
+        clean.push(t);
+      }
+    }
+    target.tags = clean;
+    target.tag = clean.length > 0 ? clean[0] : '';
+    target.updatedAt = Date.now();
+    this.notes = this.notes.slice();
+    if (this.readingOpen && this.readingNote.id === target.id) {
+      this.readingNote = target;
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.refreshStats();
+    this.notify(`已更新「${target.title}」的标签`);
+  }
+
+  // ==================================================================
+  // 待办日历
+  // ==================================================================
+
+  /** 全部未完成待办数量，用于侧边栏角标。 */
+  private todoPendingCount(): number {
+    let count: number = 0;
+    for (let i = 0; i < this.todos.length; i++) {
+      if (!this.todos[i].done) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private async persistTodos(): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    try {
+      await this.todoStorage.saveTodos(context, this.todos);
+    } catch (error) {
+      console.error(`待办保存失败: ${JSON.stringify(error)}`);
+      this.notify('待办保存失败');
+    }
+  }
+
+  private async persistDayNotes(): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    try {
+      await this.todoStorage.saveDayNotes(context, this.dayNotes);
+    } catch (error) {
+      console.error(`日期备忘保存失败: ${JSON.stringify(error)}`);
+    }
+  }
+
+  /** 新增一条待办到指定日期。 */
+  private async addTodo(dateKey: string, title: string, noteRefs: string[]): Promise<void> {
+    const now: number = Date.now();
+    const todo: TodoItem = {
+      id: `todo-${now}-${this.todos.length}`,
+      date: dateKey,
+      title: title,
+      done: false,
+      noteRefs: noteRefs.slice(),
+      createdAt: now,
+      updatedAt: now
+    };
+    this.todos = [todo].concat(this.todos);
+    await this.persistTodos();
+    this.notify('已添加待办');
+  }
+
+  /** 切换待办完成态：未完成（红）↔ 已完成（绿）。 */
+  private async toggleTodo(todo: TodoItem): Promise<void> {
+    for (let i = 0; i < this.todos.length; i++) {
+      if (this.todos[i].id === todo.id) {
+        const current: TodoItem = this.todos[i];
+        const next: TodoItem = {
+          id: current.id,
+          date: current.date,
+          title: current.title,
+          done: !current.done,
+          noteRefs: current.noteRefs,
+          createdAt: current.createdAt,
+          updatedAt: Date.now()
+        };
+        this.todos[i] = next;
+        break;
+      }
+    }
+    this.todos = this.todos.slice();
+    await this.persistTodos();
+  }
+
+  /** 删除一条待办。 */
+  private async deleteTodo(todo: TodoItem): Promise<void> {
+    const result: TodoItem[] = [];
+    for (let i = 0; i < this.todos.length; i++) {
+      if (this.todos[i].id !== todo.id) {
+        result.push(this.todos[i]);
+      }
+    }
+    this.todos = result;
+    await this.persistTodos();
+    this.notify('已删除待办');
+  }
+
+  /** 写入某日期的备忘文本（不存在则新建条目）。 */
+  private async updateDayNote(dateKey: string, text: string): Promise<void> {
+    const now: number = Date.now();
+    const entry: DayNote = { date: dateKey, text: text, updatedAt: now };
+    let found: boolean = false;
+    for (let i = 0; i < this.dayNotes.length; i++) {
+      if (this.dayNotes[i].date === dateKey) {
+        this.dayNotes[i] = entry;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      const next: DayNote[] = [entry];
+      this.dayNotes = next.concat(this.dayNotes);
+    } else {
+      this.dayNotes = this.dayNotes.slice();
+    }
+    await this.persistDayNotes();
   }
 
   /**
@@ -651,7 +1191,10 @@ struct Index {
           tag: '导入',
           tagColor: '',
           updateTime: this.formatTime(now),
-          contentDetail: document.content
+          contentDetail: document.content,
+          tags: ['导入'],
+          createdAt: now.getTime(),
+          updatedAt: now.getTime()
         };
         this.notes = [note].concat(this.notes);
         await this.persistSnapshot();
@@ -668,6 +1211,12 @@ struct Index {
   }
 
   private handleSaved(note: NoteItem, content: string): void {
+    const now: number = Date.now();
+    note.updatedAt = now;
+    note.updateTime = this.formatTime(new Date(now));
+    if (note.createdAt === undefined) {
+      note.createdAt = now;
+    }
     let changed: boolean = false;
     for (let i = 0; i < this.notes.length; i++) {
       if (this.notes[i].id === note.id) {
@@ -704,6 +1253,13 @@ struct Index {
         annotationPaneOpen: this.annotationPaneOpen,
         jumpToken: this.jumpToken,
         jumpLine: this.jumpLine,
+        favorite: this.readingNote.favorite === true,
+        onToggleFavorite: (note: NoteItem) => {
+          this.toggleFavorite(note);
+        },
+        onDeleteNote: (note: NoteItem) => {
+          this.deleteNote(note.id);
+        },
         onOutlineUpdated: (items: MarkdownOutlineItem[]) => {
           this.outlineItems = items;
         },
@@ -732,7 +1288,7 @@ struct Index {
         recentNotes: this.notes.slice(0, 6),
         unresolvedLinks: this.linkGraph.unresolvedLinks,
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => this.createNote('未命名笔记'),
+        onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onImportDocument: () => this.importDocument(),
         onOpenGraph: () => {
           animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
@@ -755,7 +1311,7 @@ struct Index {
           this.activeFilter = filter;
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => this.createNote('未命名笔记'),
+        onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onImportDocument: () => this.importDocument()
       })
       .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
@@ -765,6 +1321,37 @@ struct Index {
         stats: this.stats,
         onSelectNoteById: (noteId: string) => this.openNoteById(noteId),
         onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title)
+      })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+    } else if (this.activeNav === NAV_TODO) {
+      TodoWorkspace({
+        dayNotes: this.dayNotes,
+        todos: this.todos,
+        notes: this.notes,
+        onAddTodo: (dateKey: string, title: string, noteRefs: string[]) => {
+          this.addTodo(dateKey, title, noteRefs);
+        },
+        onToggleTodo: (todo: TodoItem) => this.toggleTodo(todo),
+        onDeleteTodo: (todo: TodoItem) => this.deleteTodo(todo),
+        onUpdateDayNote: (dateKey: string, text: string) => {
+          this.updateDayNote(dateKey, text);
+        },
+        onOpenNote: (noteId: string) => this.openNoteById(noteId)
+      })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+    } else if (this.activeNav === NAV_TRASH) {
+      TrashWorkspace({
+        trash: this.trash,
+        retentionDays: TRASH_RETENTION_DAYS,
+        onRestore: (note: NoteItem) => this.restoreFromTrash(note),
+        onPurge: (note: NoteItem) => this.purgeNote(note),
+        onEmpty: () => this.emptyTrash()
+      })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+    } else if (this.activeNav === NAV_FAVORITE) {
+      FavoriteWorkspace({
+        favorites: this.favoriteNotes(),
+        onSelectNote: (note: NoteItem) => this.openNote(note)
       })
       .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_CANVAS) {
@@ -886,9 +1473,13 @@ struct Index {
           });
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => this.createNote('未命名笔记'),
+        onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onCreateNoteInProject: (title: string, projectName: string, type: string) => {
-          this.createNoteInProject(title, projectName, type);
+          // title 在这里作为命名层的默认标题（未命名笔记 / 未命名导图 / 未命名参考资料）
+          this.requestCreateNote(projectName, type, title);
+        },
+        onCreateFromTemplate: (templateName: string, projectName: string) => {
+          this.createNoteFromTemplate(templateName, projectName);
         },
         onImportIntoProject: (projectName: string) => {
           this.importDocument(projectName);
@@ -904,6 +1495,18 @@ struct Index {
         },
         onDeleteNote: (noteId: string) => {
           this.deleteNote(noteId);
+        },
+        trashCount: this.trash.length,
+        todoPendingCount: this.todoPendingCount(),
+        favoriteCount: this.favoriteNotes().length,
+        onRenameNote: (note: NoteItem, newTitle: string) => {
+          this.commitRename(note, newTitle);
+        },
+        onMoveNote: (note: NoteItem, category: string) => {
+          this.commitMove(note, category);
+        },
+        onApplyTags: (note: NoteItem, tags: string[]) => {
+          this.applyTags(note, tags);
         },
         onOpenSettings: () => {
           animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
@@ -938,6 +1541,22 @@ struct Index {
           },
           onLoadSeedData: () => {
             this.loadSeedData();
+          }
+        })
+      }
+
+      if (this.pendingCreate !== null) {
+        NameNoteSheet({
+          defaultName: this.pendingDefaultName(),
+          onClose: () => {
+            animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+              this.pendingCreate = null;
+            });
+          },
+          onConfirm: (name: string) => {
+            animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+              this.commitPendingCreate(name);
+            });
           }
         })
       }

@@ -27,9 +27,15 @@ export struct GlobalTopBar {
   onOpenSearch: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
+  }
+
+  /** 图标点击区：手机放大到接近最小触控目标，宽屏保持紧凑 */
+  private iconSize(): number {
+    return this.isPhone ? 38 : ICON_SIZE;
   }
 
   private saveStateColor(): string {
@@ -49,8 +55,8 @@ export struct GlobalTopBar {
       Text('☰')
         .fontSize(TypographyTokens.TITLE_SUB)
         .fontColor(this.palette().inkSecondary)
-        .width(ICON_SIZE)
-        .height(ICON_SIZE)
+        .width(this.iconSize())
+        .height(this.iconSize())
         .textAlign(TextAlign.Center)
         .borderRadius(6)
         .hoverEffect(HoverEffect.Highlight)
@@ -86,8 +92,8 @@ export struct GlobalTopBar {
       Text('⌕')
         .fontSize(TypographyTokens.TITLE_SUB)
         .fontColor(this.palette().inkSecondary)
-        .width(ICON_SIZE)
-        .height(ICON_SIZE)
+        .width(this.iconSize())
+        .height(this.iconSize())
         .textAlign(TextAlign.Center)
         .borderRadius(6)
         .hoverEffect(HoverEffect.Highlight)
@@ -97,8 +103,8 @@ export struct GlobalTopBar {
         Text(this.contextPanelOpen ? '❯' : '❮')
           .fontSize(TypographyTokens.CAPTION)
           .fontColor(this.contextPanelOpen ? this.palette().accent : this.palette().inkSecondary)
-          .width(ICON_SIZE)
-          .height(ICON_SIZE)
+          .width(this.iconSize())
+          .height(this.iconSize())
           .textAlign(TextAlign.Center)
           .borderRadius(6)
           .backgroundColor(this.contextPanelOpen ? this.palette().accentSoft : Color.Transparent)

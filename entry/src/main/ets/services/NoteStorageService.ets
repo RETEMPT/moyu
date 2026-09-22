@@ -8,6 +8,7 @@ import { DocumentTransferResult, MarkdownDocument } from '../common/types/Markdo
 const PREFERENCES_NAME: string = 'flowmind_notes';
 const NOTES_KEY: string = 'notes';
 const PROJECTS_KEY: string = 'projects';
+const TRASH_KEY: string = 'trash';
 const NOTES_DIRECTORY_NAME: string = 'notes';
 
 export class NoteStorageService {
@@ -390,6 +391,38 @@ export class NoteStorageService {
       });
     }
     await prefs.put(PROJECTS_KEY, JSON.stringify(slim));
+    await prefs.flush();
+  }
+
+  /**
+   * 读取回收站中的笔记（软删除快照）。从未保存过或数据损坏时返回空数组。
+   * 回收站与资料库分开存储：正文 .md 文件在软删除阶段保留，只有彻底删除才移除。
+   * @param context 应用上下文
+   * @returns 回收站笔记列表
+   */
+  async loadTrash(context: Context): Promise<NoteItem[]> {
+    const prefs: preferences.Preferences = await this.ensureInitialized(context);
+    const stored = await prefs.get(TRASH_KEY, '');
+    if (typeof stored !== 'string' || stored.length === 0) {
+      return [];
+    }
+    try {
+      const parsed: NoteItem[] = JSON.parse(stored) as NoteItem[];
+      return this.isNoteItemArray(parsed) ? parsed : [];
+    } catch (error) {
+      console.error(`回收站快照解析失败: ${JSON.stringify(error)}`);
+      return [];
+    }
+  }
+
+  /**
+   * 保存回收站快照。仅写入 Preferences JSON，不动任何 .md 文件。
+   * @param context 应用上下文
+   * @param trash 回收站笔记列表
+   */
+  async saveTrash(context: Context, trash: NoteItem[]): Promise<void> {
+    const prefs: preferences.Preferences = await this.ensureInitialized(context);
+    await prefs.put(TRASH_KEY, JSON.stringify(trash));
     await prefs.flush();
   }
 
