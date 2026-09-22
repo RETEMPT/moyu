@@ -353,22 +353,39 @@ export struct HomeWorkspace {
       Column() {
         Column() {
           // ---- 1. 品牌欢迎与快捷操作岛 ----
-          Row({ space: 14 }) {
-            BrandMark({ markSize: 46 })
-            Column({ space: 4 }) {
-              Text('墨语 · 第二大脑')
-                .fontSize(TypographyTokens.TITLE_HERO)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(this.palette().inkPrimary)
-              Text('离线优先、隐私可控，让每篇随想与文档都连成思考的星系。')
-                .fontSize(TypographyTokens.BODY_REGULAR)
-                .fontColor(this.palette().inkSecondary)
-            }
-            .alignItems(HorizontalAlign.Start)
-            .layoutWeight(1)
+          Column({ space: 14 }) {
+            // 品牌标题行（独占整行，避免被快捷按钮挤压导致末字裁切）
+            Row({ space: 14 }) {
+              BrandMark({ markSize: 46 })
+              Column({ space: 6 }) {
+                Row({ space: 8 }) {
+                  Text('墨语')
+                    .fontSize(TypographyTokens.TITLE_HERO)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor(this.palette().inkPrimary)
+                  Text('第二大脑')
+                    .fontSize(TypographyTokens.CAPTION)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor(this.palette().accent)
+                    .maxLines(1)
+                    .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+                    .borderRadius(999)
+                    .backgroundColor(this.palette().accentSoft)
+                }
+                .alignItems(VerticalAlign.Bottom)
 
-            // 快捷操作岛
-            Row({ space: 8 }) {
+                Text('离线优先、隐私可控，让每篇随想与文档都连成思考的星系。')
+                  .fontSize(TypographyTokens.BODY_REGULAR)
+                  .fontColor(this.palette().inkSecondary)
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Center)
+
+            // 快捷操作岛（独立一行，窄屏自动换行）
+            Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
               Row({ space: 4 }) {
                 Text('＋')
                   .fontSize(12)
@@ -380,6 +397,7 @@ export struct HomeWorkspace {
                   .fontColor(Color.White)
               }
               .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+              .margin({ right: 8, bottom: 8 })
               .borderRadius(16)
               .backgroundColor(this.palette().accent)
               .hoverEffect(HoverEffect.Highlight)
@@ -395,6 +413,7 @@ export struct HomeWorkspace {
                   .fontColor(this.palette().inkPrimary)
               }
               .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+              .margin({ right: 8, bottom: 8 })
               .borderRadius(16)
               .backgroundColor(this.palette().surface)
               .border({ width: 1, color: this.palette().borderSubtle })
@@ -411,14 +430,16 @@ export struct HomeWorkspace {
                   .fontColor(this.palette().accent)
               }
               .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+              .margin({ bottom: 8 })
               .borderRadius(16)
               .backgroundColor(this.palette().accentSoft)
               .hoverEffect(HoverEffect.Highlight)
               .onClick(() => this.onOpenGraph())
             }
+            .width('100%')
           }
           .width('100%')
-          .alignItems(VerticalAlign.Center)
+          .alignItems(HorizontalAlign.Start)
           .margin({ bottom: 20 })
 
           // ---- 2. Bento 统计卡片栅格 ----

@@ -168,9 +168,7 @@ export struct AppShell {
       onMoveNote: this.onMoveNote,
       onApplyTags: this.onApplyTags,
       onSelectNav: this.onSelectNav,
-      onOpenSettings: this.onOpenSettings,
-      trashCount: this.trashCount,
-      todoPendingCount: this.todoPendingCount
+      onOpenSettings: this.onOpenSettings
     })
   }
 
