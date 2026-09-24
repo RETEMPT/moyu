@@ -25,13 +25,6 @@ import { SpaceFolder } from '../../common/types/SpaceFolder';
 import { NAV_AI, NAV_CANVAS, NAV_GRAPH, NAV_HOME, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
 import { noteRenderKey, spaceRenderKey } from '../../common/utils/ForEachKeys';
 import { BrandMark } from '../brand/BrandMark';
-import { ProjectMenuSheet } from './sheets/ProjectMenuSheet';
-import { NewProjectSheet } from './sheets/NewProjectSheet';
-import { NewContentSheet } from './sheets/NewContentSheet';
-import { RenameProjectSheet } from './sheets/RenameProjectSheet';
-import { NoteMenuSheet } from './sheets/NoteMenuSheet';
-import { RenameNoteSheet } from './sheets/RenameNoteSheet';
-import { MoveNoteSheet } from './sheets/MoveNoteSheet';
 
 const ROW_HEIGHT: number = 38;
 const FILE_ROW_HEIGHT: number = 36;
@@ -65,36 +58,20 @@ export struct Sidebar {
   onMoveNote: (note: NoteItem, category: string) => void = () => {};
   onSelectNav: (navKey: string) => void = () => {};
   onOpenSettings: () => void = () => {};
+  /** 请求 Index 层挂载指定底部弹层（全屏遮罩，而非被侧栏 260vp 宽度裁剪） */
+  onOpenSheet: (type: string, project: SpaceFolder | null, note: NoteItem | null) => void = () => {};
+  /** 请求打开居中「新建项目」对话框 */
+  onOpenCreateProject: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
 
   // ---- 触感与动画状态 ----
   @State pressedItemId: string = '';
   @State liftedItemId: string = '';
-
-  // ---- 内联新建项目状态 (类 VSCode 无遮罩紧凑卡片) ----
-  @State isAddingProject: boolean = false;
-  @State newProjectName: string = '';
-  @State newProjectIcon: string = '📁';
-  @State newProjectColor: string = '#4F46E5';
   private suppressRowClick: boolean = false;
-
-  // ---- 操作面板与对话框状态 ----
-  @State activeSheet: string = ''; // 'project_menu' | 'new_project' | 'rename_project' | 'new_content' | 'note_menu' | 'rename_note' | 'move_note'
-  @State selectedProject: SpaceFolder | null = null;
-  @State selectedNote: NoteItem | null = null;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
-  }
-
-  private submitNewProject(): void {
-    const trimmed: string = this.newProjectName.trim();
-    if (trimmed.length > 0) {
-      this.onCreateProject(trimmed, this.newProjectColor, this.newProjectIcon);
-      this.newProjectName = '';
-      this.isAddingProject = false;
-    }
   }
 
   // ------------------------------------------------------------------
@@ -129,15 +106,6 @@ export struct Sidebar {
     return ResourceTypeTokens.COLOR_MARKDOWN;
   }
 
-  /** 现有项目（分类）名列表，供「移动到项目」弹层选择目标 */
-  private categoryNames(): string[] {
-    const result: string[] = [];
-    for (let i = 0; i < this.spaces.length; i++) {
-      result.push(this.spaces[i].name);
-    }
-    return result;
-  }
-
   // ------------------------------------------------------------------
   // 触感物理动画属性生成器
   // ------------------------------------------------------------------
@@ -164,101 +132,6 @@ export struct Sidebar {
   // ------------------------------------------------------------------
   // 视图构建：项目与资源文件树
   // ------------------------------------------------------------------
-
-  /** 类 VSCode 紧凑型内联新建项目卡片（优雅内嵌在树头部，无全屏黑化遮罩） */
-  @Builder
-  inlineNewProjectCard() {
-    Column({ space: 6 }) {
-      Row({ space: 6 }) {
-        Text(this.newProjectIcon)
-          .fontSize(TypographyTokens.BODY_REGULAR)
-        TextInput({ text: this.newProjectName, placeholder: '输入新项目名称...' })
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.palette().inkPrimary)
-          .placeholderColor(this.palette().inkMuted)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .borderRadius(6)
-          .height(28)
-          .layoutWeight(1)
-          .onChange((value: string) => {
-            this.newProjectName = value;
-          })
-          .onSubmit(() => {
-            this.submitNewProject();
-          })
-      }
-      .width('100%')
-
-      Row({ space: 6 }) {
-        // 常用图标快捷选择
-        Row({ space: 2 }) {
-          ForEach(['📁', '🚀', '📚', '💡', '🔬', '🎯'], (icon: string) => {
-            Text(icon)
-              .fontSize(11)
-              .padding(2)
-              .borderRadius(4)
-              .backgroundColor(this.newProjectIcon === icon ? this.palette().activeBg : Color.Transparent)
-              .onClick(() => {
-                this.newProjectIcon = icon;
-              })
-          }, (icon: string) => icon)
-        }
-        .layoutWeight(1)
-
-        // 常用主题色微型选择点
-        Row({ space: 4 }) {
-          ForEach(['#4F46E5', '#059669', '#D97706', '#DC2626', '#2563EB'], (color: string) => {
-            Circle({ width: 12, height: 12 })
-              .fill(color)
-              .stroke(this.newProjectColor === color ? this.palette().inkPrimary : Color.Transparent)
-              .strokeWidth(1.5)
-              .onClick(() => {
-                this.newProjectColor = color;
-              })
-          }, (color: string) => color)
-        }
-      }
-      .width('100%')
-
-      Row({ space: 6 }) {
-        Button('取消')
-          .layoutWeight(1)
-          .height(24)
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkSecondary)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .borderRadius(4)
-          .onClick(() => {
-            this.isAddingProject = false;
-            this.newProjectName = '';
-          })
-
-        Button('创建')
-          .layoutWeight(1)
-          .height(24)
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(Color.White)
-          .backgroundColor(this.palette().accent)
-          .borderRadius(4)
-          .onClick(() => {
-            this.submitNewProject();
-          })
-      }
-      .width('100%')
-    }
-    .width('100%')
-    .padding(8)
-    .borderRadius(8)
-    .backgroundColor(this.palette().surface)
-    .border({ width: 1, color: this.palette().accent })
-    .shadow({ radius: 8, color: 'rgba(0,0,0,0.08)', offsetY: 2 })
-    .margin({ top: 2, bottom: 6 })
-    .transition(
-      TransitionEffect.OPACITY
-        .combine(TransitionEffect.scale({ y: 0.8, centerY: 0 }))
-        .animation({ curve: curves.springMotion(0.25, 0.76) })
-    )
-  }
 
   @Builder
   projectRow(space: SpaceFolder) {
@@ -307,8 +180,7 @@ export struct Sidebar {
           .hoverEffect(HoverEffect.Highlight)
           .onClick(() => {
             this.suppressRowClick = true;
-            this.selectedProject = space;
-            this.activeSheet = 'new_content';
+            this.onOpenSheet('new_content', space, null);
           })
 
         // 更多操作菜单按钮 (···)，防止事件冒泡
@@ -326,8 +198,7 @@ export struct Sidebar {
             this.suppressRowClick = true;
             animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
               this.liftedItemId = `project-${space.id}`;
-              this.selectedProject = space;
-              this.activeSheet = 'project_menu';
+              this.onOpenSheet('project_menu', space, null);
             });
           })
       }
@@ -371,8 +242,7 @@ export struct Sidebar {
           .onAction(() => {
             animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
               this.liftedItemId = `project-${space.id}`;
-              this.selectedProject = space;
-              this.activeSheet = 'project_menu';
+              this.onOpenSheet('project_menu', space, null);
             });
           })
       )
@@ -395,7 +265,7 @@ export struct Sidebar {
             .borderRadius(6)
             .hoverEffect(HoverEffect.Highlight)
             .onClick(() => {
-              this.onCreateNoteInProject('未命名笔记', space.name, 'Markdown');
+              this.onOpenSheet('new_content', space, null);
             })
           } else {
             ForEach(space.notes, (note: NoteItem) => {
@@ -451,8 +321,7 @@ export struct Sidebar {
             this.suppressRowClick = true;
             animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
               this.liftedItemId = `note-${note.id}`;
-              this.selectedNote = note;
-              this.activeSheet = 'note_menu';
+              this.onOpenSheet('note_menu', null, note);
             });
           })
       } else if (note.tag && note.tag.length > 0) {
@@ -495,8 +364,7 @@ export struct Sidebar {
         .onAction(() => {
           animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
             this.liftedItemId = `note-${note.id}`;
-            this.selectedNote = note;
-            this.activeSheet = 'note_menu';
+            this.onOpenSheet('note_menu', null, note);
           });
         })
     )
@@ -550,123 +418,8 @@ export struct Sidebar {
   }
 
   // ------------------------------------------------------------------
-  // 弹层组件：Apple 风格操作菜单与对话框
+  // 交互式弹层：由 Index 层挂载（全屏遮罩），此处仅触发
   // ------------------------------------------------------------------
-
-  // ------------------------------------------------------------------
-  // 交互式弹层：只有当前这一个 sheet 会被挂载
-  // ------------------------------------------------------------------
-
-  private closeSheet(): void {
-    animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
-      this.activeSheet = '';
-      this.liftedItemId = '';
-      this.selectedProject = null;
-      this.selectedNote = null;
-    });
-  }
-
-  @Builder
-  activeSheetContent() {
-    if (this.activeSheet === 'project_menu' && this.selectedProject !== null) {
-      ProjectMenuSheet({
-        project: this.selectedProject,
-        onClose: () => this.closeSheet(),
-        onCreateNoteInProject: (title: string, projectName: string, type: string) => {
-          this.closeSheet();
-          this.onCreateNoteInProject(title, projectName, type);
-        },
-        onRequestRename: (project: SpaceFolder) => {
-          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
-            this.selectedProject = project;
-            this.activeSheet = 'rename_project';
-          });
-        },
-        onDeleteProject: (name: string) => {
-          this.closeSheet();
-          this.onDeleteProject(name);
-        }
-      })
-    } else if (this.activeSheet === 'new_project') {
-      NewProjectSheet({
-        onClose: () => this.closeSheet(),
-        onCreateProject: (name: string, color: string, icon: string) => {
-          this.onCreateProject(name, color, icon);
-        }
-      })
-    } else if (this.activeSheet === 'rename_project' && this.selectedProject !== null) {
-      RenameProjectSheet({
-        project: this.selectedProject,
-        onClose: () => this.closeSheet(),
-        onRenameProject: (oldName: string, newName: string) => {
-          this.onRenameProject(oldName, newName);
-        }
-      })
-    } else if (this.activeSheet === 'new_content' && this.selectedProject !== null) {
-      NewContentSheet({
-        project: this.selectedProject,
-        onClose: () => this.closeSheet(),
-        onCreateNoteInProject: (title: string, projectName: string, type: string) => {
-          this.closeSheet();
-          this.onCreateNoteInProject(title, projectName, type);
-        },
-        onImportIntoProject: (projectName: string) => {
-          this.closeSheet();
-          this.onImportIntoProject(projectName);
-        }
-      })
-    } else if (this.activeSheet === 'note_menu' && this.selectedNote !== null) {
-      NoteMenuSheet({
-        note: this.selectedNote,
-        onClose: () => this.closeSheet(),
-        onOpenNote: (note: NoteItem) => {
-          this.onSelectNote(note);
-          this.closeSheet();
-        },
-        onDeleteNote: (noteId: string) => {
-          this.closeSheet();
-          this.onDeleteNote(noteId);
-        },
-        onRequestRename: (note: NoteItem) => {
-          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
-            this.selectedNote = note;
-            this.activeSheet = 'rename_note';
-          });
-        },
-        onRequestMove: (note: NoteItem) => {
-          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
-            this.selectedNote = note;
-            this.activeSheet = 'move_note';
-          });
-        }
-      })
-    } else if (this.activeSheet === 'rename_note' && this.selectedNote !== null) {
-      RenameNoteSheet({
-        note: this.selectedNote,
-        onClose: () => this.closeSheet(),
-        onRenameNote: (note: NoteItem, newTitle: string) => {
-          this.closeSheet();
-          this.onRenameNote(note, newTitle);
-        }
-      })
-    } else if (this.activeSheet === 'move_note' && this.selectedNote !== null) {
-      MoveNoteSheet({
-        note: this.selectedNote,
-        categories: this.categoryNames(),
-        onClose: () => this.closeSheet(),
-        onMoveNote: (note: NoteItem, category: string) => {
-          this.closeSheet();
-          this.onMoveNote(note, category);
-        }
-      })
-    }
-  }
-
-  /** 弹层内容由 activeSheetContent 挂载对应的 Sheet 组件（各 Sheet 内部均以 SheetOverlay 为根容器）。 */
-  @Builder
-  sheetOverlay() {
-    this.activeSheetContent()
-  }
 
 
   // ------------------------------------------------------------------
@@ -784,20 +537,13 @@ export struct Sidebar {
           .backgroundColor(this.palette().accentSoft)
           .hoverEffect(HoverEffect.Highlight)
           .onClick(() => {
-            animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
-              this.isAddingProject = !this.isAddingProject;
-            });
+            this.onOpenCreateProject();
           })
         }
         .width('100%')
         .height(28)
         .padding({ left: 8, right: 8 })
         .margin({ bottom: 4 })
-
-        // 内联新建项目卡片（紧凑轻量，绝不遮盖整个侧边栏）
-        if (this.isAddingProject) {
-          this.inlineNewProjectCard()
-        }
 
         // 项目树滚动容器
         Scroll() {
@@ -841,10 +587,6 @@ export struct Sidebar {
       .height('100%')
       .padding({ left: 8, right: 8, top: 8 })
 
-      // 悬浮 Action Sheet 弹层
-      if (this.activeSheet.length > 0) {
-        this.sheetOverlay()
-      }
     }
     .width(LayoutTokens.SIDEBAR_WIDTH)
     .height('100%')
