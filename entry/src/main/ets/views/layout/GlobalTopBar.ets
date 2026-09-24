@@ -1,7 +1,7 @@
 /**
  * 全局顶栏 (Notion 风格极简工具条)
  *
- * 左区：侧边栏折叠按钮 + 空间面包屑
+ * 左区：侧边栏折叠按钮 + 空间面包屑（每段可点击跳转）
  * 右区：Markdown 落盘状态 + 快速搜索入口 + 右侧上下文面板开关
  */
 import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
@@ -25,6 +25,8 @@ export struct GlobalTopBar {
   onToggleSidebar: () => void = () => {};
   onToggleContext: () => void = () => {};
   onOpenSearch: () => void = () => {};
+  /** 点击面包屑某一段（分类名或文档标题）时回调，index 为该段下标 */
+  onBreadcrumbClick: (index: number, segment: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
 
@@ -65,9 +67,11 @@ export struct GlobalTopBar {
           }
           Text(segment)
             .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(index === this.breadcrumb.length - 1 ? this.palette().inkPrimary : this.palette().inkSecondary)
+            .fontColor(index === this.breadcrumb.length - 1 ? this.palette().inkPrimary : this.palette().accent)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => this.onBreadcrumbClick(index, segment))
         }, (segment: string, index: number) => `${index}-${segment}`)
       }
       .layoutWeight(1)

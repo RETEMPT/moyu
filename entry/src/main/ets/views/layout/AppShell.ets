@@ -49,6 +49,9 @@ export struct AppShell {
   onRenameNote: (note: NoteItem, newTitle: string) => void = () => {};
   onMoveNote: (note: NoteItem, category: string) => void = () => {};
   onOpenSettings: () => void = () => {};
+  onBreadcrumbClick: (index: number, segment: string) => void = () => {};
+  onOpenSheet: (type: string, project: SpaceFolder | null, note: NoteItem | null) => void = () => {};
+  onOpenCreateProject: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
 
@@ -145,6 +148,8 @@ export struct AppShell {
       onMoveNote: this.onMoveNote,
       onSelectNav: this.onSelectNav,
       onOpenSettings: this.onOpenSettings,
+      onOpenSheet: this.onOpenSheet,
+      onOpenCreateProject: this.onOpenCreateProject,
       trashCount: this.trashCount,
       todoPendingCount: this.todoPendingCount
     })
@@ -174,7 +179,8 @@ export struct AppShell {
             showContextToggle: this.isTwoColumn || this.isThreeColumn,
             onToggleSidebar: this.onToggleSidebar,
             onToggleContext: this.onToggleContext,
-            onOpenSearch: this.onOpenSearch
+            onOpenSearch: this.onOpenSearch,
+            onBreadcrumbClick: this.onBreadcrumbClick
           })
 
           Column() {

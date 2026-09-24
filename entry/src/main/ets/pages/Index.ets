@@ -46,6 +46,14 @@ import { HuaweiDocWorkspace } from '../views/reader/huawei/HuaweiDocWorkspace';
 import { ContextDrawer, CONTEXT_TAB_OUTLINE } from '../views/context/ContextDrawer';
 import { QuickSearchDialog } from '../views/explore/QuickSearchDialog';
 import { AppearanceSheet } from '../views/settings/AppearanceSheet';
+import { NewProjectSheet } from '../views/layout/sheets/NewProjectSheet';
+import { CreateNoteSheet } from '../views/layout/sheets/CreateNoteSheet';
+import { ProjectMenuSheet } from '../views/layout/sheets/ProjectMenuSheet';
+import { NewContentSheet } from '../views/layout/sheets/NewContentSheet';
+import { RenameProjectSheet } from '../views/layout/sheets/RenameProjectSheet';
+import { NoteMenuSheet } from '../views/layout/sheets/NoteMenuSheet';
+import { RenameNoteSheet } from '../views/layout/sheets/RenameNoteSheet';
+import { MoveNoteSheet } from '../views/layout/sheets/MoveNoteSheet';
 
 const EMPTY_NOTE: NoteItem = {
   id: '',
@@ -110,6 +118,14 @@ struct Index {
   @State toastMessage: string = '';
   /** 当前 Toast 是否附带「撤销」按钮 */
   @State undoVisible: boolean = false;
+  /** 新建笔记对话框（记随笔） */
+  @State createNoteOpen: boolean = false;
+  /** 新建项目对话框 */
+  @State createProjectOpen: boolean = false;
+  /** 底部弹层类型：'project_menu' | 'new_content' | 'rename_project' | 'note_menu' | 'rename_note' | 'move_note' */
+  @State activeSheet: string = '';
+  @State sheetProject: SpaceFolder | null = null;
+  @State sheetNote: NoteItem | null = null;
 
   private storage: NoteStorageService = new NoteStorageService();
   private searchService: NoteSearchService = new NoteSearchService();
@@ -370,11 +386,142 @@ struct Index {
   }
 
   private breadcrumb(): string[] {
-    if (this.readingOpen) {
-      const category: string = this.readingNote.category.length === 0 ? '未分类' : this.readingNote.category;
-      return [category, this.readingNote.title];
+    if (this.readingOpen || this.fullScreenDocOpen) {
+      const note = this.fullScreenDocOpen ? this.fullScreenDocNote : this.readingNote;
+      const category: string = note.category.length === 0 ? '未分类' : note.category;
+      return [category, note.title];
     }
     return [this.activeNav];
+  }
+
+  /** 更新笔记封面图片 URI */
+  updateNoteCover(noteId: string, uri: string): void {
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].id === noteId) {
+        this.notes[i].coverUrl = uri;
+        this.notes = this.notes.slice();
+        this.persistSnapshot();
+        break;
+      }
+    }
+  }
+
+  closeSheet(): void {
+    animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+      this.activeSheet = '';
+      this.sheetProject = null;
+      this.sheetNote = null;
+    });
+  }
+
+  @Builder
+  activeSheetContent() {
+    if (this.activeSheet === 'project_menu' && this.sheetProject !== null) {
+      ProjectMenuSheet({
+        project: this.sheetProject,
+        onClose: () => this.closeSheet(),
+        onCreateNoteInProject: (title: string, projectName: string, type: string) => {
+          this.closeSheet();
+          this.createNoteInProject(title, projectName, type);
+        },
+        onRequestRename: (project: SpaceFolder) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.sheetProject = project;
+            this.activeSheet = 'rename_project';
+          });
+        },
+        onDeleteProject: (name: string) => {
+          this.closeSheet();
+          this.deleteProject(name);
+        }
+      })
+    } else if (this.activeSheet === 'new_content' && this.sheetProject !== null) {
+      NewContentSheet({
+        project: this.sheetProject,
+        onClose: () => this.closeSheet(),
+        onCreateNoteInProject: (title: string, projectName: string, type: string) => {
+          this.closeSheet();
+          this.createNoteInProject(title, projectName, type);
+        },
+        onImportIntoProject: (projectName: string) => {
+          this.closeSheet();
+          this.importDocument(projectName);
+        }
+      })
+    } else if (this.activeSheet === 'rename_project' && this.sheetProject !== null) {
+      RenameProjectSheet({
+        project: this.sheetProject,
+        onClose: () => this.closeSheet(),
+        onRenameProject: (oldName: string, newName: string) => {
+          this.renameProject(oldName, newName);
+        }
+      })
+    } else if (this.activeSheet === 'note_menu' && this.sheetNote !== null) {
+      NoteMenuSheet({
+        note: this.sheetNote,
+        onClose: () => this.closeSheet(),
+        onOpenNote: (note: NoteItem) => {
+          this.openNote(note);
+          this.closeSheet();
+        },
+        onDeleteNote: (noteId: string) => {
+          this.closeSheet();
+          this.deleteNote(noteId);
+        },
+        onRequestRename: (note: NoteItem) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.sheetNote = note;
+            this.activeSheet = 'rename_note';
+          });
+        },
+        onRequestMove: (note: NoteItem) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.sheetNote = note;
+            this.activeSheet = 'move_note';
+          });
+        }
+      })
+    } else if (this.activeSheet === 'rename_note' && this.sheetNote !== null) {
+      RenameNoteSheet({
+        note: this.sheetNote,
+        onClose: () => this.closeSheet(),
+        onRenameNote: (note: NoteItem, newTitle: string) => {
+          this.commitRename(note, newTitle);
+        }
+      })
+    } else if (this.activeSheet === 'move_note' && this.sheetNote !== null) {
+      MoveNoteSheet({
+        note: this.sheetNote,
+        categories: this.spaces.map((s: SpaceFolder) => s.name),
+        onClose: () => this.closeSheet(),
+        onMoveNote: (note: NoteItem, category: string) => {
+          this.commitMove(note, category);
+        }
+      })
+    }
+  }
+
+  /** 点击面包屑：分类段 → 回到资料库并按分类筛选；标题段 → 打开文档切换搜索 */
+  private onBreadcrumbClick(index: number, segment: string): void {
+    if (this.readingOpen || this.fullScreenDocOpen) {
+      if (index === 0) {
+        // 点击分类名：关闭当前文档，回到资料库并选中该项目
+        this.readingOpen = false;
+        this.fullScreenDocOpen = false;
+        this.activeNoteId = '';
+        this.activeNav = NAV_LIBRARY;
+        // 尝试选中对应项目
+        for (let i = 0; i < this.spaces.length; i++) {
+          if (this.spaces[i].name === segment) {
+            this.activeSpaceId = this.spaces[i].id;
+            break;
+          }
+        }
+      } else {
+        // 点击文档标题：打开快速搜索以便切换文档
+        this.searchVisible = true;
+      }
+    }
   }
 
   // ==================================================================
@@ -1105,14 +1252,19 @@ struct Index {
     } else if (this.activeNav === NAV_HOME) {
       HomeWorkspace({
         stats: this.stats,
-        recentNotes: this.notes.slice(0, 6),
+        recentNotes: this.notes.slice(0, 9),
         unresolvedLinks: this.linkGraph.unresolvedLinks,
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => this.createNote('未命名笔记'),
+        onCreateNote: () => {
+          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+            this.createNoteOpen = true;
+          });
+        },
         onImportDocument: () => this.importDocument(),
         onOpenGraph: () => {
           this.activeNav = NAV_GRAPH;
-        }
+        },
+        onUploadCover: (noteId: string, uri: string) => this.updateNoteCover(noteId, uri)
       })
     } else if (this.activeNav === NAV_LIBRARY) {
       LibraryWorkspace({
@@ -1229,6 +1381,9 @@ struct Index {
         contextPanel: () => {
           this.contextContent();
         },
+        onBreadcrumbClick: (index: number, segment: string) => {
+          this.onBreadcrumbClick(index, segment);
+        },
         onToggleSidebar: () => {
           animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
             this.sidebarCollapsed = !this.sidebarCollapsed;
@@ -1276,7 +1431,11 @@ struct Index {
           this.fullScreenDocOpen = false;
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => this.createNote('未命名笔记'),
+        onCreateNote: () => {
+          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+            this.createNoteOpen = true;
+          });
+        },
         onCreateNoteInProject: (title: string, projectName: string, type: string) => {
           this.createNoteInProject(title, projectName, type);
         },
@@ -1285,6 +1444,18 @@ struct Index {
         },
         onCreateProject: (name: string, color: string, icon: string) => {
           this.createProject(name, color, icon);
+        },
+        onOpenCreateProject: () => {
+          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+            this.createProjectOpen = true;
+          });
+        },
+        onOpenSheet: (type: string, project: SpaceFolder | null, note: NoteItem | null) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.activeSheet = type;
+            this.sheetProject = project;
+            this.sheetNote = note;
+          });
         },
         onRenameProject: (oldName: string, newName: string) => {
           this.renameProject(oldName, newName);
@@ -1356,6 +1527,37 @@ struct Index {
           }
         })
       }
+
+      // ---- 新建笔记对话框（记随笔，居中放大） ----
+      if (this.createNoteOpen) {
+        CreateNoteSheet({
+          onClose: () => {
+            animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+              this.createNoteOpen = false;
+            });
+          },
+          onCreateNote: (title: string) => {
+            this.createNote(title);
+          }
+        })
+      }
+
+      // ---- 新建项目对话框（居中，初始「未命名项目」） ----
+      if (this.createProjectOpen) {
+        NewProjectSheet({
+          onClose: () => {
+            animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+              this.createProjectOpen = false;
+            });
+          },
+          onCreateProject: (name: string, color: string, icon: string) => {
+            this.createProject(name, color, icon);
+          }
+        })
+      }
+
+      // ---- 底部弹层（全屏遮罩，由 Sidebar 触发） ----
+      this.activeSheetContent()
 
       if (this.toastVisible) {
         Column() {
