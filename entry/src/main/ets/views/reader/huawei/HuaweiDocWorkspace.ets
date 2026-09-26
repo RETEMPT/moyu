@@ -906,6 +906,8 @@ export struct HuaweiDocWorkspace {
 
   @Builder
   bottomReadingConsole() {
+    // 横向滚动容器：与笔盘同方案，窄屏上翻页/滑块/视图切换可左右滑动触达
+    Scroll() {
     Row({ space: this.isPhone ? 6 : 14 }) {
       // 1. 上一页胶囊按钮 (Obsidian 单线角标 ‹)
       Row({ space: 4 }) {
@@ -1060,7 +1062,13 @@ export struct HuaweiDocWorkspace {
       color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)',
       offsetY: 6
     })
-    .margin({ bottom: 20 })
+    }
+    .scrollable(ScrollDirection.Horizontal)
+    .scrollBar(BarState.Off)
+    .align(Alignment.Center)
+    .constraintSize({ maxWidth: '96%' })
+    .padding({ top: 10, bottom: 10 })
+    .margin({ bottom: 10 })
     .translate({ y: this.barsVisible ? 0 : 96 })
     .opacity(this.barsVisible ? 1 : 0)
     .enabled(this.barsVisible)
