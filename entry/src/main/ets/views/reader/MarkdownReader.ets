@@ -5,8 +5,7 @@
  * 支持「阅读 / 编辑」模式切换；输入变化触发 800ms 防抖，
  * 通过 NoteStorageService.saveDocument 落盘到沙箱应用目录的 .md 文件。
  */
-import { common } from '@kit.AbilityKit';
-import { curves } from '@kit.ArkUI';
+import { curves, KeyboardAvoidMode, promptAction } from '@kit.ArkUI';
 import { ColorPalette, LayoutTokens, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
@@ -15,6 +14,7 @@ import { MarkdownOutlineItem } from '../../common/types/MarkdownOutlineItem';
 import { NoteStorageService } from '../../services/NoteStorageService';
 import { TimeFormat } from '../../common/utils/TimeFormat';
 import { SAVE_FAILED, SAVE_IDLE, SAVE_SAVING } from '../../common/constants/WorkspaceConstants';
+import { EditorToolbar } from './EditorToolbar';
 
 /** 输入停止后延迟落盘的毫秒数 */
 const AUTOSAVE_DELAY_MS: number = 800;
@@ -42,6 +42,9 @@ const FORMAT_ACTIONS: FormatAction[] = [
   { label: '[[]]', action: 'link', tip: '双向链接' },
   { label: '#', action: 'tag', tip: '标签' }
 ];
+
+/** 行首的块级标记（标题 / 引用 / 有序 / 待办 / 无序），切换格式时先剥掉它 */
+const BLOCK_MARKER_RE: RegExp = /^(#{1,6}\s+|>\s+|\d+\.\s+|[-*+]\s+\[[ xX]\]\s+|[-*+]\s+)/;
 
 /** 正文行内片段（用于给 [[双链]] 与 #标签 上色） */
 interface TextSegment {
@@ -104,13 +107,21 @@ export struct MarkdownReader {
    */
   private editingNote: NoteItem | null = null;
 
+  /** 编辑区当前选区（字符索引），由 TextArea.onTextSelectionChange 实时维护，供格式动作定位 */
+  private selStart: number = 0;
+  private selEnd: number = 0;
+
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
   }
 
   aboutToAppear(): void {
+    // 键盘避让用 RESIZE：页面可用高度被键盘压缩，底部悬浮的编辑工具栏
+    // 会自动贴到键盘正上方并跟随升降，无需手动监听键盘高度。
+    this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
     this.loadDocument();
   }
 
@@ -436,6 +447,101 @@ export struct MarkdownReader {
       return line.replace('[X]', '[ ]');
     }
     return line;
+  }
+
+  // ------------------------------------------------------------------
+  // 编辑格式动作（功能5）：按当前选区改写 Markdown 正文
+  // ------------------------------------------------------------------
+
+  /** 处理工具栏动作：块级标记按行切换，行内标记包裹选区，插入类暂提示未上线 */
+  private handleEditorAction(action: string): void {
+    if (!this.isEditing) {
+      return;
+    }
+    if (action === 'bold') {
+      this.wrapSelection('**', '**');
+    } else if (action === 'italic') {
+      this.wrapSelection('*', '*');
+    } else if (action === 'wikilink') {
+      this.wrapSelection('[[', ']]');
+    } else if (action === 'h1') {
+      this.applyBlockMarker('# ');
+    } else if (action === 'h2') {
+      this.applyBlockMarker('## ');
+    } else if (action === 'h3') {
+      this.applyBlockMarker('### ');
+    } else if (action === 'bullet') {
+      this.applyBlockMarker('- ');
+    } else if (action === 'ordered') {
+      this.applyBlockMarker('1. ');
+    } else if (action === 'task') {
+      this.applyBlockMarker('- [ ] ');
+    } else if (action === 'quote') {
+      this.applyBlockMarker('> ');
+    } else if (action === 'insert_image' || action === 'ocr' || action === 'record') {
+      promptAction.showToast({ message: '该功能即将上线', duration: 1600 });
+    }
+  }
+
+  /** 用 open/close 包裹选区；已包裹则取消（toggle） */
+  private wrapSelection(open: string, close: string): void {
+    let s: number = this.selStart;
+    let e: number = this.selEnd;
+    if (s > e) {
+      const tmp: number = s;
+      s = e;
+      e = tmp;
+    }
+    s = Math.max(0, Math.min(s, this.content.length));
+    e = Math.max(0, Math.min(e, this.content.length));
+    const before: string = this.content.substring(0, s);
+    const selected: string = this.content.substring(s, e);
+    const after: string = this.content.substring(e);
+    let next: string;
+    if (selected.length >= open.length + close.length
+      && selected.startsWith(open) && selected.endsWith(close)) {
+      next = before + selected.substring(open.length, selected.length - close.length) + after;
+    } else if (before.endsWith(open) && after.startsWith(close)) {
+      next = before.substring(0, before.length - open.length) + selected + after.substring(close.length);
+    } else {
+      next = before + open + selected + close + after;
+    }
+    this.setContent(next);
+  }
+
+  /** 给选区所在行加/去块级标记（标题、列表、待办、引用） */
+  private applyBlockMarker(marker: string): void {
+    const lines: string[] = this.content.split('\n');
+    const idx: number = this.lineIndexAt(this.selStart, lines);
+    const line: string = lines[idx];
+    const body: string = line.replace(BLOCK_MARKER_RE, '');
+    if (line === marker + body) {
+      lines[idx] = body;
+    } else {
+      lines[idx] = marker + body;
+    }
+    this.setContent(lines.join('\n'));
+  }
+
+  /** 字符偏移落在第几行（0 基） */
+  private lineIndexAt(offset: number, lines: string[]): number {
+    let acc: number = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const len: number = lines[i].length + 1;
+      if (offset < acc + len) {
+        return i;
+      }
+      acc += len;
+    }
+    return lines.length > 0 ? lines.length - 1 : 0;
+  }
+
+  /** 统一写回正文：重解析块与大纲，并触发防抖落盘 */
+  private setContent(next: string): void {
+    this.content = next;
+    this.blocks = this.parseBlocks(next);
+    this.onOutlineUpdated(this.collectOutline(this.blocks));
+    this.scheduleSave();
   }
 
   /** 把一行拆成普通文本 / [[双链]] / #标签 三类片段 */
@@ -827,6 +933,7 @@ export struct MarkdownReader {
   }
 
   build() {
+    Stack({ alignContent: Alignment.Bottom }) {
     Column() {
       // ---- 固定头部：工具栏 + 大标题 + 元数据 ----
       Column() {
@@ -861,7 +968,7 @@ export struct MarkdownReader {
       .width('100%')
       .constraintSize({ maxWidth: LayoutTokens.CONTENT_MAX_WIDTH })
       .alignItems(HorizontalAlign.Start)
-      .padding({ left: 32, right: 32, top: 20 })
+      .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 20 })
       .onClick(() => {
         // 头部区域点击消费，防止触发根节点退出编辑
         if (!this.isEditing) {
@@ -886,6 +993,10 @@ export struct MarkdownReader {
               this.onOutlineUpdated(this.collectOutline(this.blocks));
               this.scheduleSave();
             })
+            .onTextSelectionChange((start: number, end: number) => {
+              this.selStart = start;
+              this.selEnd = end;
+            })
             .onFocus(() => {
               animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
                 this.isFormatBarVisible = true;
@@ -903,7 +1014,7 @@ export struct MarkdownReader {
         .width('100%')
         .constraintSize({ maxWidth: LayoutTokens.CONTENT_MAX_WIDTH })
         .alignItems(HorizontalAlign.Start)
-        .padding({ left: 32, right: 32, top: 4, bottom: 16 })
+        .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 4, bottom: 16 })
         .layoutWeight(1)
 
         // 格式工具栏：仅在编辑态 + 输入焦点存在时显示，贴合键盘底部
@@ -921,7 +1032,7 @@ export struct MarkdownReader {
               .width('100%')
               .constraintSize({ maxWidth: LayoutTokens.CONTENT_MAX_WIDTH })
               .alignItems(HorizontalAlign.Start)
-              .padding({ left: 32, right: 32 })
+              .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone) })
             }
           }, (block: MarkdownBlock, index: number) =>
             `${index}-${block.kind}-${block.line}-${block.checked === true ? 1 : 0}`)

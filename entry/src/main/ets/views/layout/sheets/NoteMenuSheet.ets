@@ -20,6 +20,7 @@ export struct NoteMenuSheet {
   onDeleteNote: (noteId: string) => void = () => {};
   onRequestRename: (note: NoteItem) => void = () => {};
   onRequestMove: (note: NoteItem) => void = () => {};
+  onRequestTags: (note: NoteItem) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
 
@@ -87,6 +88,11 @@ export struct NoteMenuSheet {
         SheetActionRow({
           label: '⇄ 移动到项目',
           onAction: () => this.onRequestMove(this.note)
+        })
+
+        SheetActionRow({
+          label: '🏷 编辑标签',
+          onAction: () => this.onRequestTags(this.note)
         })
 
         DestructiveConfirm({

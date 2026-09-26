@@ -31,6 +31,7 @@ export struct AppShell {
   @Prop contextPanelOpen: boolean = false;
   @Prop trashCount: number = 0;
   @Prop todoPendingCount: number = 0;
+  @Prop favoriteCount: number = 0;
   /** 侧栏中段模式：'tree' 项目资料树 | 'sessions' 对话记录 */
   @Prop sidebarMode: string = 'tree';
   @Prop sessions: ChatSession[] = [];
@@ -46,6 +47,7 @@ export struct AppShell {
   onSelectNote: (note: NoteItem) => void = () => {};
   onCreateNote: () => void = () => {};
   onCreateNoteInProject: (title: string, projectName: string, type: string) => void = () => {};
+  onCreateFromTemplate: (templateName: string, projectName: string) => void = () => {};
   onImportIntoProject: (projectName: string) => void = () => {};
   onCreateProject: (name: string, color: string, icon: string) => void = () => {};
   onRenameProject: (oldName: string, newName: string) => void = () => {};
@@ -53,6 +55,7 @@ export struct AppShell {
   onDeleteNote: (noteId: string) => void = () => {};
   onRenameNote: (note: NoteItem, newTitle: string) => void = () => {};
   onMoveNote: (note: NoteItem, category: string) => void = () => {};
+  onApplyTags: (note: NoteItem, tags: string[]) => void = () => {};
   onOpenSettings: () => void = () => {};
   onBreadcrumbClick: (index: number, segment: string) => void = () => {};
   onOpenSheet: (type: string, project: SpaceFolder | null, note: NoteItem | null) => void = () => {};
@@ -67,9 +70,11 @@ export struct AppShell {
 
   @State isThreeColumn: boolean = false;
   @State isTwoColumn: boolean = false;
+  @State isPhone: boolean = false;
 
   private threeColumnListener: mediaquery.MediaQueryListener | undefined = undefined;
   private twoColumnListener: mediaquery.MediaQueryListener | undefined = undefined;
+  private phoneListener: mediaquery.MediaQueryListener | undefined = undefined;
 
   @Builder
   emptyPanel() {
@@ -86,19 +91,30 @@ export struct AppShell {
     this.isTwoColumn = result.matches;
   };
 
+  private onPhoneChange = (result: mediaquery.MediaQueryResult): void => {
+    this.isPhone = result.matches;
+    AppStorage.setOrCreate('flowmindIsPhone', result.matches);
+  };
+
   aboutToAppear(): void {
     const threeColumn: mediaquery.MediaQueryListener =
       mediaquery.matchMediaSync(`(width >= ${LayoutTokens.BREAKPOINT_TABLET_LARGE}vp)`);
     const twoColumn: mediaquery.MediaQueryListener =
       mediaquery.matchMediaSync(`(width >= ${LayoutTokens.BREAKPOINT_TABLET_MEDIUM}vp)`);
+    const phone: mediaquery.MediaQueryListener =
+      mediaquery.matchMediaSync(`(width < ${LayoutTokens.BREAKPOINT_PHONE}vp)`);
 
     this.threeColumnListener = threeColumn;
     this.twoColumnListener = twoColumn;
+    this.phoneListener = phone;
     this.isThreeColumn = threeColumn.matches;
     this.isTwoColumn = twoColumn.matches;
+    this.isPhone = phone.matches;
+    AppStorage.setOrCreate('flowmindIsPhone', phone.matches);
 
     threeColumn.on('change', this.onThreeColumnChange);
     twoColumn.on('change', this.onTwoColumnChange);
+    phone.on('change', this.onPhoneChange);
   }
 
   aboutToDisappear(): void {
@@ -107,6 +123,9 @@ export struct AppShell {
     }
     if (this.twoColumnListener !== undefined) {
       this.twoColumnListener.off('change', this.onTwoColumnChange);
+    }
+    if (this.phoneListener !== undefined) {
+      this.phoneListener.off('change', this.onPhoneChange);
     }
   }
 
@@ -142,6 +161,9 @@ export struct AppShell {
       activeNav: this.activeNav,
       activeSpaceId: this.activeSpaceId,
       activeNoteId: this.activeNoteId,
+      trashCount: this.trashCount,
+      todoPendingCount: this.todoPendingCount,
+      favoriteCount: this.favoriteCount,
       onToggleSpace: this.onToggleSpace,
       onCollapseAllSpaces: this.onCollapseAllSpaces,
       onSelectSpace: this.onSelectSpace,
@@ -149,6 +171,7 @@ export struct AppShell {
       onSelectNote: this.onSelectNote,
       onCreateNote: this.onCreateNote,
       onCreateNoteInProject: this.onCreateNoteInProject,
+      onCreateFromTemplate: this.onCreateFromTemplate,
       onImportIntoProject: this.onImportIntoProject,
       onCreateProject: this.onCreateProject,
       onRenameProject: this.onRenameProject,
@@ -156,12 +179,11 @@ export struct AppShell {
       onDeleteNote: this.onDeleteNote,
       onRenameNote: this.onRenameNote,
       onMoveNote: this.onMoveNote,
+      onApplyTags: this.onApplyTags,
       onSelectNav: this.onSelectNav,
       onOpenSettings: this.onOpenSettings,
       onOpenSheet: this.onOpenSheet,
       onOpenCreateProject: this.onOpenCreateProject,
-      trashCount: this.trashCount,
-      todoPendingCount: this.todoPendingCount,
       sidebarMode: this.sidebarMode,
       sessions: this.sessions,
       activeSessionId: this.activeSessionId,
@@ -194,7 +216,7 @@ export struct AppShell {
             breadcrumb: this.breadcrumb,
             saveState: this.saveState,
             contextPanelOpen: this.contextPanelOpen,
-            showContextToggle: this.isTwoColumn || this.isThreeColumn,
+            showContextToggle: this.isTwoColumn || this.isThreeColumn || this.isPhone,
             onToggleSidebar: this.onToggleSidebar,
             onToggleContext: this.onToggleContext,
             onOpenSearch: this.onOpenSearch,
@@ -267,6 +289,7 @@ export struct AppShell {
           Column() {
             this.contextPanel()
           }
+          .width(this.isPhone ? '100%' : LayoutTokens.CONTEXT_PANEL_WIDTH)
           .height('100%')
           .shadow({ radius: 24, color: 'rgba(0,0,0,0.18)' })
           .transition(

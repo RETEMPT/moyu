@@ -103,22 +103,20 @@ export class LayoutTokens {
 
   // UI/UX Pro Max 触控与间距阶梯
   static readonly MIN_TOUCH_TARGET: number = 44;
-  static readonly SPACING_XS: number = 4;
-  static readonly SPACING_SM: number = 8;
-  static readonly SPACING_MD: number = 12;
-  static readonly SPACING_LG: number = 16;
-  static readonly SPACING_XL: number = 24;
 
-  // 圆角阶梯 (Bento & Cards)
-  static readonly RADIUS_SM: number = 8;
-  static readonly RADIUS_MD: number = 12;
-  static readonly RADIUS_LG: number = 16;
-  static readonly RADIUS_XL: number = 24;
-  static readonly RADIUS_FULL: number = 9999;
-  
   // 响应式物理断点 (vp)
   static readonly BREAKPOINT_TABLET_LARGE: number = 1200; // 三栏 (侧边栏 + 正文 + 上下文面板)
   static readonly BREAKPOINT_TABLET_MEDIUM: number = 840;  // 双栏 (侧边栏/抽屉 + 正文)
+  static readonly BREAKPOINT_PHONE: number = 600;          // 手机紧凑态：收窄留白、抽屉改百分比宽
+
+  // 正文左右留白：宽屏舒展、手机紧凑
+  static readonly GUTTER_WIDE: number = 32;
+  static readonly GUTTER_COMPACT: number = 16;
+
+  /** 手机紧凑态返回收窄后的左右留白，否则用宽屏留白。 */
+  static gutter(isPhone: boolean): number {
+    return isPhone ? LayoutTokens.GUTTER_COMPACT : LayoutTokens.GUTTER_WIDE;
+  }
 }
 
 export class TypographyTokens {

@@ -25,9 +25,109 @@ export struct LibraryWorkspace {
   onImportDocument: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
+
+  /** 功能11：排序键与升降序，驱动 displayNotes() 的真实排序 */
+  @State sortKey: string = 'update'; // 'update' | 'create' | 'title'
+  @State sortAsc: boolean = false;
+  /** 功能6：选中的标签，多选 OR 过滤，驱动 displayNotes() */
+  @State selectedTags: string[] = [];
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
+  }
+
+  private setSort(key: string): void {
+    this.sortKey = key;
+  }
+
+  /** 从当前笔记里收集去重标签，作为筛选 chip 的数据源 */
+  private availableTags(): string[] {
+    const seen: Set<string> = new Set();
+    const out: string[] = [];
+    for (let i = 0; i < this.notes.length; i++) {
+      const list: string[] = this.noteTags(this.notes[i]);
+      for (let j = 0; j < list.length; j++) {
+        if (!seen.has(list[j])) {
+          seen.add(list[j]);
+          out.push(list[j]);
+        }
+      }
+    }
+    return out;
+  }
+
+  /** 一篇笔记的标签列表：优先 tags[]，回退到单值 tag。 */
+  private noteTags(note: NoteItem): string[] {
+    if (note.tags !== undefined && note.tags.length > 0) {
+      return note.tags;
+    }
+    return note.tag.length > 0 ? [note.tag] : [];
+  }
+
+  /** OR 匹配：只要命中任一选中标签即保留。 */
+  private noteHasAnyTag(note: NoteItem, selected: string[]): boolean {
+    const list: string[] = this.noteTags(note);
+    for (let i = 0; i < list.length; i++) {
+      for (let j = 0; j < selected.length; j++) {
+        if (list[i] === selected[j]) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** 标签过滤（OR）+ 排序后的实际展示列表。 */
+  private displayNotes(): NoteItem[] {
+    let list: NoteItem[] = this.notes.slice();
+    if (this.selectedTags.length > 0) {
+      const filtered: NoteItem[] = [];
+      for (let i = 0; i < list.length; i++) {
+        if (this.noteHasAnyTag(list[i], this.selectedTags)) {
+          filtered.push(list[i]);
+        }
+      }
+      list = filtered;
+    }
+    const asc: boolean = this.sortAsc;
+    list.sort((a: NoteItem, b: NoteItem): number => {
+      let cmp: number = 0;
+      if (this.sortKey === 'title') {
+        cmp = a.title.localeCompare(b.title);
+      } else if (this.sortKey === 'create') {
+        cmp = (a.createdAt ?? 0) - (b.createdAt ?? 0);
+      } else {
+        cmp = (a.updatedAt ?? 0) - (b.updatedAt ?? 0);
+      }
+      return asc ? cmp : -cmp;
+    });
+    return list;
+  }
+
+  private isTagSelected(tag: string): boolean {
+    for (let i = 0; i < this.selectedTags.length; i++) {
+      if (this.selectedTags[i] === tag) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private toggleTag(tag: string): void {
+    const next: string[] = [];
+    let removed: boolean = false;
+    for (let i = 0; i < this.selectedTags.length; i++) {
+      if (this.selectedTags[i] === tag) {
+        removed = true;
+        continue;
+      }
+      next.push(this.selectedTags[i]);
+    }
+    if (!removed) {
+      next.push(tag);
+    }
+    this.selectedTags = next;
   }
 
   @Builder
@@ -42,6 +142,32 @@ export struct LibraryWorkspace {
       .onClick(() => this.onFilterChange(label))
   }
 
+  /** 功能11：排序段选按钮 */
+  @Builder
+  sortChip(key: string, label: string) {
+    Text(label)
+      .fontSize(TypographyTokens.CAPTION)
+      .fontColor(key === this.sortKey ? this.palette().inkPrimary : this.palette().inkSecondary)
+      .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+      .borderRadius(6)
+      .backgroundColor(key === this.sortKey ? this.palette().activeBg : Color.Transparent)
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => this.setSort(key))
+  }
+
+  /** 功能6：标签筛选 chip（可多选高亮） */
+  @Builder
+  tagChip(tag: string) {
+    Text(tag)
+      .fontSize(TypographyTokens.TINY)
+      .fontColor(this.isTagSelected(tag) ? Color.White : this.palette().inkSecondary)
+      .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+      .borderRadius(10)
+      .backgroundColor(this.isTagSelected(tag) ? this.palette().accent : this.palette().surfaceSubtle)
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => this.toggleTag(tag))
+  }
+
   @Builder
   noteCard(note: NoteItem) {
     Row({ space: 12 }) {
@@ -54,13 +180,17 @@ export struct LibraryWorkspace {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
-          if (note.tag.length > 0) {
-            Text(note.tag)
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(note.tagColor.length === 0 ? this.palette().inkSecondary : note.tagColor)
-              .padding({ left: 6, right: 6, top: 1, bottom: 1 })
-              .borderRadius(4)
-              .backgroundColor(this.palette().surfaceSubtle)
+          if (this.noteTags(note).length > 0) {
+            Row({ space: 4 }) {
+              ForEach(this.noteTags(note), (t: string) => {
+                Text(t)
+                  .fontSize(TypographyTokens.TINY)
+                  .fontColor(note.tagColor.length === 0 ? this.palette().inkSecondary : note.tagColor)
+                  .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+                  .borderRadius(4)
+                  .backgroundColor(this.palette().surfaceSubtle)
+              }, (t: string) => t)
+            }
           }
         }
         .width('100%')
@@ -150,15 +280,54 @@ export struct LibraryWorkspace {
         .width('100%')
         .margin({ top: 10, bottom: 6 })
 
+        // ---- 功能11：排序 ----
+        Row({ space: 4 }) {
+          Text('排序')
+            .fontSize(TypographyTokens.TINY)
+            .fontColor(this.palette().inkMuted)
+            .margin({ right: 4 })
+          this.sortChip('update', '更新时间')
+          this.sortChip('create', '创建时间')
+          this.sortChip('title', '标题')
+          Blank()
+          Text(this.sortAsc ? '↑ 升序' : '↓ 降序')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontColor(this.palette().inkSecondary)
+            .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+            .borderRadius(6)
+            .backgroundColor(this.palette().surfaceSubtle)
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => {
+              this.sortAsc = !this.sortAsc;
+            })
+        }
+        .width('100%')
+        .margin({ top: 2, bottom: 6 })
+
+        // ---- 功能6：标签筛选（可多选高亮） ----
+        if (this.availableTags().length > 0) {
+          Scroll() {
+            Row({ space: 6 }) {
+              ForEach(this.availableTags(), (tag: string) => {
+                this.tagChip(tag)
+              }, (tag: string) => tag)
+            }
+          }
+          .scrollable(ScrollDirection.Horizontal)
+          .scrollBar(BarState.Off)
+          .width('100%')
+          .margin({ bottom: 6 })
+        }
+
         Divider()
           .strokeWidth(1)
           .color(this.palette().borderSubtle)
       }
       .width('100%')
-      .padding({ left: 32, right: 32, top: 24 })
+      .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 24 })
 
       // ---- 列表 ----
-      if (this.notes.length === 0) {
+      if (this.displayNotes().length === 0) {
         Column({ space: 8 }) {
           Text('没有匹配的笔记')
             .fontSize(TypographyTokens.BODY_REGULAR)
@@ -173,7 +342,7 @@ export struct LibraryWorkspace {
         .alignItems(HorizontalAlign.Center)
       } else {
         List({ space: 2 }) {
-          ForEach(this.notes, (note: NoteItem) => {
+          ForEach(this.displayNotes(), (note: NoteItem) => {
             ListItem() {
               this.noteCard(note)
             }

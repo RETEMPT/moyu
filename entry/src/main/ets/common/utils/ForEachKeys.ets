@@ -20,12 +20,16 @@ import { SpaceFolder } from '../types/SpaceFolder';
  *
  * 覆盖了这些视图真正读到的字段：标题、标签、类型（决定图标与配色）、id。
  * 只写 `note.id` 的话，重命名后列表会继续显示旧标题。
+ * 多标签（tags[]）与更新时间也编进键里：卡片会渲染全部标签、资料库会按时间排序，
+ * 漏掉它们会导致改标签/编辑后卡片不刷新。
  *
  * @param note 待渲染的资料
  * @returns 该行在本帧的唯一键
  */
 export function noteRenderKey(note: NoteItem): string {
-  return `${note.id}|${note.title}|${note.type}|${note.tag}`;
+  const tags: string = note.tags !== undefined ? note.tags.join(',') : note.tag;
+  const updated: number = note.updatedAt ?? 0;
+  return `${note.id}|${note.title}|${note.type}|${note.tag}|${tags}|${updated}`;
 }
 
 /**

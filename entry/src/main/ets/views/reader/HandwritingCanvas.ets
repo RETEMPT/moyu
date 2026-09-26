@@ -9,7 +9,7 @@
  *   5. 支持撤销、清屏与防抖自动落盘
  */
 import { curves } from '@kit.ArkUI';
-import { ColorPalette, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, AnimationTokens, LayoutTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { CanvasPoint, CanvasStroke } from '../../common/types/CanvasStroke';
@@ -32,6 +32,7 @@ export struct HandwritingCanvas {
   onSaveStateChange: (state: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   // 画布上下文
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -392,7 +393,7 @@ export struct HandwritingCanvas {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 24, right: 24, top: 12, bottom: 16 })
+    .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 12, bottom: 16 })
     .backgroundColor(this.palette().canvas)
   }
 }
