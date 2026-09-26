@@ -5,6 +5,7 @@
  * 支持「阅读 / 编辑」模式切换；输入变化触发 800ms 防抖，
  * 通过 NoteStorageService.saveDocument 落盘到沙箱应用目录的 .md 文件。
  */
+import { common } from '@kit.AbilityKit';
 import { curves, KeyboardAvoidMode, promptAction } from '@kit.ArkUI';
 import { ColorPalette, LayoutTokens, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
@@ -1042,17 +1043,20 @@ export struct MarkdownReader {
         .scrollBar(BarState.Auto)
         .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.25, 0.76) }))
       }
+      }
+      .width('100%')
+      .height('100%')
+      .alignItems(HorizontalAlign.Center)
+      .backgroundColor(this.palette().canvas)
+      .onClick(() => {
+        // 点击空白处退出编辑模式（TextArea/按钮等交互元素会消费自身点击，不会冒泡至此）
+        if (this.isEditing) {
+          this.exitEdit();
+        }
+      })
     }
     .width('100%')
     .height('100%')
-    .alignItems(HorizontalAlign.Center)
-    .backgroundColor(this.palette().canvas)
-    .onClick(() => {
-      // 点击空白处退出编辑模式（TextArea/按钮等交互元素会消费自身点击，不会冒泡至此）
-      if (this.isEditing) {
-        this.exitEdit();
-      }
-    })
   }
 
   private editorHeight(): number {
