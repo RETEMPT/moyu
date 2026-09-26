@@ -103,6 +103,19 @@ struct Index {
   @State contextPanelOpen: boolean = true;
   @State contextTab: string = CONTEXT_TAB_OUTLINE;
 
+  // 单栏（<840vp 手机端）标志，由 AppShell 通过 mediaquery 广播。
+  // 手机端主导航改由底部 Tab 承担，这里联动收起抽屉与上下文浮层，避免遮挡内容。
+  @StorageLink('flowmindIsCompact') @Watch('onCompactLayoutChange') isCompactLayout: boolean = false;
+
+  onCompactLayoutChange(): void {
+    if (this.isCompactLayout) {
+      this.sidebarCollapsed = true;
+      this.contextPanelOpen = false;
+    } else {
+      this.sidebarCollapsed = false;
+    }
+  }
+
   // ---- 资料库筛选 ----
   @State searchText: string = '';
   @State activeFilter: string = FILTER_ALL;
