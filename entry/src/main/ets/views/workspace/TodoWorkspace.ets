@@ -1,15 +1,13 @@
 /**
- * 待办日历工作台 (TodoWorkspace - UI/UX Pro Max 升级版)
+ * 待办日历视图（参考 Feenote 的日历式待办）
  *
- * 核心升级：
- *   1. 人体工学 44x44vp 触控复选框与平滑微动效，防止移动端错触
- *   2. 色彩语义重构：正常待办采用高对比度正文色 (WCAG AA 4.5:1+)，告别刺眼报错红
- *   3. 状态徽章微排版：[ 待办 ] / [ ✓ 已完成 ] / [ 关联笔记 ]
- *   4. Bento Card 双容器美学：月历视窗与日程待办均采用卡片层级与柔和微阴影
- *   5. 优雅空白态 (Empty State) 与快捷「规划今日任务」操作引导
+ * 上半部：月历网格，可翻月；有待办的日期用红点（未完成）/绿点（已完成）标记。
+ * 下半部：选中日期的详情——本日备忘（可编辑文本，显示最后编辑时间）、
+ *         当日待办列表（未完成红字 / 完成绿字、点勾选切换、引用笔记可跳转、删除）、添加待办。
+ *
+ * 数据与副作用全部由上层 Index 处理，本组件只负责呈现与回调。
  */
-import { curves } from '@kit.ArkUI';
-import { ColorPalette, LayoutTokens, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { CalendarCell, DayNote, TodoItem } from '../../common/types/TodoItem';
@@ -43,6 +41,7 @@ export struct TodoWorkspace {
   private memoTimer: number = -1;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
@@ -100,16 +99,14 @@ export struct TodoWorkspace {
         result.push(this.todos[i]);
       }
     }
-    return result;
-  }
-
-  private noteTitle(noteId: string): string {
-    for (let i = 0; i < this.notes.length; i++) {
-      if (this.notes[i].id === noteId) {
-        return this.notes[i].title;
+    // 未完成在前，其次按创建时间升序
+    result.sort((a: TodoItem, b: TodoItem) => {
+      if (a.done !== b.done) {
+        return a.done ? 1 : -1;
       }
-    }
-    return noteId;
+      return a.createdAt - b.createdAt;
+    });
+    return result;
   }
 
   private pendingCount(dateKey: string): number {
@@ -132,6 +129,16 @@ export struct TodoWorkspace {
     return count;
   }
 
+  private noteTitle(noteId: string): string {
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].id === noteId) {
+        const title: string = this.notes[i].title;
+        return title.length === 0 ? '未命名笔记' : title;
+      }
+    }
+    return '笔记已删除';
+  }
+
   private selectedPendingTotal(): number {
     let count: number = 0;
     for (let i = 0; i < this.todos.length; i++) {
@@ -143,49 +150,54 @@ export struct TodoWorkspace {
   }
 
   // ------------------------------------------------------------------
-  // 交互事件
+  // 交互
   // ------------------------------------------------------------------
 
-  private changeMonth(delta: number): void {
-    let newMonth: number = this.month + delta;
-    let newYear: number = this.year;
-    if (newMonth < 0) {
-      newMonth = 11;
-      newYear--;
-    } else if (newMonth > 11) {
-      newMonth = 0;
-      newYear++;
-    }
-    this.year = newYear;
-    this.month = newMonth;
-  }
-
-  private goToday(): void {
-    const now: Date = new Date();
-    this.year = now.getFullYear();
-    this.month = now.getMonth();
-    this.selectDate(CalendarUtil.todayKey());
-  }
-
   private selectDate(dateKey: string): void {
+    if (dateKey.length === 0) {
+      return;
+    }
     this.flushMemo();
     this.selectedDate = dateKey;
     this.memoTouched = false;
     this.memoText = this.memoFor(dateKey);
   }
 
+  private changeMonth(delta: number): void {
+    this.flushMemo();
+    let nextMonth: number = this.month + delta;
+    let nextYear: number = this.year;
+    if (nextMonth < 0) {
+      nextMonth = 11;
+      nextYear--;
+    } else if (nextMonth > 11) {
+      nextMonth = 0;
+      nextYear++;
+    }
+    this.month = nextMonth;
+    this.year = nextYear;
+  }
+
+  private goToday(): void {
+    const today: Date = new Date();
+    this.year = today.getFullYear();
+    this.month = today.getMonth();
+    this.selectDate(CalendarUtil.todayKey());
+  }
+
   private onMemoChange(value: string): void {
-    this.memoTouched = true;
     this.memoText = value;
+    this.memoTouched = true;
     if (this.memoTimer !== -1) {
       clearTimeout(this.memoTimer);
     }
     this.memoTimer = setTimeout(() => {
       this.memoTimer = -1;
-      this.onUpdateDayNote(this.selectedDate, this.memoText);
+      this.onUpdateDayNote(this.selectedDate, value);
     }, MEMO_DEBOUNCE_MS);
   }
 
+  /** 立即回写尚未落盘的备忘（切日期 / 离开页面时调用） */
   private flushMemo(): void {
     if (this.memoTimer !== -1) {
       clearTimeout(this.memoTimer);
@@ -206,14 +218,13 @@ export struct TodoWorkspace {
       ForEach(WEEK_LABELS, (label: string) => {
         Text(label)
           .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Medium)
           .fontColor(this.palette().inkMuted)
           .textAlign(TextAlign.Center)
           .layoutWeight(1)
       }, (label: string) => label)
     }
     .width('100%')
-    .margin({ bottom: 8 })
+    .margin({ bottom: 6 })
   }
 
   @Builder
@@ -222,35 +233,31 @@ export struct TodoWorkspace {
       Column({ space: 4 }) {
         Text(`${cell.day}`)
           .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontWeight(cell.isToday ? FontWeight.Bold : (cell.dateKey === this.selectedDate ? FontWeight.Medium : FontWeight.Normal))
-          .fontColor(cell.isToday ? this.palette().accent : (cell.dateKey === this.selectedDate ? this.palette().accent : this.palette().inkPrimary))
-
-        // 状态指示原点
+          .fontWeight(cell.isToday ? FontWeight.Bold : FontWeight.Normal)
+          .fontColor(cell.isToday ? this.palette().accent : this.palette().inkPrimary)
         Row({ space: 3 }) {
           if (this.pendingCount(cell.dateKey) > 0) {
-            Circle({ width: 5, height: 5 })
-              .fill(this.palette().accent)
+            Text('●').fontSize(8).fontColor(this.palette().danger)
           }
           if (this.doneCount(cell.dateKey) > 0) {
-            Circle({ width: 5, height: 5 })
-              .fill(this.palette().success)
+            Text('●').fontSize(8).fontColor(this.palette().success)
           }
         }
-        .height(6)
+        .height(8)
       }
       .width('100%')
-      .height(52)
+      .height(50)
       .justifyContent(FlexAlign.Center)
-      .borderRadius(10)
-      .backgroundColor(cell.dateKey === this.selectedDate ? this.palette().accentSoft : (cell.isToday ? this.palette().surfaceSubtle : Color.Transparent))
+      .borderRadius(8)
+      .backgroundColor(cell.dateKey === this.selectedDate ? this.palette().activeBg : Color.Transparent)
       .border({
-        width: cell.dateKey === this.selectedDate ? 1.5 : (cell.isToday ? 1 : 0),
-        color: cell.dateKey === this.selectedDate ? this.palette().accent : this.palette().borderSubtle
+        width: 1,
+        color: cell.dateKey === this.selectedDate ? this.palette().accent : Color.Transparent
       })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => this.selectDate(cell.dateKey))
     } else {
-      Column().width('100%').height(52)
+      Column().width('100%').height(50)
     }
   }
 
@@ -264,82 +271,45 @@ export struct TodoWorkspace {
       }, (cell: CalendarCell, index: number) => `${index}-${cell.dateKey}`)
     }
     .columnsTemplate('1fr 1fr 1fr 1fr 1fr 1fr 1fr')
-    .rowsGap(6)
-    .columnsGap(6)
+    .rowsGap(4)
+    .columnsGap(4)
     .width('100%')
-    .height(this.gridRows() * 58)
+    .height(this.gridRows() * 54)
   }
 
   @Builder
   refChip(noteId: string) {
-    Row({ space: 4 }) {
-      Text('▤')
-        .fontSize(11)
-        .fontColor(this.palette().accent)
-      Text(this.noteTitle(noteId))
-        .fontSize(TypographyTokens.TINY)
-        .fontColor(this.palette().accent)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-    }
-    .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-    .borderRadius(6)
-    .backgroundColor(this.palette().accentSoft)
-    .hoverEffect(HoverEffect.Highlight)
-    .onClick(() => this.onOpenNote(noteId))
+    Text(`▤ ${this.noteTitle(noteId)}`)
+      .fontSize(TypographyTokens.TINY)
+      .fontColor(this.palette().accent)
+      .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+      .borderRadius(4)
+      .backgroundColor(this.palette().surfaceSubtle)
+      .maxLines(1)
+      .textOverflow({ overflow: TextOverflow.Ellipsis })
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => this.onOpenNote(noteId))
   }
 
   @Builder
   todoRow(todo: TodoItem) {
-    Row({ space: 8 }) {
-      // 1. 人体工学 44x44vp 触控复选框
-      Row() {
-        Row() {
-          if (todo.done) {
-            Text('✓')
-              .fontSize(12)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(Color.White)
-          }
-        }
-        .width(22)
-        .height(22)
-        .borderRadius(6)
-        .backgroundColor(todo.done ? this.palette().success : Color.Transparent)
-        .border({
-          width: 1.5,
-          color: todo.done ? this.palette().success : this.palette().inkMuted
-        })
-        .justifyContent(FlexAlign.Center)
-      }
-      .width(44)
-      .height(44)
-      .justifyContent(FlexAlign.Center)
-      .onClick(() => this.onToggleTodo(todo))
+    Row({ space: 10 }) {
+      Text(todo.done ? '☑' : '☐')
+        .fontSize(TypographyTokens.TITLE_SUB)
+        .fontColor(todo.done ? this.palette().success : this.palette().danger)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => this.onToggleTodo(todo))
 
-      // 2. 待办文本与关联资料
-      Column({ space: 4 }) {
-        Row({ space: 6 }) {
-          // 状态徽标
-          Text(todo.done ? '已完成' : '待办')
-            .fontSize(TypographyTokens.TINY)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(todo.done ? this.palette().success : this.palette().accent)
-            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-            .borderRadius(4)
-            .backgroundColor(todo.done ? 'rgba(5,150,105,0.12)' : this.palette().accentSoft)
-
-          Text(todo.title)
-            .fontSize(TypographyTokens.BODY_LARGE)
-            .fontWeight(todo.done ? FontWeight.Normal : FontWeight.Medium)
-            .fontColor(todo.done ? this.palette().inkMuted : this.palette().inkPrimary)
-            .decoration({
-              type: todo.done ? TextDecorationType.LineThrough : TextDecorationType.None,
-              color: this.palette().inkMuted
-            })
-            .layoutWeight(1)
-        }
-        .width('100%')
+      Column({ space: 5 }) {
+        Text(todo.title)
+          .fontSize(TypographyTokens.BODY_LARGE)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(todo.done ? this.palette().success : this.palette().danger)
+          .decoration({
+            type: todo.done ? TextDecorationType.LineThrough : TextDecorationType.None,
+            color: this.palette().success
+          })
+          .width('100%')
 
         if (todo.noteRefs.length > 0) {
           Flex({ wrap: FlexWrap.Wrap }) {
@@ -356,130 +326,92 @@ export struct TodoWorkspace {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      // 3. 删除操作按钮 (40x40vp 触控区)
-      Row() {
-        Text('✕')
-          .fontSize(12)
-          .fontColor(this.palette().inkMuted)
-          .width(28)
-          .height(28)
-          .textAlign(TextAlign.Center)
-          .borderRadius(14)
-          .backgroundColor(this.palette().surface)
-          .hoverEffect(HoverEffect.Highlight)
-      }
-      .width(40)
-      .height(40)
-      .justifyContent(FlexAlign.Center)
-      .onClick(() => this.onDeleteTodo(todo))
+      Text('删除')
+        .fontSize(TypographyTokens.CAPTION)
+        .fontColor(this.palette().inkMuted)
+        .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+        .borderRadius(6)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => this.onDeleteTodo(todo))
     }
     .width('100%')
-    .padding({ left: 6, right: 12, top: 4, bottom: 4 })
-    .borderRadius(10)
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .borderRadius(8)
     .alignItems(VerticalAlign.Center)
-    .backgroundColor(this.palette().surface)
-    .border({ width: 1, color: this.palette().borderSubtle })
-    .shadow({ radius: 8, color: this.isDarkMode ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.03)', offsetY: 2 })
+    .backgroundColor(this.palette().surfaceSubtle)
   }
 
   @Builder
   dayPanel() {
-    Column({ space: 14 }) {
-      // 头部：日期与总项数
+    Column({ space: 10 }) {
       Row({ space: 8 }) {
         Text(CalendarUtil.formatKeyCn(this.selectedDate))
           .fontSize(TypographyTokens.TITLE_SUB)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.palette().inkPrimary)
         Blank()
-        Text(`${this.todosFor(this.selectedDate).length} 项日程`)
+        Text(`${this.todosFor(this.selectedDate).length} 项`)
           .fontSize(TypographyTokens.CAPTION)
           .fontColor(this.palette().inkMuted)
-          .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-          .borderRadius(6)
-          .backgroundColor(this.palette().surfaceSubtle)
       }
       .width('100%')
 
-      // ---- 本日备忘 ----
+      // ---- 本日备忘（可编辑文本 / 最后编辑文本）----
       Column({ space: 6 }) {
         Row() {
-          Text('📝 本日随记与备忘')
+          Text('本日备忘')
             .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
             .fontColor(this.palette().inkSecondary)
           Blank()
           if (this.memoUpdatedText(this.selectedDate).length > 0) {
-            Text(`更新于 ${this.memoUpdatedText(this.selectedDate)}`)
+            Text(`最后编辑 ${this.memoUpdatedText(this.selectedDate)}`)
               .fontSize(TypographyTokens.TINY)
               .fontColor(this.palette().inkMuted)
           }
         }
         .width('100%')
 
-        TextArea({ text: this.memoText, placeholder: '记录今日学习心得、重点反思或随堂待办…' })
+        TextArea({ text: this.memoText, placeholder: '记录这一天的想法、进展或待补充内容…' })
           .fontSize(TypographyTokens.BODY_REGULAR)
           .fontColor(this.palette().inkPrimary)
           .placeholderColor(this.palette().inkMuted)
-          .backgroundColor(this.palette().surface)
-          .border({ width: 1, color: this.palette().borderSubtle })
-          .borderRadius(10)
-          .height(88)
+          .backgroundColor(this.palette().surfaceSubtle)
+          .borderRadius(8)
+          .height(92)
           .width('100%')
           .onChange((value: string) => this.onMemoChange(value))
       }
       .width('100%')
       .alignItems(HorizontalAlign.Start)
 
-      // ---- 当日待办标题与添加按钮 ----
+      // ---- 当日待办 ----
       Row() {
-        Text('☑ 当日待办清单')
+        Text('待办事项')
           .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Medium)
           .fontColor(this.palette().inkSecondary)
         Blank()
-        Row({ space: 4 }) {
-          Text('＋')
-            .fontSize(12)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(Color.White)
-          Text('添加待办')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(Color.White)
-        }
-        .padding({ left: 14, right: 14, top: 7, bottom: 7 })
-        .borderRadius(16)
-        .backgroundColor(this.palette().accent)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          this.flushMemo();
-          this.dialogVisible = true;
-        })
+        Text('＋ 添加待办')
+          .fontSize(TypographyTokens.CAPTION)
+          .fontColor(Color.White)
+          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+          .borderRadius(6)
+          .backgroundColor(this.palette().accent)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.flushMemo();
+            this.dialogVisible = true;
+          })
       }
       .width('100%')
 
-      // ---- 待办列表或友好空白态 ----
       if (this.todosFor(this.selectedDate).length === 0) {
-        Column({ space: 10 }) {
-          Text('📋')
-            .fontSize(32)
-          Text('今日暂无待办事项')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkPrimary)
-          Text('劳逸结合享受专注时光，或点击上方按钮规划新任务。')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkMuted)
-            .textAlign(TextAlign.Center)
-        }
-        .width('100%')
-        .padding({ top: 24, bottom: 24 })
-        .borderRadius(12)
-        .backgroundColor(this.palette().surfaceSubtle)
-        .justifyContent(FlexAlign.Center)
+        Text('这一天还没有待办，点右上角「添加待办」开始。')
+          .fontSize(TypographyTokens.CAPTION)
+          .fontColor(this.palette().inkMuted)
+          .width('100%')
+          .padding({ top: 8, bottom: 8 })
       } else {
-        Column({ space: 8 }) {
+        Column({ space: 6 }) {
           ForEach(this.todosFor(this.selectedDate), (todo: TodoItem) => {
             this.todoRow(todo)
           }, (todo: TodoItem) => `${todo.id}-${todo.done ? 1 : 0}`)
@@ -488,101 +420,69 @@ export struct TodoWorkspace {
       }
     }
     .width('100%')
-    .padding(16)
-    .borderRadius(16)
-    .backgroundColor(this.palette().surfaceSubtle)
-    .border({ width: 1, color: this.palette().borderSubtle })
     .alignItems(HorizontalAlign.Start)
   }
 
   build() {
     Stack() {
       Column() {
-        // ---- 标题与统计 ----
-        Row({ space: 10 }) {
-          Text('待办任务')
+        // ---- 标题 ----
+        Row({ space: 8 }) {
+          Text('待办')
             .fontSize(TypographyTokens.TITLE_HERO)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().inkPrimary)
-
-          Row({ space: 4 }) {
-            Text('●')
-              .fontSize(8)
-              .fontColor(this.palette().accent)
-            Text(`${this.selectedPendingTotal()} 项待完成`)
-              .fontSize(TypographyTokens.CAPTION)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.palette().accent)
-          }
-          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-          .borderRadius(12)
-          .backgroundColor(this.palette().accentSoft)
+          Text(`${this.selectedPendingTotal()} 项未完成`)
+            .fontSize(TypographyTokens.CAPTION)
+            .fontColor(this.palette().inkMuted)
         }
         .width('100%')
-        .margin({ bottom: 14 })
+        .margin({ bottom: 12 })
 
-        // ---- 月份切换 Bento 卡片 ----
-        Column() {
-          Row({ space: 10 }) {
-            // 上一月
-            Text('‹')
-              .fontSize(TypographyTokens.TITLE_SUB)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.palette().inkSecondary)
-              .width(36)
-              .height(36)
-              .textAlign(TextAlign.Center)
-              .borderRadius(10)
-              .backgroundColor(this.palette().surfaceSubtle)
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.changeMonth(-1))
-
-            Text(CalendarUtil.monthTitle(this.year, this.month))
-              .fontSize(TypographyTokens.TITLE_SUB)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.palette().inkPrimary)
-              .layoutWeight(1)
-              .textAlign(TextAlign.Center)
-
-            // 今天
-            Text('回到今天')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.palette().accent)
-              .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-              .borderRadius(14)
-              .backgroundColor(this.palette().accentSoft)
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.goToday())
-
-            // 下一月
-            Text('›')
-              .fontSize(TypographyTokens.TITLE_SUB)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.palette().inkSecondary)
-              .width(36)
-              .height(36)
-              .textAlign(TextAlign.Center)
-              .borderRadius(10)
-              .backgroundColor(this.palette().surfaceSubtle)
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.changeMonth(1))
-          }
-          .width('100%')
-          .margin({ bottom: 12 })
-
-          this.weekdayHeader()
-          this.calendarGrid()
+        // ---- 月份切换 ----
+        Row({ space: 10 }) {
+          Text('‹')
+            .fontSize(TypographyTokens.TITLE_SUB)
+            .fontColor(this.palette().inkSecondary)
+            .padding({ left: 12, right: 12, top: 4, bottom: 4 })
+            .borderRadius(6)
+            .backgroundColor(this.palette().surfaceSubtle)
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => this.changeMonth(-1))
+          Text(CalendarUtil.monthTitle(this.year, this.month))
+            .fontSize(TypographyTokens.TITLE_SUB)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.palette().inkPrimary)
+            .layoutWeight(1)
+            .textAlign(TextAlign.Center)
+          Text('今天')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontColor(this.palette().accent)
+            .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+            .borderRadius(6)
+            .backgroundColor(this.palette().surfaceSubtle)
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => this.goToday())
+          Text('›')
+            .fontSize(TypographyTokens.TITLE_SUB)
+            .fontColor(this.palette().inkSecondary)
+            .padding({ left: 12, right: 12, top: 4, bottom: 4 })
+            .borderRadius(6)
+            .backgroundColor(this.palette().surfaceSubtle)
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => this.changeMonth(1))
         }
         .width('100%')
-        .padding(16)
-        .borderRadius(16)
-        .backgroundColor(this.palette().surface)
-        .border({ width: 1, color: this.palette().borderSubtle })
-        .shadow({ radius: 12, color: this.isDarkMode ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.03)', offsetY: 2 })
-        .margin({ bottom: 16 })
+        .margin({ bottom: 10 })
 
-        // ---- 选中日期的日程面板 ----
+        this.weekdayHeader()
+        this.calendarGrid()
+
+        Divider()
+          .strokeWidth(1)
+          .color(this.palette().borderSubtle)
+          .margin({ top: 10, bottom: 4 })
+
         Scroll() {
           this.dayPanel()
         }
@@ -594,7 +494,7 @@ export struct TodoWorkspace {
       .width('100%')
       .height('100%')
       .constraintSize({ maxWidth: LayoutTokens.CONTENT_MAX_WIDTH + 160 })
-      .padding({ left: 32, right: 32, top: 24, bottom: 20 })
+      .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 24, bottom: 20 })
       .backgroundColor(this.palette().canvas)
 
       if (this.dialogVisible) {

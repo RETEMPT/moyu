@@ -23,6 +23,7 @@ import {
   FILTER_ALL,
   NAV_AI,
   NAV_CANVAS,
+  NAV_FAVORITE,
   NAV_GRAPH,
   NAV_HOME,
   NAV_LIBRARY,
@@ -37,7 +38,7 @@ import { TodoStorageService } from '../services/TodoStorageService';
 import { ChatSessionService } from '../services/ai/ChatSessionService';
 import { ModelConfigService } from '../services/ai/ModelConfigService';
 import { buildSpaces } from '../services/WorkspaceBuilder';
-import { defaultProjects, seedNotes } from '../common/seed/SeedContent';
+import { defaultProjects, seedNotes, templateBody } from '../common/seed/SeedContent';
 import { AppShell } from '../views/layout/AppShell';
 import { SIDEBAR_MODE_SESSIONS, SIDEBAR_MODE_TREE } from '../views/layout/Sidebar';
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
@@ -48,6 +49,7 @@ import { AiWorkspace } from '../views/ai/AiWorkspace';
 import { AiSourcesPanel } from '../views/ai/AiSourcesPanel';
 import { TodoWorkspace } from '../views/workspace/TodoWorkspace';
 import { TrashWorkspace } from '../views/workspace/TrashWorkspace';
+import { FavoriteWorkspace } from '../views/workspace/FavoriteWorkspace';
 import { ReaderWorkspace } from '../views/reader/ReaderWorkspace';
 import { HuaweiDocWorkspace } from '../views/reader/huawei/HuaweiDocWorkspace';
 import { ContextDrawer, CONTEXT_TAB_OUTLINE } from '../views/context/ContextDrawer';
@@ -62,6 +64,14 @@ import { RenameProjectSheet } from '../views/layout/sheets/RenameProjectSheet';
 import { NoteMenuSheet } from '../views/layout/sheets/NoteMenuSheet';
 import { RenameNoteSheet } from '../views/layout/sheets/RenameNoteSheet';
 import { MoveNoteSheet } from '../views/layout/sheets/MoveNoteSheet';
+import { NameNoteSheet } from '../views/layout/sheets/NameNoteSheet';
+
+/** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
+interface PendingNoteCreate {
+  projectName: string;
+  type: string;
+  defaultName: string;
+}
 
 const EMPTY_NOTE: NoteItem = {
   id: '',
@@ -134,6 +144,8 @@ struct Index {
   // ---- 全局浮层 ----
   @State searchVisible: boolean = false;
   @State settingsVisible: boolean = false;
+  /** 新建笔记的命名弹层意图；非空即显示 NameNoteSheet。 */
+  @State pendingCreate: PendingNoteCreate | null = null;
   @State toastVisible: boolean = false;
   @State toastMessage: string = '';
   /** 当前 Toast 是否附带「撤销」按钮 */
@@ -191,6 +203,7 @@ struct Index {
       console.error(`项目列表加载失败: ${JSON.stringify(error)}`);
       this.customProjects = defaultProjects();
     }
+    this.backfillNoteMeta();
     this.rebuildSpaces();
     this.activeSpaceId = '';
     this.persistSnapshot();
@@ -307,6 +320,34 @@ struct Index {
     } catch (error) {
       console.error(`会话列表加载失败: ${JSON.stringify(error)}`);
       this.sessions = [];
+    }
+  }
+
+  /**
+   * 为旧数据回填功能6/11 所需的元信息：
+   * tags 从单值 tag 派生；createdAt/updatedAt 用「按现有顺序倒推的分钟数」填充，
+   * 这样排序后的顺序与既有 seed 顺序一致，不会打乱用户熟悉的列表。
+   */
+  private backfillNoteMeta(): void {
+    const base: number = Date.now();
+    let changed: boolean = false;
+    for (let i = 0; i < this.notes.length; i++) {
+      const n: NoteItem = this.notes[i];
+      if (n.updatedAt === undefined) {
+        n.updatedAt = base - i * 60000;
+        changed = true;
+      }
+      if (n.createdAt === undefined) {
+        n.createdAt = n.updatedAt;
+        changed = true;
+      }
+      if (n.tags === undefined) {
+        n.tags = n.tag.length > 0 ? [n.tag] : [];
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.notes = this.notes.slice();
     }
   }
 
@@ -440,9 +481,12 @@ struct Index {
   private refreshStats(): void {
     const tags: Set<string> = new Set();
     for (let i = 0; i < this.notes.length; i++) {
-      const tag: string = this.notes[i].tag;
-      if (tag.length > 0) {
-        tags.add(tag);
+      const note: NoteItem = this.notes[i];
+      const list: string[] = note.tags !== undefined ? note.tags : (note.tag.length > 0 ? [note.tag] : []);
+      for (let j = 0; j < list.length; j++) {
+        if (list[j].length > 0) {
+          tags.add(list[j]);
+        }
       }
     }
     this.stats = {
@@ -776,6 +820,38 @@ struct Index {
     this.notify(`「${title}」尚未创建`);
   }
 
+  /** 新建笔记前先弹命名层：记录意图并展示 NameNoteSheet，确认后再真正落地。 */
+  private requestCreateNote(projectName: string, type: string, defaultName: string): void {
+    const pending: PendingNoteCreate = {
+      projectName: projectName,
+      type: type,
+      defaultName: defaultName
+    };
+    animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+      this.pendingCreate = pending;
+    });
+  }
+
+  /** 命名层确认：按意图分发到全局新建或项目内新建。 */
+  private commitPendingCreate(name: string): void {
+    const pending: PendingNoteCreate | null = this.pendingCreate;
+    this.pendingCreate = null;
+    if (pending === null) {
+      return;
+    }
+    if (pending.projectName.length === 0) {
+      this.createNote(name);
+    } else {
+      this.createNoteInProject(name, pending.projectName, pending.type);
+    }
+  }
+
+  /** 命名层默认标题（取自待创建意图）。 */
+  private pendingDefaultName(): string {
+    const pending: PendingNoteCreate | null = this.pendingCreate;
+    return pending !== null ? pending.defaultName : '未命名笔记';
+  }
+
   private async createNote(title: string): Promise<void> {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const now: Date = new Date();
@@ -789,7 +865,10 @@ struct Index {
       tag: '新笔记',
       tagColor: '',
       updateTime: this.formatTime(now),
-      contentDetail: `# ${title}\n\n`
+      contentDetail: `# ${title}\n\n`,
+      tags: ['新笔记'],
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
     };
     this.notes = [note].concat(this.notes);
     try {
@@ -920,7 +999,10 @@ struct Index {
       tag: tag,
       tagColor: '',
       updateTime: this.formatTime(now),
-      contentDetail: `# ${title}\n\n`
+      contentDetail: `# ${title}\n\n`,
+      tags: [tag],
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
     };
     this.notes = [note].concat(this.notes);
     try {
@@ -933,6 +1015,42 @@ struct Index {
     this.refreshGraph();
     this.openNote(note);
     this.notify(`已在「${projectName}」创建${type}`);
+  }
+
+  /**
+   * 按模板新建（功能10）。
+   * 模板正文预填结构，标题取模板名；空白模板等价于普通新建。
+   */
+  private async createNoteFromTemplate(templateName: string, projectName: string): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const now: Date = new Date();
+    const category: string = projectName.length === 0 ? '未分类' : projectName;
+    const body: string = templateBody(templateName, now);
+    const note: NoteItem = {
+      id: `note-${now.getTime()}`,
+      title: templateName,
+      category: category,
+      type: 'Markdown',
+      previewText: templateName,
+      tag: templateName,
+      tagColor: '',
+      updateTime: this.formatTime(now),
+      contentDetail: body,
+      tags: [templateName],
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
+    };
+    this.notes = [note].concat(this.notes);
+    try {
+      await this.storage.create(context, note);
+    } catch (error) {
+      console.error(`模板正文创建失败: ${JSON.stringify(error)}`);
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.refreshGraph();
+    this.openNote(note);
+    this.notify(`已用「${templateName}」模板新建`);
   }
 
   private async deleteNote(noteId: string): Promise<void> {
@@ -1185,6 +1303,81 @@ struct Index {
   }
 
   // ==================================================================
+  // 收藏（星标）
+  // ==================================================================
+
+  /** 已收藏的笔记列表（回收站中的笔记不在 this.notes 内，无需再排除）。 */
+  private favoriteNotes(): NoteItem[] {
+    const result: NoteItem[] = [];
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].favorite === true) {
+        result.push(this.notes[i]);
+      }
+    }
+    return result;
+  }
+
+  /** 切换收藏态并落盘；同步刷新阅读器与侧栏角标。 */
+  private async toggleFavorite(note: NoteItem): Promise<void> {
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      this.notify('目标笔记不存在');
+      return;
+    }
+    target.favorite = target.favorite !== true;
+    this.notes = this.notes.slice();
+    if (this.readingOpen && this.readingNote.id === target.id) {
+      this.readingNote = target;
+    }
+    await this.persistSnapshot();
+    this.notify(target.favorite ? `已收藏「${target.title}」` : `已取消收藏「${target.title}」`);
+  }
+
+  // ==================================================================
+  // 多标签（功能6）
+  // ==================================================================
+
+  /**
+   * 写回一篇笔记的标签列表。
+   * 同时把单值 tag 同步为首个标签，卡片/侧栏的旧展示位无需改造即可跟着更新。
+   */
+  private async applyTags(note: NoteItem, tags: string[]): Promise<void> {
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      this.notify('目标笔记不存在');
+      return;
+    }
+    const clean: string[] = [];
+    for (let i = 0; i < tags.length; i++) {
+      const t: string = tags[i].trim().replace(/^#/, '');
+      if (t.length === 0) {
+        continue;
+      }
+      let dup: boolean = false;
+      for (let j = 0; j < clean.length; j++) {
+        if (clean[j] === t) {
+          dup = true;
+          break;
+        }
+      }
+      if (!dup) {
+        clean.push(t);
+      }
+    }
+    target.tags = clean;
+    target.tag = clean.length > 0 ? clean[0] : '';
+    target.updatedAt = Date.now();
+    this.notes = this.notes.slice();
+    if (this.readingOpen && this.readingNote.id === target.id) {
+      this.readingNote = target;
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.refreshStats();
+    this.notify(`已更新「${target.title}」的标签`);
+  }
+
+  // ==================================================================
   // 待办日历
   // ==================================================================
 
@@ -1313,7 +1506,10 @@ struct Index {
           tag: '导入',
           tagColor: '',
           updateTime: this.formatTime(now),
-          contentDetail: document.content
+          contentDetail: document.content,
+          tags: ['导入'],
+          createdAt: now.getTime(),
+          updatedAt: now.getTime()
         };
         this.notes = [note].concat(this.notes);
         await this.persistSnapshot();
@@ -1330,6 +1526,12 @@ struct Index {
   }
 
   private handleSaved(note: NoteItem, content: string): void {
+    const now: number = Date.now();
+    note.updatedAt = now;
+    note.updateTime = this.formatTime(new Date(now));
+    if (note.createdAt === undefined) {
+      note.createdAt = now;
+    }
     let changed: boolean = false;
     for (let i = 0; i < this.notes.length; i++) {
       if (this.notes[i].id === note.id) {
@@ -1366,6 +1568,13 @@ struct Index {
         annotationPaneOpen: this.annotationPaneOpen,
         jumpToken: this.jumpToken,
         jumpLine: this.jumpLine,
+        favorite: this.readingNote.favorite === true,
+        onToggleFavorite: (note: NoteItem) => {
+          this.toggleFavorite(note);
+        },
+        onDeleteNote: (note: NoteItem) => {
+          this.deleteNote(note.id);
+        },
         onOutlineUpdated: (items: MarkdownOutlineItem[]) => {
           this.outlineItems = items;
         },
@@ -1391,11 +1600,7 @@ struct Index {
         recentNotes: this.notes.slice(0, 9),
         unresolvedLinks: this.linkGraph.unresolvedLinks,
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => {
-          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
-            this.createNoteOpen = true;
-          });
-        },
+        onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onImportDocument: () => this.importDocument(),
         onOpenGraph: () => {
           this.activeNav = NAV_GRAPH;
@@ -1416,7 +1621,7 @@ struct Index {
           this.activeFilter = filter;
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => this.createNote('未命名笔记'),
+        onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onImportDocument: () => this.importDocument()
       })
     } else if (this.activeNav === NAV_GRAPH) {
@@ -1426,6 +1631,7 @@ struct Index {
         onSelectNoteById: (noteId: string) => this.openNoteById(noteId),
         onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title)
       })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_TODO) {
       TodoWorkspace({
         dayNotes: this.dayNotes,
@@ -1441,6 +1647,7 @@ struct Index {
         },
         onOpenNote: (noteId: string) => this.openNoteById(noteId)
       })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_TRASH) {
       TrashWorkspace({
         trash: this.trash,
@@ -1449,6 +1656,13 @@ struct Index {
         onPurge: (note: NoteItem) => this.purgeNote(note),
         onEmpty: () => this.emptyTrash()
       })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+    } else if (this.activeNav === NAV_FAVORITE) {
+      FavoriteWorkspace({
+        favorites: this.favoriteNotes(),
+        onSelectNote: (note: NoteItem) => this.openNote(note)
+      })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_CANVAS) {
       PendingWorkspace({
         title: '白板',
@@ -1656,13 +1870,13 @@ struct Index {
           this.fullScreenDocOpen = false;
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => {
-          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
-            this.createNoteOpen = true;
-          });
-        },
+        onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onCreateNoteInProject: (title: string, projectName: string, type: string) => {
-          this.createNoteInProject(title, projectName, type);
+          // title 在这里作为命名层的默认标题（未命名笔记 / 未命名导图 / 未命名参考资料）
+          this.requestCreateNote(projectName, type, title);
+        },
+        onCreateFromTemplate: (templateName: string, projectName: string) => {
+          this.createNoteFromTemplate(templateName, projectName);
         },
         onImportIntoProject: (projectName: string) => {
           this.importDocument(projectName);
@@ -1711,11 +1925,15 @@ struct Index {
         onTogglePinSession: (session: ChatSession) => {
           this.handleTogglePinSession(session);
         },
+        favoriteCount: this.favoriteNotes().length,
         onRenameNote: (note: NoteItem, newTitle: string) => {
           this.commitRename(note, newTitle);
         },
         onMoveNote: (note: NoteItem, category: string) => {
           this.commitMove(note, category);
+        },
+        onApplyTags: (note: NoteItem, tags: string[]) => {
+          this.applyTags(note, tags);
         },
         onOpenSettings: () => {
           animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
@@ -1771,16 +1989,18 @@ struct Index {
         })
       }
 
-      // ---- 新建笔记对话框（记随笔，居中放大） ----
-      if (this.createNoteOpen) {
-        CreateNoteSheet({
+      if (this.pendingCreate !== null) {
+        NameNoteSheet({
+          defaultName: this.pendingDefaultName(),
           onClose: () => {
             animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
-              this.createNoteOpen = false;
+              this.pendingCreate = null;
             });
           },
-          onCreateNote: (title: string) => {
-            this.createNote(title);
+          onConfirm: (name: string) => {
+            animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+              this.commitPendingCreate(name);
+            });
           }
         })
       }
@@ -1801,7 +2021,6 @@ struct Index {
 
       // ---- 底部弹层（全屏遮罩，由 Sidebar 触发） ----
       this.activeSheetContent()
-
       if (this.toastVisible) {
         Column() {
           Row({ space: 4 }) {
