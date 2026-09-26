@@ -26,6 +26,7 @@ import { PdfAnnotatorView } from '../pdf/PdfAnnotatorView';
 import { HandwritingCanvas } from '../HandwritingCanvas';
 import { HuaweiAiSplitPanel } from './HuaweiAiSplitPanel';
 import { HuaweiDocActionDialog, HuaweiDocDialogType } from './HuaweiDocActionDialog';
+import { SheetOverlay, SheetCancelButton } from '../../layout/sheets/SheetScaffold';
 
 export type HuaweiTabType = 'file' | 'view' | 'play' | 'annotate' | 'ai';
 export type SplitModeType = 'none' | 'ai' | 'scratchpad';
@@ -56,6 +57,7 @@ export struct HuaweiDocWorkspace {
   @State clearTrigger: number = 0;
   @State moreMenuOpen: boolean = false;
   @State exitDialogOpen: boolean = false;
+  @State clearConfirmOpen: boolean = false;
 
   // 导航与功能区状态
   @State activeTab: HuaweiTabType = 'file';
@@ -174,6 +176,34 @@ export struct HuaweiDocWorkspace {
   private clearCurrentPageAnnotations(): void {
     this.clearTrigger++;
     this.showToast(`第 ${this.currentPage} 页手写批注已清空`);
+  }
+
+  /** 退出：放弃未保存修改并关闭阅读器 */
+  private discardChangesAndExit(): void {
+    animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+      this.exitDialogOpen = false;
+    });
+    this.showToast('已放弃本次修改');
+    this.onClose();
+  }
+
+  /** 退出：保存批注与进度后关闭阅读器 */
+  private saveChangesAndExit(): void {
+    this.onSaved(this.note, this.note.contentDetail);
+    animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+      this.exitDialogOpen = false;
+    });
+    this.showToast('文档修改已保存');
+    setTimeout(() => {
+      this.onClose();
+    }, 200);
+  }
+
+  /** 退出：取消，关闭确认弹窗留在阅读器 */
+  private cancelExit(): void {
+    animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+      this.exitDialogOpen = false;
+    });
   }
 
   private showToast(msg: string): void {
@@ -792,8 +822,8 @@ export struct HuaweiDocWorkspace {
             this.moreActionItem('⎚', '清空批注', '清空本页笔迹', () => {
               animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
                 this.moreMenuOpen = false;
+                this.clearConfirmOpen = true;
               });
-              this.clearCurrentPageAnnotations();
             })
           }
           .width('100%')
@@ -1316,13 +1346,7 @@ export struct HuaweiDocWorkspace {
             .borderRadius(10)
             .height(36)
             .layoutWeight(1)
-            .onClick(() => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.exitDialogOpen = false;
-              });
-              this.showToast('已放弃本次修改');
-              this.onClose();
-            })
+            .onClick(() => this.discardChangesAndExit())
 
           // 取消 (关闭弹窗，留在当前阅读器)
           Button('取消')
@@ -1335,11 +1359,7 @@ export struct HuaweiDocWorkspace {
             .borderRadius(10)
             .height(36)
             .layoutWeight(1)
-            .onClick(() => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.exitDialogOpen = false;
-              });
-            })
+            .onClick(() => this.cancelExit())
 
           // 保存并退出 (主确认动作)
           Button('保存并退出')
@@ -1351,16 +1371,7 @@ export struct HuaweiDocWorkspace {
             .borderRadius(10)
             .height(36)
             .layoutWeight(1.2)
-            .onClick(() => {
-              this.onSaved(this.note, this.note.contentDetail);
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.exitDialogOpen = false;
-              });
-              this.showToast('文档修改已保存');
-              setTimeout(() => {
-                this.onClose();
-              }, 200);
-            })
+            .onClick(() => this.saveChangesAndExit())
         }
         .width('100%')
       }
@@ -1391,10 +1402,117 @@ export struct HuaweiDocWorkspace {
         .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
     )
     .onClick(() => {
-      animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-        this.exitDialogOpen = false;
-      });
+      this.cancelExit();
     })
+  }
+
+  // ------------------------------------------------------------------
+  // 退出确认（紧凑布局）：底部抽屉，复用 SheetOverlay，拇指可达
+  // ------------------------------------------------------------------
+
+  @Builder
+  exitConfirmationSheet() {
+    Column() {
+      SheetOverlay({ onDismiss: () => this.cancelExit() }) {
+        Column({ space: 12 }) {
+          Text('保存文档修改？')
+            .fontSize(TypographyTokens.BODY_LARGE)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.palette().inkPrimary)
+            .width('100%')
+          Text('退出前是否保存当前手写批注与阅读进度？')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontColor(this.palette().inkSecondary)
+            .width('100%')
+
+          Button('保存并退出')
+            .type(ButtonType.Normal)
+            .width('100%')
+            .height(44)
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#FFFFFF')
+            .backgroundColor(this.palette().accent)
+            .borderRadius(10)
+            .onClick(() => this.saveChangesAndExit())
+
+          Button('放弃修改')
+            .type(ButtonType.Normal)
+            .width('100%')
+            .height(44)
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.isDarkMode ? '#F87171' : '#DC2626')
+            .backgroundColor(this.isDarkMode ? '#3B181E' : '#FEE2E2')
+            .border({ width: 1, color: this.isDarkMode ? '#5C2229' : '#FCA5A5' })
+            .borderRadius(10)
+            .onClick(() => this.discardChangesAndExit())
+
+          SheetCancelButton({ onCancel: () => this.cancelExit() })
+        }
+        .width('100%')
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .zIndex(300)
+  }
+
+  // ------------------------------------------------------------------
+  // 清空本页批注二次确认：底部抽屉，避免误触即清
+  // ------------------------------------------------------------------
+
+  @Builder
+  clearAnnotationsSheet() {
+    Column() {
+      SheetOverlay({
+        onDismiss: () => {
+          animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+            this.clearConfirmOpen = false;
+          });
+        }
+      }) {
+        Column({ space: 12 }) {
+          Text(`清空第 ${this.currentPage} 页的手写批注？`)
+            .fontSize(TypographyTokens.BODY_REGULAR)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.palette().danger)
+            .width('100%')
+          Text('此操作不可撤销，本页所有笔迹与荧光标记将被清除。')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontColor(this.palette().inkSecondary)
+            .width('100%')
+
+          Button('确认清空')
+            .type(ButtonType.Normal)
+            .width('100%')
+            .height(44)
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#FFFFFF')
+            .backgroundColor(this.palette().danger)
+            .borderRadius(10)
+            .onClick(() => {
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.clearConfirmOpen = false;
+              });
+              this.clearCurrentPageAnnotations();
+            })
+
+          SheetCancelButton({
+            onCancel: () => {
+              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                this.clearConfirmOpen = false;
+              });
+            }
+          })
+        }
+        .width('100%')
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .zIndex(280)
   }
 
   // ------------------------------------------------------------------
@@ -1636,9 +1754,18 @@ export struct HuaweiDocWorkspace {
         this.moreActionSheet()
       }
 
-      // ---- 8. 退出阅读器保存确认弹窗 (Obsidian 风格) ----
+      // ---- 8. 退出阅读器保存确认弹窗：紧凑布局走底部抽屉，宽屏保留居中弹窗 ----
       if (this.exitDialogOpen) {
-        this.exitConfirmationDialog()
+        if (this.isCompactLayout) {
+          this.exitConfirmationSheet()
+        } else {
+          this.exitConfirmationDialog()
+        }
+      }
+
+      // ---- 9. 清空本页批注二次确认（底部抽屉）----
+      if (this.clearConfirmOpen) {
+        this.clearAnnotationsSheet()
       }
     }
     .width('100%')
