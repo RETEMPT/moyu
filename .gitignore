@@ -14,3 +14,9 @@
 /.tmp-icons
 /.build.log
 /.codegenie/
+# 本地敏感凭据与测试备忘
+/moyu_text.txt
+*.local
+.env*
+*.key
+*.secret

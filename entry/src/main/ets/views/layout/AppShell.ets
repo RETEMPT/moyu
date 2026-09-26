@@ -13,6 +13,7 @@ import { ColorPalette, LayoutTokens } from '../../common/constants/DesignTokens'
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
+import { ChatSession } from '../../common/types/ChatSession';
 import { SAVE_IDLE } from '../../common/constants/WorkspaceConstants';
 import { GlobalTopBar } from './GlobalTopBar';
 import { Sidebar } from './Sidebar';
@@ -30,6 +31,10 @@ export struct AppShell {
   @Prop contextPanelOpen: boolean = false;
   @Prop trashCount: number = 0;
   @Prop todoPendingCount: number = 0;
+  /** 侧栏中段模式：'tree' 项目资料树 | 'sessions' 对话记录 */
+  @Prop sidebarMode: string = 'tree';
+  @Prop sessions: ChatSession[] = [];
+  @Prop activeSessionId: string = '';
 
   onToggleSidebar: () => void = () => {};
   onToggleContext: () => void = () => {};
@@ -52,6 +57,11 @@ export struct AppShell {
   onBreadcrumbClick: (index: number, segment: string) => void = () => {};
   onOpenSheet: (type: string, project: SpaceFolder | null, note: NoteItem | null) => void = () => {};
   onOpenCreateProject: () => void = () => {};
+  onSidebarModeChange: (mode: string) => void = () => {};
+  onSelectSession: (session: ChatSession) => void = () => {};
+  onNewSession: () => void = () => {};
+  onDeleteSession: (sessionId: string) => void = () => {};
+  onTogglePinSession: (session: ChatSession) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
 
@@ -151,7 +161,15 @@ export struct AppShell {
       onOpenSheet: this.onOpenSheet,
       onOpenCreateProject: this.onOpenCreateProject,
       trashCount: this.trashCount,
-      todoPendingCount: this.todoPendingCount
+      todoPendingCount: this.todoPendingCount,
+      sidebarMode: this.sidebarMode,
+      sessions: this.sessions,
+      activeSessionId: this.activeSessionId,
+      onSidebarModeChange: this.onSidebarModeChange,
+      onSelectSession: this.onSelectSession,
+      onNewSession: this.onNewSession,
+      onDeleteSession: this.onDeleteSession,
+      onTogglePinSession: this.onTogglePinSession
     })
   }
 
