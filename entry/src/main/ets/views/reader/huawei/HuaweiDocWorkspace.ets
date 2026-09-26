@@ -40,6 +40,8 @@ export struct HuaweiDocWorkspace {
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
+  /** 单栏紧凑布局（<840vp）：顶栏收纳分屏/沉浸入口，统一移入「更多」面板 */
+  @StorageProp('flowmindIsCompact') isCompactLayout: boolean = false;
 
   // 顶底栏沉浸与显隐状态
   @State barsVisible: boolean = true;
@@ -197,7 +199,7 @@ export struct HuaweiDocWorkspace {
 
   @Builder
   topNavigationBar() {
-    Row({ space: 12 }) {
+    Row({ space: this.isCompactLayout ? 8 : 12 }) {
       // 1. 退出全屏胶囊（Obsidian 简约返回样式，触发退出保存确认）
       Row({ space: 5 }) {
         Text('←')
@@ -231,7 +233,7 @@ export struct HuaweiDocWorkspace {
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-        if (!this.isPhone) {
+        if (!this.isCompactLayout) {
           Text(this.isDocumentOrExam() ? 'PDF · 考研真题' : (this.isHandwritingNote() ? '稿纸 · 手写演算' : this.note.type.toUpperCase()))
             .fontSize(TypographyTokens.TINY)
             .fontWeight(FontWeight.Normal)
@@ -321,38 +323,40 @@ export struct HuaweiDocWorkspace {
 
       Blank()
 
-      // 4. 右侧分屏模式与更多操作 (Obsidian 极简图标)
+      // 4. 右侧分屏模式与更多操作 (Obsidian 极简图标)；紧凑布局下分屏/沉浸移入「更多」面板
       Row({ space: 8 }) {
-        // 分屏胶囊
-        Row({ space: 3 }) {
-          this.splitSegmentItem('⊡', '单页', 'none')
-          this.splitSegmentItem('✦', 'AI 伴读', 'ai')
-          this.splitSegmentItem('▦', '稿纸', 'scratchpad')
-        }
-        .padding(3)
-        .borderRadius(18)
-        .backgroundColor(this.palette().surfaceSubtle)
-        .border({ width: 1, color: this.palette().borderSubtle })
+        if (!this.isCompactLayout) {
+          // 分屏胶囊
+          Row({ space: 3 }) {
+            this.splitSegmentItem('⊡', '单页', 'none')
+            this.splitSegmentItem('✦', 'AI 伴读', 'ai')
+            this.splitSegmentItem('▦', '稿纸', 'scratchpad')
+          }
+          .padding(3)
+          .borderRadius(18)
+          .backgroundColor(this.palette().surfaceSubtle)
+          .border({ width: 1, color: this.palette().borderSubtle })
 
-        // 沉浸阅读隐藏顶底栏
-        Row({ space: 4 }) {
-          Text('⛶')
-            .fontSize(12)
-            .fontColor(this.palette().accent)
-          Text('沉浸')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().accent)
+          // 沉浸阅读隐藏顶底栏
+          Row({ space: 4 }) {
+            Text('⛶')
+              .fontSize(12)
+              .fontColor(this.palette().accent)
+            Text('沉浸')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.palette().accent)
+          }
+          .padding({ left: 10, right: 12, top: 5, bottom: 5 })
+          .borderRadius(14)
+          .backgroundColor(this.palette().accentSoft)
+          .border({ width: 1, color: this.palette().borderSubtle })
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.toggleBars(false);
+            this.showToast('已进入沉浸全屏，触碰屏幕顶/底边缘即可唤回');
+          })
         }
-        .padding({ left: 10, right: 12, top: 5, bottom: 5 })
-        .borderRadius(14)
-        .backgroundColor(this.palette().accentSoft)
-        .border({ width: 1, color: this.palette().borderSubtle })
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          this.toggleBars(false);
-          this.showToast('已进入沉浸全屏，触碰屏幕顶/底边缘即可唤回');
-        })
 
         // 更多操作入口（Obsidian 风格中点省略号）
         Row({ space: 4 }) {
@@ -379,7 +383,7 @@ export struct HuaweiDocWorkspace {
     }
     .width('100%')
     .height(48)
-    .padding({ left: 16, right: 16 })
+    .padding({ left: this.isCompactLayout ? 10 : 16, right: this.isCompactLayout ? 10 : 16 })
     .backgroundColor(this.palette().surface)
     .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
   }
@@ -414,6 +418,8 @@ export struct HuaweiDocWorkspace {
 
   @Builder
   floatingPenPalette() {
+    // 横向滚动容器：窄屏上笔盘不再被裁切，工具/颜色/笔宽可左右滑动触达
+    Scroll() {
     Row({ space: this.isPhone ? 4 : 8 }) {
       // 1. 突出「退出批注」胶囊 (一键退出回阅读模式)
       Row({ space: 4 }) {
@@ -645,7 +651,13 @@ export struct HuaweiDocWorkspace {
       offsetY: 8
     })
     .border({ width: 1, color: this.palette().borderSubtle })
-    .margin({ bottom: 20 })
+    }
+    .scrollable(ScrollDirection.Horizontal)
+    .scrollBar(BarState.Off)
+    .align(Alignment.Center)
+    .constraintSize({ maxWidth: '96%' })
+    .padding({ top: 10, bottom: 10 })
+    .margin({ bottom: 10 })
     .zIndex(60)
     .animation({ duration: 180, curve: Curve.EaseInOut })
   }
@@ -785,10 +797,43 @@ export struct HuaweiDocWorkspace {
             })
           }
           .width('100%')
+
+          // 紧凑布局专属：顶栏收纳下来的分屏与沉浸入口
+          if (this.isCompactLayout) {
+            Row({ space: 10 }) {
+              this.moreActionItem('⛶', '沉浸阅读', '隐藏顶底栏', () => {
+                animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                  this.moreMenuOpen = false;
+                });
+                this.toggleBars(false);
+                this.showToast('已进入沉浸全屏，触碰屏幕顶/底边缘即可唤回');
+              })
+              this.moreActionItem('⊡', '单页', this.splitMode === 'none' ? '当前分屏' : '关闭分屏', () => {
+                animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                  this.splitMode = 'none';
+                  this.moreMenuOpen = false;
+                });
+              })
+              this.moreActionItem('✦', 'AI 伴读', this.splitMode === 'ai' ? '当前分屏' : '智能分屏', () => {
+                animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                  this.splitMode = 'ai';
+                  this.moreMenuOpen = false;
+                });
+              })
+              this.moreActionItem('▦', '稿纸', this.splitMode === 'scratchpad' ? '当前分屏' : '演算分屏', () => {
+                animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                  this.splitMode = 'scratchpad';
+                  this.moreMenuOpen = false;
+                });
+              })
+            }
+            .width('100%')
+          }
         }
         .width('100%')
       }
       .width(440)
+      .constraintSize({ maxWidth: '92%' })
       .padding(20)
       .borderRadius(16)
       .backgroundColor(this.palette().surface)
@@ -1164,6 +1209,7 @@ export struct HuaweiDocWorkspace {
         .width('100%')
       }
       .width(320)
+      .constraintSize({ maxWidth: '92%' })
       .padding(20)
       .borderRadius(16)
       .backgroundColor(this.palette().surface)
@@ -1311,6 +1357,7 @@ export struct HuaweiDocWorkspace {
         .width('100%')
       }
       .width(400)
+      .constraintSize({ maxWidth: '92%' })
       .padding(22)
       .borderRadius(16)
       .backgroundColor(this.palette().surface)
