@@ -43,6 +43,7 @@ export struct CreateNoteSheet {
             .textAlign(TextAlign.Center)
             .borderRadius(6)
             .hoverEffect(HoverEffect.Highlight)
+            .responseRegion({ x: -8, y: -8, width: 44, height: 44 })
             .onClick(() => this.onClose())
         }
         .width('100%')

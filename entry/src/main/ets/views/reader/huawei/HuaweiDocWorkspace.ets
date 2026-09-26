@@ -248,6 +248,7 @@ export struct HuaweiDocWorkspace {
       .backgroundColor(this.palette().surfaceSubtle)
       .border({ width: 1, color: this.palette().borderSubtle })
       .hoverEffect(HoverEffect.Highlight)
+      .responseRegion({ x: 0, y: -8, width: '100%', height: 44 })
       .onClick(() => {
         animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
           this.exitDialogOpen = true;
@@ -958,6 +959,7 @@ export struct HuaweiDocWorkspace {
       .border({ width: 1, color: this.currentPage <= 1 ? Color.Transparent : this.palette().borderSubtle })
       .enabled(this.currentPage > 1)
       .hoverEffect(HoverEffect.Highlight)
+      .responseRegion({ x: 0, y: -7, width: '100%', height: 44 })
       .onClick(() => this.prevPage())
 
       // 2. 页码指示与滑块进度条
@@ -1014,6 +1016,7 @@ export struct HuaweiDocWorkspace {
       .border({ width: 1, color: this.currentPage >= this.totalPages ? Color.Transparent : this.palette().borderSubtle })
       .enabled(this.currentPage < this.totalPages)
       .hoverEffect(HoverEffect.Highlight)
+      .responseRegion({ x: 0, y: -7, width: '100%', height: 44 })
       .onClick(() => this.nextPage())
 
       if (!this.isPhone) {

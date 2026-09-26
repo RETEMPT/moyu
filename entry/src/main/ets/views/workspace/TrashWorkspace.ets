@@ -55,6 +55,7 @@ export struct TrashWorkspace {
       .backgroundColor(filled ? color : Color.Transparent)
       .border({ width: filled ? 0 : 1, color: { top: color, bottom: color, left: color, right: color } })
       .hoverEffect(HoverEffect.Highlight)
+      .responseRegion({ x: 0, y: -9, width: '100%', height: 44 })
       .onClick(action)
   }
 
@@ -125,6 +126,7 @@ export struct TrashWorkspace {
               .borderRadius(6)
               .border({ width: 1, color: { top: this.palette().danger, bottom: this.palette().danger, left: this.palette().danger, right: this.palette().danger } })
               .hoverEffect(HoverEffect.Highlight)
+              .responseRegion({ x: 0, y: -8, width: '100%', height: 44 })
               .onClick(() => this.onEmpty())
           }
         }
