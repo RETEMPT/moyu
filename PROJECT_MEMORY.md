@@ -1,8 +1,8 @@
 # FlowMind（墨语）项目全景记忆与技术备忘录 (Project Memory)
 
-> **对应 CodeGenie 记忆库**：[`e:/apps/.codegenie/MEMORY.md`](file:///e:/apps/.codegenie/MEMORY.md)  
-> **文档维护状态**：最新同步于 2026-09-21  
-> **面向对象**：架构师、DevEco CodeGenie、全栈开发团队
+> **项目定位**：纯血鸿蒙 Local-First 端侧 AI 双链知识库与多端研读系统  
+> **文档维护状态**：最新同步  
+> **面向对象**：核心开发团队、开源贡献者
 
 ---
 
@@ -26,11 +26,11 @@
 应用严格遵守 **单向向下依赖** 准则：`pages/` → `views/` → `services/` → `common/`。严禁底层反向引用上层组件。
 
 ```text
-e:/apps/
-├── .codegenie/
-│   ├── MEMORY.md                          # CodeGenie 专属工作记忆（FACT 与 TASK 结构化存储）
-│   ├── agent.md                           # CodeGenie 项目指导与架构分层规范
-│   └── README.md                          # 设计与实施文档索引
+├── AppScope/                              # 应用级配置和全端图标资源
+├── design/                                # 图标 SVG 母版与设计资产
+├── tools/                                 # 图标与构建工具
+├── build-profile.json5                    # SDK、产品和构建模式配置
+├── hvigorfile.ts                          # Hvigor 工程入口
 ├── entry/src/main/ets/
 │   ├── common/                            # 公共基础设施（零业务逻辑、零上层依赖）
 │   │   ├── constants/DesignTokens.ets     # UI/UX Pro Max 规范 Token、Obsidian 极简中性调色板
@@ -66,7 +66,7 @@ e:/apps/
      * `▰`（荧光笔）、`⌫`（橡皮擦）、`✥`（漫游手势）、`↶`（撤销笔迹）、`—`（单页）、`‹` / `›`（翻页）、`☰`（目录/侧栏）、`▯`（双页）
      * `⭳`（导出）、`↗`（全屏/弹窗）、`⇄`（切换）、`⧉`（分屏）、`⎙`（打印）、`⌕`（检索）、`⎚`（清空）
 2. **中性灰阶与高对比度层次**：
-   * 严格依托 [`DesignTokens.ets`](file:///e:/apps/entry/src/main/ets/common/constants/DesignTokens.ets)；
+   * 严格依托 `entry/src/main/ets/common/constants/DesignTokens.ets`；
    * 背景色采用深邃中性黑 `#121212` 与纯白 `#FFFFFF`，表面卡片采用 `#1E1E1E` / `#F5F5F7`；
    * 边框采用超细微半透明描边（`1vp rgba(255,255,255,0.08)` / `rgba(0,0,0,0.06)`）；
    * 按钮与触控区域严格保证 44vp 最小触控热区。
@@ -87,7 +87,7 @@ e:/apps/
 
 ## 五、 HarmonyOS GPU 光栅化渲染避坑三铁律（彻底根除折光与撕裂）
 
-在排查全屏阅读器 [`HuaweiDocWorkspace.ets`](file:///e:/apps/entry/src/main/ets/views/reader/huawei/HuaweiDocWorkspace.ets) 中打开「更多」面板、快速跳转与退出弹窗时从屏幕左上角 `(0, 0)` 放射状拉扯到居中卡片的深色/反色三角形折光拉丝时，确立了以下三大不可逾越的渲染铁律：
+在排查全屏阅读器 `entry/src/main/ets/views/reader/huawei/HuaweiDocWorkspace.ets` 中打开「更多」面板、快速跳转与退出弹窗时从屏幕左上角 `(0, 0)` 放射状拉扯到居中卡片的深色/反色三角形折光拉丝时，确立了以下三大不可逾越的渲染铁律：
 
 | 避坑铁律 | 物理与 GPU 底层根因 | 架构重构方案 |
 |---|---|---|
@@ -101,7 +101,7 @@ e:/apps/
 
 1. **退出拦截机制**：
    * 当用户在阅读器中点击左上角返回或触发返回手势时，拦截直接退出路由；
-   * 弹出居中极简 [`exitConfirmationDialog`](file:///e:/apps/entry/src/main/ets/views/reader/huawei/HuaweiDocWorkspace.ets) 确认对话框。
+   * 弹出居中极简确认对话框。
 2. **确定性三态闭环**：
    * **「保存并退出」**：立即抓取当前文档最新的手写批注数据（`pageAnnotations`），调用 `NoteStorageService` 完整持久化写入沙箱文件与 Preferences 快照，然后安全退出阅读器。
    * **「放弃修改」**：丢弃未持久化的临时笔迹与修改，直接返回工作台。
