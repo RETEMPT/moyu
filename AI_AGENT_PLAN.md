@@ -592,7 +592,7 @@ export interface ToolDefinition {
 - 网络 kit：`@kit.NetworkKit`（http / rcp）——**目前全项目无网络代码，属绿地**
 - 数据 kit：`@kit.ArkData`（preferences，已有，见 `NoteStorageService`）
 - 构建/部署：`.\deploy_hap.bat`
-- 模拟器：MatePad Pro 13（`127.0.0.1:5555`），bundle `com.example.myapplication`
+- 模拟器：MatePad Pro 13（`127.0.0.1:5555`），bundle `com.retempt.flowmind`
 
 ---
 

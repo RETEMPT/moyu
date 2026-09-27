@@ -127,7 +127,7 @@ hdc list targets
 hdc -t 127.0.0.1:5555 install -r entry/build/default/outputs/default/entry-default-unsigned.hap
 
 # 启动应用 EntryAbility
-hdc -t 127.0.0.1:5555 shell aa start -a EntryAbility -b com.example.myapplication -m entry
+hdc -t 127.0.0.1:5555 shell aa start -a EntryAbility -b com.retempt.flowmind -m entry
 ```
 
 若 `hdc` 出现卡顿或未响应，可执行以下命令恢复服务：
