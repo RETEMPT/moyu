@@ -44,7 +44,7 @@ import { SIDEBAR_MODE_SESSIONS, SIDEBAR_MODE_TREE } from '../views/layout/Sideba
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
 import { LibraryWorkspace } from '../views/workspace/LibraryWorkspace';
 import { GraphWorkspace } from '../views/workspace/GraphWorkspace';
-import { PendingWorkspace } from '../views/workspace/PendingWorkspace';
+import { HandwritingCanvas } from '../views/reader/HandwritingCanvas';
 import { AiWorkspace } from '../views/ai/AiWorkspace';
 import { AiSourcesPanel } from '../views/ai/AiSourcesPanel';
 import { TodoWorkspace } from '../views/workspace/TodoWorkspace';
@@ -65,6 +65,9 @@ import { NoteMenuSheet } from '../views/layout/sheets/NoteMenuSheet';
 import { RenameNoteSheet } from '../views/layout/sheets/RenameNoteSheet';
 import { MoveNoteSheet } from '../views/layout/sheets/MoveNoteSheet';
 import { NameNoteSheet } from '../views/layout/sheets/NameNoteSheet';
+import { SmartExtractSheet } from '../views/layout/sheets/SmartExtractSheet';
+import { SmartContent } from '../common/types/SmartContent';
+import { SmartTask } from '../common/types/SmartTask';
 
 /** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
 interface PendingNoteCreate {
@@ -144,6 +147,7 @@ struct Index {
   // ---- 全局浮层 ----
   @State searchVisible: boolean = false;
   @State settingsVisible: boolean = false;
+  @State smartExtractVisible: boolean = false;
   /** 新建笔记的命名弹层意图；非空即显示 NameNoteSheet。 */
   @State pendingCreate: PendingNoteCreate | null = null;
   @State toastVisible: boolean = false;
@@ -172,6 +176,15 @@ struct Index {
    * 由 Toast 上的「撤销」按钮触发还原；Toast 消失时句柄一并失效。
    */
   private undoAction: (() => void) | null = null;
+  private appContext: common.UIAbilityContext | null = null;
+
+  private getAbilityContext(): common.UIAbilityContext {
+    if (this.appContext !== null) {
+      return this.appContext;
+    }
+    this.appContext = getContext(this) as common.UIAbilityContext;
+    return this.appContext;
+  }
 
   aboutToAppear(): void {
     if (!this.bootstrapped) {
@@ -185,7 +198,7 @@ struct Index {
   // ==================================================================
 
   private async bootstrap(): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       const loaded: NoteItem[] = await this.storage.load(context, seedNotes());
       this.notes = loaded.length > 0 ? loaded : seedNotes();
@@ -817,7 +830,7 @@ struct Index {
         return;
       }
     }
-    this.notify(`「${title}」尚未创建`);
+    this.requestCreateNote('', 'Markdown', title);
   }
 
   /** 新建笔记前先弹命名层：记录意图并展示 NameNoteSheet，确认后再真正落地。 */
@@ -1211,6 +1224,104 @@ struct Index {
     return null;
   }
 
+  private findNoteByIdentifier(identifier: string): NoteItem | null {
+    const target: string = identifier.trim().toLowerCase();
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].id.toLowerCase() === target || this.notes[i].title.toLowerCase() === target) {
+        return this.notes[i];
+      }
+    }
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].title.toLowerCase().includes(target)) {
+        return this.notes[i];
+      }
+    }
+    return null;
+  }
+
+  private handleAiAddTag(identifier: string, tags: string): void {
+    const target: NoteItem | null = this.findNoteByIdentifier(identifier);
+    if (target === null) {
+      this.notify(`未找到笔记「${identifier}」`);
+      return;
+    }
+    const splitTags: string[] = tags.split(',').map((t: string) => t.trim()).filter((t: string) => t.length > 0);
+    const existing: string[] = target.tags !== undefined ? target.tags.slice() : (target.tag.length > 0 ? target.tag.split(',').map((t: string) => t.trim()) : []);
+    for (let i = 0; i < splitTags.length; i++) {
+      if (!existing.includes(splitTags[i])) {
+        existing.push(splitTags[i]);
+      }
+    }
+    target.tags = existing;
+    target.tag = existing.join(', ');
+    this.notes = this.notes.slice();
+    this.persistSnapshot();
+    this.refreshStats();
+    this.notify(`已为《${target.title}》添加标签: ${tags}`);
+  }
+
+  private async handleAiCreateLink(sourceIdentifier: string, targetTitle: string): Promise<void> {
+    const target: NoteItem | null = this.findNoteByIdentifier(sourceIdentifier);
+    if (target === null) {
+      this.notify(`未找到源笔记「${sourceIdentifier}」`);
+      return;
+    }
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const appendLink: string = `\n\n[[${targetTitle}]]\n`;
+    target.contentDetail = (target.contentDetail || '') + appendLink;
+    target.updateTime = this.formatTime(new Date());
+    this.notes = this.notes.slice();
+    try {
+      await this.storage.saveDocument(context, target, target.contentDetail);
+    } catch (e) {
+      console.error(`保存双链失败: ${JSON.stringify(e)}`);
+    }
+    await this.persistSnapshot();
+    await this.refreshGraph();
+    this.notify(`已在《${target.title}》中建立指向[[${targetTitle}]]的双链`);
+  }
+
+  private handleAiCategorize(identifier: string, category: string): void {
+    const target: NoteItem | null = this.findNoteByIdentifier(identifier);
+    if (target === null) {
+      this.notify(`未找到笔记「${identifier}」`);
+      return;
+    }
+    this.commitMove(target, category);
+  }
+
+  private async handleAiCreateNote(title: string, category: string, tag: string, content: string): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const now: Date = new Date();
+    const cleanTitle: string = title.trim().length > 0 ? title.trim() : '未命名笔记';
+    const cleanCategory: string = category.trim().length > 0 ? category.trim() : '未分类';
+    const tagList: string[] = tag.trim().length > 0 ? tag.split(',').map((t: string) => t.trim()) : ['AI生成'];
+    const note: NoteItem = {
+      id: `note-${now.getTime()}`,
+      title: cleanTitle,
+      category: cleanCategory,
+      type: 'Markdown',
+      previewText: content.slice(0, 100).replace(/[#*`\n]/g, ' ').trim(),
+      tag: tagList.join(', '),
+      tagColor: '#2563EB',
+      updateTime: this.formatTime(now),
+      contentDetail: content.trim().length > 0 ? content : `# ${cleanTitle}\n\n`,
+      tags: tagList,
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
+    };
+    this.notes = [note].concat(this.notes);
+    try {
+      await this.storage.create(context, note);
+    } catch (error) {
+      console.error(`创建笔记失败: ${JSON.stringify(error)}`);
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    await this.refreshGraph();
+    this.notify(`已新建知识笔记《${cleanTitle}》`);
+  }
+
   // ==================================================================
   // 重命名 / 移动分类
   // ==================================================================
@@ -1333,6 +1444,18 @@ struct Index {
     this.notify(target.favorite ? `已收藏「${target.title}」` : `已取消收藏「${target.title}」`);
   }
 
+  /** 切换置顶状态并落盘 */
+  private async togglePinNote(note: NoteItem): Promise<void> {
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      return;
+    }
+    target.isPinned = target.isPinned !== true;
+    this.notes = this.notes.slice();
+    await this.persistSnapshot();
+    this.notify(target.isPinned ? `已置顶「${target.title}」` : `已取消置顶「${target.title}」`);
+  }
+
   // ==================================================================
   // 多标签（功能6）
   // ==================================================================
@@ -1393,7 +1516,7 @@ struct Index {
   }
 
   private async persistTodos(): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       await this.todoStorage.saveTodos(context, this.todos);
     } catch (error) {
@@ -1403,7 +1526,7 @@ struct Index {
   }
 
   private async persistDayNotes(): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       await this.todoStorage.saveDayNotes(context, this.dayNotes);
     } catch (error) {
@@ -1426,6 +1549,108 @@ struct Index {
     this.todos = [todo].concat(this.todos);
     await this.persistTodos();
     this.notify('已添加待办');
+  }
+
+  /**
+   * 黄金闭环：智能提取落地为双链知识卡并注入待办日程
+   */
+  private async handleCommitSmartExtract(content: SmartContent, selectedTasks: SmartTask[]): Promise<void> {
+    const context: common.UIAbilityContext = this.getAbilityContext();
+    const now = new Date();
+    const dateKey = `${now.getFullYear()}-${(now.getMonth() + 1 < 10 ? '0' : '') + (now.getMonth() + 1)}-${(now.getDate() < 10 ? '0' : '') + now.getDate()}`;
+    const noteId = `note-${Date.now()}`;
+
+    // 1. 将勾选的待办事项直接存入待办日历
+    for (let i = 0; i < selectedTasks.length; i++) {
+      const task = selectedTasks[i];
+      const deadlineText = task.deadline && task.deadline.length > 0 ? ` [截止: ${task.deadline}]` : '';
+      const todoNow = Date.now() + i;
+      const todo: TodoItem = {
+        id: `todo-${todoNow}-${this.todos.length}`,
+        date: dateKey,
+        title: `${task.title}${deadlineText}`,
+        done: false,
+        noteRefs: [noteId],
+        createdAt: todoNow,
+        updatedAt: todoNow
+      };
+      this.todos = [todo].concat(this.todos);
+    }
+    if (selectedTasks.length > 0) {
+      await this.persistTodos();
+    }
+
+    // 2. 构造 Markdown 正文、结构化块与双链
+    let body = `# ${content.title}\n\n`;
+    body += `> ✦ **AI 智能提炼摘要**：${content.summary}\n\n`;
+
+    if (content.keyPoints && content.keyPoints.length > 0) {
+      body += `## 核心要点\n\n`;
+      for (let i = 0; i < content.keyPoints.length; i++) {
+        body += `- ${content.keyPoints[i]}\n`;
+      }
+      body += `\n`;
+    }
+
+    if (content.entities && content.entities.length > 0) {
+      body += `## 关键实体与信息\n\n`;
+      for (let i = 0; i < content.entities.length; i++) {
+        const ent = content.entities[i];
+        body += `- **${ent.name}** (${ent.type})：${ent.description || '核心概念'}\n`;
+      }
+      body += `\n`;
+    }
+
+    if (selectedTasks.length > 0) {
+      body += `## 行动待办清单\n\n`;
+      for (let i = 0; i < selectedTasks.length; i++) {
+        const t = selectedTasks[i];
+        body += `- [ ] ${t.title}${t.deadline ? ' ⏳ ' + t.deadline : ''}\n`;
+      }
+      body += `\n`;
+    }
+
+    if (content.relations && content.relations.length > 0) {
+      body += `## 知识网络关联\n\n`;
+      for (let i = 0; i < content.relations.length; i++) {
+        const rel = content.relations[i];
+        body += `- [[${rel.targetTitle}]]（${rel.reason || '关联考点'}）\n`;
+      }
+      body += `\n`;
+    }
+
+    const tags = content.tags && content.tags.length > 0 ? content.tags : ['智能提取', '知识卡'];
+    body += tags.map((t: string) => `#${t}`).join(' ') + '\n';
+
+    // 3. 创建 NoteItem
+    const newNote: NoteItem = {
+      id: noteId,
+      title: content.title,
+      category: '计算机基础',
+      type: 'Markdown',
+      previewText: content.summary,
+      tag: tags[0],
+      tagColor: '#4F46E5',
+      updateTime: '刚刚',
+      contentDetail: body,
+      tags: tags,
+      aiSummary: content.summary,
+      aiTags: tags,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+
+    this.notes = [newNote].concat(this.notes);
+    try {
+      await this.storage.create(context, newNote);
+    } catch (e) {
+      console.warn(`保存智能笔记失败: ${JSON.stringify(e)}`);
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.refreshGraph();
+    this.openNote(newNote);
+    this.notify(`已生成「${content.title}」并同步 ${selectedTasks.length} 条待办！`);
   }
 
   /** 切换待办完成态：未完成（红）↔ 已完成（绿）。 */
@@ -1484,30 +1709,55 @@ struct Index {
     await this.persistDayNotes();
   }
 
+  /** 获取或自动生成自由白板笔记，用于自由白板画卷常驻工作区 */
+  private getOrCreateCanvasNote(): NoteItem {
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].type.toLowerCase() === 'canvas' || this.notes[i].id === 'note-seed-handwriting' || this.notes[i].title === '自由白板演算') {
+        return this.notes[i];
+      }
+    }
+    const canvasNote: NoteItem = {
+      id: `canvas-global`,
+      title: '自由白板演算',
+      category: '速记灵感',
+      type: 'canvas',
+      previewText: '全功能多色自由手写草稿板',
+      tag: '手写',
+      tagColor: '#D97706',
+      updateTime: '刚刚',
+      contentDetail: '',
+      strokes: '[]'
+    };
+    this.notes = [canvasNote].concat(this.notes);
+    return canvasNote;
+  }
+
   /**
    * 通过系统文件选择器导入文档。
    * @param targetCategory 导入后归入的项目名，默认「未分类」
    */
   private async importDocument(targetCategory: string = '未分类'): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       const result: DocumentTransferResult = await this.storage.importDocument(context);
       if (result.status === 'imported' && result.document !== undefined) {
         const document: MarkdownDocument = result.document;
         const now: Date = new Date();
+        const isPdf: boolean = result.noteType === 'PDF' || document.title.toLowerCase().endsWith('.pdf');
         const note: NoteItem = {
           id: document.id,
           title: document.title,
           category: targetCategory,
-          // 类型必须采用服务层回传的结果：写死 'Markdown' 会让导入的 PDF
-          // 走不进原盘批注阅读器（ReaderWorkspace 按 type 分流）。
-          type: result.noteType !== undefined ? result.noteType : 'Markdown',
+          type: result.noteType !== undefined ? result.noteType : (isPdf ? 'PDF' : 'Markdown'),
+          sourceType: isPdf ? 'pdf' : 'document',
+          pageCount: isPdf ? 9 : 1,
+          pageInfo: isPdf ? '9 页 · 研读真题' : '',
           previewText: document.content.length > 48 ? `${document.content.substring(0, 48)}…` : document.content,
-          tag: '导入',
-          tagColor: '',
+          tag: isPdf ? 'PDF文献' : '导入',
+          tagColor: isPdf ? '#E11D48' : '#2563EB',
           updateTime: this.formatTime(now),
           contentDetail: document.content,
-          tags: ['导入'],
+          tags: isPdf ? ['PDF文献', targetCategory] : ['导入'],
           createdAt: now.getTime(),
           updatedAt: now.getTime()
         };
@@ -1597,7 +1847,7 @@ struct Index {
     } else if (this.activeNav === NAV_HOME) {
       HomeWorkspace({
         stats: this.stats,
-        recentNotes: this.notes.slice(0, 9),
+        recentNotes: this.notes,
         unresolvedLinks: this.linkGraph.unresolvedLinks,
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
@@ -1605,7 +1855,19 @@ struct Index {
         onOpenGraph: () => {
           this.activeNav = NAV_GRAPH;
         },
-        onUploadCover: (noteId: string, uri: string) => this.updateNoteCover(noteId, uri)
+        onUploadCover: (noteId: string, uri: string) => this.updateNoteCover(noteId, uri),
+        onTogglePin: (note: NoteItem) => this.togglePinNote(note),
+        onToggleFavorite: (note: NoteItem) => this.toggleFavorite(note),
+        onDeleteNote: (noteId: string) => this.deleteNote(noteId),
+        onSmartExtract: () => {
+          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+            this.smartExtractVisible = true;
+          });
+        },
+        onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
+        onNavigate: (navKey: string) => {
+          this.activeNav = navKey;
+        }
       })
     } else if (this.activeNav === NAV_LIBRARY) {
       LibraryWorkspace({
@@ -1628,8 +1890,15 @@ struct Index {
       GraphWorkspace({
         graph: this.linkGraph,
         stats: this.stats,
+        allNotes: this.notes,
         onSelectNoteById: (noteId: string) => this.openNoteById(noteId),
-        onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title)
+        onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
+        onLinkNodes: (sourceIdentifier: string, targetTitle: string) => {
+          this.handleAiCreateLink(sourceIdentifier, targetTitle);
+        },
+        onCreateGalaxy: (galaxyName: string) => {
+          this.createProject(galaxyName, '#6366F1', '🪐');
+        }
       })
       .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_TODO) {
@@ -1664,15 +1933,17 @@ struct Index {
       })
       .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_CANVAS) {
-      PendingWorkspace({
-        title: '白板',
-        description: '自由画布与思维导图正在迁移到新的视图层，当前版本暂未开放。',
-        pendingItems: [
-          '星闪手写笔墨迹采样与压感',
-          '卡片拖拽与自动连线',
-          '白板内容导出为 Markdown'
-        ]
+      HandwritingCanvas({
+        note: this.getOrCreateCanvasNote(),
+        isScratchpad: false,
+        onSaved: (note: NoteItem, content: string) => this.handleSaved(note, content),
+        onSaveStateChange: (state: string) => {
+          this.saveState = state;
+        }
       })
+      .width('100%')
+      .height('100%')
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else {
       AiWorkspace({
         allNotes: this.notes,
@@ -1708,6 +1979,28 @@ struct Index {
         },
         onCreateTodo: (dateKey: string, title: string) => {
           this.addTodo(dateKey, title, []);
+        },
+        onAddTagToNote: (identifier: string, tags: string) => {
+          this.handleAiAddTag(identifier, tags);
+        },
+        onCreateLinkBetweenNotes: (sourceIdentifier: string, targetTitle: string) => {
+          this.handleAiCreateLink(sourceIdentifier, targetTitle);
+        },
+        onCategorizeNote: (identifier: string, category: string) => {
+          this.handleAiCategorize(identifier, category);
+        },
+        onCreateNewNote: (title: string, category: string, tag: string, content: string) => {
+          this.handleAiCreateNote(title, category, tag, content);
+        },
+        onOpenSearch: () => {
+          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+            this.searchVisible = true;
+          });
+        },
+        onSmartExtract: () => {
+          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+            this.smartExtractVisible = true;
+          });
         }
       })
     }
@@ -1777,6 +2070,7 @@ struct Index {
         outlineItems: this.outlineItems,
         backlinks: this.currentBacklinks(),
         unresolved: this.currentUnresolved(),
+        recentNotes: this.notes.slice(0, 10),
         activeTab: this.contextTab,
         closable: true,
         onTabChange: (tab: string) => {
@@ -1787,6 +2081,7 @@ struct Index {
           this.jumpToken = this.jumpToken + 1;
         },
         onOpenNote: (noteId: string) => this.openNoteById(noteId),
+        onSelectNote: (note: NoteItem) => this.openNote(note),
         onCreateFromTitle: (title: string) => this.createNote(title),
         onClose: () => {
           animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
@@ -1953,6 +2248,9 @@ struct Index {
           onSaved: (note: NoteItem, content: string) => this.handleSaved(note, content),
           onSaveStateChange: (state: string) => {
             this.saveState = state;
+          },
+          onToggleFavorite: (note: NoteItem) => {
+            this.toggleFavorite(note);
           }
         })
         .width('100%')
@@ -1985,6 +2283,19 @@ struct Index {
           },
           onLoadSeedData: () => {
             this.loadSeedData();
+          }
+        })
+      }
+
+      if (this.smartExtractVisible) {
+        SmartExtractSheet({
+          onClose: () => {
+            animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+              this.smartExtractVisible = false;
+            });
+          },
+          onCommit: (content: SmartContent, selectedTasks: SmartTask[]) => {
+            this.handleCommitSmartExtract(content, selectedTasks);
           }
         })
       }

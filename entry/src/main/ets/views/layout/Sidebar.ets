@@ -201,27 +201,12 @@ export struct Sidebar {
           .borderRadius(10)
           .backgroundColor(this.palette().surfaceSubtle)
 
-        // 在当前项目内新建内容：先让用户选类型，防止事件冒泡
-        Text('＋')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .width(18)
-          .height(18)
-          .textAlign(TextAlign.Center)
-          .borderRadius(4)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.suppressRowClick = true;
-            this.onOpenSheet('new_content', space, null);
-          })
-
-        // 更多操作菜单按钮 (···)，防止事件冒泡
-        Text('···')
-          .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontWeight(FontWeight.Bold)
+        // 整合为一个三条横杠的菜单键 (☰)，彻底消除折行挤压
+        Text('☰')
+          .fontSize(13)
           .fontColor(space.id === this.activeSpaceId ? this.palette().inkPrimary : this.palette().inkMuted)
-          .width(20)
-          .height(18)
+          .width(22)
+          .height(20)
           .textAlign(TextAlign.Center)
           .borderRadius(4)
           .backgroundColor(space.id === this.activeSpaceId ? this.palette().surfaceSubtle : Color.Transparent)
@@ -287,7 +272,7 @@ export struct Sidebar {
               Text('＋')
                 .fontSize(TypographyTokens.TINY)
                 .fontColor(this.palette().inkMuted)
-              Text('点击新建资料')
+              Text('新建资料')
                 .fontSize(TypographyTokens.CAPTION)
                 .fontColor(this.palette().inkMuted)
             }

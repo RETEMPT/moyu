@@ -36,8 +36,10 @@ export struct HuaweiDocWorkspace {
   onClose: () => void = () => {};
   onSaved: (note: NoteItem, content: string) => void = () => {};
   onSaveStateChange: (state: string) => void = () => {};
+  onToggleFavorite: (note: NoteItem) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   // 顶底栏沉浸与显隐状态
   @State barsVisible: boolean = true;
@@ -79,8 +81,9 @@ export struct HuaweiDocWorkspace {
 
   aboutToAppear(): void {
     if (this.isDocumentOrExam()) {
-      this.currentPage = 4;
-      this.totalPages = 9;
+      const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount : 9;
+      this.totalPages = count;
+      this.currentPage = Math.min(this.currentPage, count);
     } else {
       this.currentPage = 1;
       this.totalPages = 1;
@@ -90,6 +93,18 @@ export struct HuaweiDocWorkspace {
   onNoteChanged(): void {
     this.activeModal = '';
     this.jumpDialogOpen = false;
+    if (this.isDocumentOrExam()) {
+      const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount : 9;
+      this.totalPages = count;
+    }
+  }
+
+  private pageNumbersList(): number[] {
+    const list: number[] = [];
+    for (let i = 1; i <= this.totalPages; i++) {
+      list.push(i);
+    }
+    return list;
   }
 
   /** 是否为 PDF / Word 试卷或参考资料 */
@@ -189,12 +204,14 @@ export struct HuaweiDocWorkspace {
           .fontSize(14)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.palette().inkPrimary)
-        Text('退出')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.palette().inkPrimary)
+        if (!this.isPhone) {
+          Text('退出')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.palette().inkPrimary)
+        }
       }
-      .padding({ left: 10, right: 12, top: 6, bottom: 6 })
+      .padding({ left: 10, right: this.isPhone ? 10 : 12, top: 6, bottom: 6 })
       .borderRadius(14)
       .backgroundColor(this.palette().surfaceSubtle)
       .border({ width: 1, color: this.palette().borderSubtle })
@@ -214,14 +231,37 @@ export struct HuaweiDocWorkspace {
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
 
-        Text(this.isDocumentOrExam() ? 'PDF · 考研真题' : (this.isHandwritingNote() ? '稿纸 · 手写演算' : this.note.type.toUpperCase()))
-          .fontSize(TypographyTokens.TINY)
-          .fontWeight(FontWeight.Normal)
-          .fontColor(this.palette().inkSecondary)
-          .padding({ left: 8, right: 8, top: 2, bottom: 2 })
-          .borderRadius(6)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .border({ width: 1, color: this.palette().borderSubtle })
+        if (!this.isPhone) {
+          Text(this.isDocumentOrExam() ? 'PDF · 考研真题' : (this.isHandwritingNote() ? '稿纸 · 手写演算' : this.note.type.toUpperCase()))
+            .fontSize(TypographyTokens.TINY)
+            .fontWeight(FontWeight.Normal)
+            .fontColor(this.palette().inkSecondary)
+            .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+            .borderRadius(6)
+            .backgroundColor(this.palette().surfaceSubtle)
+            .border({ width: 1, color: this.palette().borderSubtle })
+        }
+
+        // 收藏星标快捷切换
+        Row({ space: 4 }) {
+          Text(this.note.favorite === true ? '★' : '☆')
+            .fontSize(13)
+            .fontColor(this.note.favorite === true ? this.palette().warning : this.palette().inkSecondary)
+          if (!this.isPhone) {
+            Text(this.note.favorite === true ? '已收藏' : '收藏')
+              .fontSize(TypographyTokens.TINY)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.note.favorite === true ? this.palette().warning : this.palette().inkSecondary)
+          }
+        }
+        .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+        .borderRadius(8)
+        .backgroundColor(this.note.favorite === true ? this.palette().accentSoft : this.palette().surfaceSubtle)
+        .border({ width: 1, color: this.note.favorite === true ? this.palette().warning : this.palette().borderSubtle })
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          this.onToggleFavorite(this.note);
+        })
       }
       .layoutWeight(1)
 
@@ -374,19 +414,21 @@ export struct HuaweiDocWorkspace {
 
   @Builder
   floatingPenPalette() {
-    Row({ space: 8 }) {
+    Row({ space: this.isPhone ? 4 : 8 }) {
       // 1. 突出「退出批注」胶囊 (一键退出回阅读模式)
       Row({ space: 4 }) {
         Text('✕')
           .fontSize(12)
           .fontWeight(FontWeight.Bold)
           .fontColor('#DC2626')
-        Text('退出')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#DC2626')
+        if (!this.isPhone) {
+          Text('退出')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#DC2626')
+        }
       }
-      .padding({ left: 10, right: 12, top: 6, bottom: 6 })
+      .padding({ left: this.isPhone ? 8 : 10, right: this.isPhone ? 8 : 12, top: 6, bottom: 6 })
       .borderRadius(16)
       .backgroundColor(this.isDarkMode ? '#3B181E' : '#FEE2E2')
       .border({ width: 1, color: this.isDarkMode ? '#5C2229' : '#FCA5A5' })
@@ -409,12 +451,14 @@ export struct HuaweiDocWorkspace {
         Text('✎')
           .fontSize(13)
           .fontColor(this.currentTool === 'pen' ? '#FFFFFF' : this.palette().inkPrimary)
-        Text('钢笔')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(this.currentTool === 'pen' ? FontWeight.Medium : FontWeight.Normal)
-          .fontColor(this.currentTool === 'pen' ? '#FFFFFF' : this.palette().inkPrimary)
+        if (!this.isPhone) {
+          Text('钢笔')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(this.currentTool === 'pen' ? FontWeight.Medium : FontWeight.Normal)
+            .fontColor(this.currentTool === 'pen' ? '#FFFFFF' : this.palette().inkPrimary)
+        }
       }
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+      .padding({ left: this.isPhone ? 7 : 10, right: this.isPhone ? 7 : 10, top: 6, bottom: 6 })
       .borderRadius(14)
       .backgroundColor(this.currentTool === 'pen' ? '#2563EB' : this.palette().surfaceSubtle)
       .border({ width: 1, color: this.currentTool === 'pen' ? '#2563EB' : this.palette().borderSubtle })
@@ -431,12 +475,14 @@ export struct HuaweiDocWorkspace {
         Text('▰')
           .fontSize(13)
           .fontColor(this.currentTool === 'highlighter' ? '#FFFFFF' : this.palette().inkPrimary)
-        Text('荧光')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(this.currentTool === 'highlighter' ? FontWeight.Medium : FontWeight.Normal)
-          .fontColor(this.currentTool === 'highlighter' ? '#FFFFFF' : this.palette().inkPrimary)
+        if (!this.isPhone) {
+          Text('荧光')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(this.currentTool === 'highlighter' ? FontWeight.Medium : FontWeight.Normal)
+            .fontColor(this.currentTool === 'highlighter' ? '#FFFFFF' : this.palette().inkPrimary)
+        }
       }
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+      .padding({ left: this.isPhone ? 7 : 10, right: this.isPhone ? 7 : 10, top: 6, bottom: 6 })
       .borderRadius(14)
       .backgroundColor(this.currentTool === 'highlighter' ? '#EAB308' : this.palette().surfaceSubtle)
       .border({ width: 1, color: this.currentTool === 'highlighter' ? '#EAB308' : this.palette().borderSubtle })
@@ -451,12 +497,14 @@ export struct HuaweiDocWorkspace {
         Text('⌫')
           .fontSize(13)
           .fontColor(this.currentTool === 'eraser' ? '#FFFFFF' : this.palette().inkPrimary)
-        Text('橡皮')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(this.currentTool === 'eraser' ? FontWeight.Medium : FontWeight.Normal)
-          .fontColor(this.currentTool === 'eraser' ? '#FFFFFF' : this.palette().inkPrimary)
+        if (!this.isPhone) {
+          Text('橡皮')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(this.currentTool === 'eraser' ? FontWeight.Medium : FontWeight.Normal)
+            .fontColor(this.currentTool === 'eraser' ? '#FFFFFF' : this.palette().inkPrimary)
+        }
       }
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+      .padding({ left: this.isPhone ? 7 : 10, right: this.isPhone ? 7 : 10, top: 6, bottom: 6 })
       .borderRadius(14)
       .backgroundColor(this.currentTool === 'eraser' ? '#DC2626' : this.palette().surfaceSubtle)
       .border({ width: 1, color: this.currentTool === 'eraser' ? '#DC2626' : this.palette().borderSubtle })
@@ -469,12 +517,14 @@ export struct HuaweiDocWorkspace {
         Text('✥')
           .fontSize(13)
           .fontColor(this.currentTool === 'pan' ? '#FFFFFF' : this.palette().inkPrimary)
-        Text('漫游')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(this.currentTool === 'pan' ? FontWeight.Medium : FontWeight.Normal)
-          .fontColor(this.currentTool === 'pan' ? '#FFFFFF' : this.palette().inkPrimary)
+        if (!this.isPhone) {
+          Text('漫游')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(this.currentTool === 'pan' ? FontWeight.Medium : FontWeight.Normal)
+            .fontColor(this.currentTool === 'pan' ? '#FFFFFF' : this.palette().inkPrimary)
+        }
       }
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+      .padding({ left: this.isPhone ? 7 : 10, right: this.isPhone ? 7 : 10, top: 6, bottom: 6 })
       .borderRadius(14)
       .backgroundColor(this.currentTool === 'pan' ? '#475569' : this.palette().surfaceSubtle)
       .border({ width: 1, color: this.currentTool === 'pan' ? '#475569' : this.palette().borderSubtle })
@@ -548,9 +598,11 @@ export struct HuaweiDocWorkspace {
         Text('↶')
           .fontSize(14)
           .fontColor(this.palette().inkPrimary)
-        Text('撤销')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.palette().inkPrimary)
+        if (!this.isPhone) {
+          Text('撤销')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontColor(this.palette().inkPrimary)
+        }
       }
       .padding({ left: 8, right: 10, top: 6, bottom: 6 })
       .borderRadius(14)
@@ -742,7 +794,9 @@ export struct HuaweiDocWorkspace {
       .backgroundColor(this.palette().surface)
       .shadow({ radius: 16, color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)', offsetY: 4 })
       .border({ width: 1, color: this.palette().borderSubtle })
-      .hitTestBehavior(HitTestMode.Block)
+      .onClick(() => {
+        // 消费卡片点击，防止冒泡到遮罩关闭
+      })
       .transition(
         TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
           .combine(TransitionEffect.OPACITY)
@@ -807,19 +861,21 @@ export struct HuaweiDocWorkspace {
 
   @Builder
   bottomReadingConsole() {
-    Row({ space: 14 }) {
+    Row({ space: this.isPhone ? 6 : 14 }) {
       // 1. 上一页胶囊按钮 (Obsidian 单线角标 ‹)
-      Row({ space: 5 }) {
+      Row({ space: 4 }) {
         Text('‹')
           .fontSize(15)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.currentPage <= 1 ? this.palette().inkMuted : this.palette().inkPrimary)
-        Text('上一页')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.currentPage <= 1 ? this.palette().inkMuted : this.palette().inkPrimary)
+        if (!this.isPhone) {
+          Text('上一页')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.currentPage <= 1 ? this.palette().inkMuted : this.palette().inkPrimary)
+        }
       }
-      .padding({ left: 12, right: 14, top: 7, bottom: 7 })
+      .padding({ left: this.isPhone ? 8 : 12, right: this.isPhone ? 10 : 14, top: 7, bottom: 7 })
       .borderRadius(16)
       .backgroundColor(this.currentPage <= 1 ? Color.Transparent : this.palette().surfaceSubtle)
       .border({ width: 1, color: this.currentPage <= 1 ? Color.Transparent : this.palette().borderSubtle })
@@ -828,9 +884,9 @@ export struct HuaweiDocWorkspace {
       .onClick(() => this.prevPage())
 
       // 2. 页码指示与滑块进度条
-      Row({ space: 10 }) {
+      Row({ space: this.isPhone ? 6 : 10 }) {
         // 当前页码胶囊
-        Text(`第 ${this.currentPage} / ${this.totalPages} 页`)
+        Text(this.isPhone ? `${this.currentPage}/${this.totalPages}` : `第 ${this.currentPage} / ${this.totalPages} 页`)
           .fontSize(TypographyTokens.CAPTION)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.palette().inkPrimary)
@@ -843,35 +899,39 @@ export struct HuaweiDocWorkspace {
           step: 1,
           style: SliderStyle.OutSet
         })
-        .width(160)
+        .width(this.isPhone ? 70 : 160)
         .trackColor(this.palette().surfaceSubtle)
         .selectedColor(this.palette().accent)
         .onChange((val: number) => {
           this.currentPage = Math.round(val);
         })
 
-        // 百分比胶囊
-        Text(`${Math.round((this.currentPage / this.totalPages) * 100)}%`)
-          .fontSize(TypographyTokens.TINY)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.palette().accent)
-          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-          .borderRadius(6)
-          .backgroundColor(this.palette().accentSoft)
+        // 百分比胶囊 (手机上省略以腾出空间)
+        if (!this.isPhone) {
+          Text(`${Math.round((this.currentPage / this.totalPages) * 100)}%`)
+            .fontSize(TypographyTokens.TINY)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.palette().accent)
+            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+            .borderRadius(6)
+            .backgroundColor(this.palette().accentSoft)
+        }
       }
 
       // 3. 下一页胶囊按钮 (Obsidian 单线角标 ›)
-      Row({ space: 5 }) {
-        Text('下一页')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.currentPage >= this.totalPages ? this.palette().inkMuted : this.palette().inkPrimary)
+      Row({ space: 4 }) {
+        if (!this.isPhone) {
+          Text('下一页')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.currentPage >= this.totalPages ? this.palette().inkMuted : this.palette().inkPrimary)
+        }
         Text('›')
           .fontSize(15)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.currentPage >= this.totalPages ? this.palette().inkMuted : this.palette().inkPrimary)
       }
-      .padding({ left: 14, right: 12, top: 7, bottom: 7 })
+      .padding({ left: this.isPhone ? 10 : 14, right: this.isPhone ? 8 : 12, top: 7, bottom: 7 })
       .borderRadius(16)
       .backgroundColor(this.currentPage >= this.totalPages ? Color.Transparent : this.palette().surfaceSubtle)
       .border({ width: 1, color: this.currentPage >= this.totalPages ? Color.Transparent : this.palette().borderSubtle })
@@ -879,31 +939,33 @@ export struct HuaweiDocWorkspace {
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => this.nextPage())
 
-      Divider()
-        .vertical(true)
-        .height(18)
-        .color(this.palette().borderSubtle)
+      if (!this.isPhone) {
+        Divider()
+          .vertical(true)
+          .height(18)
+          .color(this.palette().borderSubtle)
 
-      // 4. 连续/单页视图切换 (Obsidian 单线排版字形 ☰ / ▯)
-      Row({ space: 5 }) {
-        Text(this.isContinuousScroll ? '☰' : '▯')
-          .fontSize(13)
-          .fontColor(this.palette().inkSecondary)
-        Text(this.isContinuousScroll ? '连续' : '单页')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.palette().inkSecondary)
+        // 4. 连续/单页视图切换 (Obsidian 单线排版字形 ☰ / ▯)
+        Row({ space: 5 }) {
+          Text(this.isContinuousScroll ? '☰' : '▯')
+            .fontSize(13)
+            .fontColor(this.palette().inkSecondary)
+          Text(this.isContinuousScroll ? '连续' : '单页')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontColor(this.palette().inkSecondary)
+        }
+        .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+        .borderRadius(14)
+        .backgroundColor(this.palette().surfaceSubtle)
+        .border({ width: 1, color: this.palette().borderSubtle })
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+            this.isContinuousScroll = !this.isContinuousScroll;
+          });
+          this.showToast(this.isContinuousScroll ? '已切换为连续滚动视图' : '已切换为单页排版');
+        })
       }
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-      .borderRadius(14)
-      .backgroundColor(this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-          this.isContinuousScroll = !this.isContinuousScroll;
-        });
-        this.showToast(this.isContinuousScroll ? '已切换为连续滚动视图' : '已切换为单页排版');
-      })
 
       // 5. 快速页码跳转 (Obsidian 准星定位字形 ⌖)
       Row({ space: 4 }) {
@@ -1086,7 +1148,7 @@ export struct HuaweiDocWorkspace {
 
         // 快速单选页码药丸
         Flex({ wrap: FlexWrap.Wrap }) {
-          ForEach([1, 2, 3, 4, 5, 6, 7, 8, 9], (pNum: number) => {
+          ForEach(this.pageNumbersList(), (pNum: number) => {
             Text(`第 ${pNum} 页`)
               .fontSize(TypographyTokens.CAPTION)
               .fontWeight(this.currentPage === pNum ? FontWeight.Bold : FontWeight.Normal)
@@ -1107,7 +1169,9 @@ export struct HuaweiDocWorkspace {
       .backgroundColor(this.palette().surface)
       .shadow({ radius: 16, color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)', offsetY: 4 })
       .border({ width: 1, color: this.palette().borderSubtle })
-      .hitTestBehavior(HitTestMode.Block)
+      .onClick(() => {
+        // 消费卡片点击，防止冒泡到遮罩关闭
+      })
       .transition(
         TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
           .combine(TransitionEffect.OPACITY)
@@ -1252,7 +1316,9 @@ export struct HuaweiDocWorkspace {
       .backgroundColor(this.palette().surface)
       .shadow({ radius: 24, color: this.isDarkMode ? 'rgba(0,0,0,0.65)' : 'rgba(0,0,0,0.18)', offsetY: 8 })
       .border({ width: 1, color: this.palette().borderSubtle })
-      .hitTestBehavior(HitTestMode.Block)
+      .onClick(() => {
+        // 消费卡片点击，防止冒泡到遮罩关闭
+      })
       .transition(
         TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
           .combine(TransitionEffect.OPACITY)
@@ -1421,21 +1487,23 @@ export struct HuaweiDocWorkspace {
               this.bottomReadingConsole()
             }
           }
-          .layoutWeight(this.splitMode === 'none' ? 100 : 55)
+          .layoutWeight(this.splitMode === 'none' || this.isPhone ? 100 : 55)
           .height('100%')
           .animation({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD })
 
-          // 右侧分屏区
+          // 右侧分屏区（平板为左右分屏，手机为全宽滑入式抽屉）
           if (this.splitMode !== 'none') {
-            Divider()
-              .vertical(true)
-              .strokeWidth(1)
-              .color(this.palette().borderSubtle)
-              .height('100%')
-              .transition(
-                TransitionEffect.OPACITY
-                  .animation({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD })
-              )
+            if (!this.isPhone) {
+              Divider()
+                .vertical(true)
+                .strokeWidth(1)
+                .color(this.palette().borderSubtle)
+                .height('100%')
+                .transition(
+                  TransitionEffect.OPACITY
+                    .animation({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD })
+                )
+            }
 
             Column() {
               if (this.splitMode === 'ai') {
@@ -1451,8 +1519,12 @@ export struct HuaweiDocWorkspace {
                 this.scratchpadSplitPane()
               }
             }
-            .layoutWeight(45)
+            .layoutWeight(this.isPhone ? undefined : 45)
+            .width(this.isPhone ? '100%' : undefined)
             .height('100%')
+            .position(this.isPhone ? { x: 0, y: 0 } : undefined)
+            .zIndex(this.isPhone ? 40 : 1)
+            .backgroundColor(this.palette().surface)
             .transition(
               TransitionEffect.move(TransitionEdge.END)
                 .combine(TransitionEffect.OPACITY)

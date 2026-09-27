@@ -234,7 +234,7 @@ export struct QuickSearchDialog {
           Text('⌕')
             .fontSize(TypographyTokens.TITLE_SUB)
             .fontColor(this.palette().inkMuted)
-          TextInput({ text: this.keyword, placeholder: '搜索全部笔记的标题、正文与标签' })
+          TextInput({ text: this.keyword, placeholder: '搜索笔记或标签…' })
             .fontSize(TypographyTokens.BODY_LARGE)
             .fontColor(this.palette().inkPrimary)
             .placeholderColor(this.palette().inkMuted)
@@ -252,10 +252,29 @@ export struct QuickSearchDialog {
             .backgroundColor(this.regexOn ? this.palette().accent : this.palette().surfaceSubtle)
             .hoverEffect(HoverEffect.Highlight)
             .onClick(() => this.toggleRegex())
-          Text(this.searching ? '检索中' : 'Esc 关闭')
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkMuted)
-            .onClick(() => this.onClose())
+
+          if (this.searching) {
+            LoadingProgress()
+              .width(16)
+              .height(16)
+              .color(this.palette().accent)
+              .margin({ right: 4 })
+          }
+
+          // 简洁 ✕ 关闭按钮
+          Row() {
+            Text('✕')
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.palette().inkMuted)
+          }
+          .width(28)
+          .height(28)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(14)
+          .backgroundColor(this.palette().surfaceSubtle)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => this.onClose())
         }
         .width('100%')
         .padding({ left: 14, right: 14, top: 12, bottom: 12 })

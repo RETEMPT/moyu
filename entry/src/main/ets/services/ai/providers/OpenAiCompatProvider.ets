@@ -478,6 +478,21 @@ export class OpenAiCompatProvider implements ModelProvider {
     if (request.toolsJson !== undefined && request.toolsJson.length > 0) {
       body += `,"tools":${request.toolsJson},"tool_choice":"auto"`;
     }
+    if (profile.isReasoningModel) {
+      const lowerModel: string = model.toLowerCase();
+      if (lowerModel.startsWith('o1') || lowerModel.startsWith('o3') || lowerModel.startsWith('o4') || lowerModel.includes('codex')) {
+        let effort: string = 'medium';
+        const budget: number = profile.thinkingBudget ?? 16384;
+        if (budget <= 8192) {
+          effort = 'low';
+        } else if (budget <= 24576) {
+          effort = 'medium';
+        } else {
+          effort = 'high';
+        }
+        body += `,"reasoning_effort":${JSON.stringify(effort)}`;
+      }
+    }
     body += '}';
     return body;
   }

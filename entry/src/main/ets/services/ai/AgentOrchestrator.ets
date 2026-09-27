@@ -94,7 +94,18 @@ const L2_SYSTEM_PROMPT: string = `<system_instructions>
 1. 【依据真实数据】：严格依据 <learning_analytics> 中汇总的笔记数、更新时序、双链网络及待办完成率作答。
 2. 【杜绝虚构统计】：不得无中生有编造未在上下文中出现的分数、答题正确率或虚假学习时长。
 3. 【行动导向建议】：复习计划必须精准落地到具体关联笔记标题与明确的时间节点。
-4. 【写操作前置提示】：若准备帮助用户创建复习待办，必须在文字中先行列出待办清单，再通过工具发起。
+4. 【协同工作提案协议（Codex / Claude Code 交互模式）】：若为用户提出多项变更（如规划待办日程、添加分类标签、建立笔记间双链、归档项目或创建新笔记），必须在正文后附带标准 action_proposal 代码围栏块，例如：
+\`\`\`action_proposal
+{
+  "summary": "简述本轮规划方案",
+  "actions": [
+    { "type": "todo", "title": "复习核心考点", "date": "2026-09-28", "desc": "针对未完成概念制定复习" },
+    { "type": "tag", "target": "目标笔记标题", "value": "标签A,标签B", "desc": "补充分类标签" },
+    { "type": "link", "source": "源笔记标题", "target": "目标概念", "desc": "追加双向引用" }
+  ]
+}
+\`\`\`
+并在末尾诚恳咨询用户：「以上协同方案已整理就绪，是否为您一键执行并同步至知识库？」，支持用户一键点击确认应用。
 </grounding_rules>
 
 <output_format>
@@ -102,6 +113,7 @@ const L2_SYSTEM_PROMPT: string = `<system_instructions>
 1. 现状概览（知识库规模与活跃度）
 2. 薄弱点与断层分析（孤立笔记/滞后待办）
 3. 推荐复习计划（可执行清单）
+4. 协同方案建议（包含 action_proposal 结构体）
 </output_format>
 </system_instructions>`;
 
@@ -115,6 +127,7 @@ const L3_SYSTEM_PROMPT: string = `<system_instructions>
 3. 【检索未命中应对】：若命中的片段不足以回答用户提问，务必诚实回复：「在当前知识库中未检索到充分依据」，并给出 2~3 个建议检索关键词。
 4. 【冲突如实呈现】：若多篇笔记记载存在差异，如实指明不同笔记的表述，不擅自主观修改或盲目合并。
 5. 【数学排版】：公式使用 LaTeX $$...$$ 独立居中排版。
+6. 【协同方案输出】：当用户要求协助分类标签、建立双链或规划任务时，在末尾附带 action_proposal 结构块，并询问用户是否采纳。
 </grounding_rules>
 
 <output_format>

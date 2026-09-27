@@ -31,6 +31,8 @@ export struct NewProjectSheet {
   @State private name: string = '未命名项目';
   @State private icon: string = PRESET_ICONS[0];
   @State private color: string = PRESET_COLORS[0];
+  @State private isFocused: boolean = false;
+  private cleared: boolean = false;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
@@ -38,9 +40,7 @@ export struct NewProjectSheet {
 
   private submit(): void {
     const trimmed: string = this.name.trim();
-    if (trimmed.length > 0) {
-      this.onCreateProject(trimmed, this.color, this.icon);
-    }
+    this.onCreateProject(trimmed.length > 0 ? trimmed : '未命名项目', this.color, this.icon);
     this.onClose();
   }
 
@@ -65,7 +65,7 @@ export struct NewProjectSheet {
         }
         .width('100%')
 
-        TextInput({ text: this.name, placeholder: '点击输入项目名称' })
+        TextInput({ text: this.name, placeholder: '未命名项目' })
           .fontSize(TypographyTokens.TITLE_SUB)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.palette().inkPrimary)
@@ -74,6 +74,20 @@ export struct NewProjectSheet {
           .borderRadius(10)
           .height(46)
           .width('100%')
+          .onFocus(() => {
+            animateTo({ duration: 260, curve: Curve.EaseInOut }, () => {
+              this.isFocused = true;
+            });
+            if (!this.cleared && this.name === '未命名项目') {
+              this.cleared = true;
+              this.name = '';
+            }
+          })
+          .onBlur(() => {
+            animateTo({ duration: 260, curve: Curve.EaseInOut }, () => {
+              this.isFocused = false;
+            });
+          })
           .onChange((value: string) => {
             this.name = value;
           })
@@ -106,12 +120,15 @@ export struct NewProjectSheet {
         }
         .width('100%')
       }
-      .width(400)
-      .padding(22)
+      .width('88%')
+      .constraintSize({ maxWidth: 400 })
+      .padding(20)
       .borderRadius(16)
       .backgroundColor(this.palette().surface)
       .shadow({ radius: 28, color: this.isDarkMode ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.18)', offsetY: 8 })
       .border({ width: 1, color: this.palette().borderSubtle })
+      .offset({ y: this.isFocused ? -90 : 0 })
+      .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
       .transition(
         TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
           .combine(TransitionEffect.OPACITY)

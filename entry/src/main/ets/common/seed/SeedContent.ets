@@ -185,6 +185,9 @@ export function seedNotes(): NoteItem[] {
       tag: '重点',
       tagColor: '',
       updateTime: '示例',
+      isPinned: true,
+      aiSummary: '详细阐述死锁产生的互斥、占有等待、不可剥夺和循环等待四个条件，以及银行家算法的安全性检查与资源分配过程。',
+      aiTags: ['操作系统', '死锁', '银行家算法', '安全序列'],
       contentDetail: '# 死锁与银行家算法\n\n' +
         '## 死锁的四个必要条件\n\n' +
         '- 互斥：资源同一时刻只能被一个进程占用\n' +
@@ -243,8 +246,19 @@ export function seedNotes(): NoteItem[] {
       previewText: '深入理解进程调度、内存分页与硬件虚拟化技术架构。',
       tag: 'PDF文献',
       tagColor: '#E11D48',
-      pageInfo: '348 页',
+      pageInfo: '9 页精研',
+      pageCount: 9,
+      sourceType: 'pdf',
       updateTime: '昨天',
+      aiSummary: '本书系统讲解现代操作系统的核心概念：虚拟化（CPU与内存）、并发（线程与锁）以及持久化（文件系统与I/O），包含安全与分布式系统关键设计。',
+      aiTags: ['操作系统', '虚拟化', '并发', '页表', '死锁'],
+      documentMeta: JSON.stringify({
+        title: '现代操作系统原理与虚拟化.pdf',
+        totalPages: 9,
+        author: 'Remzi H. Arpaci-Dusseau',
+        fileSize: 4829104,
+        isEncrypted: false
+      }),
       contentDetail: '# 现代操作系统原理与虚拟化 (PDF)\n\n本书详细讨论了现代操作系统的四大支柱：虚拟化、并发、持久化与分布式系统。\n\n重点内容参考 [[操作系统 · 死锁与银行家算法]]。',
       pageAnnotations: JSON.stringify(SEED_EXAM_PAGE_ANNOTATIONS)
     },
@@ -268,7 +282,19 @@ export function seedNotes(): NoteItem[] {
       previewText: '[真题试卷] 原生三层原盘批注 + 边读边写草稿，支持红笔勾选与高亮',
       tag: '试卷题目',
       tagColor: '#2563EB',
+      pageInfo: '2 页真题',
+      pageCount: 2,
+      sourceType: 'document',
       updateTime: '刚刚',
+      aiSummary: '2026计算机统考模拟题：重点考察银行家算法安全性分析、死锁四要素判定及线性代数矩阵运算。',
+      aiTags: ['真题', '死锁', '银行家算法', '安全性分析'],
+      documentMeta: JSON.stringify({
+        title: '2026 计算机考研专业综合模拟试卷.docx',
+        totalPages: 2,
+        author: '命题研析组',
+        fileSize: 124800,
+        isEncrypted: false
+      }),
       contentDetail: '# 2026 计算机考研专业综合模拟试卷\n\n' +
         '> 提示：点击顶栏「✎ 原盘批注」可直接在试卷上批改解题；点击「◫ 边读边写」可调出随堂草稿板。\n\n' +
         '## 一、选择题（每小题 2 分）\n\n' +

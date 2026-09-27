@@ -48,9 +48,9 @@ export struct TrashWorkspace {
   @Builder
   actionButton(label: string, color: string, filled: boolean, action: () => void) {
     Text(label)
-      .fontSize(TypographyTokens.CAPTION)
+      .fontSize(this.isPhone ? TypographyTokens.TINY : TypographyTokens.CAPTION)
       .fontColor(filled ? Color.White : color)
-      .padding({ left: 12, right: 12, top: 5, bottom: 5 })
+      .padding(this.isPhone ? { left: 8, right: 8, top: 4, bottom: 4 } : { left: 12, right: 12, top: 5, bottom: 5 })
       .borderRadius(6)
       .backgroundColor(filled ? color : Color.Transparent)
       .border({ width: filled ? 0 : 1, color: { top: color, bottom: color, left: color, right: color } })

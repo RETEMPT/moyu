@@ -52,6 +52,45 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     description: '获取当前知识库的宏观统计概览（笔记总量、分类结构、常用标签分布），用于快速盘点知识库。',
     permission: 'read',
     params: []
+  },
+  {
+    name: 'add_tag_to_note',
+    description: '协助用户为指定笔记添加一个或多个知识标签（逗号分隔），用于多维知识分类。',
+    permission: 'write',
+    params: [
+      { name: 'identifier', jsonType: 'string', description: '笔记标题或 ID', required: true },
+      { name: 'tags', jsonType: 'string', description: '要追加的标签，多个用逗号隔开，如"机器学习,算法"', required: true }
+    ]
+  },
+  {
+    name: 'create_link',
+    description: '在源笔记末尾追加 [[目标笔记或概念]] 双链语法，建立知识关联。',
+    permission: 'write',
+    params: [
+      { name: 'sourceIdentifier', jsonType: 'string', description: '源笔记标题或 ID', required: true },
+      { name: 'targetTitle', jsonType: 'string', description: '目标笔记或概念标题', required: true },
+      { name: 'reason', jsonType: 'string', description: '建立双链的关联原因说明', required: false }
+    ]
+  },
+  {
+    name: 'categorize_note',
+    description: '将笔记归档至指定的项目分类文件夹。',
+    permission: 'write',
+    params: [
+      { name: 'identifier', jsonType: 'string', description: '笔记标题或 ID', required: true },
+      { name: 'category', jsonType: 'string', description: '目标项目/文件夹分类名称', required: true }
+    ]
+  },
+  {
+    name: 'create_note',
+    description: '新建一篇 Markdown 知识笔记。',
+    permission: 'write',
+    params: [
+      { name: 'title', jsonType: 'string', description: '笔记标题', required: true },
+      { name: 'category', jsonType: 'string', description: '所属项目分类，默认未分类', required: false },
+      { name: 'tag', jsonType: 'string', description: '笔记标签，多个用逗号分隔', required: false },
+      { name: 'content', jsonType: 'string', description: '笔记 Markdown 正文内容', required: true }
+    ]
   }
 ];
 
@@ -119,6 +158,18 @@ export function toolDisplayName(name: string): string {
   }
   if (name === 'summarize_vault') {
     return '知识库概览';
+  }
+  if (name === 'add_tag_to_note') {
+    return '添加分类标签';
+  }
+  if (name === 'create_link') {
+    return '建立双链引用';
+  }
+  if (name === 'categorize_note') {
+    return '调整所属项目';
+  }
+  if (name === 'create_note') {
+    return '新建知识笔记';
   }
   return name;
 }

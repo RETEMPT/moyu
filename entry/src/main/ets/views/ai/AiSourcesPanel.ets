@@ -65,6 +65,7 @@ export struct AiSourcesPanel {
   @State activeTab: string = 'explorer'; // 'explorer' | 'tools'
   @State selectedProjectFilter: string = ''; // '' 代表全部工程
   @State searchKeyword: string = '';
+  @State searchExpanded: boolean = false; // 是否展开目录搜索栏
   @State projectDropdownOpen: boolean = false;
 
   // 新建工程状态
@@ -577,38 +578,40 @@ export struct AiSourcesPanel {
   @Builder
   directoryTreeSection() {
     Column({ space: 6 }) {
-      // 目录搜索过滤
-      Row({ space: 6 }) {
-        Text('🔍')
-          .fontSize(TypographyTokens.TINY)
-        TextInput({
-          text: this.searchKeyword,
-          placeholder: '搜索文档…'
-        })
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkPrimary)
-          .placeholderColor(this.palette().inkMuted)
-          .backgroundColor(Color.Transparent)
-          .layoutWeight(1)
-          .height(28)
-          .onChange((v: string) => {
-            this.searchKeyword = v;
-          })
-
-        if (this.searchKeyword.length > 0) {
-          Text('✕')
+      // 目录搜索过滤（支持通过顶部 🔍 图标一键展开/收起，不再常驻挤压目录）
+      if (this.searchExpanded || this.searchKeyword.length > 0) {
+        Row({ space: 6 }) {
+          Text('🔍')
             .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkMuted)
-            .onClick(() => {
-              this.searchKeyword = '';
+          TextInput({
+            text: this.searchKeyword,
+            placeholder: '搜索文档…'
+          })
+            .fontSize(TypographyTokens.TINY)
+            .fontColor(this.palette().inkPrimary)
+            .placeholderColor(this.palette().inkMuted)
+            .backgroundColor(Color.Transparent)
+            .layoutWeight(1)
+            .height(28)
+            .onChange((v: string) => {
+              this.searchKeyword = v;
             })
+
+          if (this.searchKeyword.length > 0) {
+            Text('✕')
+              .fontSize(TypographyTokens.TINY)
+              .fontColor(this.palette().inkMuted)
+              .onClick(() => {
+                this.searchKeyword = '';
+              })
+          }
         }
+        .width('100%')
+        .padding({ left: 8, right: 6 })
+        .borderRadius(6)
+        .backgroundColor(this.palette().surfaceSubtle)
+        .border({ width: 1, color: this.palette().borderSubtle })
       }
-      .width('100%')
-      .padding({ left: 8, right: 6 })
-      .borderRadius(6)
-      .backgroundColor(this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.palette().borderSubtle })
 
       // 目录树
       Column({ space: 4 }) {
@@ -934,6 +937,26 @@ export struct AiSourcesPanel {
             .fontColor(this.palette().inkPrimary)
         }
         .layoutWeight(1)
+
+        // 独立搜索图标按键：点击展开/收起搜索框，防止常驻挤压列表文字
+        Row() {
+          Text('🔍')
+            .fontSize(TypographyTokens.TINY)
+            .fontColor(this.searchExpanded || this.searchKeyword.length > 0 ? this.palette().accent : this.palette().inkMuted)
+        }
+        .width(26).height(26)
+        .justifyContent(FlexAlign.Center)
+        .borderRadius(4)
+        .backgroundColor(this.searchExpanded || this.searchKeyword.length > 0 ? this.palette().accentSoft : Color.Transparent)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+            this.searchExpanded = !this.searchExpanded;
+            if (!this.searchExpanded) {
+              this.searchKeyword = '';
+            }
+          });
+        })
 
         Text('✕')
           .fontSize(TypographyTokens.TINY)

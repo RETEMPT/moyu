@@ -23,6 +23,7 @@ import {
   PdfPageModel
 } from '../../../common/types/PdfAnnotationTypes';
 import { PdfPageCanvas } from './PdfPageCanvas';
+import { PdfDocumentService } from '../../../services/document/PdfDocumentService';
 
 const PEN_COLORS: string[] = ['#DC2626', '#2563EB', '#1C1917', '#059669'];
 const HIGHLIGHTER_COLORS: string[] = ['#FACC15', '#4ADE80'];
@@ -72,88 +73,26 @@ export struct PdfAnnotatorView {
     }
   }
 
-  // 模拟真实考研试卷分页排版模型
-  @State pages: PdfPageModel[] = [
-    {
-      pageIndex: 0,
-      pageNumberText: '第 1 页 · 共 2 页',
-      sections: [
-        {
-          type: 'header',
-          title: '一、单项选择题（每题 5 分，共 40 分）',
-          text: '在每小题给出的四个选项中，只有一项是符合题目要求的。请在题干中划线并在答题区直接书写解析。'
-        },
-        {
-          type: 'question',
-          tag: '操作系统 · 死锁',
-          score: '5分',
-          text: '1. 系统中有 4 个进程 P1~P4，竞争 3 类资源 R1(6), R2(4), R3(4)。若当前 Allocation 矩阵为 [ [2,1,0], [1,0,2], [1,1,0], [0,1,1] ]，则此时系统处于哪种状态？\n' +
-            'A. 一定处于安全状态，存在至少一条安全序列\n' +
-            'B. 发生死锁，涉及进程为 P1 和 P3\n' +
-            'C. 不安全状态，但尚未发生死锁\n' +
-            'D. 资源分配出现严重越界异常'
-        },
-        {
-          type: 'blank',
-          text: '【答题与演算区域】请直接在此处用笔写下 Banker\'s Algorithm 计算步骤...'
-        },
-        {
-          type: 'question',
-          tag: '数据结构 · 树与图',
-          score: '5分',
-          text: '2. 已知某二叉树的前序遍历序列为 A B D E C F，中序遍历序列为 D B E A F C，则该二叉树的后序遍历序列为？\n' +
-            'A. D E B F C A\n' +
-            'B. D E B C F A\n' +
-            'C. E D B F C A\n' +
-            'D. B D E F C A'
-        }
-      ]
-    },
-    {
-      pageIndex: 1,
-      pageNumberText: '第 2 页 · 共 2 页',
-      sections: [
-        {
-          type: 'header',
-          title: '二、综合解答与推导题（共 20 分）',
-          text: '解答应写出文字说明、演算步骤或推导证明过程。请使用红笔订正，蓝笔作答。'
-        },
-        {
-          type: 'question',
-          tag: '线性代数 · 特征值',
-          score: '10分',
-          text: '3. 设三阶实对称矩阵 A 的特征值为 λ1 = 1, λ2 = 2, λ3 = -2，对应的特征向量分别为 α1, α2, α3。\n' +
-            '（1）证明特征向量 α1 与 α3 正交；\n' +
-            '（2）若矩阵 B = A³ - 2A² + E，求矩阵 B 的行列式 |B| 的值。'
-        },
-        {
-          type: 'blank',
-          text: '【解题推导空白区】请在此书写特征多项式分解与正交化证明...'
-        },
-        {
-          type: 'question',
-          tag: '系统调用 · 内核态',
-          score: '10分',
-          text: '4. 简述从用户态发起 write() 系统调用至数据真正写入页缓存（Page Cache）的完整中断与陷阱（Trap）流程。'
-        },
-        {
-          type: 'blank',
-          text: '【流程草图区】请在此手绘 Trap 门、中断向量表与内核栈切换示意图...'
-        }
-      ]
-    }
-  ];
+  @State pages: PdfPageModel[] = [];
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
   }
 
   aboutToAppear(): void {
+    this.initPages();
     this.loadAnnotations();
   }
 
   onNoteChanged(): void {
+    this.initPages();
     this.loadAnnotations();
+  }
+
+  /** 根据文档真实页数与标题动态生成排版页面 */
+  private initPages(): void {
+    const total = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount : 9;
+    this.pages = PdfDocumentService.getInstance().generatePageModels(total, this.note.title);
   }
 
   /** 从笔记中加载归一化矢量批注 */

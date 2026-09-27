@@ -90,8 +90,9 @@ export struct CreateNoteSheet {
         }
         .width('100%')
       }
-      .width(400)
-      .padding(22)
+      .width('88%')
+      .constraintSize({ maxWidth: 400 })
+      .padding(20)
       .borderRadius(16)
       .backgroundColor(this.palette().surface)
       .shadow({ radius: 28, color: this.isDarkMode ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.18)', offsetY: 8 })

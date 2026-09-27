@@ -129,14 +129,30 @@ export struct TodoWorkspace {
     return count;
   }
 
-  private noteTitle(noteId: string): string {
+  private findReferencedNote(ref: string): NoteItem | null {
     for (let i = 0; i < this.notes.length; i++) {
-      if (this.notes[i].id === noteId) {
-        const title: string = this.notes[i].title;
-        return title.length === 0 ? '未命名笔记' : title;
+      if (this.notes[i].id === ref || this.notes[i].title === ref) {
+        return this.notes[i];
       }
     }
-    return '笔记已删除';
+    return null;
+  }
+
+  private noteTitle(ref: string): string {
+    const note = this.findReferencedNote(ref);
+    if (note !== null) {
+      return note.title.length === 0 ? '未命名笔记' : note.title;
+    }
+    return ref.length > 0 ? ref : '笔记已删除';
+  }
+
+  private openReferencedNote(ref: string): void {
+    const note = this.findReferencedNote(ref);
+    if (note !== null) {
+      this.onOpenNote(note.id);
+    } else {
+      this.onOpenNote(ref);
+    }
   }
 
   private selectedPendingTotal(): number {
@@ -288,7 +304,7 @@ export struct TodoWorkspace {
       .maxLines(1)
       .textOverflow({ overflow: TextOverflow.Ellipsis })
       .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => this.onOpenNote(noteId))
+      .onClick(() => this.openReferencedNote(noteId))
   }
 
   @Builder

@@ -24,5 +24,19 @@ export interface NoteItem {
   createdAt?: number;
   /** 更新时间戳（毫秒，功能11 排序用）。旧数据缺失时由 bootstrap 回填。 */
   updatedAt?: number;
+  /** 是否置顶在主页网格顶部。true 表示置顶。 */
+  isPinned?: boolean;
+  /** 真实文档文件在沙箱或系统中的 URI */
+  sourceUri?: string;
+  /** 文档原始来源类型 ('pdf' | 'doc' | 'image' | 'markdown') */
+  sourceType?: string;
+  /** 真实文档总页数 */
+  pageCount?: number;
+  /** 文档元数据 JSON（如尺寸、大小、原文件名等） */
+  documentMeta?: string;
+  /** AI 自动生成的摘要 */
+  aiSummary?: string;
+  /** AI 自动分析的智能标签列表 */
+  aiTags?: string[];
 }
 

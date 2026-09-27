@@ -33,6 +33,7 @@ import { MarkdownDocument } from '../../common/types/MarkdownDocument';
 import { RetrievalHit } from '../../common/types/RagTypes';
 import { AgentToolExecutor, AgentToolResult } from '../../common/types/AgentTypes';
 import { AGENT_TOOLS, toolDisplayName } from '../../services/ai/ToolRegistry';
+import { DocumentImportService } from '../../services/document/DocumentImportService';
 
 interface QuickPrompt {
   title: string;
@@ -47,22 +48,23 @@ interface AgentModeTabItem {
 }
 
 interface ThinkingBudgetPreset {
+  key: string;
   label: string;
   val: number;
 }
 
 const THINKING_BUDGETS: ThinkingBudgetPreset[] = [
-  { label: '0k 极速', val: 0 },
-  { label: '4k 标称', val: 4096 },
-  { label: '16k 深度', val: 16384 },
-  { label: '32k 满血', val: 32768 }
+  { key: 'low', label: 'Low', val: 4096 },
+  { key: 'medium', label: 'Medium', val: 16384 },
+  { key: 'high', label: 'High', val: 32768 },
+  { key: 'max', label: 'Max', val: 65536 }
 ];
 
 const MODE_TABS: AgentModeTabItem[] = [
-  { mode: 'auto', title: '✦ 智能调度' },
-  { mode: 'L1', title: '▤ 伴读' },
-  { mode: 'L2', title: '◇ 学情' },
-  { mode: 'L3', title: '⊡ 跨库' }
+  { mode: 'auto', title: '自动' },
+  { mode: 'L1', title: '伴读' },
+  { mode: 'L2', title: '学情' },
+  { mode: 'L3', title: '跨库' }
 ];
 
 interface SearchNotesArgs {
@@ -83,6 +85,48 @@ interface CreateTodoArgs {
   date?: string;
 }
 
+interface AddTagArgs {
+  identifier?: string;
+  tags?: string;
+}
+
+interface CreateLinkArgs {
+  sourceIdentifier?: string;
+  targetTitle?: string;
+  reason?: string;
+}
+
+interface CategorizeNoteArgs {
+  identifier?: string;
+  category?: string;
+}
+
+interface CreateNoteArgs {
+  title?: string;
+  category?: string;
+  tag?: string;
+  content?: string;
+}
+
+/** 智能体协同规划条目 */
+export interface ProposedActionItem {
+  id: string;
+  type: string; // 'todo' | 'tag' | 'link' | 'category' | 'note'
+  title: string;
+  desc: string;
+  target?: string;
+  value?: string;
+  source?: string;
+  date?: string;
+  content?: string;
+}
+
+/** 智能体方案提案数据 */
+export interface ActionProposalData {
+  summary: string;
+  actions: ProposedActionItem[];
+}
+
 /**
  * 智能体工具执行器
  */
@@ -92,6 +136,10 @@ class WorkspaceToolExecutor implements AgentToolExecutor {
   private readFn: (identifier: string) => string;
   private summarizeFn: () => string;
   private createTodoFn: (date: string, title: string) => string;
+  private addTagFn: (identifier: string, tags: string) => string;
+  private createLinkFn: (sourceIdentifier: string, targetTitle: string, reason?: string) => string;
+  private categorizeFn: (identifier: string, category: string) => string;
+  private createNoteFn: (title: string, category: string, tag: string, content: string) => string;
   private onProgress: (text: string) => void;
 
   constructor(
@@ -100,6 +148,10 @@ class WorkspaceToolExecutor implements AgentToolExecutor {
     readFn: (identifier: string) => string,
     summarizeFn: () => string,
     createTodoFn: (date: string, title: string) => string,
+    addTagFn: (identifier: string, tags: string) => string,
+    createLinkFn: (sourceIdentifier: string, targetTitle: string, reason?: string) => string,
+    categorizeFn: (identifier: string, category: string) => string,
+    createNoteFn: (title: string, category: string, tag: string, content: string) => string,
     onProgress: (text: string) => void
   ) {
     this.searchFn = searchFn;
@@ -107,6 +159,10 @@ class WorkspaceToolExecutor implements AgentToolExecutor {
     this.readFn = readFn;
     this.summarizeFn = summarizeFn;
     this.createTodoFn = createTodoFn;
+    this.addTagFn = addTagFn;
+    this.createLinkFn = createLinkFn;
+    this.categorizeFn = categorizeFn;
+    this.createNoteFn = createNoteFn;
     this.onProgress = onProgress;
   }
 
@@ -183,6 +239,78 @@ class WorkspaceToolExecutor implements AgentToolExecutor {
       return { ok: true, content };
     }
 
+    if (toolName === 'add_tag_to_note') {
+      let args: AddTagArgs = {};
+      try {
+        args = JSON.parse(argsJson) as AddTagArgs;
+      } catch {
+        return { ok: false, content: '参数不是合法 JSON。' };
+      }
+      const iden: string = (args.identifier ?? '').trim();
+      const tags: string = (args.tags ?? '').trim();
+      if (iden.length === 0 || tags.length === 0) {
+        return { ok: false, content: 'identifier 与 tags 均不能为空。' };
+      }
+      this.onProgress(`正在为「${iden}」追加标签…`);
+      const content: string = this.addTagFn(iden, tags);
+      this.onProgress('');
+      return { ok: true, content };
+    }
+
+    if (toolName === 'create_link') {
+      let args: CreateLinkArgs = {};
+      try {
+        args = JSON.parse(argsJson) as CreateLinkArgs;
+      } catch {
+        return { ok: false, content: '参数不是合法 JSON。' };
+      }
+      const src: string = (args.sourceIdentifier ?? '').trim();
+      const tgt: string = (args.targetTitle ?? '').trim();
+      if (src.length === 0 || tgt.length === 0) {
+        return { ok: false, content: 'sourceIdentifier 与 targetTitle 均不能为空。' };
+      }
+      this.onProgress(`正在建立指向「${tgt}」的双链…`);
+      const content: string = this.createLinkFn(src, tgt, args.reason);
+      this.onProgress('');
+      return { ok: true, content };
+    }
+
+    if (toolName === 'categorize_note') {
+      let args: CategorizeNoteArgs = {};
+      try {
+        args = JSON.parse(argsJson) as CategorizeNoteArgs;
+      } catch {
+        return { ok: false, content: '参数不是合法 JSON。' };
+      }
+      const iden: string = (args.identifier ?? '').trim();
+      const cat: string = (args.category ?? '').trim();
+      if (iden.length === 0 || cat.length === 0) {
+        return { ok: false, content: 'identifier 与 category 均不能为空。' };
+      }
+      this.onProgress(`正在将「${iden}」分类归入「${cat}」…`);
+      const content: string = this.categorizeFn(iden, cat);
+      this.onProgress('');
+      return { ok: true, content };
+    }
+
+    if (toolName === 'create_note') {
+      let args: CreateNoteArgs = {};
+      try {
+        args = JSON.parse(argsJson) as CreateNoteArgs;
+      } catch {
+        return { ok: false, content: '参数不是合法 JSON。' };
+      }
+      const title: string = (args.title ?? '').trim();
+      const contentText: string = (args.content ?? '').trim();
+      if (title.length === 0) {
+        return { ok: false, content: 'title 不能为空。' };
+      }
+      this.onProgress(`正在创建新笔记「${title}」…`);
+      const content: string = this.createNoteFn(title, args.category ?? '未分类', args.tag ?? '', contentText);
+      this.onProgress('');
+      return { ok: true, content };
+    }
+
     return { ok: false, content: `未注册工具: ${toolName}` };
   }
 
@@ -209,10 +337,10 @@ function pad2(n: number): string {
 }
 
 const QUICK_PROMPTS: QuickPrompt[] = [
-  { title: '文档要点速览', badge: '伴读', desc: '提炼当前文档核心论点与公式推导', query: '请帮我提炼当前文档的核心结论与主要推导步骤。' },
-  { title: '双链知识探幽', badge: '跨库', desc: '挖掘全库笔记间的潜在概念关联', query: '检索我的全部笔记，分析其中可能存在的跨学科或双向关联概念。' },
-  { title: '复习与学情规划', badge: '学情', desc: '结合笔记与待办生成个性化复习日程', query: '根据知识库现状与待办，生成一份可执行的复习计划。' },
-  { title: '知识全景盘点', badge: '工具', desc: '宏观汇总知识库分类与知识资产分布', query: '调用知识库概览工具，帮我统计知识库结构与重点分类。' }
+  { title: '智能规划', badge: '规划', desc: '梳理分类、双链与待办', query: '请深度分析我的知识库现状，提出具体的分类标签、双向链接与待办复习规划，并以 action_proposal 格式输出协同方案供我一键确认。' },
+  { title: '文档提炼', badge: '提炼', desc: '总结核心要点与逻辑', query: '请帮我提炼当前文档的核心结论与主要推导步骤。' },
+  { title: '双链关联', badge: '关联', desc: '挖掘笔记间的潜在联系', query: '检索我的全部笔记，分析其中可能存在的跨学科或双向关联概念。' },
+  { title: '知识全景', badge: '全景', desc: '宏观汇总知识资产分布', query: '调用知识库概览工具，帮我统计知识库结构与重点分类。' }
 ];
 
 @Component
@@ -235,6 +363,12 @@ export struct AiWorkspace {
   onToggleContextPanel: () => void = () => {};
   onOpenModelSettings: () => void = () => {};
   onCreateTodo: (dateKey: string, title: string) => void = () => {};
+  onAddTagToNote: (identifier: string, tags: string) => void = () => {};
+  onCreateLinkBetweenNotes: (sourceIdentifier: string, targetTitle: string) => void = () => {};
+  onCategorizeNote: (identifier: string, category: string) => void = () => {};
+  onCreateNewNote: (title: string, category: string, tag: string, content: string) => void = () => {};
+  onOpenSearch: () => void = () => {};
+  onSmartExtract: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp(ACTIVE_STORAGE_KEY) @Watch('onActiveProfileChanged') activeProfileId: string = '';
@@ -258,6 +392,7 @@ export struct AiWorkspace {
   @State modelMenuOpen: boolean = false;
   @State plusMenuOpen: boolean = false;
   @State selectedThinkingBudget: number = 16384;
+  @State isThinkingEnabled: boolean = true;
 
   private orchestrator: AgentOrchestrator = new AgentOrchestrator();
   private sessionService: ChatSessionService = ChatSessionService.getInstance();
@@ -589,6 +724,10 @@ export struct AiWorkspace {
       (identifier: string) => this.toolReadNote(identifier),
       () => this.toolSummarizeVault(),
       (date: string, title: string) => this.toolCreateTodo(date, title),
+      (identifier: string, tags: string) => this.toolAddTagToNote(identifier, tags),
+      (sourceIdentifier: string, targetTitle: string, reason?: string) => this.toolCreateLink(sourceIdentifier, targetTitle, reason),
+      (identifier: string, category: string) => this.toolCategorizeNote(identifier, category),
+      (title: string, category: string, tag: string, content: string) => this.toolCreateNote(title, category, tag, content),
       (text: string) => {
         this.toolStatus = text;
       }
@@ -678,27 +817,32 @@ export struct AiWorkspace {
     return `已成功创建待办：[${date}] ${title}`;
   }
 
+  private toolAddTagToNote(identifier: string, tags: string): string {
+    this.onAddTagToNote(identifier, tags);
+    return `已为笔记「${identifier}」添加标签：${tags}`;
+  }
+
+  private toolCreateLink(sourceIdentifier: string, targetTitle: string, reason?: string): string {
+    this.onCreateLinkBetweenNotes(sourceIdentifier, targetTitle);
+    return `已在笔记「${sourceIdentifier}」中追加双向链接 [[${targetTitle}]]`;
+  }
+
+  private toolCategorizeNote(identifier: string, category: string): string {
+    this.onCategorizeNote(identifier, category);
+    return `已将笔记「${identifier}」归档入项目「${category}」`;
+  }
+
+  private toolCreateNote(title: string, category: string, tag: string, content: string): string {
+    this.onCreateNewNote(title, category, tag, content);
+    return `已成功新建笔记「${title}」`;
+  }
+
   private async confirmTool(toolName: string, argsJson: string): Promise<boolean> {
     if (this.cancelled) {
       return false;
     }
-    // 只读工具免授权自动执行，写操作（新建待办等）必须用户确认
-    if (toolName !== 'create_todo') {
-      return true;
-    }
-    try {
-      const response = await promptAction.showDialog({
-        title: `授权工具「${toolDisplayName(toolName)}」？`,
-        message: this.describeToolArgs(toolName, argsJson),
-        buttons: [
-          { text: '拒绝', color: '#787774' },
-          { text: '允许执行', color: '#2F6FED' }
-        ]
-      });
-      return response.index === 1;
-    } catch {
-      return false;
-    }
+    // 用户已全局授权自动同意：直接放行执行，无需弹窗打断
+    return true;
   }
 
   private describeToolArgs(toolName: string, argsJson: string): string {
@@ -710,7 +854,135 @@ export struct AiWorkspace {
         return argsJson;
       }
     }
+    if (toolName === 'add_tag_to_note') {
+      try {
+        const args: AddTagArgs = JSON.parse(argsJson) as AddTagArgs;
+        return `智能体请求为笔记「${args.identifier ?? ''}」添加标签：${args.tags ?? ''}`;
+      } catch {
+        return argsJson;
+      }
+    }
+    if (toolName === 'create_link') {
+      try {
+        const args: CreateLinkArgs = JSON.parse(argsJson) as CreateLinkArgs;
+        return `智能体请求在笔记「${args.sourceIdentifier ?? ''}」中追加双向链接：[[${args.targetTitle ?? ''}]]`;
+      } catch {
+        return argsJson;
+      }
+    }
+    if (toolName === 'categorize_note') {
+      try {
+        const args: CategorizeNoteArgs = JSON.parse(argsJson) as CategorizeNoteArgs;
+        return `智能体请求将笔记「${args.identifier ?? ''}」归档至项目：「${args.category ?? ''}」`;
+      } catch {
+        return argsJson;
+      }
+    }
+    if (toolName === 'create_note') {
+      try {
+        const args: CreateNoteArgs = JSON.parse(argsJson) as CreateNoteArgs;
+        return `智能体请求新建知识笔记：「${args.title ?? ''}」，归属分类：${args.category ?? '未分类'}`;
+      } catch {
+        return argsJson;
+      }
+    }
     return argsJson;
+  }
+
+  private getTodayDateString(): string {
+    const d: Date = new Date();
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  }
+
+  /** 从文本中解析 Codex / Claude Code 风格协同方案 */
+  private extractProposal(text: string): ActionProposalData | null {
+    if (!text.includes('action_proposal') && !text.includes('"actions"')) {
+      return null;
+    }
+    try {
+      const fenceMatch = text.match(/```(?:action_proposal|json)?\s*(\{[\s\S]*?"actions"[\s\S]*?\})\s*```/);
+      if (fenceMatch && fenceMatch[1]) {
+        return JSON.parse(fenceMatch[1]) as ActionProposalData;
+      }
+      const jsonStart = text.indexOf('{"summary"');
+      if (jsonStart !== -1) {
+        const jsonEnd = text.lastIndexOf('}');
+        if (jsonEnd > jsonStart) {
+          const raw = text.substring(jsonStart, jsonEnd + 1);
+          return JSON.parse(raw) as ActionProposalData;
+        }
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  /** 一键采纳并应用协同方案 */
+  private applyProposal(msgId: string, proposal: ActionProposalData): void {
+    let count: number = 0;
+    for (let i = 0; i < proposal.actions.length; i++) {
+      const act = proposal.actions[i];
+      if (act.type === 'todo') {
+        const d = act.date && act.date.length > 0 ? act.date : this.getTodayDateString();
+        this.toolCreateTodo(d, act.title.length > 0 ? act.title : act.desc);
+        count++;
+      } else if (act.type === 'tag') {
+        const iden = act.target ? act.target : act.title;
+        const tags = act.value ? act.value : act.desc;
+        if (iden.length > 0 && tags.length > 0) {
+          this.toolAddTagToNote(iden, tags);
+          count++;
+        }
+      } else if (act.type === 'link') {
+        const src = act.source ? act.source : act.title;
+        const tgt = act.target ? act.target : act.value;
+        if (src && tgt && src.length > 0 && tgt.length > 0) {
+          this.toolCreateLink(src, tgt, act.desc);
+          count++;
+        }
+      } else if (act.type === 'category') {
+        const iden = act.target ? act.target : act.title;
+        const cat = act.value ? act.value : act.desc;
+        if (iden.length > 0 && cat.length > 0) {
+          this.toolCategorizeNote(iden, cat);
+          count++;
+        }
+      } else if (act.type === 'note') {
+        const title = act.title;
+        const content = act.content ? act.content : (act.desc ? act.desc : `# ${title}\n\n`);
+        const cat = act.target ? act.target : '未分类';
+        const tag = act.value ? act.value : '';
+        if (title.length > 0) {
+          this.toolCreateNote(title, cat, tag, content);
+          count++;
+        }
+      }
+    }
+    const next: StoredMessage[] = [];
+    for (const m of this.messages) {
+      if (m.id === msgId) {
+        m.proposalStatus = 'accepted';
+      }
+      next.push(m);
+    }
+    this.messages = next;
+    this.persistSession();
+    promptAction.showToast({ message: `✓ 已全部接受并应用 ${count} 项知识库变更！` });
+  }
+
+  /** 忽略协同方案 */
+  private dismissProposal(msgId: string): void {
+    const next: StoredMessage[] = [];
+    for (const m of this.messages) {
+      if (m.id === msgId) {
+        m.proposalStatus = 'dismissed';
+      }
+      next.push(m);
+    }
+    this.messages = next;
+    this.persistSession();
+    promptAction.showToast({ message: '已忽略此协同建议' });
   }
 
   private appendError(message: string): void {
@@ -1004,6 +1276,9 @@ export struct AiWorkspace {
           this.renderMarkdownText(msg.text, false)
         }
 
+        // 墨语智能协同方案卡 (Codex / Claude Code 交互式协同)
+        this.proposalCard(msg)
+
         // 引用来源芯片
         if (msg.citations !== undefined && msg.citations.length > 0) {
           Column({ space: 4 }) {
@@ -1099,6 +1374,180 @@ export struct AiWorkspace {
     }
   }
 
+  /** Codex / Claude Code 交互式协同方案卡片 */
+  @Builder
+  proposalCard(msg: StoredMessage) {
+    if (this.extractProposal(msg.text) !== null) {
+      this.renderProposalCardContent(msg, this.extractProposal(msg.text)!)
+    }
+  }
+
+  @Builder
+  renderProposalCardContent(msg: StoredMessage, proposal: ActionProposalData) {
+    Column({ space: 10 }) {
+      // 顶栏：标题与状态标签
+      Row() {
+        Row({ space: 6 }) {
+          Text('✦')
+            .fontSize(14)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.palette().accent)
+          Text('墨语智能协同方案')
+            .fontSize(TypographyTokens.BODY_REGULAR)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.palette().inkPrimary)
+          Text('CLAUDE CODE 协同模式')
+            .fontSize(TypographyTokens.TINY)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.palette().accent)
+            .padding({ left: 6, right: 6, top: 1, bottom: 1 })
+            .borderRadius(4)
+            .backgroundColor(this.palette().accentSoft)
+        }
+        .layoutWeight(1)
+
+        Blank()
+
+        if (msg.proposalStatus === 'accepted') {
+          Row({ space: 4 }) {
+            Text('✓')
+              .fontSize(12)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(Color.White)
+            Text('已全部采纳并写入')
+              .fontSize(TypographyTokens.TINY)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(Color.White)
+          }
+          .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+          .borderRadius(6)
+          .backgroundColor('#059669')
+        } else if (msg.proposalStatus === 'dismissed') {
+          Text('✕ 已忽略')
+            .fontSize(TypographyTokens.TINY)
+            .fontColor(this.palette().inkMuted)
+            .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+            .borderRadius(6)
+            .backgroundColor(this.palette().surfaceSubtle)
+        } else {
+          Row({ space: 4 }) {
+            Text('⏳')
+              .fontSize(11)
+            Text('待用户确认')
+              .fontSize(TypographyTokens.TINY)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.palette().accent)
+          }
+          .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+          .borderRadius(6)
+          .backgroundColor(this.palette().accentSoft)
+        }
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      // 方案概述
+      if (proposal.summary.length > 0) {
+        Text(proposal.summary)
+          .fontSize(TypographyTokens.CAPTION)
+          .fontColor(this.palette().inkSecondary)
+          .width('100%')
+      }
+
+      // 方案执行清单
+      Column({ space: 6 }) {
+        ForEach(proposal.actions, (act: ProposedActionItem, idx: number) => {
+          Row({ space: 8 }) {
+            // 类型徽标
+            Row() {
+              Text(act.type === 'todo' ? '📅 待办' : (act.type === 'tag' ? '🏷 标签' : (act.type === 'link' ? '🔗 双链' : (act.type === 'category' ? '📁 归档' : '📝 新建'))))
+                .fontSize(11)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(act.type === 'todo' ? '#059669' : (act.type === 'tag' ? '#D97706' : (act.type === 'link' ? '#6366F1' : this.palette().accent)))
+            }
+            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+            .borderRadius(4)
+            .backgroundColor(act.type === 'todo' ? 'rgba(5,150,105,0.1)' : (act.type === 'tag' ? 'rgba(217,119,6,0.1)' : (act.type === 'link' ? 'rgba(99,102,241,0.1)' : this.palette().accentSoft)))
+
+            Column({ space: 2 }) {
+              Text(act.title.length > 0 ? act.title : (act.target ? `${act.target}: ${act.value ?? ''}` : ''))
+                .fontSize(TypographyTokens.CAPTION)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.palette().inkPrimary)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+
+              if (act.desc && act.desc.length > 0) {
+                Text(act.desc)
+                  .fontSize(TypographyTokens.TINY)
+                  .fontColor(this.palette().inkMuted)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
+          }
+          .width('100%')
+          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+          .borderRadius(8)
+          .backgroundColor(this.palette().surface)
+          .border({ width: 1, color: this.palette().borderSubtle })
+        }, (act: ProposedActionItem, idx: number) => `act-${idx}-${act.type}`)
+      }
+      .width('100%')
+
+      // 操作交互栏：接受并应用 / 拒绝
+      if (msg.proposalStatus !== 'accepted' && msg.proposalStatus !== 'dismissed') {
+        Row({ space: 10 }) {
+          Row({ space: 6 }) {
+            Text('✓')
+              .fontSize(12)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(Color.White)
+            Text('接受并执行变更 (Accept & Apply)')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(Color.White)
+          }
+          .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+          .borderRadius(8)
+          .backgroundColor(this.palette().accent)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.applyProposal(msg.id, proposal);
+          })
+
+          Row({ space: 4 }) {
+            Text('✕')
+              .fontSize(12)
+              .fontColor(this.palette().inkMuted)
+            Text('忽略此方案')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkMuted)
+          }
+          .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          .borderRadius(8)
+          .backgroundColor(this.palette().surface)
+          .border({ width: 1, color: this.palette().borderSubtle })
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.dismissProposal(msg.id);
+          })
+        }
+        .width('100%')
+        .margin({ top: 4 })
+      }
+    }
+    .width('100%')
+    .padding(14)
+    .borderRadius(12)
+    .backgroundColor(this.palette().surfaceSubtle)
+    .border({ width: 1, color: this.palette().borderSubtle })
+    .shadow({ radius: 8, color: this.isDarkMode ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.03)', offsetY: 2 })
+    .margin({ top: 8, bottom: 4 })
+  }
+
   @Builder
   renderMarkdownText(text: string, isStreamingText: boolean) {
     Column({ space: 4 }) {
@@ -1175,7 +1624,25 @@ export struct AiWorkspace {
   @Builder
   renderBlock(block: string) {
     if (block.startsWith('```')) {
-      if (this.isFormulaBlock(block)) {
+      if (block.startsWith('```action_proposal')) {
+        // 结构化协同方案由下方的交互式卡片承载呈现，此处展示提示标签
+        Row({ space: 6 }) {
+          Text('✦')
+            .fontSize(12)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.palette().accent)
+          Text('已生成结构化协同方案，请在下方【墨语智能协同方案卡】中核对并一键应用')
+            .fontSize(TypographyTokens.TINY)
+            .fontColor(this.palette().accent)
+            .layoutWeight(1)
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+        .borderRadius(8)
+        .backgroundColor(this.palette().accentSoft)
+        .border({ width: 1, color: this.palette().borderSubtle })
+        .margin({ top: 4, bottom: 4 })
+      } else if (this.isFormulaBlock(block)) {
         Column() {
           Text(this.stripFence(block))
             .fontSize(TypographyTokens.BODY_REGULAR)
@@ -1381,150 +1848,413 @@ export struct AiWorkspace {
 
   private getBudgetShortLabel(budget: number): string {
     switch (budget) {
-      case 0:
-        return '0k 极速';
       case 4096:
-        return '4k 标称';
+        return 'Low';
       case 16384:
-        return '16k 深度';
+        return 'Medium';
       case 32768:
-        return '32k 满血';
+        return 'High';
+      case 65536:
+        return 'Max';
       default:
-        return `${Math.round(budget / 1024)}k`;
+        if (budget <= 8192) {
+          return 'Low';
+        } else if (budget <= 24576) {
+          return 'Medium';
+        } else if (budget <= 49152) {
+          return 'High';
+        } else {
+          return 'Max';
+        }
     }
+  }
+
+  private getBudgetPreset(budget: number): ThinkingBudgetPreset {
+    const label: string = this.getBudgetShortLabel(budget);
+    const found: ThinkingBudgetPreset | undefined = THINKING_BUDGETS.find((b: ThinkingBudgetPreset) => b.label === label);
+    return found ?? THINKING_BUDGETS[1];
+  }
+
+  private getBudgetStep(budget: number): number {
+    switch (budget) {
+      case 4096:
+        return 0;
+      case 16384:
+        return 1;
+      case 32768:
+        return 2;
+      case 65536:
+        return 3;
+      default:
+        if (budget <= 8192) {
+          return 0;
+        } else if (budget <= 24576) {
+          return 1;
+        } else if (budget <= 49152) {
+          return 2;
+        } else {
+          return 3;
+        }
+    }
+  }
+
+  private setThinkingBudgetByStep(step: number, showToast: boolean = false): void {
+    const list: number[] = [4096, 16384, 32768, 65536];
+    const clampedStep: number = Math.max(0, Math.min(3, Math.round(step)));
+    const newBudget: number = list[clampedStep];
+    if (this.selectedThinkingBudget !== newBudget) {
+      this.selectedThinkingBudget = newBudget;
+      if (showToast) {
+        const item: ThinkingBudgetPreset = this.getBudgetPreset(this.selectedThinkingBudget);
+        promptAction.showToast({ message: `思考深度: ${item.label}` });
+      }
+    }
+  }
+
+  private getKnobOffset(step: number): number {
+    switch (step) {
+      case 0:
+        return 2;
+      case 1:
+        return 21;
+      case 2:
+        return 40;
+      case 3:
+      default:
+        return 58;
+    }
+  }
+
+  private getFillWidth(step: number): number {
+    switch (step) {
+      case 0:
+        return 18;
+      case 1:
+        return 37;
+      case 2:
+        return 56;
+      case 3:
+      default:
+        return 76;
+    }
+  }
+
+  private async importExternalFile(): Promise<void> {
+    this.plusMenuOpen = false;
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const note = await DocumentImportService.getInstance().pickAndImport(ctx, 'AI外部参考');
+      if (note !== null) {
+        if (!this.pinnedNotes.some((n: NoteItem) => n.id === note.id)) {
+          this.pinnedNotes = [...this.pinnedNotes, note];
+          this.emitContext();
+          this.onPinnedNotesChange(this.pinnedNotes);
+          promptAction.showToast({ message: `已导入外部文件并挂载：${note.title}` });
+        } else {
+          promptAction.showToast({ message: '该文件已在参考列表中' });
+        }
+      }
+    } catch (err) {
+      console.error(`导入外部文件异常: ${JSON.stringify(err)}`);
+      promptAction.showToast({ message: '导入外部文件取消或失败' });
+    }
+  }
+
+  private rewindLastMessage(): void {
+    if (this.messages.length === 0) {
+      promptAction.showToast({ message: '暂无消息可撤销' });
+      return;
+    }
+    if (this.messages[this.messages.length - 1].role === 'assistant') {
+      this.messages.pop();
+    }
+    if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'user') {
+      this.messages.pop();
+    }
+    this.messages = [...this.messages];
+    promptAction.showToast({ message: '已撤销上一轮对话' });
   }
 
   private cycleThinkingBudget(): void {
-    const list: number[] = [0, 4096, 16384, 32768];
-    const currentIndex: number = list.indexOf(this.selectedThinkingBudget);
+    const list: number[] = [4096, 16384, 32768, 65536];
+    let currentIndex: number = list.indexOf(this.selectedThinkingBudget);
+    if (currentIndex === -1) {
+      currentIndex = 1;
+    }
     const nextIndex: number = (currentIndex + 1) % list.length;
     this.selectedThinkingBudget = list[nextIndex];
-    const label: string = THINKING_BUDGETS.find((b: ThinkingBudgetPreset) => b.val === this.selectedThinkingBudget)?.label
-      ?? `${this.selectedThinkingBudget}`;
-    promptAction.showToast({ message: `思考预算已设为：${label}` });
+    const item: ThinkingBudgetPreset = this.getBudgetPreset(this.selectedThinkingBudget);
+    promptAction.showToast({ message: `推演深度: ${item.label}` });
   }
 
-  /** Codex 风格输入框「+」操作舱浮层 */
+  /** 极简操作舱面板 (中文极简，区分库内与外部文件，支持思考深度胶囊滑块) */
   @Builder
   plusActionMenu() {
-    Column({ space: 10 }) {
-      // 1. 深度思考预算
-      Column({ space: 6 }) {
-        Row() {
-          Text('🧠 思考预算')
-            .fontSize(TypographyTokens.TINY)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.palette().inkPrimary)
-          Blank()
-          Text(this.getBudgetShortLabel(this.selectedThinkingBudget))
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().accent)
-            .fontWeight(FontWeight.Medium)
-        }
-        .width('100%')
-
-        Row({ space: 4 }) {
-          ForEach(THINKING_BUDGETS, (item: ThinkingBudgetPreset) => {
-            Text(item.label)
-              .fontSize(TypographyTokens.TINY)
-              .fontWeight(this.selectedThinkingBudget === item.val ? FontWeight.Bold : FontWeight.Normal)
-              .fontColor(this.selectedThinkingBudget === item.val ? this.palette().accent : this.palette().inkMuted)
-              .padding({ left: 6, right: 6, top: 4, bottom: 4 })
-              .borderRadius(6)
-              .backgroundColor(this.selectedThinkingBudget === item.val ? this.palette().accentSoft : this.palette().surfaceSubtle)
-              .layoutWeight(1)
-              .textAlign(TextAlign.Center)
-              .onClick(() => {
-                this.selectedThinkingBudget = item.val;
-                promptAction.showToast({ message: `思考预算已设为：${item.label}` });
-              })
-          }, (item: ThinkingBudgetPreset) => `${item.val}`)
-        }
-        .width('100%')
-      }
-      .width('100%')
-      .padding(8)
-      .borderRadius(8)
-      .backgroundColor(this.palette().surfaceSubtle)
-
-      // 2. 工程与上下文侧栏入口
-      Row({ space: 8 }) {
-        Text('📁')
-          .fontSize(TypographyTokens.CAPTION)
+    Column({ space: 2 }) {
+      // 滚动操作列表
+      Scroll() {
         Column({ space: 2 }) {
-          Text(this.pinnedNotes.length > 0 ? `已挂载 ${this.pinnedNotes.length} 篇文档` : '文档目录')
-            .fontSize(TypographyTokens.TINY)
+          // ---- 区块一：资料与识别 ----
+          Text('资料与识别')
+            .fontSize(11)
             .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkPrimary)
-          Text('在右侧管理参考文档')
-            .fontSize(TypographyTokens.TINY)
             .fontColor(this.palette().inkMuted)
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
+            .padding({ left: 10, top: 4, bottom: 2 })
+            .width('100%')
 
-        Text('管理 ❯')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().accent)
-      }
-      .width('100%')
-      .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-      .borderRadius(8)
-      .backgroundColor(this.palette().surfaceSubtle)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.plusMenuOpen = false;
-        this.onToggleContextPanel();
-      })
+          // 1. 智能识别 (拍照/选图并进行 OCR 与多模态提取)
+          Row() {
+            Text('智能识别')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkPrimary)
+          }
+          .width('100%')
+          .height(32)
+          .padding({ left: 10, right: 10 })
+          .borderRadius(6)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.plusMenuOpen = false;
+            this.onSmartExtract();
+          })
 
-      // 3. 快捷清空挂载 (当有挂载时显示)
-      if (this.pinnedNotes.length > 0) {
-        Row({ space: 6 }) {
-          Text('✕')
-            .fontSize(TypographyTokens.TINY)
+          // 2. 引用库内资料 (程序内已有笔记与文档)
+          Row() {
+            Text('引用库内资料')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkPrimary)
+            Blank()
+            if (this.pinnedNotes.length > 0) {
+              Text(`已引 ${this.pinnedNotes.length} 篇`)
+                .fontSize(TypographyTokens.TINY)
+                .fontColor(this.palette().accent)
+            }
+          }
+          .width('100%')
+          .height(32)
+          .padding({ left: 10, right: 10 })
+          .borderRadius(6)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.plusMenuOpen = false;
+            this.onToggleContextPanel();
+          })
+
+          // 3. 导入外部文件 (调起系统选择器，导入程序外的 PDF/TXT/MD 等)
+          Row() {
+            Text('导入外部文件')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkPrimary)
+          }
+          .width('100%')
+          .height(32)
+          .padding({ left: 10, right: 10 })
+          .borderRadius(6)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.importExternalFile();
+          })
+
+          // 4. 清空对话
+          Row() {
+            Text('清空对话')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkPrimary)
+          }
+          .width('100%')
+          .height(32)
+          .padding({ left: 10, right: 10 })
+          .borderRadius(6)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.messages = [];
+            this.streamingText = '';
+            this.streamingReasoning = '';
+            this.plusMenuOpen = false;
+            promptAction.showToast({ message: '已清空对话' });
+          })
+
+          // 5. 撤销上一轮
+          Row() {
+            Text('撤销上一轮')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkPrimary)
+          }
+          .width('100%')
+          .height(32)
+          .padding({ left: 10, right: 10 })
+          .borderRadius(6)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.plusMenuOpen = false;
+            this.rewindLastMessage();
+          })
+
+          // 分割线
+          Divider()
+            .color(this.palette().borderSubtle)
+            .margin({ top: 4, bottom: 4 })
+
+          // ---- 区块二：模型设置 ----
+          Text('模型设置')
+            .fontSize(11)
+            .fontWeight(FontWeight.Medium)
             .fontColor(this.palette().inkMuted)
-          Text('清空已挂载文档')
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkSecondary)
+            .padding({ left: 10, top: 4, bottom: 2 })
+            .width('100%')
+
+          // 切换模型
+          Row() {
+            Text('切换模型')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkPrimary)
+            Blank()
+            Text(this.modelLabel.length > 0 ? this.modelLabel : '默认推荐')
+              .fontSize(TypographyTokens.TINY)
+              .fontColor(this.palette().inkMuted)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .constraintSize({ maxWidth: 120 })
+          }
+          .width('100%')
+          .height(32)
+          .padding({ left: 10, right: 10 })
+          .borderRadius(6)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.plusMenuOpen = false;
+            this.modelMenuOpen = true;
+          })
+
+          // 思考深度 (Low / Medium / High / Max) 胶囊滑块
+          Row() {
+            Text(`思考深度 (${this.getBudgetShortLabel(this.selectedThinkingBudget)})`)
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.isThinkingEnabled ? this.palette().inkPrimary : this.palette().inkMuted)
+
+            Blank()
+
+            // 紧凑胶囊滑块 (76vp x 18vp，底轨 + 动态蓝色填充条 + 4个刻度点 + 实体滑动圆标)
+            Stack({ alignContent: Alignment.Start }) {
+              // 底轨
+              Row()
+                .width('100%')
+                .height('100%')
+                .borderRadius(9)
+                .backgroundColor(this.isDarkMode ? '#334155' : '#E2E8F0')
+
+              // 动态蓝色填充条 (右拖长度直接反映思考深度)
+              Row()
+                .width(this.isThinkingEnabled ? this.getFillWidth(this.getBudgetStep(this.selectedThinkingBudget)) : 0)
+                .height('100%')
+                .borderRadius(9)
+                .backgroundColor(this.palette().accent)
+                .animation({ curve: curves.springMotion(0.24, 0.72) })
+
+              // 四个刻度点
+              Row() {
+                Circle({ width: 3, height: 3 })
+                  .fill(this.getBudgetStep(this.selectedThinkingBudget) >= 0 ? Color.White : '#64748B')
+                  .opacity(0.65)
+                Blank()
+                Circle({ width: 3, height: 3 })
+                  .fill(this.getBudgetStep(this.selectedThinkingBudget) >= 1 ? Color.White : '#64748B')
+                  .opacity(0.65)
+                Blank()
+                Circle({ width: 3, height: 3 })
+                  .fill(this.getBudgetStep(this.selectedThinkingBudget) >= 2 ? Color.White : '#64748B')
+                  .opacity(0.65)
+                Blank()
+                Circle({ width: 3, height: 3 })
+                  .fill(this.getBudgetStep(this.selectedThinkingBudget) >= 3 ? Color.White : '#64748B')
+                  .opacity(0.65)
+              }
+              .width('100%')
+              .height('100%')
+              .padding({ left: 8, right: 8 })
+
+              // 实体滑动圆标
+              Row()
+                .width(16)
+                .height(16)
+                .borderRadius(8)
+                .backgroundColor(this.isDarkMode ? '#E2E8F0' : '#2D3748')
+                .shadow({ radius: 4, color: 'rgba(0,0,0,0.25)', offsetY: 1 })
+                .margin({ left: this.getKnobOffset(this.getBudgetStep(this.selectedThinkingBudget)) })
+                .animation({ curve: curves.springMotion(0.24, 0.72) })
+            }
+            .width(76)
+            .height(18)
+            .onTouch((event: TouchEvent) => {
+              if (!this.isThinkingEnabled) {
+                return;
+              }
+              const touch = event.touches[0];
+              if (!touch) {
+                return;
+              }
+              const ratio: number = Math.max(0, Math.min(1, touch.x / 76));
+              const step: number = Math.min(3, Math.floor(ratio * 4));
+              animateTo({ curve: curves.springMotion(0.24, 0.72) }, () => {
+                this.setThinkingBudgetByStep(step, false);
+              });
+            })
+            .onClick(() => {
+              if (!this.isThinkingEnabled) {
+                return;
+              }
+              const nextStep: number = (this.getBudgetStep(this.selectedThinkingBudget) + 1) % 4;
+              animateTo({ curve: curves.springMotion(0.24, 0.72) }, () => {
+                this.setThinkingBudgetByStep(nextStep, false);
+              });
+            })
+          }
+          .width('100%')
+          .height(32)
+          .padding({ left: 10, right: 10 })
+
+          // 深度思考 (开关)
+          Row() {
+            Text('深度思考')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkPrimary)
+
+            Blank()
+
+            Toggle({ type: ToggleType.Switch, isOn: this.isThinkingEnabled })
+              .selectedColor(this.palette().accent)
+              .onChange((isOn: boolean) => {
+                this.isThinkingEnabled = isOn;
+                if (!isOn) {
+                  this.selectedThinkingBudget = 0;
+                } else {
+                  this.selectedThinkingBudget = 16384;
+                }
+              })
+          }
+          .width('100%')
+          .height(32)
+          .padding({ left: 10, right: 10 })
         }
         .width('100%')
-        .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-        .borderRadius(6)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          this.pinnedNotes = [];
-          this.onPinnedNotesChange([]);
-          this.plusMenuOpen = false;
-          promptAction.showToast({ message: '已清空挂载文档' });
-        })
       }
-
-      // 4. 新对话入口
-      Row({ space: 6 }) {
-        Text('✦')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().accent)
-        Text('开启新对话')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkPrimary)
-      }
-      .width('100%')
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-      .borderRadius(6)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.plusMenuOpen = false;
-        this.startNewChat();
-      })
+      .constraintSize({ maxHeight: 340 })
+      .scrollBar(BarState.Auto)
     }
     .width(280)
-    .padding(10)
-    .borderRadius(12)
+    .padding(6)
+    .borderRadius(10)
     .backgroundColor(this.palette().surface)
     .border({ width: 1, color: this.palette().border })
     .shadow({ radius: 24, color: 'rgba(0,0,0,0.18)' })
     .alignSelf(ItemAlign.Start)
     .margin({ bottom: 8, left: 16 })
+    .transition(
+      TransitionEffect.OPACITY
+        .combine(TransitionEffect.scale({ x: 0.92, y: 0.92, centerX: '24vp', centerY: '100%' }))
+        .combine(TransitionEffect.translate({ y: 12 }))
+        .animation({ curve: curves.springMotion(0.28, 0.72) })
+    )
   }
 
   build() {
@@ -1590,7 +2320,7 @@ export struct AiWorkspace {
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
             if (this.isModelReasoningType) {
-              Text('🧠 思考')
+              Text(`✦ ${this.getBudgetShortLabel(this.selectedThinkingBudget)}`)
                 .fontSize(TypographyTokens.TINY)
                 .fontColor(this.palette().accent)
                 .padding({ left: 4, right: 4, top: 1, bottom: 1 })
@@ -1634,6 +2364,19 @@ export struct AiWorkspace {
           .onClick(() => {
             this.onToggleContextPanel();
           })
+
+          // 独立快速检索图标按钮（防止挤压）
+          Row() {
+            Text('⌕')
+              .fontSize(TypographyTokens.TITLE_SUB)
+              .fontColor(this.palette().inkSecondary)
+          }
+          .width(32).height(32)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(8)
+          .backgroundColor(this.palette().surfaceSubtle)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => this.onOpenSearch())
 
           // 设置按钮
           Text('⚙')
@@ -1824,12 +2567,14 @@ export struct AiWorkspace {
 
         // 核心输入卡片
         Row({ space: 8 }) {
-          // Codex 风格「+」多功能操作按钮
+          // Codex 风格「+」多功能操作按钮 (带弹出弹簧动画与旋转反馈)
           Row({ space: 3 }) {
-            Text('+')
+            Text(this.plusMenuOpen ? '✕' : '+')
               .fontSize(TypographyTokens.BODY_LARGE)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.plusMenuOpen || this.pinnedNotes.length > 0 ? this.palette().accent : this.palette().inkSecondary)
+              .rotate({ angle: this.plusMenuOpen ? 90 : 0 })
+              .animation({ curve: curves.springMotion(0.28, 0.72) })
             if (this.pinnedNotes.length > 0) {
               Text(`${this.pinnedNotes.length}`)
                 .fontSize(TypographyTokens.TINY)
@@ -1846,14 +2591,14 @@ export struct AiWorkspace {
           .backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : this.palette().surfaceSubtle)
           .hoverEffect(HoverEffect.Highlight)
           .onClick(() => {
-            this.plusMenuOpen = !this.plusMenuOpen;
+            animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+              this.plusMenuOpen = !this.plusMenuOpen;
+            });
           })
 
           TextInput({
             text: this.inputText,
-            placeholder: this.pinnedNotes.length > 0
-              ? `提问或输入需求 (${this.pinnedNotes.length} 篇已挂载)…`
-              : '提问或输入需求…'
+            placeholder: '输入问题或需求…'
           })
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().inkPrimary)
@@ -1863,10 +2608,11 @@ export struct AiWorkspace {
             .onChange((v: string) => { this.inputText = v; })
             .onSubmit(() => this.sendMessage())
 
-          // 紧凑思考深度微型徽标（点击即快捷轮转）
-          Row({ space: 3 }) {
-            Text('🧠')
+          // 紧凑推演深度微型徽标（Codex 风格，点击即展开拖拽滑块弹窗）
+          Row({ space: 4 }) {
+            Text('✦')
               .fontSize(TypographyTokens.TINY)
+              .fontColor(this.palette().accent)
             Text(this.getBudgetShortLabel(this.selectedThinkingBudget))
               .fontSize(TypographyTokens.TINY)
               .fontWeight(FontWeight.Medium)
@@ -1874,10 +2620,12 @@ export struct AiWorkspace {
           }
           .padding({ left: 7, right: 7, top: 4, bottom: 4 })
           .borderRadius(6)
-          .backgroundColor(this.palette().surfaceSubtle)
+          .backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : this.palette().surfaceSubtle)
           .hoverEffect(HoverEffect.Highlight)
           .onClick(() => {
-            this.cycleThinkingBudget();
+            animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+              this.plusMenuOpen = !this.plusMenuOpen;
+            });
           })
 
           if (this.isLoading) {

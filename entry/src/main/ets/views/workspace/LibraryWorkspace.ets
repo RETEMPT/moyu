@@ -272,35 +272,44 @@ export struct LibraryWorkspace {
           .onChange((value: string) => this.onSearchChange(value))
 
         // ---- 类型筛选 ----
-        Row({ space: 2 }) {
-          ForEach(NOTE_FILTERS, (filter: string) => {
-            this.filterChip(filter)
-          }, (filter: string) => filter)
+        Scroll() {
+          Row({ space: 2 }) {
+            ForEach(NOTE_FILTERS, (filter: string) => {
+              this.filterChip(filter)
+            }, (filter: string) => filter)
+          }
         }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
         .width('100%')
         .margin({ top: 10, bottom: 6 })
 
         // ---- 功能11：排序 ----
-        Row({ space: 4 }) {
-          Text('排序')
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkMuted)
-            .margin({ right: 4 })
-          this.sortChip('update', '更新时间')
-          this.sortChip('create', '创建时间')
-          this.sortChip('title', '标题')
-          Blank()
-          Text(this.sortAsc ? '↑ 升序' : '↓ 降序')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkSecondary)
-            .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-            .borderRadius(6)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => {
-              this.sortAsc = !this.sortAsc;
-            })
+        Scroll() {
+          Row({ space: 4 }) {
+            Text('排序')
+              .fontSize(TypographyTokens.TINY)
+              .fontColor(this.palette().inkMuted)
+              .margin({ right: 4 })
+            this.sortChip('update', '更新时间')
+            this.sortChip('create', '创建时间')
+            this.sortChip('title', '标题')
+            Blank()
+            Text(this.sortAsc ? '↑ 升序' : '↓ 降序')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkSecondary)
+              .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+              .borderRadius(6)
+              .backgroundColor(this.palette().surfaceSubtle)
+              .hoverEffect(HoverEffect.Highlight)
+              .onClick(() => {
+                this.sortAsc = !this.sortAsc;
+              })
+          }
+          .constraintSize({ minWidth: '100%' })
         }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
         .width('100%')
         .margin({ top: 2, bottom: 6 })
 

@@ -607,11 +607,23 @@ export struct MarkdownReader {
   // 格式工具栏：Markdown 语法插入
   // ------------------------------------------------------------------
 
-  /** 在光标处插入文本（inline 格式：粗体/斜体/代码/双链/标签） */
+  /** 在光标或选区处插入/包裹文本（inline 格式：粗体/斜体/代码/双链/标签） */
   private insertInline(open: string, close: string): void {
-    this.applyContent(this.content + open + close);
-    // 将光标移到 open 和 close 之间（近似：回退 close.length 个字符）
-    // ArkUI TextAreaController 不提供精确光标 API，此为最佳近似
+    if (open === '[[' && close === ']]') {
+      const s: number = Math.min(this.selStart, this.selEnd);
+      const e: number = Math.max(this.selStart, this.selEnd);
+      if (s === e) {
+        // 无选区时插入预填示例，方便用户直接输入标题连接
+        const before: string = this.content.substring(0, s);
+        const after: string = this.content.substring(s);
+        this.setContent(before + '[[待连接笔记]]' + after);
+        try {
+          promptAction.showToast({ message: '已插入 [[双向链接]]，在括号内输入标题即可连接知识网络', duration: 2000 });
+        } catch (err) {}
+        return;
+      }
+    }
+    this.wrapSelection(open, close);
   }
 
   /** 在当前行首插入块级标记（标题/列表/引用/待办） */
@@ -901,25 +913,67 @@ export struct MarkdownReader {
     )
   }
 
-  /** 顶部极简工具栏：阅读/编辑切换 + 落盘状态 */
+  /** 顶部极简工具栏：阅读/编辑切换 + 双链快捷动作 + 落盘状态 */
   @Builder
   editorToolbar() {
     Row({ space: 8 }) {
-      Text(this.isEditing ? '编辑中' : '阅读')
-        .fontSize(TypographyTokens.CAPTION)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.isEditing ? this.palette().accent : this.palette().inkSecondary)
-        .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-        .borderRadius(6)
-        .backgroundColor(this.isEditing ? this.palette().accentSoft : this.palette().surfaceSubtle)
+      // 阅读 / 编辑 切换按钮
+      Row({ space: 4 }) {
+        Text(this.isEditing ? '✓' : '✎')
+          .fontSize(12)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.isEditing ? Color.White : this.palette().inkPrimary)
+        Text(this.isEditing ? '完成' : '编辑')
+          .fontSize(TypographyTokens.CAPTION)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.isEditing ? Color.White : this.palette().inkPrimary)
+      }
+      .padding({ left: 10, right: 12, top: 5, bottom: 5 })
+      .borderRadius(8)
+      .backgroundColor(this.isEditing ? this.palette().accent : this.palette().surfaceSubtle)
+      .hoverEffect(HoverEffect.Highlight)
+      .onClick(() => {
+        if (this.isEditing) {
+          this.exitEdit();
+        } else {
+          this.enterEdit();
+        }
+      })
+
+      // 编辑状态下显示常用快捷入口：双向链接、待办、标签
+      if (this.isEditing) {
+        Row({ space: 4 }) {
+          Text('🔗')
+            .fontSize(12)
+          Text('[[双链]]')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.palette().link)
+        }
+        .padding({ left: 8, right: 10, top: 5, bottom: 5 })
+        .borderRadius(8)
+        .backgroundColor(this.palette().accentSoft)
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
-          if (this.isEditing) {
-            this.exitEdit();
-          } else {
-            this.enterEdit();
-          }
+          this.handleFormatAction('link');
         })
+
+        Row({ space: 4 }) {
+          Text('☐')
+            .fontSize(12)
+          Text('待办')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.palette().inkSecondary)
+        }
+        .padding({ left: 8, right: 10, top: 5, bottom: 5 })
+        .borderRadius(8)
+        .backgroundColor(this.palette().surfaceSubtle)
+        .hoverEffect(HoverEffect.Highlight)
+        .onClick(() => {
+          this.handleFormatAction('task');
+        })
+      }
 
       Blank()
 
@@ -999,15 +1053,7 @@ export struct MarkdownReader {
               this.selEnd = end;
             })
             .onFocus(() => {
-              animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
-                this.isFormatBarVisible = true;
-              });
-            })
-            .onBlur(() => {
-              // 键盘收起（失焦）时同步隐藏格式菜单栏
-              animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
-                this.isFormatBarVisible = false;
-              });
+              this.isFormatBarVisible = true;
             })
             // 消费输入框点击，避免冒泡触发根节点退出编辑
             .onClick(() => {})
@@ -1018,10 +1064,8 @@ export struct MarkdownReader {
         .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 4, bottom: 16 })
         .layoutWeight(1)
 
-        // 格式工具栏：仅在编辑态 + 输入焦点存在时显示，贴合键盘底部
-        if (this.isFormatBarVisible) {
-          this.formatToolbar()
-        }
+        // 格式工具栏：在编辑态始终可见，横向滚动贴合键盘底部
+        this.formatToolbar()
       } else {
         // 使用 List 承载块级内容，以便大纲点击可平滑锚点定位
         List({ space: 0, scroller: this.scroller }) {
