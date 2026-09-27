@@ -140,6 +140,49 @@ export struct AppearanceSheet {
           .strokeWidth(1)
           .color(this.palette().borderSubtle)
 
+        // ---- 隐私与离线优先 (Local-First) ----
+        Column({ space: 8 }) {
+          Row({ space: 6 }) {
+            Text('🛡')
+              .fontSize(14)
+            Text('离线优先与隐私安全 (Local-First)')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkSecondary)
+              .fontWeight(FontWeight.Medium)
+          }
+          .width('100%')
+
+          Text('所有随笔、PDF批注、手写笔迹与智能图谱均存储于设备沙箱内部，不强制依赖云端账号，无隐私上传。AI 模型默认采用端侧启发或用户自持密钥直连。')
+            .fontSize(TypographyTokens.TINY)
+            .fontColor(this.palette().inkMuted)
+            .lineHeight(16)
+            .width('100%')
+
+          Row({ space: 8 }) {
+            Text('已启用沙箱私有加密存储')
+              .fontSize(TypographyTokens.TINY)
+              .fontColor(this.palette().accent)
+              .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+              .borderRadius(6)
+              .backgroundColor(this.palette().accentSoft)
+
+            Text('零云端留存')
+              .fontSize(TypographyTokens.TINY)
+              .fontColor(this.palette().inkSecondary)
+              .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+              .borderRadius(6)
+              .backgroundColor(this.palette().surfaceSubtle)
+          }
+          .width('100%')
+        }
+        .width('100%')
+        .padding({ left: 14, right: 14, top: 10, bottom: 14 })
+        .alignItems(HorizontalAlign.Start)
+
+        Divider()
+          .strokeWidth(1)
+          .color(this.palette().borderSubtle)
+
         // ---- 数据：补入示例 ----
         Column({ space: 6 }) {
           Text('示例数据')

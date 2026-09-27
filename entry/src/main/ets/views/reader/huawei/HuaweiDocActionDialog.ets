@@ -304,13 +304,16 @@ export struct HuaweiDocActionDialog {
         .width('100%')
         .margin({ top: 6 })
       }
-      .width(360)
+      .width('88%')
+      .constraintSize({ maxWidth: 360 })
       .padding(18)
       .borderRadius(16)
       .backgroundColor(this.palette().surface)
       .shadow({ radius: 24, color: this.isDarkMode ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.18)', offsetY: 6 })
       .border({ width: 1, color: this.palette().borderSubtle })
-      .hitTestBehavior(HitTestMode.Block)
+      .onClick(() => {
+        // 消费卡片点击，防止冒泡到遮罩关闭
+      })
       .transition(
         TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
           .combine(TransitionEffect.OPACITY)

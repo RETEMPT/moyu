@@ -9,7 +9,7 @@
  *   5. 支持撤销、清屏与防抖自动落盘
  */
 import { curves } from '@kit.ArkUI';
-import { ColorPalette, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, AnimationTokens, LayoutTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { CanvasPoint, CanvasStroke } from '../../common/types/CanvasStroke';
@@ -32,6 +32,7 @@ export struct HandwritingCanvas {
   onSaveStateChange: (state: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   // 画布上下文
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -45,10 +46,12 @@ export struct HandwritingCanvas {
   @State isEraser: boolean = false;
   @State currentStroke: CanvasStroke | null = null;
   @State title: string = '';
+  @State dynamicCanvasHeight: number = 2400;
 
+  private canvasScroller: Scroller = new Scroller();
   private saveTimer: number = -1;
-  private canvasWidth: number = 0;
-  private canvasHeight: number = 0;
+  private canvasWidth: number = 1200;
+  private canvasHeight: number = 2400;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
@@ -78,6 +81,28 @@ export struct HandwritingCanvas {
     } else {
       this.strokes = [];
     }
+
+    // 根据历史笔迹中最大 Y 轴坐标，智能计算并延展画布高度
+    let maxY = 1800;
+    for (let i = 0; i < this.strokes.length; i++) {
+      const s = this.strokes[i];
+      for (let j = 0; j < s.points.length; j++) {
+        if (s.points[j].y > maxY) {
+          maxY = s.points[j].y;
+        }
+      }
+    }
+    this.dynamicCanvasHeight = Math.max(2400, Math.ceil((maxY + 800) / 400) * 400);
+    this.canvasHeight = this.dynamicCanvasHeight;
+  }
+
+  /** 向下动态延展画布 */
+  private extendCanvas(amount: number = 800): void {
+    this.dynamicCanvasHeight += amount;
+    this.canvasHeight = this.dynamicCanvasHeight;
+    setTimeout(() => {
+      this.redrawAll();
+    }, 40);
   }
 
   private redrawAll(): void {
@@ -210,21 +235,23 @@ export struct HandwritingCanvas {
 
   @Builder
   penToolbar() {
-    Row({ space: 12 }) {
+    Row({ space: this.isPhone ? 8 : 12 }) {
       if (this.isScratchpad) {
-        Row({ space: 6 }) {
-          Text('✎ 随堂草稿板')
-            .fontSize(TypographyTokens.BODY_REGULAR)
+        Row({ space: 4 }) {
+          Text('✎ 随堂草稿')
+            .fontSize(this.isPhone ? TypographyTokens.CAPTION : TypographyTokens.BODY_REGULAR)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().accent)
-          Text(`(${this.strokes.length} 笔)`)
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkMuted)
+          if (!this.isPhone) {
+            Text(`(${this.strokes.length} 笔)`)
+              .fontSize(TypographyTokens.TINY)
+              .fontColor(this.palette().inkMuted)
+          }
         }
-        .layoutWeight(1)
+        .layoutWeight(this.isPhone ? 0 : 1)
       } else {
         TextInput({ text: this.title, placeholder: '输入笔记标题…' })
-          .fontSize(TypographyTokens.TITLE_SUB)
+          .fontSize(this.isPhone ? TypographyTokens.BODY_REGULAR : TypographyTokens.TITLE_SUB)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.palette().inkPrimary)
           .backgroundColor(Color.Transparent)
@@ -237,92 +264,121 @@ export struct HandwritingCanvas {
           })
       }
 
-      // 调色盘
-      Row({ space: 8 }) {
-        ForEach(PEN_COLORS, (color: string) => {
-          Circle({ width: 18, height: 18 })
-            .fill(color)
-            .stroke(this.selectedColor === color && !this.isEraser && !this.isHighlighter
-              ? this.palette().inkPrimary : Color.Transparent)
-            .strokeWidth(2)
-            .onClick(() => {
-              this.selectedColor = color;
-              this.isEraser = false;
-              this.isHighlighter = false;
-            })
-        }, (color: string) => color)
-      }
-      .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-      .borderRadius(20)
-      .backgroundColor(this.palette().surfaceSubtle)
-
-      // 笔刷粗细
-      Row({ space: 6 }) {
-        ForEach(STROKE_WIDTHS, (w: number) => {
-          Circle({ width: w * 2 + 6, height: w * 2 + 6 })
-            .fill(this.selectedWidth === w ? this.palette().inkPrimary : this.palette().inkMuted)
-            .onClick(() => {
-              this.selectedWidth = w;
-              this.isEraser = false;
-              this.isHighlighter = false;
-            })
-        }, (w: number) => `${w}`)
-      }
-      .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-      .borderRadius(20)
-      .backgroundColor(this.palette().surfaceSubtle)
-
-      // 荧光高亮笔按钮
-      Text('🖍️')
-        .fontSize(TypographyTokens.BODY_REGULAR)
-        .padding(6)
-        .borderRadius(6)
-        .backgroundColor(this.isHighlighter ? this.palette().activeBg : Color.Transparent)
-        .onClick(() => {
-          this.isHighlighter = !this.isHighlighter;
-          this.isEraser = false;
-          if (this.isHighlighter) {
-            this.selectedColor = '#EAB308';
-            this.selectedWidth = 14;
-          } else {
-            this.selectedColor = this.isDarkMode ? '#F5F5F4' : '#1C1917';
-            this.selectedWidth = 3;
+      // 可横滑工具项容器
+      Scroll() {
+        Row({ space: this.isPhone ? 6 : 8 }) {
+          // 调色盘
+          Row({ space: this.isPhone ? 5 : 8 }) {
+            ForEach(PEN_COLORS, (color: string) => {
+              Circle({ width: this.isPhone ? 16 : 18, height: this.isPhone ? 16 : 18 })
+                .fill(color)
+                .stroke(this.selectedColor === color && !this.isEraser && !this.isHighlighter
+                  ? this.palette().inkPrimary : Color.Transparent)
+                .strokeWidth(2)
+                .onClick(() => {
+                  this.selectedColor = color;
+                  this.isEraser = false;
+                  this.isHighlighter = false;
+                })
+            }, (color: string) => color)
           }
-        })
+          .padding({ left: 6, right: 6, top: 4, bottom: 4 })
+          .borderRadius(20)
+          .backgroundColor(this.palette().surfaceSubtle)
 
-      // 橡皮擦按钮
-      Text('⌫')
-        .fontSize(TypographyTokens.BODY_REGULAR)
-        .fontColor(this.isEraser ? this.palette().accent : this.palette().inkSecondary)
-        .padding(6)
-        .borderRadius(6)
-        .backgroundColor(this.isEraser ? this.palette().activeBg : Color.Transparent)
-        .onClick(() => {
-          this.isEraser = !this.isEraser;
-          this.isHighlighter = false;
-        })
+          // 笔刷粗细
+          Row({ space: 5 }) {
+            ForEach(STROKE_WIDTHS, (w: number) => {
+              Circle({ width: w * 2 + 5, height: w * 2 + 5 })
+                .fill(this.selectedWidth === w ? this.palette().inkPrimary : this.palette().inkMuted)
+                .onClick(() => {
+                  this.selectedWidth = w;
+                  this.isEraser = false;
+                  this.isHighlighter = false;
+                })
+            }, (w: number) => `${w}`)
+          }
+          .padding({ left: 6, right: 6, top: 4, bottom: 4 })
+          .borderRadius(20)
+          .backgroundColor(this.palette().surfaceSubtle)
 
-      // 撤销按钮
-      Text('↩')
-        .fontSize(TypographyTokens.BODY_REGULAR)
-        .fontColor(this.palette().inkSecondary)
-        .padding(6)
-        .borderRadius(6)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => this.handleUndo())
+          // 荧光高亮笔按钮
+          Text('🖍️')
+            .fontSize(this.isPhone ? 14 : TypographyTokens.BODY_REGULAR)
+            .padding(this.isPhone ? 4 : 6)
+            .borderRadius(6)
+            .backgroundColor(this.isHighlighter ? this.palette().activeBg : Color.Transparent)
+            .onClick(() => {
+              this.isHighlighter = !this.isHighlighter;
+              this.isEraser = false;
+              if (this.isHighlighter) {
+                this.selectedColor = '#EAB308';
+                this.selectedWidth = 14;
+              } else {
+                this.selectedColor = this.isDarkMode ? '#F5F5F4' : '#1C1917';
+                this.selectedWidth = 3;
+              }
+            })
 
-      // 清屏按钮
-      Text('🗑️')
-        .fontSize(TypographyTokens.BODY_REGULAR)
-        .fontColor(this.palette().danger)
-        .padding(6)
-        .borderRadius(6)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => this.handleClear())
+          // 橡皮擦按钮
+          Text('⌫')
+            .fontSize(this.isPhone ? 14 : TypographyTokens.BODY_REGULAR)
+            .fontColor(this.isEraser ? this.palette().accent : this.palette().inkSecondary)
+            .padding(this.isPhone ? 4 : 6)
+            .borderRadius(6)
+            .backgroundColor(this.isEraser ? this.palette().activeBg : Color.Transparent)
+            .onClick(() => {
+              this.isEraser = !this.isEraser;
+              this.isHighlighter = false;
+            })
+
+          // 撤销按钮
+          Text('↩')
+            .fontSize(this.isPhone ? 14 : TypographyTokens.BODY_REGULAR)
+            .fontColor(this.palette().inkSecondary)
+            .padding(this.isPhone ? 4 : 6)
+            .borderRadius(6)
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => this.handleUndo())
+
+          // 清屏按钮
+          Text('🗑️')
+            .fontSize(this.isPhone ? 14 : TypographyTokens.BODY_REGULAR)
+            .fontColor(this.palette().danger)
+            .padding(this.isPhone ? 4 : 6)
+            .borderRadius(6)
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => this.handleClear())
+
+          // 延长画布快捷按钮
+          Row({ space: 3 }) {
+            Text('＋')
+              .fontSize(12)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.palette().accent)
+            Text('延长')
+              .fontSize(this.isPhone ? TypographyTokens.TINY : TypographyTokens.CAPTION)
+              .fontColor(this.palette().accent)
+          }
+          .padding(this.isPhone ? { left: 6, right: 6, top: 4, bottom: 4 } : { left: 8, right: 8, top: 4, bottom: 4 })
+          .borderRadius(6)
+          .backgroundColor(this.palette().accentSoft)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.extendCanvas(800);
+            setTimeout(() => {
+              this.canvasScroller.scrollEdge(Edge.Bottom);
+            }, 60);
+          })
+        }
+      }
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Off)
+      .layoutWeight(this.isPhone ? 1 : 0)
     }
     .width('100%')
     .height(48)
-    .padding({ left: 20, right: 20 })
+    .padding({ left: this.isPhone ? 10 : 20, right: this.isPhone ? 10 : 20 })
     .borderRadius(10)
     .backgroundColor(this.palette().surface)
     .shadow({ radius: 8, color: 'rgba(0,0,0,0.06)' })
@@ -333,54 +389,66 @@ export struct HandwritingCanvas {
       // 顶部悬浮工具栏
       this.penToolbar()
 
-      // 白纸质感手绘画布区
-      Stack() {
-        // 白纸底纹层（带淡色网格）
-        Column()
-          .width('100%')
-          .height('100%')
-          .backgroundColor(this.isDarkMode ? '#1C1C1E' : '#FAF9F5')
+      // 白纸质感手绘无限画布区 (支持向下无限滚动与动态延展)
+      Scroll(this.canvasScroller) {
+        Column() {
+          Stack({ alignContent: Alignment.TopStart }) {
+            // 白纸底纹层（带极简素雅质感）
+            Column()
+              .width('100%')
+              .height(this.dynamicCanvasHeight)
+              .backgroundColor(this.isDarkMode ? '#1C1C1E' : '#FAF9F5')
 
-        // 真实手写笔墨迹 Canvas 层
-        Canvas(this.context)
-          .width('100%')
-          .height('100%')
-          .onReady(() => {
-            // 获取画布实际尺寸并重绘
-            this.canvasWidth = 1200;
-            this.canvasHeight = 1600;
-            this.redrawAll();
-          })
-          .onTouch((event: TouchEvent) => {
-            const touch = event.touches[0];
-            if (!touch) {
-              return;
-            }
+            // 真实手写笔墨迹 Canvas 层
+            Canvas(this.context)
+              .width('100%')
+              .height(this.dynamicCanvasHeight)
+              .onReady(() => {
+                this.canvasWidth = 1200;
+                this.canvasHeight = this.dynamicCanvasHeight;
+                this.redrawAll();
+              })
+              .onTouch((event: TouchEvent) => {
+                const touch = event.touches[0];
+                if (!touch) {
+                  return;
+                }
 
-            if (event.type === TouchType.Down) {
-              this.currentStroke = {
-                points: [{ x: touch.x, y: touch.y }],
-                color: this.selectedColor,
-                width: this.isEraser ? 16 : this.selectedWidth,
-                isHighlighter: this.isHighlighter,
-                isEraser: this.isEraser
-              };
-              this.drawSingleStroke(this.currentStroke);
-            } else if (event.type === TouchType.Move) {
-              if (this.currentStroke !== null) {
-                this.currentStroke.points.push({ x: touch.x, y: touch.y });
-                this.drawSingleStroke(this.currentStroke);
-              }
-            } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-              if (this.currentStroke !== null && this.currentStroke.points.length > 0) {
-                this.strokes.push(this.currentStroke);
-                this.currentStroke = null;
-                this.scheduleSave();
-              }
-            }
-          })
+                // 笔尖接近画布底部时自动无感向下延长
+                if (touch.y > this.dynamicCanvasHeight - 320) {
+                  this.extendCanvas(800);
+                }
+
+                if (event.type === TouchType.Down) {
+                  this.currentStroke = {
+                    points: [{ x: touch.x, y: touch.y }],
+                    color: this.selectedColor,
+                    width: this.isEraser ? 16 : this.selectedWidth,
+                    isHighlighter: this.isHighlighter,
+                    isEraser: this.isEraser
+                  };
+                  this.drawSingleStroke(this.currentStroke);
+                } else if (event.type === TouchType.Move) {
+                  if (this.currentStroke !== null) {
+                    this.currentStroke.points.push({ x: touch.x, y: touch.y });
+                    this.drawSingleStroke(this.currentStroke);
+                  }
+                } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+                  if (this.currentStroke !== null && this.currentStroke.points.length > 0) {
+                    this.strokes.push(this.currentStroke);
+                    this.currentStroke = null;
+                    this.scheduleSave();
+                  }
+                }
+              })
+          }
+          .width('100%')
+          .height(this.dynamicCanvasHeight)
+        }
+        .width('100%')
       }
-      .width('100%')
+      .scrollable(ScrollDirection.Vertical)
+      .scrollBar(BarState.Auto)
       .layoutWeight(1)
       .margin({ top: 8 })
       .borderRadius(12)
@@ -392,7 +460,7 @@ export struct HandwritingCanvas {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 24, right: 24, top: 12, bottom: 16 })
+    .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 12, bottom: 16 })
     .backgroundColor(this.palette().canvas)
   }
 }

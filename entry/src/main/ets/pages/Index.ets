@@ -16,11 +16,14 @@ import { MarkdownOutlineItem } from '../common/types/MarkdownOutlineItem';
 import { WorkspaceStats } from '../common/types/WorkspaceStats';
 import { DocumentTransferResult, MarkdownDocument } from '../common/types/MarkdownDocument';
 import { TodoItem, DayNote } from '../common/types/TodoItem';
+import { ChatSession } from '../common/types/ChatSession';
+import { ChatCitation } from '../common/types/ChatSession';
 import {
   CATEGORY_UNFILED,
   FILTER_ALL,
   NAV_AI,
   NAV_CANVAS,
+  NAV_FAVORITE,
   NAV_GRAPH,
   NAV_HOME,
   NAV_LIBRARY,
@@ -32,20 +35,46 @@ import {
 import { NoteStorageService } from '../services/NoteStorageService';
 import { NoteSearchService } from '../services/NoteSearchService';
 import { TodoStorageService } from '../services/TodoStorageService';
+import { ChatSessionService } from '../services/ai/ChatSessionService';
+import { ModelConfigService } from '../services/ai/ModelConfigService';
 import { buildSpaces } from '../services/WorkspaceBuilder';
-import { defaultProjects, seedNotes } from '../common/seed/SeedContent';
+import { defaultProjects, seedNotes, templateBody } from '../common/seed/SeedContent';
 import { AppShell } from '../views/layout/AppShell';
+import { SIDEBAR_MODE_SESSIONS, SIDEBAR_MODE_TREE } from '../views/layout/Sidebar';
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
 import { LibraryWorkspace } from '../views/workspace/LibraryWorkspace';
 import { GraphWorkspace } from '../views/workspace/GraphWorkspace';
-import { PendingWorkspace } from '../views/workspace/PendingWorkspace';
+import { HandwritingCanvas } from '../views/reader/HandwritingCanvas';
+import { AiWorkspace } from '../views/ai/AiWorkspace';
+import { AiSourcesPanel } from '../views/ai/AiSourcesPanel';
 import { TodoWorkspace } from '../views/workspace/TodoWorkspace';
 import { TrashWorkspace } from '../views/workspace/TrashWorkspace';
+import { FavoriteWorkspace } from '../views/workspace/FavoriteWorkspace';
 import { ReaderWorkspace } from '../views/reader/ReaderWorkspace';
 import { HuaweiDocWorkspace } from '../views/reader/huawei/HuaweiDocWorkspace';
 import { ContextDrawer, CONTEXT_TAB_OUTLINE } from '../views/context/ContextDrawer';
 import { QuickSearchDialog } from '../views/explore/QuickSearchDialog';
 import { AppearanceSheet } from '../views/settings/AppearanceSheet';
+import { ModelSettingsSheet } from '../views/settings/ModelSettingsSheet';
+import { NewProjectSheet } from '../views/layout/sheets/NewProjectSheet';
+import { CreateNoteSheet } from '../views/layout/sheets/CreateNoteSheet';
+import { ProjectMenuSheet } from '../views/layout/sheets/ProjectMenuSheet';
+import { NewContentSheet } from '../views/layout/sheets/NewContentSheet';
+import { RenameProjectSheet } from '../views/layout/sheets/RenameProjectSheet';
+import { NoteMenuSheet } from '../views/layout/sheets/NoteMenuSheet';
+import { RenameNoteSheet } from '../views/layout/sheets/RenameNoteSheet';
+import { MoveNoteSheet } from '../views/layout/sheets/MoveNoteSheet';
+import { NameNoteSheet } from '../views/layout/sheets/NameNoteSheet';
+import { SmartExtractSheet } from '../views/layout/sheets/SmartExtractSheet';
+import { SmartContent } from '../common/types/SmartContent';
+import { SmartTask } from '../common/types/SmartTask';
+
+/** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
+interface PendingNoteCreate {
+  projectName: string;
+  type: string;
+  defaultName: string;
+}
 
 const EMPTY_NOTE: NoteItem = {
   id: '',
@@ -90,6 +119,18 @@ struct Index {
   @State todos: TodoItem[] = [];
   @State dayNotes: DayNote[] = [];
 
+  // ---- AI 会话（列表由 Index 持有，侧栏与工作台共用） ----
+  @State sessions: ChatSession[] = [];
+  @State activeSessionId: string = '';
+  @State sidebarMode: string = SIDEBAR_MODE_TREE;
+  /** AI 墨客右栏「来源与上下文」由工作台上报 */
+  @State aiCitations: ChatCitation[] = [];
+  @State aiPinnedNotes: NoteItem[] = [];
+  @State aiLayerLabel: string = '';
+  @State aiModelLabel: string = '';
+  @State aiToolsEnabled: boolean = true;
+  @State aiPrefilledPrompt: string = '';
+
   // ---- 研读态 (速记与 Markdown 随笔) ----
   @State readingOpen: boolean = false;
   @State readingNote: NoteItem = EMPTY_NOTE;
@@ -106,14 +147,26 @@ struct Index {
   // ---- 全局浮层 ----
   @State searchVisible: boolean = false;
   @State settingsVisible: boolean = false;
+  @State smartExtractVisible: boolean = false;
+  /** 新建笔记的命名弹层意图；非空即显示 NameNoteSheet。 */
+  @State pendingCreate: PendingNoteCreate | null = null;
   @State toastVisible: boolean = false;
   @State toastMessage: string = '';
   /** 当前 Toast 是否附带「撤销」按钮 */
   @State undoVisible: boolean = false;
+  /** 新建笔记对话框（记随笔） */
+  @State createNoteOpen: boolean = false;
+  /** 新建项目对话框 */
+  @State createProjectOpen: boolean = false;
+  /** 底部弹层类型：'project_menu' | 'new_content' | 'rename_project' | 'note_menu' | 'rename_note' | 'move_note' */
+  @State activeSheet: string = '';
+  @State sheetProject: SpaceFolder | null = null;
+  @State sheetNote: NoteItem | null = null;
 
   private storage: NoteStorageService = new NoteStorageService();
   private searchService: NoteSearchService = new NoteSearchService();
   private todoStorage: TodoStorageService = new TodoStorageService();
+  private chatStorage: ChatSessionService = ChatSessionService.getInstance();
   private toastTimer: number = -1;
   private bootstrapped: boolean = false;
 
@@ -123,6 +176,15 @@ struct Index {
    * 由 Toast 上的「撤销」按钮触发还原；Toast 消失时句柄一并失效。
    */
   private undoAction: (() => void) | null = null;
+  private appContext: common.UIAbilityContext | null = null;
+
+  private getAbilityContext(): common.UIAbilityContext {
+    if (this.appContext !== null) {
+      return this.appContext;
+    }
+    this.appContext = getContext(this) as common.UIAbilityContext;
+    return this.appContext;
+  }
 
   aboutToAppear(): void {
     if (!this.bootstrapped) {
@@ -136,7 +198,7 @@ struct Index {
   // ==================================================================
 
   private async bootstrap(): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       const loaded: NoteItem[] = await this.storage.load(context, seedNotes());
       this.notes = loaded.length > 0 ? loaded : seedNotes();
@@ -154,12 +216,152 @@ struct Index {
       console.error(`项目列表加载失败: ${JSON.stringify(error)}`);
       this.customProjects = defaultProjects();
     }
+    this.backfillNoteMeta();
     this.rebuildSpaces();
     this.activeSpaceId = '';
     this.persistSnapshot();
     this.refreshGraph();
     await this.loadTrash(context);
     await this.loadTodos(context);
+    await this.loadSessions(context);
+    // 模型配置也在这里初始化：AI 视图自行取 Context 有竞态，
+    // 由持有 Context 的 Index 统一初始化，视图侧只读单例。
+    try {
+      await ModelConfigService.getInstance().init(context);
+    } catch (error) {
+      console.error(`模型配置初始化失败: ${JSON.stringify(error)}`);
+    }
+  }
+
+  // ==================================================================
+  // AI 会话（侧栏「对话」模式 + AI 墨客工作台共用同一份列表）
+  // ==================================================================
+
+  /** 置顶优先、其次按更新时间倒序 */
+  private sortSessions(list: ChatSession[]): ChatSession[] {
+    const next: ChatSession[] = list.slice();
+    next.sort((a: ChatSession, b: ChatSession) => {
+      if (a.pinned !== b.pinned) {
+        return a.pinned ? -1 : 1;
+      }
+      return b.updatedAt - a.updatedAt;
+    });
+    return next;
+  }
+
+  /** AiWorkspace 新建或更新会话后回写列表，并同步 activeSessionId */
+  private handleSessionSaved(session: ChatSession): void {
+    let replaced: boolean = false;
+    const next: ChatSession[] = [];
+    for (let i = 0; i < this.sessions.length; i++) {
+      if (this.sessions[i].id === session.id) {
+        next.push(session);
+        replaced = true;
+      } else {
+        next.push(this.sessions[i]);
+      }
+    }
+    if (!replaced) {
+      next.unshift(session);
+    }
+    this.sessions = this.sortSessions(next);
+    this.activeSessionId = session.id;
+  }
+
+  private handleSelectSession(session: ChatSession): void {
+    this.activeNav = NAV_AI;
+    this.readingOpen = false;
+    this.fullScreenDocOpen = false;
+    this.activeNoteId = '';
+    this.activeSessionId = session.id;
+  }
+
+  private handleNewSession(): void {
+    this.activeNav = NAV_AI;
+    this.readingOpen = false;
+    this.fullScreenDocOpen = false;
+    this.activeSessionId = '';
+  }
+
+  private async handleDeleteSession(sessionId: string): Promise<void> {
+    try {
+      await this.chatStorage.deleteSession(sessionId);
+    } catch (error) {
+      console.error(`会话删除失败: ${JSON.stringify(error)}`);
+      this.notify('会话删除失败');
+      return;
+    }
+    this.sessions = this.sessions.filter((s: ChatSession) => s.id !== sessionId);
+    if (this.activeSessionId === sessionId) {
+      this.activeSessionId = '';
+    }
+    this.notify('已删除对话');
+  }
+
+  private async handleTogglePinSession(session: ChatSession): Promise<void> {
+    const next: ChatSession[] = [];
+    for (let i = 0; i < this.sessions.length; i++) {
+      const s: ChatSession = this.sessions[i];
+      if (s.id === session.id) {
+        const toggled: ChatSession = {
+          id: s.id,
+          title: s.title,
+          pinned: !s.pinned,
+          agentMode: s.agentMode,
+          messages: s.messages,
+          createdAt: s.createdAt,
+          updatedAt: s.updatedAt
+        };
+        next.push(toggled);
+      } else {
+        next.push(s);
+      }
+    }
+    this.sessions = this.sortSessions(next);
+    try {
+      await this.chatStorage.saveSessions(this.sessions);
+    } catch (error) {
+      console.error(`会话置顶保存失败: ${JSON.stringify(error)}`);
+    }
+  }
+
+  /** 载入 AI 会话列表（侧栏「对话」模式的唯一数据源） */
+  private async loadSessions(context: common.UIAbilityContext): Promise<void> {
+    try {
+      await this.chatStorage.init(context);
+      this.sessions = await this.chatStorage.loadSessions();
+    } catch (error) {
+      console.error(`会话列表加载失败: ${JSON.stringify(error)}`);
+      this.sessions = [];
+    }
+  }
+
+  /**
+   * 为旧数据回填功能6/11 所需的元信息：
+   * tags 从单值 tag 派生；createdAt/updatedAt 用「按现有顺序倒推的分钟数」填充，
+   * 这样排序后的顺序与既有 seed 顺序一致，不会打乱用户熟悉的列表。
+   */
+  private backfillNoteMeta(): void {
+    const base: number = Date.now();
+    let changed: boolean = false;
+    for (let i = 0; i < this.notes.length; i++) {
+      const n: NoteItem = this.notes[i];
+      if (n.updatedAt === undefined) {
+        n.updatedAt = base - i * 60000;
+        changed = true;
+      }
+      if (n.createdAt === undefined) {
+        n.createdAt = n.updatedAt;
+        changed = true;
+      }
+      if (n.tags === undefined) {
+        n.tags = n.tag.length > 0 ? [n.tag] : [];
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.notes = this.notes.slice();
+    }
   }
 
   /**
@@ -292,9 +494,12 @@ struct Index {
   private refreshStats(): void {
     const tags: Set<string> = new Set();
     for (let i = 0; i < this.notes.length; i++) {
-      const tag: string = this.notes[i].tag;
-      if (tag.length > 0) {
-        tags.add(tag);
+      const note: NoteItem = this.notes[i];
+      const list: string[] = note.tags !== undefined ? note.tags : (note.tag.length > 0 ? [note.tag] : []);
+      for (let j = 0; j < list.length; j++) {
+        if (list[j].length > 0) {
+          tags.add(list[j]);
+        }
       }
     }
     this.stats = {
@@ -370,11 +575,146 @@ struct Index {
   }
 
   private breadcrumb(): string[] {
-    if (this.readingOpen) {
-      const category: string = this.readingNote.category.length === 0 ? '未分类' : this.readingNote.category;
-      return [category, this.readingNote.title];
+    if (this.readingOpen || this.fullScreenDocOpen) {
+      const note = this.fullScreenDocOpen ? this.fullScreenDocNote : this.readingNote;
+      const category: string = note.category.length === 0 ? '未分类' : note.category;
+      return [category, note.title];
     }
     return [this.activeNav];
+  }
+
+  /** 更新笔记封面图片 URI */
+  updateNoteCover(noteId: string, uri: string): void {
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].id === noteId) {
+        this.notes[i].coverUrl = uri;
+        this.notes = this.notes.slice();
+        this.persistSnapshot();
+        break;
+      }
+    }
+  }
+
+  closeSheet(): void {
+    animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+      this.activeSheet = '';
+      this.sheetProject = null;
+      this.sheetNote = null;
+    });
+  }
+
+  @Builder
+  activeSheetContent() {
+    if (this.activeSheet === 'project_menu' && this.sheetProject !== null) {
+      ProjectMenuSheet({
+        project: this.sheetProject,
+        onClose: () => this.closeSheet(),
+        onCreateNoteInProject: (title: string, projectName: string, type: string) => {
+          this.closeSheet();
+          this.createNoteInProject(title, projectName, type);
+        },
+        onRequestRename: (project: SpaceFolder) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.sheetProject = project;
+            this.activeSheet = 'rename_project';
+          });
+        },
+        onDeleteProject: (name: string) => {
+          this.closeSheet();
+          this.deleteProject(name);
+        }
+      })
+    } else if (this.activeSheet === 'new_content' && this.sheetProject !== null) {
+      NewContentSheet({
+        project: this.sheetProject,
+        onClose: () => this.closeSheet(),
+        onCreateNoteInProject: (title: string, projectName: string, type: string) => {
+          this.closeSheet();
+          this.createNoteInProject(title, projectName, type);
+        },
+        onImportIntoProject: (projectName: string) => {
+          this.closeSheet();
+          this.importDocument(projectName);
+        }
+      })
+    } else if (this.activeSheet === 'rename_project' && this.sheetProject !== null) {
+      RenameProjectSheet({
+        project: this.sheetProject,
+        onClose: () => this.closeSheet(),
+        onRenameProject: (oldName: string, newName: string) => {
+          this.renameProject(oldName, newName);
+        }
+      })
+    } else if (this.activeSheet === 'note_menu' && this.sheetNote !== null) {
+      NoteMenuSheet({
+        note: this.sheetNote,
+        onClose: () => this.closeSheet(),
+        onOpenNote: (note: NoteItem) => {
+          this.openNote(note);
+          this.closeSheet();
+        },
+        onDeleteNote: (noteId: string) => {
+          this.closeSheet();
+          this.deleteNote(noteId);
+        },
+        onRequestRename: (note: NoteItem) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.sheetNote = note;
+            this.activeSheet = 'rename_note';
+          });
+        },
+        onRequestMove: (note: NoteItem) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.sheetNote = note;
+            this.activeSheet = 'move_note';
+          });
+        }
+      })
+    } else if (this.activeSheet === 'rename_note' && this.sheetNote !== null) {
+      RenameNoteSheet({
+        note: this.sheetNote,
+        onClose: () => this.closeSheet(),
+        onRenameNote: (note: NoteItem, newTitle: string) => {
+          this.commitRename(note, newTitle);
+        }
+      })
+    } else if (this.activeSheet === 'move_note' && this.sheetNote !== null) {
+      MoveNoteSheet({
+        note: this.sheetNote,
+        categories: this.spaces.map((s: SpaceFolder) => s.name),
+        onClose: () => this.closeSheet(),
+        onMoveNote: (note: NoteItem, category: string) => {
+          this.commitMove(note, category);
+        }
+      })
+    } else if (this.activeSheet === 'model_settings') {
+      ModelSettingsSheet({
+        onClose: () => this.closeSheet()
+      })
+    }
+  }
+
+  /** 点击面包屑：分类段 → 回到资料库并按分类筛选；标题段 → 打开文档切换搜索 */
+  private onBreadcrumbClick(index: number, segment: string): void {
+    if (this.readingOpen || this.fullScreenDocOpen) {
+      if (index === 0) {
+        // 点击分类名：关闭当前文档，回到资料库并选中该项目
+        this.readingOpen = false;
+        this.fullScreenDocOpen = false;
+        this.activeNoteId = '';
+        this.activeNav = NAV_LIBRARY;
+        // 尝试选中对应项目
+        for (let i = 0; i < this.spaces.length; i++) {
+          if (this.spaces[i].name === segment) {
+            this.activeSpaceId = this.spaces[i].id;
+            break;
+          }
+        }
+      } else {
+        // 点击文档标题：打开快速搜索以便切换文档
+        this.searchVisible = true;
+      }
+    }
   }
 
   // ==================================================================
@@ -490,7 +830,39 @@ struct Index {
         return;
       }
     }
-    this.notify(`「${title}」尚未创建`);
+    this.requestCreateNote('', 'Markdown', title);
+  }
+
+  /** 新建笔记前先弹命名层：记录意图并展示 NameNoteSheet，确认后再真正落地。 */
+  private requestCreateNote(projectName: string, type: string, defaultName: string): void {
+    const pending: PendingNoteCreate = {
+      projectName: projectName,
+      type: type,
+      defaultName: defaultName
+    };
+    animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+      this.pendingCreate = pending;
+    });
+  }
+
+  /** 命名层确认：按意图分发到全局新建或项目内新建。 */
+  private commitPendingCreate(name: string): void {
+    const pending: PendingNoteCreate | null = this.pendingCreate;
+    this.pendingCreate = null;
+    if (pending === null) {
+      return;
+    }
+    if (pending.projectName.length === 0) {
+      this.createNote(name);
+    } else {
+      this.createNoteInProject(name, pending.projectName, pending.type);
+    }
+  }
+
+  /** 命名层默认标题（取自待创建意图）。 */
+  private pendingDefaultName(): string {
+    const pending: PendingNoteCreate | null = this.pendingCreate;
+    return pending !== null ? pending.defaultName : '未命名笔记';
   }
 
   private async createNote(title: string): Promise<void> {
@@ -506,7 +878,10 @@ struct Index {
       tag: '新笔记',
       tagColor: '',
       updateTime: this.formatTime(now),
-      contentDetail: `# ${title}\n\n`
+      contentDetail: `# ${title}\n\n`,
+      tags: ['新笔记'],
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
     };
     this.notes = [note].concat(this.notes);
     try {
@@ -637,7 +1012,10 @@ struct Index {
       tag: tag,
       tagColor: '',
       updateTime: this.formatTime(now),
-      contentDetail: `# ${title}\n\n`
+      contentDetail: `# ${title}\n\n`,
+      tags: [tag],
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
     };
     this.notes = [note].concat(this.notes);
     try {
@@ -650,6 +1028,42 @@ struct Index {
     this.refreshGraph();
     this.openNote(note);
     this.notify(`已在「${projectName}」创建${type}`);
+  }
+
+  /**
+   * 按模板新建（功能10）。
+   * 模板正文预填结构，标题取模板名；空白模板等价于普通新建。
+   */
+  private async createNoteFromTemplate(templateName: string, projectName: string): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const now: Date = new Date();
+    const category: string = projectName.length === 0 ? '未分类' : projectName;
+    const body: string = templateBody(templateName, now);
+    const note: NoteItem = {
+      id: `note-${now.getTime()}`,
+      title: templateName,
+      category: category,
+      type: 'Markdown',
+      previewText: templateName,
+      tag: templateName,
+      tagColor: '',
+      updateTime: this.formatTime(now),
+      contentDetail: body,
+      tags: [templateName],
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
+    };
+    this.notes = [note].concat(this.notes);
+    try {
+      await this.storage.create(context, note);
+    } catch (error) {
+      console.error(`模板正文创建失败: ${JSON.stringify(error)}`);
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.refreshGraph();
+    this.openNote(note);
+    this.notify(`已用「${templateName}」模板新建`);
   }
 
   private async deleteNote(noteId: string): Promise<void> {
@@ -810,6 +1224,104 @@ struct Index {
     return null;
   }
 
+  private findNoteByIdentifier(identifier: string): NoteItem | null {
+    const target: string = identifier.trim().toLowerCase();
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].id.toLowerCase() === target || this.notes[i].title.toLowerCase() === target) {
+        return this.notes[i];
+      }
+    }
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].title.toLowerCase().includes(target)) {
+        return this.notes[i];
+      }
+    }
+    return null;
+  }
+
+  private handleAiAddTag(identifier: string, tags: string): void {
+    const target: NoteItem | null = this.findNoteByIdentifier(identifier);
+    if (target === null) {
+      this.notify(`未找到笔记「${identifier}」`);
+      return;
+    }
+    const splitTags: string[] = tags.split(',').map((t: string) => t.trim()).filter((t: string) => t.length > 0);
+    const existing: string[] = target.tags !== undefined ? target.tags.slice() : (target.tag.length > 0 ? target.tag.split(',').map((t: string) => t.trim()) : []);
+    for (let i = 0; i < splitTags.length; i++) {
+      if (!existing.includes(splitTags[i])) {
+        existing.push(splitTags[i]);
+      }
+    }
+    target.tags = existing;
+    target.tag = existing.join(', ');
+    this.notes = this.notes.slice();
+    this.persistSnapshot();
+    this.refreshStats();
+    this.notify(`已为《${target.title}》添加标签: ${tags}`);
+  }
+
+  private async handleAiCreateLink(sourceIdentifier: string, targetTitle: string): Promise<void> {
+    const target: NoteItem | null = this.findNoteByIdentifier(sourceIdentifier);
+    if (target === null) {
+      this.notify(`未找到源笔记「${sourceIdentifier}」`);
+      return;
+    }
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const appendLink: string = `\n\n[[${targetTitle}]]\n`;
+    target.contentDetail = (target.contentDetail || '') + appendLink;
+    target.updateTime = this.formatTime(new Date());
+    this.notes = this.notes.slice();
+    try {
+      await this.storage.saveDocument(context, target, target.contentDetail);
+    } catch (e) {
+      console.error(`保存双链失败: ${JSON.stringify(e)}`);
+    }
+    await this.persistSnapshot();
+    await this.refreshGraph();
+    this.notify(`已在《${target.title}》中建立指向[[${targetTitle}]]的双链`);
+  }
+
+  private handleAiCategorize(identifier: string, category: string): void {
+    const target: NoteItem | null = this.findNoteByIdentifier(identifier);
+    if (target === null) {
+      this.notify(`未找到笔记「${identifier}」`);
+      return;
+    }
+    this.commitMove(target, category);
+  }
+
+  private async handleAiCreateNote(title: string, category: string, tag: string, content: string): Promise<void> {
+    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const now: Date = new Date();
+    const cleanTitle: string = title.trim().length > 0 ? title.trim() : '未命名笔记';
+    const cleanCategory: string = category.trim().length > 0 ? category.trim() : '未分类';
+    const tagList: string[] = tag.trim().length > 0 ? tag.split(',').map((t: string) => t.trim()) : ['AI生成'];
+    const note: NoteItem = {
+      id: `note-${now.getTime()}`,
+      title: cleanTitle,
+      category: cleanCategory,
+      type: 'Markdown',
+      previewText: content.slice(0, 100).replace(/[#*`\n]/g, ' ').trim(),
+      tag: tagList.join(', '),
+      tagColor: '#2563EB',
+      updateTime: this.formatTime(now),
+      contentDetail: content.trim().length > 0 ? content : `# ${cleanTitle}\n\n`,
+      tags: tagList,
+      createdAt: now.getTime(),
+      updatedAt: now.getTime()
+    };
+    this.notes = [note].concat(this.notes);
+    try {
+      await this.storage.create(context, note);
+    } catch (error) {
+      console.error(`创建笔记失败: ${JSON.stringify(error)}`);
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    await this.refreshGraph();
+    this.notify(`已新建知识笔记《${cleanTitle}》`);
+  }
+
   // ==================================================================
   // 重命名 / 移动分类
   // ==================================================================
@@ -902,6 +1414,93 @@ struct Index {
   }
 
   // ==================================================================
+  // 收藏（星标）
+  // ==================================================================
+
+  /** 已收藏的笔记列表（回收站中的笔记不在 this.notes 内，无需再排除）。 */
+  private favoriteNotes(): NoteItem[] {
+    const result: NoteItem[] = [];
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].favorite === true) {
+        result.push(this.notes[i]);
+      }
+    }
+    return result;
+  }
+
+  /** 切换收藏态并落盘；同步刷新阅读器与侧栏角标。 */
+  private async toggleFavorite(note: NoteItem): Promise<void> {
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      this.notify('目标笔记不存在');
+      return;
+    }
+    target.favorite = target.favorite !== true;
+    this.notes = this.notes.slice();
+    if (this.readingOpen && this.readingNote.id === target.id) {
+      this.readingNote = target;
+    }
+    await this.persistSnapshot();
+    this.notify(target.favorite ? `已收藏「${target.title}」` : `已取消收藏「${target.title}」`);
+  }
+
+  /** 切换置顶状态并落盘 */
+  private async togglePinNote(note: NoteItem): Promise<void> {
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      return;
+    }
+    target.isPinned = target.isPinned !== true;
+    this.notes = this.notes.slice();
+    await this.persistSnapshot();
+    this.notify(target.isPinned ? `已置顶「${target.title}」` : `已取消置顶「${target.title}」`);
+  }
+
+  // ==================================================================
+  // 多标签（功能6）
+  // ==================================================================
+
+  /**
+   * 写回一篇笔记的标签列表。
+   * 同时把单值 tag 同步为首个标签，卡片/侧栏的旧展示位无需改造即可跟着更新。
+   */
+  private async applyTags(note: NoteItem, tags: string[]): Promise<void> {
+    const target: NoteItem | null = this.findNoteById(note.id);
+    if (target === null) {
+      this.notify('目标笔记不存在');
+      return;
+    }
+    const clean: string[] = [];
+    for (let i = 0; i < tags.length; i++) {
+      const t: string = tags[i].trim().replace(/^#/, '');
+      if (t.length === 0) {
+        continue;
+      }
+      let dup: boolean = false;
+      for (let j = 0; j < clean.length; j++) {
+        if (clean[j] === t) {
+          dup = true;
+          break;
+        }
+      }
+      if (!dup) {
+        clean.push(t);
+      }
+    }
+    target.tags = clean;
+    target.tag = clean.length > 0 ? clean[0] : '';
+    target.updatedAt = Date.now();
+    this.notes = this.notes.slice();
+    if (this.readingOpen && this.readingNote.id === target.id) {
+      this.readingNote = target;
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.refreshStats();
+    this.notify(`已更新「${target.title}」的标签`);
+  }
+
+  // ==================================================================
   // 待办日历
   // ==================================================================
 
@@ -917,7 +1516,7 @@ struct Index {
   }
 
   private async persistTodos(): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       await this.todoStorage.saveTodos(context, this.todos);
     } catch (error) {
@@ -927,7 +1526,7 @@ struct Index {
   }
 
   private async persistDayNotes(): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       await this.todoStorage.saveDayNotes(context, this.dayNotes);
     } catch (error) {
@@ -950,6 +1549,108 @@ struct Index {
     this.todos = [todo].concat(this.todos);
     await this.persistTodos();
     this.notify('已添加待办');
+  }
+
+  /**
+   * 黄金闭环：智能提取落地为双链知识卡并注入待办日程
+   */
+  private async handleCommitSmartExtract(content: SmartContent, selectedTasks: SmartTask[]): Promise<void> {
+    const context: common.UIAbilityContext = this.getAbilityContext();
+    const now = new Date();
+    const dateKey = `${now.getFullYear()}-${(now.getMonth() + 1 < 10 ? '0' : '') + (now.getMonth() + 1)}-${(now.getDate() < 10 ? '0' : '') + now.getDate()}`;
+    const noteId = `note-${Date.now()}`;
+
+    // 1. 将勾选的待办事项直接存入待办日历
+    for (let i = 0; i < selectedTasks.length; i++) {
+      const task = selectedTasks[i];
+      const deadlineText = task.deadline && task.deadline.length > 0 ? ` [截止: ${task.deadline}]` : '';
+      const todoNow = Date.now() + i;
+      const todo: TodoItem = {
+        id: `todo-${todoNow}-${this.todos.length}`,
+        date: dateKey,
+        title: `${task.title}${deadlineText}`,
+        done: false,
+        noteRefs: [noteId],
+        createdAt: todoNow,
+        updatedAt: todoNow
+      };
+      this.todos = [todo].concat(this.todos);
+    }
+    if (selectedTasks.length > 0) {
+      await this.persistTodos();
+    }
+
+    // 2. 构造 Markdown 正文、结构化块与双链
+    let body = `# ${content.title}\n\n`;
+    body += `> ✦ **AI 智能提炼摘要**：${content.summary}\n\n`;
+
+    if (content.keyPoints && content.keyPoints.length > 0) {
+      body += `## 核心要点\n\n`;
+      for (let i = 0; i < content.keyPoints.length; i++) {
+        body += `- ${content.keyPoints[i]}\n`;
+      }
+      body += `\n`;
+    }
+
+    if (content.entities && content.entities.length > 0) {
+      body += `## 关键实体与信息\n\n`;
+      for (let i = 0; i < content.entities.length; i++) {
+        const ent = content.entities[i];
+        body += `- **${ent.name}** (${ent.type})：${ent.description || '核心概念'}\n`;
+      }
+      body += `\n`;
+    }
+
+    if (selectedTasks.length > 0) {
+      body += `## 行动待办清单\n\n`;
+      for (let i = 0; i < selectedTasks.length; i++) {
+        const t = selectedTasks[i];
+        body += `- [ ] ${t.title}${t.deadline ? ' ⏳ ' + t.deadline : ''}\n`;
+      }
+      body += `\n`;
+    }
+
+    if (content.relations && content.relations.length > 0) {
+      body += `## 知识网络关联\n\n`;
+      for (let i = 0; i < content.relations.length; i++) {
+        const rel = content.relations[i];
+        body += `- [[${rel.targetTitle}]]（${rel.reason || '关联考点'}）\n`;
+      }
+      body += `\n`;
+    }
+
+    const tags = content.tags && content.tags.length > 0 ? content.tags : ['智能提取', '知识卡'];
+    body += tags.map((t: string) => `#${t}`).join(' ') + '\n';
+
+    // 3. 创建 NoteItem
+    const newNote: NoteItem = {
+      id: noteId,
+      title: content.title,
+      category: '计算机基础',
+      type: 'Markdown',
+      previewText: content.summary,
+      tag: tags[0],
+      tagColor: '#4F46E5',
+      updateTime: '刚刚',
+      contentDetail: body,
+      tags: tags,
+      aiSummary: content.summary,
+      aiTags: tags,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+
+    this.notes = [newNote].concat(this.notes);
+    try {
+      await this.storage.create(context, newNote);
+    } catch (e) {
+      console.warn(`保存智能笔记失败: ${JSON.stringify(e)}`);
+    }
+    await this.persistSnapshot();
+    this.rebuildSpaces();
+    this.refreshGraph();
+    this.openNote(newNote);
+    this.notify(`已生成「${content.title}」并同步 ${selectedTasks.length} 条待办！`);
   }
 
   /** 切换待办完成态：未完成（红）↔ 已完成（绿）。 */
@@ -1008,29 +1709,57 @@ struct Index {
     await this.persistDayNotes();
   }
 
+  /** 获取或自动生成自由白板笔记，用于自由白板画卷常驻工作区 */
+  private getOrCreateCanvasNote(): NoteItem {
+    for (let i = 0; i < this.notes.length; i++) {
+      if (this.notes[i].type.toLowerCase() === 'canvas' || this.notes[i].id === 'note-seed-handwriting' || this.notes[i].title === '自由白板演算') {
+        return this.notes[i];
+      }
+    }
+    const canvasNote: NoteItem = {
+      id: `canvas-global`,
+      title: '自由白板演算',
+      category: '速记灵感',
+      type: 'canvas',
+      previewText: '全功能多色自由手写草稿板',
+      tag: '手写',
+      tagColor: '#D97706',
+      updateTime: '刚刚',
+      contentDetail: '',
+      strokes: '[]'
+    };
+    this.notes = [canvasNote].concat(this.notes);
+    return canvasNote;
+  }
+
   /**
    * 通过系统文件选择器导入文档。
    * @param targetCategory 导入后归入的项目名，默认「未分类」
    */
   private async importDocument(targetCategory: string = '未分类'): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       const result: DocumentTransferResult = await this.storage.importDocument(context);
       if (result.status === 'imported' && result.document !== undefined) {
         const document: MarkdownDocument = result.document;
         const now: Date = new Date();
+        const isPdf: boolean = result.noteType === 'PDF' || document.title.toLowerCase().endsWith('.pdf');
         const note: NoteItem = {
           id: document.id,
           title: document.title,
           category: targetCategory,
-          // 类型必须采用服务层回传的结果：写死 'Markdown' 会让导入的 PDF
-          // 走不进原盘批注阅读器（ReaderWorkspace 按 type 分流）。
-          type: result.noteType !== undefined ? result.noteType : 'Markdown',
+          type: result.noteType !== undefined ? result.noteType : (isPdf ? 'PDF' : 'Markdown'),
+          sourceType: isPdf ? 'pdf' : 'document',
+          pageCount: isPdf ? 9 : 1,
+          pageInfo: isPdf ? '9 页 · 研读真题' : '',
           previewText: document.content.length > 48 ? `${document.content.substring(0, 48)}…` : document.content,
-          tag: '导入',
-          tagColor: '',
+          tag: isPdf ? 'PDF文献' : '导入',
+          tagColor: isPdf ? '#E11D48' : '#2563EB',
           updateTime: this.formatTime(now),
-          contentDetail: document.content
+          contentDetail: document.content,
+          tags: isPdf ? ['PDF文献', targetCategory] : ['导入'],
+          createdAt: now.getTime(),
+          updatedAt: now.getTime()
         };
         this.notes = [note].concat(this.notes);
         await this.persistSnapshot();
@@ -1047,6 +1776,12 @@ struct Index {
   }
 
   private handleSaved(note: NoteItem, content: string): void {
+    const now: number = Date.now();
+    note.updatedAt = now;
+    note.updateTime = this.formatTime(new Date(now));
+    if (note.createdAt === undefined) {
+      note.createdAt = now;
+    }
     let changed: boolean = false;
     for (let i = 0; i < this.notes.length; i++) {
       if (this.notes[i].id === note.id) {
@@ -1083,6 +1818,13 @@ struct Index {
         annotationPaneOpen: this.annotationPaneOpen,
         jumpToken: this.jumpToken,
         jumpLine: this.jumpLine,
+        favorite: this.readingNote.favorite === true,
+        onToggleFavorite: (note: NoteItem) => {
+          this.toggleFavorite(note);
+        },
+        onDeleteNote: (note: NoteItem) => {
+          this.deleteNote(note.id);
+        },
         onOutlineUpdated: (items: MarkdownOutlineItem[]) => {
           this.outlineItems = items;
         },
@@ -1105,13 +1847,26 @@ struct Index {
     } else if (this.activeNav === NAV_HOME) {
       HomeWorkspace({
         stats: this.stats,
-        recentNotes: this.notes.slice(0, 6),
+        recentNotes: this.notes,
         unresolvedLinks: this.linkGraph.unresolvedLinks,
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => this.createNote('未命名笔记'),
+        onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onImportDocument: () => this.importDocument(),
         onOpenGraph: () => {
           this.activeNav = NAV_GRAPH;
+        },
+        onUploadCover: (noteId: string, uri: string) => this.updateNoteCover(noteId, uri),
+        onTogglePin: (note: NoteItem) => this.togglePinNote(note),
+        onToggleFavorite: (note: NoteItem) => this.toggleFavorite(note),
+        onDeleteNote: (noteId: string) => this.deleteNote(noteId),
+        onSmartExtract: () => {
+          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+            this.smartExtractVisible = true;
+          });
+        },
+        onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
+        onNavigate: (navKey: string) => {
+          this.activeNav = navKey;
         }
       })
     } else if (this.activeNav === NAV_LIBRARY) {
@@ -1128,16 +1883,24 @@ struct Index {
           this.activeFilter = filter;
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => this.createNote('未命名笔记'),
+        onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onImportDocument: () => this.importDocument()
       })
     } else if (this.activeNav === NAV_GRAPH) {
       GraphWorkspace({
         graph: this.linkGraph,
         stats: this.stats,
+        allNotes: this.notes,
         onSelectNoteById: (noteId: string) => this.openNoteById(noteId),
-        onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title)
+        onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
+        onLinkNodes: (sourceIdentifier: string, targetTitle: string) => {
+          this.handleAiCreateLink(sourceIdentifier, targetTitle);
+        },
+        onCreateGalaxy: (galaxyName: string) => {
+          this.createProject(galaxyName, '#6366F1', '🪐');
+        }
       })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_TODO) {
       TodoWorkspace({
         dayNotes: this.dayNotes,
@@ -1153,6 +1916,7 @@ struct Index {
         },
         onOpenNote: (noteId: string) => this.openNoteById(noteId)
       })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else if (this.activeNav === NAV_TRASH) {
       TrashWorkspace({
         trash: this.trash,
@@ -1161,52 +1925,171 @@ struct Index {
         onPurge: (note: NoteItem) => this.purgeNote(note),
         onEmpty: () => this.emptyTrash()
       })
-    } else if (this.activeNav === NAV_CANVAS) {
-      PendingWorkspace({
-        title: '白板',
-        description: '自由画布与思维导图正在迁移到新的视图层，当前版本暂未开放。',
-        pendingItems: [
-          '星闪手写笔墨迹采样与压感',
-          '卡片拖拽与自动连线',
-          '白板内容导出为 Markdown'
-        ]
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+    } else if (this.activeNav === NAV_FAVORITE) {
+      FavoriteWorkspace({
+        favorites: this.favoriteNotes(),
+        onSelectNote: (note: NoteItem) => this.openNote(note)
       })
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+    } else if (this.activeNav === NAV_CANVAS) {
+      HandwritingCanvas({
+        note: this.getOrCreateCanvasNote(),
+        isScratchpad: false,
+        onSaved: (note: NoteItem, content: string) => this.handleSaved(note, content),
+        onSaveStateChange: (state: string) => {
+          this.saveState = state;
+        }
+      })
+      .width('100%')
+      .height('100%')
+      .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
     } else {
-      PendingWorkspace({
-        title: 'AI 墨客',
-        description: '端侧私有化 RAG 问答需要先完成本地索引，当前版本暂未开放。',
-        pendingItems: [
-          '本地 Markdown 分块与向量索引',
-          '带来源片段的引用式回答',
-          'L1 伴读 / L2 学情 / L3 跨库三层智能体'
-        ]
+      AiWorkspace({
+        allNotes: this.notes,
+        todos: this.todos,
+        stats: this.stats,
+        activeSessionId: this.activeSessionId,
+        currentNote: this.activeNoteId.length > 0
+          ? this.notes.find((note: NoteItem) => note.id === this.activeNoteId) ?? null
+          : null,
+        externalPinnedNotes: this.aiPinnedNotes,
+        prefilledPrompt: this.aiPrefilledPrompt,
+        toolsEnabled: this.aiToolsEnabled,
+        contextPanelOpen: this.contextPanelOpen,
+        onToggleContextPanel: () => {
+          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+            this.contextPanelOpen = !this.contextPanelOpen;
+          });
+        },
+        onPinnedNotesChange: (pinned: NoteItem[]) => {
+          this.aiPinnedNotes = pinned;
+        },
+        onSessionSaved: (session: ChatSession) => {
+          this.handleSessionSaved(session);
+        },
+        onContextChange: (citations: ChatCitation[], pinned: NoteItem[], layerLabel: string, modelLabel: string) => {
+          this.aiCitations = citations;
+          this.aiPinnedNotes = pinned;
+          this.aiLayerLabel = layerLabel;
+          this.aiModelLabel = modelLabel;
+        },
+        onOpenModelSettings: () => {
+          this.activeSheet = 'model_settings';
+        },
+        onCreateTodo: (dateKey: string, title: string) => {
+          this.addTodo(dateKey, title, []);
+        },
+        onAddTagToNote: (identifier: string, tags: string) => {
+          this.handleAiAddTag(identifier, tags);
+        },
+        onCreateLinkBetweenNotes: (sourceIdentifier: string, targetTitle: string) => {
+          this.handleAiCreateLink(sourceIdentifier, targetTitle);
+        },
+        onCategorizeNote: (identifier: string, category: string) => {
+          this.handleAiCategorize(identifier, category);
+        },
+        onCreateNewNote: (title: string, category: string, tag: string, content: string) => {
+          this.handleAiCreateNote(title, category, tag, content);
+        },
+        onOpenSearch: () => {
+          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+            this.searchVisible = true;
+          });
+        },
+        onSmartExtract: () => {
+          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+            this.smartExtractVisible = true;
+          });
+        }
       })
     }
   }
 
   @Builder
   contextContent() {
-    ContextDrawer({
-      outlineItems: this.outlineItems,
-      backlinks: this.currentBacklinks(),
-      unresolved: this.currentUnresolved(),
-      activeTab: this.contextTab,
-      closable: true,
-      onTabChange: (tab: string) => {
-        this.contextTab = tab;
-      },
-      onJumpToLine: (line: number) => {
-        this.jumpLine = line;
-        this.jumpToken = this.jumpToken + 1;
-      },
-      onOpenNote: (noteId: string) => this.openNoteById(noteId),
-      onCreateFromTitle: (title: string) => this.createNote(title),
-      onClose: () => {
-        animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
-          this.contextPanelOpen = false;
-        });
-      }
-    })
+    // AI 墨客下右栏改为「来源与上下文」；其余场景仍是笔记大纲 / 反向链接
+    if (this.activeNav === NAV_AI) {
+      AiSourcesPanel({
+        spaces: this.spaces,
+        citations: this.aiCitations,
+        pinnedNotes: this.aiPinnedNotes,
+        layerLabel: this.aiLayerLabel,
+        modelLabel: this.aiModelLabel,
+        currentDocTitle: this.activeNoteId.length > 0
+          ? (this.notes.find((note: NoteItem) => note.id === this.activeNoteId)?.title ?? '')
+          : '',
+        currentDocNote: this.activeNoteId.length > 0
+          ? (this.notes.find((note: NoteItem) => note.id === this.activeNoteId) ?? null)
+          : null,
+        allNotes: this.notes,
+        toolsEnabled: this.aiToolsEnabled,
+        onToggleTools: (enabled: boolean) => {
+          this.aiToolsEnabled = enabled;
+        },
+        onAddPinnedNote: (note: NoteItem) => {
+          if (!this.aiPinnedNotes.some((n: NoteItem) => n.id === note.id)) {
+            this.aiPinnedNotes = [...this.aiPinnedNotes, note];
+          }
+        },
+        onAddBatchPinnedNotes: (notes: NoteItem[]) => {
+          const currentIds: Set<string> = new Set(this.aiPinnedNotes.map((n: NoteItem) => n.id));
+          const newNotes: NoteItem[] = notes.filter((n: NoteItem) => !currentIds.has(n.id));
+          if (newNotes.length > 0) {
+            this.aiPinnedNotes = [...this.aiPinnedNotes, ...newNotes];
+          }
+        },
+        onRemovePinnedNote: (noteId: string) => {
+          this.aiPinnedNotes = this.aiPinnedNotes.filter((n: NoteItem) => n.id !== noteId);
+        },
+        onRemoveBatchPinnedNotes: (noteIds: string[]) => {
+          const removeIds: Set<string> = new Set(noteIds);
+          this.aiPinnedNotes = this.aiPinnedNotes.filter((n: NoteItem) => !removeIds.has(n.id));
+        },
+        onClearPinnedNotes: () => {
+          this.aiPinnedNotes = [];
+        },
+        onCreateProject: (name: string, color: string, icon: string) => {
+          this.createProject(name, color, icon);
+        },
+        onStartChatWithContext: (prefilled: string) => {
+          this.aiPrefilledPrompt = prefilled;
+        },
+        onPreviewSource: (c: ChatCitation) => this.openNoteById(c.noteId),
+        onOpenModelSettings: () => {
+          this.activeSheet = 'model_settings';
+        },
+        onClose: () => {
+          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+            this.contextPanelOpen = false;
+          });
+        }
+      })
+    } else {
+      ContextDrawer({
+        outlineItems: this.outlineItems,
+        backlinks: this.currentBacklinks(),
+        unresolved: this.currentUnresolved(),
+        recentNotes: this.notes.slice(0, 10),
+        activeTab: this.contextTab,
+        closable: true,
+        onTabChange: (tab: string) => {
+          this.contextTab = tab;
+        },
+        onJumpToLine: (line: number) => {
+          this.jumpLine = line;
+          this.jumpToken = this.jumpToken + 1;
+        },
+        onOpenNote: (noteId: string) => this.openNoteById(noteId),
+        onSelectNote: (note: NoteItem) => this.openNote(note),
+        onCreateFromTitle: (title: string) => this.createNote(title),
+        onClose: () => {
+          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+            this.contextPanelOpen = false;
+          });
+        }
+      })
+    }
   }
 
   build() {
@@ -1229,6 +2112,9 @@ struct Index {
         contextPanel: () => {
           this.contextContent();
         },
+        onBreadcrumbClick: (index: number, segment: string) => {
+          this.onBreadcrumbClick(index, segment);
+        },
         onToggleSidebar: () => {
           animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
             this.sidebarCollapsed = !this.sidebarCollapsed;
@@ -1249,6 +2135,9 @@ struct Index {
           this.readingOpen = false;
           this.fullScreenDocOpen = false;
           this.activeNoteId = '';
+          // 进入 AI 墨客自动切到对话列表；离开时切回资料树。
+          // 用户在 AI 里手动切回资料树后不会被强行拉回（只在导航变化时决策）。
+          this.sidebarMode = navKey === NAV_AI ? SIDEBAR_MODE_SESSIONS : SIDEBAR_MODE_TREE;
         },
         onToggleSpace: (spaceId: string) => {
           animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
@@ -1276,15 +2165,31 @@ struct Index {
           this.fullScreenDocOpen = false;
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => this.createNote('未命名笔记'),
+        onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onCreateNoteInProject: (title: string, projectName: string, type: string) => {
-          this.createNoteInProject(title, projectName, type);
+          // title 在这里作为命名层的默认标题（未命名笔记 / 未命名导图 / 未命名参考资料）
+          this.requestCreateNote(projectName, type, title);
+        },
+        onCreateFromTemplate: (templateName: string, projectName: string) => {
+          this.createNoteFromTemplate(templateName, projectName);
         },
         onImportIntoProject: (projectName: string) => {
           this.importDocument(projectName);
         },
         onCreateProject: (name: string, color: string, icon: string) => {
           this.createProject(name, color, icon);
+        },
+        onOpenCreateProject: () => {
+          animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+            this.createProjectOpen = true;
+          });
+        },
+        onOpenSheet: (type: string, project: SpaceFolder | null, note: NoteItem | null) => {
+          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            this.activeSheet = type;
+            this.sheetProject = project;
+            this.sheetNote = note;
+          });
         },
         onRenameProject: (oldName: string, newName: string) => {
           this.renameProject(oldName, newName);
@@ -1297,11 +2202,33 @@ struct Index {
         },
         trashCount: this.trash.length,
         todoPendingCount: this.todoPendingCount(),
+        sidebarMode: this.sidebarMode,
+        sessions: this.sessions,
+        activeSessionId: this.activeSessionId,
+        onSidebarModeChange: (mode: string) => {
+          this.sidebarMode = mode;
+        },
+        onSelectSession: (session: ChatSession) => {
+          this.handleSelectSession(session);
+        },
+        onNewSession: () => {
+          this.handleNewSession();
+        },
+        onDeleteSession: (sessionId: string) => {
+          this.handleDeleteSession(sessionId);
+        },
+        onTogglePinSession: (session: ChatSession) => {
+          this.handleTogglePinSession(session);
+        },
+        favoriteCount: this.favoriteNotes().length,
         onRenameNote: (note: NoteItem, newTitle: string) => {
           this.commitRename(note, newTitle);
         },
         onMoveNote: (note: NoteItem, category: string) => {
           this.commitMove(note, category);
+        },
+        onApplyTags: (note: NoteItem, tags: string[]) => {
+          this.applyTags(note, tags);
         },
         onOpenSettings: () => {
           animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
@@ -1321,6 +2248,9 @@ struct Index {
           onSaved: (note: NoteItem, content: string) => this.handleSaved(note, content),
           onSaveStateChange: (state: string) => {
             this.saveState = state;
+          },
+          onToggleFavorite: (note: NoteItem) => {
+            this.toggleFavorite(note);
           }
         })
         .width('100%')
@@ -1357,6 +2287,51 @@ struct Index {
         })
       }
 
+      if (this.smartExtractVisible) {
+        SmartExtractSheet({
+          onClose: () => {
+            animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+              this.smartExtractVisible = false;
+            });
+          },
+          onCommit: (content: SmartContent, selectedTasks: SmartTask[]) => {
+            this.handleCommitSmartExtract(content, selectedTasks);
+          }
+        })
+      }
+
+      if (this.pendingCreate !== null) {
+        NameNoteSheet({
+          defaultName: this.pendingDefaultName(),
+          onClose: () => {
+            animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+              this.pendingCreate = null;
+            });
+          },
+          onConfirm: (name: string) => {
+            animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+              this.commitPendingCreate(name);
+            });
+          }
+        })
+      }
+
+      // ---- 新建项目对话框（居中，初始「未命名项目」） ----
+      if (this.createProjectOpen) {
+        NewProjectSheet({
+          onClose: () => {
+            animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+              this.createProjectOpen = false;
+            });
+          },
+          onCreateProject: (name: string, color: string, icon: string) => {
+            this.createProject(name, color, icon);
+          }
+        })
+      }
+
+      // ---- 底部弹层（全屏遮罩，由 Sidebar 触发） ----
+      this.activeSheetContent()
       if (this.toastVisible) {
         Column() {
           Row({ space: 4 }) {

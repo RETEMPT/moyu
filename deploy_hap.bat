@@ -12,7 +12,7 @@ set "HVIGOR_BIN=%STUDIO_DIR%\tools\hvigor\bin\hvigorw.bat"
 set "HDC_BIN=%STUDIO_DIR%\sdk\default\openharmony\toolchains\hdc.exe"
 
 set "HAP_PATH=%~dp0entry\build\default\outputs\default\entry-default-unsigned.hap"
-set "BUNDLE_NAME=com.example.myapplication"
+set "BUNDLE_NAME=com.retempt.flowmind"
 set "ABILITY_NAME=EntryAbility"
 
 echo [1/4] Checking connected target devices...

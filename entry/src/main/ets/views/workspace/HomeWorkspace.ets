@@ -1,16 +1,16 @@
 /**
- * 首页工作台 (HomeWorkspace - UI/UX Pro Max 升级版)
+ * 首页工作台 (HomeWorkspace)
  *
- * 核心升级：
- *   1. Bento Grid 仪表盘美学：卡片式栅格、柔和环境微阴影与高对比度文字
- *   2. 视觉书架 2.0 (Visual Shelf)：
- *      - PDF 文档：玫瑰红专属封面头标、页码胶囊与高品质微排版
- *      - 稿纸/手写：琥珀色方格纸底纹、多色笔迹指示
- *      - Markdown 随笔：靛蓝色微标、富文本两行预览
- *   3. 快捷操作岛 (Quick Actions Island)：一键新建笔记、导入文档、进入知识图谱
- *   4. 触控微交互：0.97 scale 按压回弹与 springMotion(0.28, 0.76) 物理弹性过渡
+ * 逆向 Craft & Notion 旗舰级个人信息工作台体验：
+ *   1. 沉浸品牌欢迎区与快捷灵动胶囊操作岛
+ *   2. Bento 资产矩阵看板（支持一键点击联动穿梭到资料库与图谱）
+ *   3. 知识书架多维筛选（全部 / 置顶 / PDF真题 / 随堂手写 / 收藏）
+ *   4. 统一精巧双层卡片架构（上层封面/排版摘录 + 下层元数据条，杜绝封面遮挡文字）
+ *   5. 待拓展概念脉络（点击即刻物化为真实第二大脑笔记）
+ *   6. 物理弹性微交互与流畅动效 (springMotion)
  */
 import { curves } from '@kit.ArkUI';
+import { picker } from '@kit.CoreFileKit';
 import { ColorPalette, LayoutTokens, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
@@ -18,6 +18,22 @@ import { UnresolvedLink } from '../../common/types/LinkGraph';
 import { WorkspaceStats } from '../../common/types/WorkspaceStats';
 import { BrandMark } from '../brand/BrandMark';
 import { noteRenderKey } from '../../common/utils/ForEachKeys';
+import { NAV_LIBRARY, NAV_GRAPH } from '../../common/constants/WorkspaceConstants';
+
+export type ShelfFilterType = 'all' | 'pinned' | 'pdf' | 'handwriting' | 'favorite';
+
+interface FilterOption {
+  key: ShelfFilterType;
+  label: string;
+}
+
+const SHELF_FILTERS: FilterOption[] = [
+  { key: 'all', label: '全部' },
+  { key: 'pinned', label: '📌 置顶' },
+  { key: 'pdf', label: '🗎 PDF真题' },
+  { key: 'handwriting', label: '✎ 随堂稿纸' },
+  { key: 'favorite', label: '⭐ 重点收藏' }
+];
 
 @Component
 export struct HomeWorkspace {
@@ -29,17 +45,40 @@ export struct HomeWorkspace {
   onCreateNote: () => void = () => {};
   onImportDocument: () => void = () => {};
   onOpenGraph: () => void = () => {};
+  onUploadCover: (noteId: string, uri: string) => void = () => {};
+  onTogglePin: (note: NoteItem) => void = () => {};
+  onToggleFavorite: (note: NoteItem) => void = () => {};
+  onDeleteNote: (noteId: string) => void = () => {};
+  onSmartExtract: () => void = () => {};
+  onOpenNoteByTitle: (title: string) => void = () => {};
+  onNavigate: (navKey: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @State pressedCardId: string = '';
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
+
+  @State private activeShelfFilter: ShelfFilterType = 'all';
+  @State private pressedCardId: string = '';
+  @State private hoveredCardId: string = '';
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
   }
 
-  // ------------------------------------------------------------------
-  // 辅助判定
-  // ------------------------------------------------------------------
+  /** 打开系统相册选择封面图 */
+  private async pickCover(noteId: string): Promise<void> {
+    try {
+      const photoPicker = new picker.PhotoViewPicker();
+      const options = new picker.PhotoSelectOptions();
+      options.MIMEType = picker.PhotoViewMIMETypes.IMAGE_TYPE;
+      options.maxSelectNumber = 1;
+      const result = await photoPicker.select(options);
+      if (result.photoUris && result.photoUris.length > 0) {
+        this.onUploadCover(noteId, result.photoUris[0]);
+      }
+    } catch (err) {
+      // 静默处理用户取消
+    }
+  }
 
   private isPdfNote(note: NoteItem): boolean {
     const t = note.type.toLowerCase();
@@ -51,234 +90,143 @@ export struct HomeWorkspace {
     return t === 'canvas' || t === '白板' || t === '白纸笔记' || t === 'handwriting' || t === '稿纸';
   }
 
+  /** 按筛选条件过滤并保证置顶在前 */
+  private displayNotes(): NoteItem[] {
+    let list: NoteItem[] = this.recentNotes.slice();
+
+    if (this.activeShelfFilter === 'pinned') {
+      list = list.filter((n: NoteItem) => n.isPinned === true);
+    } else if (this.activeShelfFilter === 'pdf') {
+      list = list.filter((n: NoteItem) => this.isPdfNote(n));
+    } else if (this.activeShelfFilter === 'handwriting') {
+      list = list.filter((n: NoteItem) => this.isHandwritingNote(n));
+    } else if (this.activeShelfFilter === 'favorite') {
+      list = list.filter((n: NoteItem) => n.favorite === true);
+    }
+
+    list.sort((a: NoteItem, b: NoteItem) => {
+      const pinA: number = a.isPinned === true ? 1 : 0;
+      const pinB: number = b.isPinned === true ? 1 : 0;
+      if (pinB !== pinA) {
+        return pinB - pinA;
+      }
+      return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    });
+
+    return list;
+  }
+
   // ------------------------------------------------------------------
-  // 视图构建：封面与卡片生成器
+  // 卡片子组件：双层架构 (Top Cover + Bottom Info)
   // ------------------------------------------------------------------
 
-  /** 1. PDF 专属封面卡片 */
-  @Builder
-  pdfCoverCard(note: NoteItem) {
-    Column() {
-      // 封面区域
-      Column() {
-        // 顶部红色 PDF 标头与页数
-        Row() {
-          Text('PDF')
-            .fontSize(TypographyTokens.TINY)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(Color.White)
-            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-            .borderRadius(4)
-            .backgroundColor('#E11D48')
-          Blank()
-          Text(note.pageInfo && note.pageInfo.length > 0 ? note.pageInfo : '考研试卷')
-            .fontSize(TypographyTokens.TINY)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkMuted)
-            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-            .borderRadius(4)
-            .backgroundColor(this.isDarkMode ? '#332226' : '#FFE4E6')
-        }
-        .width('100%')
-        .padding({ left: 12, right: 12, top: 10 })
-
-        // 中部大图标与文档名
-        Column({ space: 6 }) {
-          Text('🗎')
-            .fontSize(30)
-            .fontColor('#E11D48')
-          Text(note.title)
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkPrimary)
-            .maxLines(2)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .textAlign(TextAlign.Center)
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-        .padding({ left: 10, right: 10 })
-      }
-      .width('100%')
-      .height(108)
-      .borderRadius({ topLeft: 12, topRight: 12 })
-      .backgroundColor(this.isDarkMode ? '#282424' : '#FFF1F2')
-      .border({ width: { bottom: 1 }, color: { bottom: this.isDarkMode ? '#3A2E30' : '#FFE4E6' } })
-
-      // 底部信息条
-      Row({ space: 6 }) {
-        Text(note.category)
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkSecondary)
-          .layoutWeight(1)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(note.updateTime)
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-      }
-      .width('100%')
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-    }
-    .width('100%')
-    .borderRadius(14)
-    .backgroundColor(this.palette().surface)
-    .shadow({ radius: 10, color: this.isDarkMode ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.04)', offsetY: 2 })
-    .border({ width: 1, color: this.palette().borderSubtle })
-  }
-
-  /** 2. 白纸底手写笔记专属卡片 */
-  @Builder
-  handwritingCoverCard(note: NoteItem) {
-    Column() {
-      // 封面区域
-      Column() {
-        Row() {
-          Text('稿纸演算')
-            .fontSize(TypographyTokens.TINY)
-            .fontWeight(FontWeight.Medium)
-            .fontColor('#D97706')
-            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-            .borderRadius(4)
-            .backgroundColor(this.isDarkMode ? '#362818' : '#FEF3C7')
-          Blank()
-          Text('✎ 手写笔迹')
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkMuted)
-        }
-        .width('100%')
-        .padding({ left: 12, right: 12, top: 10 })
-
-        Column({ space: 6 }) {
-          Text('⬡')
-            .fontSize(28)
-            .fontColor('#D97706')
-          Text(note.title)
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkPrimary)
-            .maxLines(2)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .textAlign(TextAlign.Center)
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-        .padding({ left: 10, right: 10 })
-      }
-      .width('100%')
-      .height(108)
-      .borderRadius({ topLeft: 12, topRight: 12 })
-      .backgroundColor(this.isDarkMode ? '#28241E' : '#FFFBEB')
-      .border({ width: { bottom: 1 }, color: { bottom: this.isDarkMode ? '#3D3424' : '#FEF3C7' } })
-
-      Row({ space: 6 }) {
-        Text(note.category)
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkSecondary)
-          .layoutWeight(1)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(note.updateTime)
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-      }
-      .width('100%')
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-    }
-    .width('100%')
-    .borderRadius(14)
-    .backgroundColor(this.palette().surface)
-    .shadow({ radius: 10, color: this.isDarkMode ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.04)', offsetY: 2 })
-    .border({ width: 1, color: this.palette().borderSubtle })
-  }
-
-  /** 3. 纯文字随笔卡片 (Notion 极简排版封面) */
-  @Builder
-  textCoverCard(note: NoteItem) {
-    Column() {
-      Column() {
-        Row() {
-          Text('Markdown')
-            .fontSize(TypographyTokens.TINY)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().accent)
-            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-            .borderRadius(4)
-            .backgroundColor(this.palette().accentSoft)
-          Blank()
-          Text('▤')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkMuted)
-        }
-        .width('100%')
-        .padding({ left: 12, right: 12, top: 10 })
-
-        Column({ space: 4 }) {
-          Text(note.title)
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.palette().inkPrimary)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
-          Text(note.previewText)
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkSecondary)
-            .maxLines(2)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .width('100%')
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-        .padding({ left: 12, right: 12 })
-      }
-      .width('100%')
-      .height(108)
-      .borderRadius({ topLeft: 12, topRight: 12 })
-      .backgroundColor(this.palette().surfaceSubtle)
-      .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
-
-      Row({ space: 6 }) {
-        Text(note.category)
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkSecondary)
-          .layoutWeight(1)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(note.updateTime)
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-      }
-      .width('100%')
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-    }
-    .width('100%')
-    .borderRadius(14)
-    .backgroundColor(this.palette().surface)
-    .shadow({ radius: 10, color: this.isDarkMode ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.04)', offsetY: 2 })
-    .border({ width: 1, color: this.palette().borderSubtle })
-  }
-
-  /** 统一卡片入口与体感响应 */
+  /** 统一卡片入口与微交互 */
   @Builder
   shelfCard(note: NoteItem) {
-    Column() {
-      if (this.isPdfNote(note)) {
-        this.pdfCoverCard(note)
-      } else if (this.isHandwritingNote(note)) {
-        this.handwritingCoverCard(note)
-      } else {
-        this.textCoverCard(note)
+    Stack({ alignContent: Alignment.BottomEnd }) {
+      Column() {
+        // ---- 1. 上半部分：封面/排版展示区 (高 106vp) ----
+        Stack({ alignContent: Alignment.TopEnd }) {
+          if (note.coverUrl && note.coverUrl.length > 0) {
+            // 用户自定义图片封面
+            Image(note.coverUrl)
+              .width('100%')
+              .height('100%')
+              .objectFit(ImageFit.Cover)
+          } else if (this.isPdfNote(note)) {
+            // PDF 专属典雅排版
+            this.pdfVisualCover(note)
+          } else if (this.isHandwritingNote(note)) {
+            // 稿纸手写专属温暖排版
+            this.handwritingVisualCover(note)
+          } else {
+            // Markdown 随笔 Notion 极简排版
+            this.markdownVisualCover(note)
+          }
+
+          // 悬浮相册更换按钮（仅 hover/按下出现）
+          if (this.hoveredCardId === note.id || this.pressedCardId === note.id) {
+            Text('📷')
+              .fontSize(12)
+              .width(26)
+              .height(26)
+              .textAlign(TextAlign.Center)
+              .borderRadius(13)
+              .backgroundColor('rgba(0,0,0,0.55)')
+              .margin({ right: 8, bottom: 8 })
+              .onClick(() => {
+                this.pickCover(note.id);
+              })
+          }
+        }
+        .width('100%')
+        .height(106)
+        .borderRadius({ topLeft: 13, topRight: 13 })
+        .clip(true)
+
+        // ---- 2. 下半部分：统一元数据信息条 (高 50vp) ----
+        Column({ space: 3 }) {
+          Row({ space: 6 }) {
+            Text(note.title.length === 0 ? '未命名笔记' : note.title)
+              .fontSize(TypographyTokens.BODY_REGULAR)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.palette().inkPrimary)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .layoutWeight(1)
+
+            if (note.isPinned === true) {
+              Text('📌')
+                .fontSize(11)
+            }
+            if (note.favorite === true) {
+              Text('★')
+                .fontSize(11)
+                .fontColor(this.palette().warning)
+            }
+          }
+          .width('100%')
+
+          Row({ space: 8 }) {
+            Text(note.category.length === 0 ? '未分类' : note.category)
+              .fontSize(TypographyTokens.TINY)
+              .fontColor(this.palette().accent)
+              .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+              .borderRadius(4)
+              .backgroundColor(this.palette().accentSoft)
+              .maxLines(1)
+
+            Blank()
+
+            Text(note.updateTime)
+              .fontSize(TypographyTokens.TINY)
+              .fontColor(this.palette().inkMuted)
+          }
+          .width('100%')
+        }
+        .width('100%')
+        .height(50)
+        .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+        .backgroundColor(this.palette().surface)
+        .borderRadius({ bottomLeft: 13, bottomRight: 13 })
+        .justifyContent(FlexAlign.Center)
       }
+      .width('100%')
+      .height(156)
     }
+    .width('100%')
+    .height(156)
+    .borderRadius(14)
+    .backgroundColor(this.palette().surface)
+    .shadow({ radius: 10, color: this.isDarkMode ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.04)', offsetY: 2 })
+    .border({ width: 1, color: this.palette().borderSubtle })
     .scale({
       x: this.pressedCardId === note.id ? AnimationTokens.SCALE_PRESSED : 1.0,
       y: this.pressedCardId === note.id ? AnimationTokens.SCALE_PRESSED : 1.0
     })
-    .animation({ curve: curves.springMotion(0.25, 0.76) })
+    .animation({ curve: curves.springMotion(0.28, 0.76) })
+    .bindContextMenu(this.cardContextMenu(note), ResponseType.LongPress)
+    .bindContextMenu(this.cardContextMenu(note), ResponseType.RightClick)
     .onTouch((event: TouchEvent) => {
       if (event.type === TouchType.Down) {
         this.pressedCardId = note.id;
@@ -286,91 +234,276 @@ export struct HomeWorkspace {
         this.pressedCardId = '';
       }
     })
+    .onHover((isHover: boolean) => {
+      this.hoveredCardId = isHover ? note.id : '';
+    })
     .onClick(() => {
       this.onSelectNote(note);
     })
   }
 
+  /** PDF 视觉封面 */
+  @Builder
+  pdfVisualCover(note: NoteItem) {
+    Column() {
+      Row() {
+        Text('PDF')
+          .fontSize(TypographyTokens.TINY)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(Color.White)
+          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+          .borderRadius(4)
+          .backgroundColor('#DC2626')
+        Blank()
+        Text(note.pageInfo && note.pageInfo.length > 0 ? note.pageInfo : '真题试卷')
+          .fontSize(TypographyTokens.TINY)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.isDarkMode ? '#FCA5A5' : '#DC2626')
+          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+          .borderRadius(4)
+          .backgroundColor(this.isDarkMode ? '#3A2022' : '#FEE2E2')
+      }
+      .width('100%')
+      .padding({ left: 10, right: 10, top: 10 })
+
+      Column({ space: 4 }) {
+        Text('🗎')
+          .fontSize(28)
+          .fontColor('#DC2626')
+        Text(note.title)
+          .fontSize(TypographyTokens.CAPTION)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.palette().inkPrimary)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.Center)
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .justifyContent(FlexAlign.Center)
+      .padding({ left: 8, right: 8 })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.isDarkMode ? '#241D1E' : '#FFF1F2')
+    .border({ width: { bottom: 1 }, color: { bottom: this.isDarkMode ? '#362829' : '#FFE4E6' } })
+  }
+
+  /** 稿纸手写视觉封面 */
+  @Builder
+  handwritingVisualCover(note: NoteItem) {
+    Column() {
+      Row() {
+        Text('稿纸演算')
+          .fontSize(TypographyTokens.TINY)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#D97706')
+          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+          .borderRadius(4)
+          .backgroundColor(this.isDarkMode ? '#382B1C' : '#FEF3C7')
+        Blank()
+        Text('✎ 矢量墨水')
+          .fontSize(TypographyTokens.TINY)
+          .fontColor(this.palette().inkMuted)
+      }
+      .width('100%')
+      .padding({ left: 10, right: 10, top: 10 })
+
+      Column({ space: 4 }) {
+        Text('✎')
+          .fontSize(28)
+          .fontColor('#D97706')
+        Text(note.title)
+          .fontSize(TypographyTokens.CAPTION)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.palette().inkPrimary)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .textAlign(TextAlign.Center)
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .justifyContent(FlexAlign.Center)
+      .padding({ left: 8, right: 8 })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.isDarkMode ? '#26221D' : '#FFFBEB')
+    .border({ width: { bottom: 1 }, color: { bottom: this.isDarkMode ? '#3D3425' : '#FEF3C7' } })
+  }
+
+  /** Markdown 随笔极简排版封面 */
+  @Builder
+  markdownVisualCover(note: NoteItem) {
+    Column() {
+      Row() {
+        Text('Markdown')
+          .fontSize(TypographyTokens.TINY)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.palette().accent)
+          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+          .borderRadius(4)
+          .backgroundColor(this.palette().accentSoft)
+        Blank()
+        Text('▤')
+          .fontSize(TypographyTokens.CAPTION)
+          .fontColor(this.palette().inkMuted)
+      }
+      .width('100%')
+      .padding({ left: 10, right: 10, top: 10 })
+
+      Column({ space: 4 }) {
+        Text(note.previewText.length > 0 ? note.previewText : note.title)
+          .fontSize(TypographyTokens.TINY)
+          .fontColor(this.palette().inkSecondary)
+          .lineHeight(16)
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .justifyContent(FlexAlign.Center)
+      .padding({ left: 12, right: 12 })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor(this.palette().surfaceSubtle)
+    .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
+  }
+
+  /** 右键/长按菜单 */
+  @Builder
+  cardContextMenu(note: NoteItem) {
+    Menu() {
+      MenuItem({
+        content: note.isPinned === true ? '📌 取消置顶' : '📌 置顶此文档'
+      })
+      .onClick(() => {
+        this.onTogglePin(note);
+      })
+
+      MenuItem({
+        content: note.favorite === true ? '★ 取消收藏' : '☆ 加入收藏'
+      })
+      .onClick(() => {
+        this.onToggleFavorite(note);
+      })
+
+      MenuItem({
+        content: '📷 更换封面'
+      })
+      .onClick(() => {
+        this.pickCover(note.id);
+      })
+
+      MenuItem({
+        content: '🗑 移至回收站'
+      })
+      .onClick(() => {
+        this.onDeleteNote(note.id);
+      })
+    }
+  }
+
   // ------------------------------------------------------------------
-  // Bento 统计卡片 (Bento Grid)
+  // Bento 智能统计卡片
   // ------------------------------------------------------------------
 
   @Builder
-  statBentoCard(icon: string, label: string, value: string, hint: string, iconBg: string) {
-    Column({ space: 6 }) {
+  statBentoCard(icon: string, label: string, value: string, hint: string, iconBg: string, targetNav: string) {
+    Column({ space: 8 }) {
       Row() {
         Row() {
           Text(icon)
-            .fontSize(14)
+            .fontSize(15)
         }
-        .width(26)
-        .height(26)
-        .borderRadius(6)
+        .width(32)
+        .height(32)
+        .borderRadius(8)
         .backgroundColor(iconBg)
         .justifyContent(FlexAlign.Center)
 
         Blank()
 
         Text(value)
-          .fontSize(TypographyTokens.TITLE_HERO)
+          .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.palette().inkPrimary)
       }
       .width('100%')
+      .alignItems(VerticalAlign.Center)
 
-      Column({ space: 1 }) {
+      Column({ space: 2 }) {
         Text(label)
           .fontSize(TypographyTokens.CAPTION)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.palette().inkPrimary)
+          .maxLines(1)
         Text(hint)
           .fontSize(TypographyTokens.TINY)
           .fontColor(this.palette().inkMuted)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
       }
+      .width('100%')
       .alignItems(HorizontalAlign.Start)
     }
-    .layoutWeight(1)
-    .padding(14)
+    .width('100%')
+    .height(92)
+    .padding({ left: 14, right: 14, top: 12, bottom: 12 })
     .borderRadius(14)
     .backgroundColor(this.palette().surface)
     .border({ width: 1, color: this.palette().borderSubtle })
-    .shadow({ radius: 8, color: this.isDarkMode ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.03)', offsetY: 2 })
-  }
-
-  @Builder
-  sectionLabel(text: string) {
-    Text(text)
-      .fontSize(TypographyTokens.CAPTION)
-      .fontWeight(FontWeight.Medium)
-      .fontColor(this.palette().inkSecondary)
-      .width('100%')
-      .margin({ bottom: 8 })
+    .shadow({ radius: 6, color: this.isDarkMode ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.03)', offsetY: 2 })
+    .hoverEffect(HoverEffect.Highlight)
+    .onClick(() => {
+      if (targetNav.length > 0) {
+        this.onNavigate(targetNav);
+      }
+    })
   }
 
   build() {
     Scroll() {
       Column() {
         Column() {
-          // ---- 1. 品牌欢迎与快捷操作岛 ----
-          Row({ space: 14 }) {
-            BrandMark({ markSize: 46 })
-            Column({ space: 4 }) {
-              Text('墨语 · 第二大脑')
-                .fontSize(TypographyTokens.TITLE_HERO)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(this.palette().inkPrimary)
-              Text('离线优先、隐私可控，让每篇随想与文档都连成思考的星系。')
-                .fontSize(TypographyTokens.BODY_REGULAR)
-                .fontColor(this.palette().inkSecondary)
-            }
-            .alignItems(HorizontalAlign.Start)
-            .layoutWeight(1)
+          // ---- 1. 顶层品牌与快捷操作岛 ----
+          Column({ space: 14 }) {
+            Row({ space: 14 }) {
+              BrandMark({ markSize: 46 })
+              Column({ space: 4 }) {
+                Row({ space: 8 }) {
+                  Text('墨语')
+                    .fontSize(TypographyTokens.TITLE_HERO)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor(this.palette().inkPrimary)
+                  Text('第二大脑')
+                    .fontSize(TypographyTokens.CAPTION)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor(this.palette().accent)
+                    .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+                    .borderRadius(999)
+                    .backgroundColor(this.palette().accentSoft)
+                }
+                .alignItems(VerticalAlign.Bottom)
 
-            // 快捷操作岛
+                Text('离线优先、隐私可控，让每篇随想与文档都连成思考的星系。')
+                  .fontSize(TypographyTokens.BODY_REGULAR)
+                  .fontColor(this.palette().inkSecondary)
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Center)
+
+            // 快捷操作胶囊岛（统一高度 36vp、统一内边距与字体风格）
             Row({ space: 8 }) {
-              Row({ space: 4 }) {
-                Text('＋')
-                  .fontSize(12)
+              // 主要行动：记随笔
+              Row({ space: 5 }) {
+                Text('+')
+                  .fontSize(14)
                   .fontWeight(FontWeight.Bold)
                   .fontColor(Color.White)
                 Text('记随笔')
@@ -378,192 +511,218 @@ export struct HomeWorkspace {
                   .fontWeight(FontWeight.Medium)
                   .fontColor(Color.White)
               }
-              .padding({ left: 14, right: 14, top: 8, bottom: 8 })
-              .borderRadius(16)
+              .height(36)
+              .padding({ left: 14, right: 14 })
+              .borderRadius(18)
               .backgroundColor(this.palette().accent)
+              .shadow({ radius: 6, color: 'rgba(37,99,235,0.22)', offsetY: 2 })
               .hoverEffect(HoverEffect.Highlight)
               .onClick(() => this.onCreateNote())
 
-              Row({ space: 4 }) {
+              // 智能提取
+              Row({ space: 5 }) {
+                Text('✦')
+                  .fontSize(13)
+                  .fontColor(this.palette().accent)
+                Text('智能提取')
+                  .fontSize(TypographyTokens.CAPTION)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(this.palette().accent)
+              }
+              .height(36)
+              .padding({ left: 14, right: 14 })
+              .borderRadius(18)
+              .backgroundColor(this.palette().accentSoft)
+              .border({ width: 1, color: this.palette().borderSubtle })
+              .hoverEffect(HoverEffect.Highlight)
+              .onClick(() => this.onSmartExtract())
+
+              // 导入文档
+              Row({ space: 5 }) {
                 Text('🗎')
-                  .fontSize(12)
+                  .fontSize(13)
                   .fontColor(this.palette().inkPrimary)
                 Text('导入文档')
                   .fontSize(TypographyTokens.CAPTION)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(this.palette().inkPrimary)
               }
-              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-              .borderRadius(16)
+              .height(36)
+              .padding({ left: 14, right: 14 })
+              .borderRadius(18)
               .backgroundColor(this.palette().surface)
               .border({ width: 1, color: this.palette().borderSubtle })
               .hoverEffect(HoverEffect.Highlight)
               .onClick(() => this.onImportDocument())
 
-              Row({ space: 4 }) {
+              // 星系图谱
+              Row({ space: 5 }) {
                 Text('◍')
-                  .fontSize(12)
+                  .fontSize(13)
                   .fontColor(this.palette().accent)
                 Text('星系图谱')
                   .fontSize(TypographyTokens.CAPTION)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(this.palette().accent)
               }
-              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-              .borderRadius(16)
-              .backgroundColor(this.palette().accentSoft)
+              .height(36)
+              .padding({ left: 14, right: 14 })
+              .borderRadius(18)
+              .backgroundColor(this.palette().surface)
+              .border({ width: 1, color: this.palette().borderSubtle })
               .hoverEffect(HoverEffect.Highlight)
               .onClick(() => this.onOpenGraph())
             }
+            .width('100%')
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+          .margin({ bottom: 20 })
+
+          // ---- 2. Bento 资产矩阵看板 ----
+          GridRow({ columns: this.isPhone ? 2 : 4, gutter: this.isPhone ? 10 : 12 }) {
+            GridCol() {
+              this.statBentoCard('📄', '本地笔记', `${this.stats.noteCount}`, 'Markdown 事实源', 'rgba(37,99,235,0.12)', NAV_LIBRARY)
+            }
+            GridCol() {
+              this.statBentoCard('🔗', '双向链接', `${this.stats.linkCount}`, '[[概念]] 已解析', 'rgba(99,102,241,0.12)', NAV_GRAPH)
+            }
+            GridCol() {
+              this.statBentoCard('✦', '待创建概念', `${this.stats.unresolvedCount}`, '思维脉络待扩充', 'rgba(217,119,6,0.12)', NAV_GRAPH)
+            }
+            GridCol() {
+              this.statBentoCard('🏷', '聚合标签', `${this.stats.tagCount}`, '#标签 自动归档', 'rgba(5,150,105,0.12)', NAV_LIBRARY)
+            }
+          }
+          .width('100%')
+          .margin({ bottom: 22 })
+
+          // ---- 3. 知识书架与多维筛选 ----
+          Row() {
+            Text('知识书架')
+              .fontSize(TypographyTokens.BODY_LARGE)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.palette().inkPrimary)
+
+            Blank()
+
+            // 筛选标签栏 (横向滚动)
+            Scroll() {
+              Row({ space: 4 }) {
+                ForEach(SHELF_FILTERS, (item: FilterOption) => {
+                  Text(item.label)
+                    .fontSize(TypographyTokens.TINY)
+                    .fontWeight(this.activeShelfFilter === item.key ? FontWeight.Bold : FontWeight.Normal)
+                    .fontColor(this.activeShelfFilter === item.key ? this.palette().accent : this.palette().inkSecondary)
+                    .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+                    .borderRadius(8)
+                    .backgroundColor(this.activeShelfFilter === item.key ? this.palette().accentSoft : this.palette().surfaceSubtle)
+                    .hoverEffect(HoverEffect.Highlight)
+                    .onClick(() => {
+                      animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
+                        this.activeShelfFilter = item.key;
+                      });
+                    })
+                }, (item: FilterOption) => item.key)
+              }
+            }
+            .scrollable(ScrollDirection.Horizontal)
+            .scrollBar(BarState.Off)
           }
           .width('100%')
           .alignItems(VerticalAlign.Center)
-          .margin({ bottom: 20 })
+          .margin({ bottom: 12 })
 
-          // ---- 2. Bento 统计卡片栅格 ----
-          Row({ space: 12 }) {
-            this.statBentoCard('📄', '本地笔记', `${this.stats.noteCount}`, 'Markdown 事实源', 'rgba(37,99,235,0.12)')
-            this.statBentoCard('🔗', '双向链接', `${this.stats.linkCount}`, '[[概念]] 已解析', 'rgba(99,102,241,0.12)')
-            this.statBentoCard('✦', '待创建概念', `${this.stats.unresolvedCount}`, '思维脉络待扩充', 'rgba(217,119,6,0.12)')
-            this.statBentoCard('🏷', '聚合标签', `${this.stats.tagCount}`, '#标签 自动归档', 'rgba(5,150,105,0.12)')
+          if (this.displayNotes().length === 0) {
+            Column({ space: 8 }) {
+              Text('该分类下暂无文档')
+                .fontSize(TypographyTokens.BODY_REGULAR)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.palette().inkPrimary)
+              Text('新建或导入一篇文档，立刻开启知识沉淀。')
+                .fontSize(TypographyTokens.CAPTION)
+                .fontColor(this.palette().inkMuted)
+            }
+            .width('100%')
+            .padding(28)
+            .borderRadius(14)
+            .backgroundColor(this.palette().surface)
+            .border({ width: 1, color: this.palette().borderSubtle })
+            .alignItems(HorizontalAlign.Center)
+            .margin({ bottom: 20 })
+          } else {
+            GridRow({ columns: this.isPhone ? 2 : 3, gutter: this.isPhone ? 10 : 14 }) {
+              ForEach(this.displayNotes(), (note: NoteItem) => {
+                GridCol() {
+                  this.shelfCard(note)
+                }
+              }, (note: NoteItem) => noteRenderKey(note))
+            }
+            .width('100%')
+            .margin({ bottom: 24 })
           }
-          .width('100%')
-          .margin({ bottom: 26 })
 
-          // ---- 3. 主体双栏：左侧列表流 + 右侧视觉书架 ----
-          Row({ space: 24 }) {
-            // 左侧：最近文字流与待解析概念
-            Column() {
-              this.sectionLabel('最近动态')
-              if (this.recentNotes.length === 0) {
-                Column({ space: 8 }) {
-                  Text('还没有本地笔记')
-                    .fontSize(TypographyTokens.BODY_REGULAR)
-                    .fontWeight(FontWeight.Medium)
-                    .fontColor(this.palette().inkPrimary)
-                  Text('新建或导入一篇文档，立刻开启知识沉淀。')
-                    .fontSize(TypographyTokens.CAPTION)
-                    .fontColor(this.palette().inkMuted)
-                }
-                .width('100%')
-                .padding(20)
-                .borderRadius(14)
-                .backgroundColor(this.palette().surface)
-                .border({ width: 1, color: this.palette().borderSubtle })
-                .alignItems(HorizontalAlign.Start)
-              } else {
-                Column({ space: 6 }) {
-                  ForEach(this.recentNotes.slice(0, 5), (note: NoteItem) => {
-                    Row({ space: 10 }) {
-                      Text(this.isPdfNote(note) ? '🗎' : (this.isHandwritingNote(note) ? '⬡' : '▤'))
-                        .fontSize(TypographyTokens.BODY_REGULAR)
-                        .fontColor(this.isPdfNote(note) ? '#E11D48' : (this.isHandwritingNote(note) ? '#D97706' : this.palette().link))
-
-                      Column({ space: 2 }) {
-                        Text(note.title)
-                          .fontSize(TypographyTokens.BODY_REGULAR)
-                          .fontWeight(FontWeight.Medium)
-                          .fontColor(this.palette().inkPrimary)
-                          .maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        Text(note.previewText)
-                          .fontSize(TypographyTokens.TINY)
-                          .fontColor(this.palette().inkMuted)
-                          .maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      }
-                      .alignItems(HorizontalAlign.Start)
-                      .layoutWeight(1)
-
-                      Text(note.updateTime)
-                        .fontSize(TypographyTokens.TINY)
-                        .fontColor(this.palette().inkMuted)
-                    }
-                    .width('100%')
-                    .padding({ left: 10, right: 10, top: 9, bottom: 9 })
-                    .borderRadius(10)
-                    .backgroundColor(this.palette().surface)
-                    .border({ width: 1, color: this.palette().borderSubtle })
-                    .hoverEffect(HoverEffect.Highlight)
-                    .onClick(() => this.onSelectNote(note))
-                  }, (note: NoteItem) => noteRenderKey(note))
-                }
-                .width('100%')
+          // ---- 4. 待创建的概念网络 (思维脉络) ----
+          if (this.unresolvedLinks.length > 0) {
+            Column({ space: 8 }) {
+              Row() {
+                Text('待拓展的思维脉络')
+                  .fontSize(TypographyTokens.BODY_REGULAR)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor(this.palette().inkPrimary)
+                Blank()
+                Text(`${this.unresolvedLinks.length} 处概念引用待物化`)
+                  .fontSize(TypographyTokens.TINY)
+                  .fontColor(this.palette().inkMuted)
               }
+              .width('100%')
 
-              // 待创建概念
-              if (this.unresolvedLinks.length > 0) {
-                Column({ space: 6 }) {
-                  this.sectionLabel('待创建的概念网络')
-                  Column({ space: 4 }) {
-                    ForEach(this.unresolvedLinks.slice(0, 3), (link: UnresolvedLink) => {
-                      Row({ space: 8 }) {
-                        Text('○')
-                          .fontSize(TypographyTokens.TINY)
-                          .fontColor(this.palette().link)
-                        Text(link.target)
-                          .fontSize(TypographyTokens.CAPTION)
-                          .fontWeight(FontWeight.Medium)
-                          .fontColor(this.palette().link)
-                          .layoutWeight(1)
-                          .maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        Text(`来自 ${link.sourceTitle}`)
-                          .fontSize(TypographyTokens.TINY)
-                          .fontColor(this.palette().inkMuted)
-                          .maxLines(1)
-                      }
-                      .width('100%')
-                      .padding({ left: 8, right: 8, top: 6, bottom: 6 })
-                      .borderRadius(6)
-                      .hoverEffect(HoverEffect.Highlight)
-                    }, (link: UnresolvedLink) => `${link.sourceNoteId}-${link.target}`)
+              Column({ space: 6 }) {
+                ForEach(this.unresolvedLinks.slice(0, 4), (link: UnresolvedLink) => {
+                  Row({ space: 8 }) {
+                    Text('○')
+                      .fontSize(TypographyTokens.TINY)
+                      .fontColor(this.palette().link)
+                    Text(`[[${link.target}]]`)
+                      .fontSize(TypographyTokens.CAPTION)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor(this.palette().link)
+                      .layoutWeight(1)
+                      .maxLines(1)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    Text(`来自 ${link.sourceTitle}`)
+                      .fontSize(TypographyTokens.TINY)
+                      .fontColor(this.palette().inkMuted)
+                      .maxLines(1)
+                    Text('＋ 创建')
+                      .fontSize(TypographyTokens.TINY)
+                      .fontColor(this.palette().accent)
+                      .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                      .borderRadius(4)
+                      .backgroundColor(this.palette().accentSoft)
                   }
                   .width('100%')
-                  .padding(8)
-                  .borderRadius(10)
+                  .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                  .borderRadius(8)
                   .backgroundColor(this.palette().surface)
                   .border({ width: 1, color: this.palette().borderSubtle })
-                }
-                .width('100%')
-                .margin({ top: 16 })
-                .alignItems(HorizontalAlign.Start)
-              }
-            }
-            .layoutWeight(2)
-            .alignItems(HorizontalAlign.Start)
-
-            // 右侧：视觉书架
-            Column() {
-              Row() {
-                this.sectionLabel('最近使用的文件书架')
-                Blank()
-                Text('查看全部 ❯')
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor(this.palette().accent)
-              }
-              .width('100%')
-
-              // 2 列卡片流
-              GridRow({ columns: 2, gutter: 12 }) {
-                ForEach(this.recentNotes.slice(0, 6), (note: NoteItem) => {
-                  GridCol() {
-                    this.shelfCard(note)
-                  }
-                }, (note: NoteItem) => noteRenderKey(note))
+                  .hoverEffect(HoverEffect.Highlight)
+                  .onClick(() => {
+                    this.onOpenNoteByTitle(link.target);
+                  })
+                }, (link: UnresolvedLink) => `${link.sourceNoteId}-${link.target}`)
               }
               .width('100%')
             }
-            .layoutWeight(3)
+            .width('100%')
+            .margin({ top: 4, bottom: 20 })
             .alignItems(HorizontalAlign.Start)
           }
-          .width('100%')
-          .alignItems(VerticalAlign.Top)
         }
         .width('100%')
         .constraintSize({ maxWidth: LayoutTokens.CONTENT_MAX_WIDTH + 200 })
         .alignItems(HorizontalAlign.Start)
-        .padding({ left: 32, right: 32, top: 28, bottom: 48 })
+        .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 24, bottom: 48 })
       }
       .width('100%')
       .alignItems(HorizontalAlign.Center)

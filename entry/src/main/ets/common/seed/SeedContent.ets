@@ -185,6 +185,9 @@ export function seedNotes(): NoteItem[] {
       tag: '重点',
       tagColor: '',
       updateTime: '示例',
+      isPinned: true,
+      aiSummary: '详细阐述死锁产生的互斥、占有等待、不可剥夺和循环等待四个条件，以及银行家算法的安全性检查与资源分配过程。',
+      aiTags: ['操作系统', '死锁', '银行家算法', '安全序列'],
       contentDetail: '# 死锁与银行家算法\n\n' +
         '## 死锁的四个必要条件\n\n' +
         '- 互斥：资源同一时刻只能被一个进程占用\n' +
@@ -243,8 +246,19 @@ export function seedNotes(): NoteItem[] {
       previewText: '深入理解进程调度、内存分页与硬件虚拟化技术架构。',
       tag: 'PDF文献',
       tagColor: '#E11D48',
-      pageInfo: '348 页',
+      pageInfo: '9 页精研',
+      pageCount: 9,
+      sourceType: 'pdf',
       updateTime: '昨天',
+      aiSummary: '本书系统讲解现代操作系统的核心概念：虚拟化（CPU与内存）、并发（线程与锁）以及持久化（文件系统与I/O），包含安全与分布式系统关键设计。',
+      aiTags: ['操作系统', '虚拟化', '并发', '页表', '死锁'],
+      documentMeta: JSON.stringify({
+        title: '现代操作系统原理与虚拟化.pdf',
+        totalPages: 9,
+        author: 'Remzi H. Arpaci-Dusseau',
+        fileSize: 4829104,
+        isEncrypted: false
+      }),
       contentDetail: '# 现代操作系统原理与虚拟化 (PDF)\n\n本书详细讨论了现代操作系统的四大支柱：虚拟化、并发、持久化与分布式系统。\n\n重点内容参考 [[操作系统 · 死锁与银行家算法]]。',
       pageAnnotations: JSON.stringify(SEED_EXAM_PAGE_ANNOTATIONS)
     },
@@ -268,7 +282,19 @@ export function seedNotes(): NoteItem[] {
       previewText: '[真题试卷] 原生三层原盘批注 + 边读边写草稿，支持红笔勾选与高亮',
       tag: '试卷题目',
       tagColor: '#2563EB',
+      pageInfo: '2 页真题',
+      pageCount: 2,
+      sourceType: 'document',
       updateTime: '刚刚',
+      aiSummary: '2026计算机统考模拟题：重点考察银行家算法安全性分析、死锁四要素判定及线性代数矩阵运算。',
+      aiTags: ['真题', '死锁', '银行家算法', '安全性分析'],
+      documentMeta: JSON.stringify({
+        title: '2026 计算机考研专业综合模拟试卷.docx',
+        totalPages: 2,
+        author: '命题研析组',
+        fileSize: 124800,
+        isEncrypted: false
+      }),
       contentDetail: '# 2026 计算机考研专业综合模拟试卷\n\n' +
         '> 提示：点击顶栏「✎ 原盘批注」可直接在试卷上批改解题；点击「◫ 边读边写」可调出随堂草稿板。\n\n' +
         '## 一、选择题（每小题 2 分）\n\n' +
@@ -289,4 +315,29 @@ export function seedNotes(): NoteItem[] {
       pageAnnotations: JSON.stringify(SEED_EXAM_PAGE_ANNOTATIONS)
     }
   ];
+}
+
+/**
+ * 新建模板的预填正文（功能10）。
+ * 与 TemplateSheet 的模板名一一对应；日记/周报会带上当天日期。
+ * 未知模板名回退为「# 标题 + 空行」，等价于空白笔记。
+ */
+export function templateBody(name: string, date: Date): string {
+  const y: number = date.getFullYear();
+  const m: number = date.getMonth() + 1;
+  const d: number = date.getDate();
+  const dateText: string = `${y}-${m < 10 ? '0' + m : m}-${d < 10 ? '0' + d : d}`;
+  if (name === '会议记录') {
+    return `# 会议记录\n\n- 日期：${dateText}\n- 与会人：\n- 主持人：\n\n## 议题\n\n1. \n\n## 讨论要点\n\n- \n\n## 决议\n\n- \n\n## 待办\n\n- [ ] \n`;
+  }
+  if (name === '日记') {
+    return `# ${dateText} 日记\n\n## 今日心情\n\n- \n\n## 今日记事\n\n- \n\n## 明日计划\n\n- [ ] \n`;
+  }
+  if (name === '读书笔记') {
+    return `# 读书笔记\n\n- 书名：\n- 作者：\n- 开始日期：${dateText}\n\n## 摘录\n\n> \n\n## 我的思考\n\n- \n\n## 行动清单\n\n- [ ] \n`;
+  }
+  if (name === '周报') {
+    return `# 周报（${dateText}）\n\n## 本周完成\n\n- \n\n## 下周计划\n\n- [ ] \n\n## 风险与阻塞\n\n- \n`;
+  }
+  return `# ${name}\n\n`;
 }

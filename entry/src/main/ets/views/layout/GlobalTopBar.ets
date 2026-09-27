@@ -1,7 +1,7 @@
 /**
  * 全局顶栏 (Notion 风格极简工具条)
  *
- * 左区：侧边栏折叠按钮 + 空间面包屑
+ * 左区：侧边栏折叠按钮 + 空间面包屑（每段可点击跳转）
  * 右区：Markdown 落盘状态 + 快速搜索入口 + 右侧上下文面板开关
  */
 import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
@@ -25,11 +25,19 @@ export struct GlobalTopBar {
   onToggleSidebar: () => void = () => {};
   onToggleContext: () => void = () => {};
   onOpenSearch: () => void = () => {};
+  /** 点击面包屑某一段（分类名或文档标题）时回调，index 为该段下标 */
+  onBreadcrumbClick: (index: number, segment: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
+  }
+
+  /** 图标点击区：手机放大到接近最小触控目标，宽屏保持紧凑 */
+  private iconSize(): number {
+    return this.isPhone ? 38 : ICON_SIZE;
   }
 
   private saveStateColor(): string {
@@ -49,8 +57,8 @@ export struct GlobalTopBar {
       Text('☰')
         .fontSize(TypographyTokens.TITLE_SUB)
         .fontColor(this.palette().inkSecondary)
-        .width(ICON_SIZE)
-        .height(ICON_SIZE)
+        .width(this.iconSize())
+        .height(this.iconSize())
         .textAlign(TextAlign.Center)
         .borderRadius(6)
         .hoverEffect(HoverEffect.Highlight)
@@ -65,9 +73,11 @@ export struct GlobalTopBar {
           }
           Text(segment)
             .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(index === this.breadcrumb.length - 1 ? this.palette().inkPrimary : this.palette().inkSecondary)
+            .fontColor(index === this.breadcrumb.length - 1 ? this.palette().inkPrimary : this.palette().accent)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .hoverEffect(HoverEffect.Highlight)
+            .onClick(() => this.onBreadcrumbClick(index, segment))
         }, (segment: string, index: number) => `${index}-${segment}`)
       }
       .layoutWeight(1)
@@ -86,8 +96,8 @@ export struct GlobalTopBar {
       Text('⌕')
         .fontSize(TypographyTokens.TITLE_SUB)
         .fontColor(this.palette().inkSecondary)
-        .width(ICON_SIZE)
-        .height(ICON_SIZE)
+        .width(this.iconSize())
+        .height(this.iconSize())
         .textAlign(TextAlign.Center)
         .borderRadius(6)
         .hoverEffect(HoverEffect.Highlight)
@@ -97,8 +107,8 @@ export struct GlobalTopBar {
         Text(this.contextPanelOpen ? '❯' : '❮')
           .fontSize(TypographyTokens.CAPTION)
           .fontColor(this.contextPanelOpen ? this.palette().accent : this.palette().inkSecondary)
-          .width(ICON_SIZE)
-          .height(ICON_SIZE)
+          .width(this.iconSize())
+          .height(this.iconSize())
           .textAlign(TextAlign.Center)
           .borderRadius(6)
           .backgroundColor(this.contextPanelOpen ? this.palette().accentSoft : Color.Transparent)

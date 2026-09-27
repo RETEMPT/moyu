@@ -12,7 +12,7 @@
  *      - 沉浸式白纸底色多色笔画板
  */
 import { curves } from '@kit.ArkUI';
-import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { MarkdownOutlineItem } from '../../common/types/MarkdownOutlineItem';
@@ -26,19 +26,29 @@ export struct ReaderWorkspace {
   @Prop annotationPaneOpen: boolean = false;
   @Prop jumpToken: number = 0;
   @Prop jumpLine: number = -1;
+  /** 当前笔记的收藏态，由 Index 依据 note.favorite 下发 */
+  @Prop favorite: boolean = false;
 
   onBack: () => void = () => {};
   onToggleAnnotation: () => void = () => {};
+  onToggleFavorite: (note: NoteItem) => void = () => {};
+  onDeleteNote: (note: NoteItem) => void = () => {};
   onSaved: (note: NoteItem, content: string) => void = () => {};
   onSaveStateChange: (state: string) => void = () => {};
   onOutlineUpdated: (items: MarkdownOutlineItem[]) => void = () => {};
   onOpenNoteByTitle: (title: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
   @State isSplitMode: boolean = false;
   @State activeDocMode: string = 'annotator'; // 'annotator' | 'split' | 'reader'
+  /** 删除二次确认态：点「删除」后原地展开为「确认删除 / 取消」，避免误删当前文件 */
+  @State deleteArmed: boolean = false;
+  /** 上次装载的笔记 id：仅当切换到不同笔记时才重置阅读模式 */
+  private lastNoteId: string = '';
 
   aboutToAppear(): void {
+    this.lastNoteId = this.note.id;
     if (this.isDocumentOrExam()) {
       this.activeDocMode = 'annotator';
     } else {
@@ -47,6 +57,12 @@ export struct ReaderWorkspace {
   }
 
   onNoteChanged(): void {
+    // 同一篇笔记的元数据刷新（如收藏/移动回写）不重置模式，避免把用户踢回默认档
+    if (this.note.id === this.lastNoteId) {
+      return;
+    }
+    this.lastNoteId = this.note.id;
+    this.deleteArmed = false;
     if (this.isDocumentOrExam()) {
       this.activeDocMode = 'annotator';
     } else {
@@ -88,15 +104,86 @@ export struct ReaderWorkspace {
           Text('❮')
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().inkSecondary)
-          Text('返回')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkSecondary)
+          if (!this.isPhone) {
+            Text('返回')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkSecondary)
+          }
         }
-        .padding({ left: 8, right: 10, top: 4, bottom: 4 })
+        .padding({ left: 8, right: this.isPhone ? 8 : 10, top: 4, bottom: 4 })
         .borderRadius(6)
         .backgroundColor(this.palette().surfaceSubtle)
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => this.onBack())
+
+        // 功能7：收藏切换，写回 note.favorite 并落盘（由 Index.toggleFavorite 处理）
+        Row({ space: 4 }) {
+          Text(this.favorite ? '★' : '☆')
+            .fontSize(TypographyTokens.CAPTION)
+            .fontColor(this.favorite ? this.palette().warning : this.palette().inkSecondary)
+          if (!this.isPhone) {
+            Text(this.favorite ? '已收藏' : '收藏')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.favorite ? this.palette().warning : this.palette().inkSecondary)
+          }
+        }
+        .margin({ left: 8 })
+        .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+        .borderRadius(6)
+        .backgroundColor(this.favorite ? this.palette().accentSoft : this.palette().surfaceSubtle)
+        .hoverEffect(HoverEffect.Highlight)
+        .animation({ curve: curves.springMotion(0.25, 0.76) })
+        .onClick(() => {
+          this.onToggleFavorite(this.note);
+        })
+
+        // 删除当前文件：与侧边栏「···」菜单一致，软删除进回收站、可在提示条撤销。
+        // 为避免误删，首次点击只「武装」，原地展开确认/取消。
+        if (this.deleteArmed) {
+          Row({ space: 6 }) {
+            Text('取消')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkSecondary)
+              .padding({ left: 8, right: 8, top: 4, bottom: 4 })
+              .borderRadius(6)
+              .backgroundColor(this.palette().surfaceSubtle)
+              .hoverEffect(HoverEffect.Highlight)
+              .onClick(() => {
+                this.deleteArmed = false;
+              })
+            Text(this.isPhone ? '🗑 确认' : '确认删除')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(Color.White)
+              .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+              .borderRadius(6)
+              .backgroundColor(this.palette().danger)
+              .hoverEffect(HoverEffect.Highlight)
+              .onClick(() => {
+                this.deleteArmed = false;
+                this.onDeleteNote(this.note);
+              })
+          }
+          .margin({ left: 8 })
+        } else {
+          Row({ space: 4 }) {
+            Text('🗑')
+              .fontSize(TypographyTokens.CAPTION)
+              .fontColor(this.palette().inkSecondary)
+            if (!this.isPhone) {
+              Text('删除')
+                .fontSize(TypographyTokens.CAPTION)
+                .fontColor(this.palette().inkSecondary)
+            }
+          }
+          .margin({ left: 8 })
+          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+          .borderRadius(6)
+          .backgroundColor(this.palette().surfaceSubtle)
+          .hoverEffect(HoverEffect.Highlight)
+          .onClick(() => {
+            this.deleteArmed = true;
+          })
+        }
 
         Blank()
 
@@ -106,7 +193,7 @@ export struct ReaderWorkspace {
             // PDF/试卷三模切换器：原盘批注 / 边读边写 / 结构研读
             Row({ space: 4 }) {
               // 1. 原盘批注
-              Text('✎ 原盘批注')
+              Text(this.isPhone ? '✎' : '✎ 原盘批注')
                 .fontSize(TypographyTokens.CAPTION)
                 .fontWeight(this.activeDocMode === 'annotator' ? FontWeight.Medium : FontWeight.Normal)
                 .fontColor(this.activeDocMode === 'annotator' ? this.palette().accent : this.palette().inkSecondary)
@@ -120,7 +207,7 @@ export struct ReaderWorkspace {
                 })
 
               // 2. 边读边写
-              Text('◫ 边读边写')
+              Text(this.isPhone ? '◫' : '◫ 边读边写')
                 .fontSize(TypographyTokens.CAPTION)
                 .fontWeight(this.activeDocMode === 'split' ? FontWeight.Medium : FontWeight.Normal)
                 .fontColor(this.activeDocMode === 'split' ? this.palette().accent : this.palette().inkSecondary)
@@ -134,7 +221,7 @@ export struct ReaderWorkspace {
                 })
 
               // 3. 结构研读
-              Text('◎ 结构研读')
+              Text(this.isPhone ? '◎' : '◎ 结构研读')
                 .fontSize(TypographyTokens.CAPTION)
                 .fontWeight(this.activeDocMode === 'reader' ? FontWeight.Medium : FontWeight.Normal)
                 .fontColor(this.activeDocMode === 'reader' ? this.palette().accent : this.palette().inkSecondary)
@@ -156,10 +243,12 @@ export struct ReaderWorkspace {
               Text('◫')
                 .fontSize(TypographyTokens.CAPTION)
                 .fontColor(this.isSplitMode ? this.palette().accent : this.palette().inkSecondary)
-              Text(this.isSplitMode ? '收起草稿板' : '边读边写')
-                .fontSize(TypographyTokens.CAPTION)
-                .fontWeight(this.isSplitMode ? FontWeight.Medium : FontWeight.Normal)
-                .fontColor(this.isSplitMode ? this.palette().accent : this.palette().inkSecondary)
+              if (!this.isPhone) {
+                Text(this.isSplitMode ? '收起草稿板' : '边读边写')
+                  .fontSize(TypographyTokens.CAPTION)
+                  .fontWeight(this.isSplitMode ? FontWeight.Medium : FontWeight.Normal)
+                  .fontColor(this.isSplitMode ? this.palette().accent : this.palette().inkSecondary)
+              }
             }
             .padding({ left: 10, right: 10, top: 4, bottom: 4 })
             .borderRadius(6)
@@ -176,7 +265,7 @@ export struct ReaderWorkspace {
       }
       .width('100%')
       .height(38)
-      .padding({ left: 16, right: 16 })
+      .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone) })
       .backgroundColor(this.palette().surface)
       .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
 
