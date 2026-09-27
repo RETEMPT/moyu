@@ -11,7 +11,7 @@ set "DEVECO_SDK_HOME=%STUDIO_DIR%\sdk"
 set "HVIGOR_BIN=%STUDIO_DIR%\tools\hvigor\bin\hvigorw.bat"
 set "HDC_BIN=%STUDIO_DIR%\sdk\default\openharmony\toolchains\hdc.exe"
 
-set "HAP_PATH=e:\apps\entry\build\default\outputs\default\entry-default-unsigned.hap"
+set "HAP_PATH=%~dp0entry\build\default\outputs\default\entry-default-unsigned.hap"
 set "BUNDLE_NAME=com.example.myapplication"
 set "ABILITY_NAME=EntryAbility"
 

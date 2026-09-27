@@ -1,4 +1,4 @@
-# 协作指南
+# 协作与贡献指南
 
 ## 分支模型
 
@@ -6,34 +6,26 @@
 
 ```text
 main
-├── feature/phone-adaptation       手机端第一阶段适配
+├── feature/phone-adaptation       手机端适配工作分支
 ├── feature/<功能名称>              独立功能开发
 └── fix/<问题名称>                  缺陷修复
 ```
 
 - `main` 始终保持可构建、可安装和可演示。
-- `feature/phone-adaptation` 是手机端适配的预留工作分支，不是永久维护的手机版分支。
-- 手机端适配完成后，通过 Pull Request 合并回 `main`，然后删除该分支。
-- 后续手机端问题继续从最新 `main` 创建短期分支，不要长期分叉。
+- `feature/phone-adaptation` 是手机端适配的工作分支。
+- 手机端适配完成后，通过 Pull Request 合并回 `main`。
+- 后续功能与缺陷修复请从最新 `main` 创建短期分支，避免长期分叉。
 
-## 两人分工建议
+## 模块分层约定
 
-### UI 与交互负责人
+应用严格遵循**单向向下依赖**原则：`pages/` → `views/` → `services/` → `common/`。
 
-- `pages/Index.ets`
-- `views/layout/`
-- `views/workspace/`
-- `views/reader/`
-- 手机端导航、响应式布局、触控热区、弹层和设备端回归
+- `pages/Index.ets`：顶层页面状态与路由装配；
+- `views/`：ArkUI 声明式视图组件库，通过 `@Prop` / `@Link` 与事件回调通信；
+- `services/`：数据持久化、全文检索、双链图谱、文档导入与模型服务；
+- `common/`：类型定义、主题 Token、常量与示例数据工厂。
 
-### 数据与工程负责人
-
-- `services/`
-- `common/types/`
-- 数据持久化、全文检索、双链图谱和导入导出
-- Hvigor 构建、hdc 部署、日志检查和发布文档
-
-公共类型、主题 Token、`Index.ets` 和跨层 API 修改前，双方先在 Issue 或 PR 中确认接口，避免同时大范围改动同一文件。
+公共类型、主题 Token、`Index.ets` 和跨层 API 修改前，建议先在 Issue 或 PR 中确认接口，避免同时大范围改动同一文件。
 
 ## 开发流程
 
@@ -51,13 +43,13 @@ git switch -c feature/your-feature
 git status
 git diff --check
 git add <changed-files>
-git commit -m "描述本次改动"
+git commit -m "feat(module): 描述本次改动"
 git push -u origin feature/your-feature
 ```
 
 ### 发起 Pull Request
 
-目标分支统一选择 `main`。Pull Request 至少包含：
+目标分支统一选择 `main`。Pull Request 请包含：
 
 - 改动目的和涉及范围；
 - 手动或自动验证方式；
@@ -83,7 +75,7 @@ git push -u origin feature/your-feature
 - `views/reader/`
 - `pages/Index.ets`
 
-只有当手机和平板的交互流程确实无法共用时，才拆分独立组件，例如 `PhoneReaderWorkspace` 和 `TabletReaderWorkspace`。不要复制整套服务层或长期维护两套页面分支。
+只有当手机和平板的交互流程确实无法共用时，才拆分独立组件，例如 `PhoneReaderWorkspace` 和 `TabletReaderWorkspace`。不要复制整套服务层或长期维护两套独立服务分支。
 
 ## 合并前检查
 
@@ -100,19 +92,23 @@ git diff --check
 - 手机端窄屏布局；
 - 平板端三栏布局。
 
-部署脚本：
+本地快捷构建与部署脚本：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File E:\apps\.codegenie\deploy.ps1
+# 编译 HAP
+.\build_hap.bat
+
+# 一键编译并安装部署到在线设备
+.\deploy_hap.bat
 ```
 
-## 提交信息
+## 提交信息规范
 
-提交信息使用简短、明确的中文或英文动词描述，例如：
+提交信息使用简短、明确的动词描述，推荐遵循 Conventional Commits 规范，例如：
 
-- `新增手机端底部导航`
-- `修复窄屏弹层关闭区域`
-- `完善PDF批注保存链路`
+- `feat(layout): 新增手机端底部导航抽屉`
+- `fix(reader): 修复窄屏弹层关闭区域`
+- `perf(graph): 优化图谱物理仿真性能`
+- `docs: 更新技术栈与协作指南`
 
 一次提交只解决一类问题，避免把无关格式化、重命名和功能改动混在一起。
