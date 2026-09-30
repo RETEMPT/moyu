@@ -108,7 +108,14 @@ FlowMind（墨语）是一款面向 HarmonyOS NEXT 的 Local-First 双链知识�
 
 # 一键编译并安装拉起到在线设备/模拟器
 .\deploy_hap.bat
+
+# 多设备时指定目标；已构建时可跳过编译
+.\deploy_hap.bat -Target 127.0.0.1:5555 -SkipBuild
 ```
+
+部署脚本只选择 `Connected` 设备，确认连接后再安装；传输中断最多重试三次，并检查实际安装结果和应用前台状态，不仅依赖 hdc 退出码。可通过 `-StudioDir` 指定其他 DevEco 安装目录；存在不早于 unsigned 包的 signed 包时优先使用 signed 包。
+
+若 DevEco 提示 `FileTransfer Failed`，先确认模拟器已完成启动、`hdc list targets -v` 中目标为 `Connected`。构建成功不代表连接稳定；可以运行上述 `-SkipBuild` 命令重新部署，保留应用数据。真机需要满足设备签名要求，脚本不会自动卸载应用或修改签名配置。
 
 构建产物位于：
 ```text

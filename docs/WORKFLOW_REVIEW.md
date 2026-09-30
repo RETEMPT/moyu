@@ -23,7 +23,7 @@
 | 服务回归 | `tools/verify-workflows.mjs`：54 项通过。涵盖原文保留、无虚构待办、模型结构校验、联网开关、异常降级、日期／闰年／跨年、预览与保存一致、三阶段存储失败与重试、旧会话、OCR 清理、真实 PDF 页数／渲染／文件复制、导入取消与不支持格式、文件清理边界与失败重试。 |
 | ArkTS／资源／HAP | 使用当前 DevEco SDK 完整 `assembleHap` 成功。服务测试将纯逻辑转译为 TypeScript 并替换平台适配器；真实 ArkTS 编译另行执行，二者不等同于设备测试。 |
 | 持续集成 | 新增 GitHub Actions 服务回归；只需 Node 与固定版本 TypeScript，不需要上传模型密钥或签名材料。云端运行结果应在 PR 检查中确认。 |
-| 签名与设备 | 构建产物为 unsigned HAP；本次 `hdc list targets` 无在线设备，未执行安装、截图或真机触控测试。 |
+| 签名与设备 | 初次构建时无在线设备。后续在 API 26 本地模拟器 `127.0.0.1:5555` 验证 HAP 传输、覆盖安装与启动成功，`EntryAbility` 状态为 FOREGROUND。产物为 unsigned HAP；仍未执行真机触控或全模块验收。 |
 
 运行服务回归：
 
@@ -36,6 +36,8 @@ node tools/verify-workflows.mjs --typescript "<DevEco Studio>/tools/hvigor/hvigo
 ```
 
 构建：`build_hap.bat`；产物：`entry/build/default/outputs/default/entry-default-unsigned.hap`。
+
+部署补充：DevEco 23:28 的 `FileTransfer Failed` 同时伴随 hdc 的 `device not found or connected`，连接恢复后包传输、安装与启动成功；客户端和服务端均为 hdc 3.2.0f，设备有 4.4 GB 可用空间。`deploy_hap.bat` 现调用 PowerShell 部署流程，仅选择 Connected 设备、校验实际成功输出、对传输中断有限重试，并确认前台状态。模拟器验证不代表真实 OCR / PDF 或全功能验收通过。
 
 ## 全功能设备验收清单
 
