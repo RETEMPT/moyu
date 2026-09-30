@@ -5,10 +5,12 @@
  *   1. 原始 PDF 文件在沙箱内的持久化复制与管理 (files/documents/)
  *   2. 读取 PDF 元数据、页数与页面尺寸
  *   3. 页面模型动态加载：与 HarmonyOS PDF Kit 架构对接
- *   4. 支持双轨运行：真实环境驱动官方 PdfView，模拟器/预览器优雅降级
+ *   4. 原文失败时报告错误；示例页面仅用于明确标注的演示资料
  */
-import { common } from '@kit.AbilityKit';
+import { Context } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
+import { pdfService } from '@kit.PDFKit';
+import { image } from '@kit.ImageKit';
 import { PdfPageModel } from '../../common/types/PdfAnnotationTypes';
 
 export interface PdfDocumentInfo {
@@ -16,6 +18,11 @@ export interface PdfDocumentInfo {
   fileName: string;
   fileSize: number;
   pageCount: number;
+}
+
+export interface RenderedPdfPage {
+  pixelMap: image.PixelMap;
+  aspectRatio: number;
 }
 
 export class PdfDocumentService {
@@ -31,37 +38,24 @@ export class PdfDocumentService {
   /**
    * 将外部选择的 PDF 复制到应用沙箱的 documents 目录
    */
-  async savePdfToSandbox(context: common.UIAbilityContext, srcUri: string, targetName: string): Promise<string> {
+  async savePdfToSandbox(context: Context, srcUri: string, targetName: string): Promise<string> {
     const docDir: string = `${context.filesDir}/documents`;
-    try {
-      if (!fs.accessSync(docDir)) {
-        fs.mkdirSync(docDir);
-      }
-    } catch (e) {
-      // 目录已存在或忽略
+    if (!fs.accessSync(docDir)) {
+      fs.mkdirSync(docDir);
     }
 
     const sanitizedName = targetName.replace(/[\\/:*?"<>|]/g, '_');
     const destPath: string = `${docDir}/${Date.now()}_${sanitizedName}`;
 
+    const srcFile = fs.openSync(srcUri, fs.OpenMode.READ_ONLY);
     try {
-      const srcFile = fs.openSync(srcUri, fs.OpenMode.READ_ONLY);
-      const destFile = fs.openSync(destPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
-
-      // 流式拷贝文件内容
-      const bufSize = 64 * 1024;
-      const buffer = new ArrayBuffer(bufSize);
-      let readLen = 0;
-      while ((readLen = fs.readSync(srcFile.fd, buffer)) > 0) {
-        fs.writeSync(destFile.fd, buffer, { length: readLen });
-      }
-
-      fs.closeSync(srcFile);
-      fs.closeSync(destFile);
+      await fs.copyFile(srcFile.fd, destPath);
       return destPath;
-    } catch (err) {
-      console.warn(`PDF 沙箱拷贝使用降级路径: ${err}`);
-      return srcUri;
+    } catch {
+      try { fs.unlinkSync(destPath); } catch { /* 未创建目标 */ }
+      throw new Error('PDF 复制失败，请检查存储空间或文件权限');
+    } finally {
+      fs.closeSync(srcFile);
     }
   }
 
@@ -77,13 +71,48 @@ export class PdfDocumentService {
       // ignore
     }
 
-    // 估算或读取页数（在具备 Native PDFKit 时调用 native API，预览器环境保底）
-    return {
-      filePath,
-      fileName: filePath.split('/').pop() ?? 'document.pdf',
-      fileSize: size,
-      pageCount: 9 // 默认真题多页标准
-    };
+    const document = new pdfService.PdfDocument();
+    try {
+      this.loadDocument(document, filePath);
+      const count = document.getPageCount();
+      if (count <= 0) { throw new Error('PDF 没有可读页面'); }
+      return { filePath: filePath, fileName: filePath.split('/').pop() || 'document.pdf',
+        fileSize: size, pageCount: count };
+    } finally {
+      document.releaseDocument();
+    }
+  }
+
+  renderPage(filePath: string, pageIndex: number): RenderedPdfPage {
+    const document = new pdfService.PdfDocument();
+    let page: pdfService.PdfPage | null = null;
+    try {
+      this.loadDocument(document, filePath);
+      if (pageIndex < 0 || pageIndex >= document.getPageCount()) { throw new Error('PDF 页码超出范围'); }
+      page = document.getPage(pageIndex);
+      const width = page.getWidth();
+      const height = page.getHeight();
+      if (width <= 0 || height <= 0) { throw new Error('PDF 页面尺寸无效'); }
+      const scale = Math.min(1200 / width, 1800 / height);
+      const matrix = new pdfService.PdfMatrix();
+      matrix.x = 0; matrix.y = 0; matrix.width = Math.max(1, Math.round(width * scale));
+      matrix.height = Math.max(1, Math.round(height * scale)); matrix.rotate = 0;
+      const pixelMap = page.getCustomPagePixelMap(matrix, false, true);
+      return { pixelMap: pixelMap, aspectRatio: width / height };
+    } finally {
+      if (page !== null) { page.release(); }
+      document.releaseDocument();
+    }
+  }
+
+  private loadDocument(document: pdfService.PdfDocument, filePath: string): void {
+    const result = document.loadDocument(filePath);
+    if (result === pdfService.ParseResult.PARSE_ERROR_PASSWORD) {
+      throw new Error('此 PDF 需要密码，请先解锁后再导入');
+    }
+    if (result !== pdfService.ParseResult.PARSE_SUCCESS) {
+      throw new Error('PDF 无法读取，请检查文件是否损坏或设备是否支持 PDFKit');
+    }
   }
 
   /**

@@ -33,10 +33,24 @@ export type SplitModeType = 'none' | 'ai' | 'scratchpad';
 @Component
 export struct HuaweiDocWorkspace {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
+  @Prop @Watch('handleBackRequest') backRequestToken: number = 0;
   onClose: () => void = () => {};
   onSaved: (note: NoteItem, content: string) => void = () => {};
+  onCommitForExit: (note: NoteItem, content: string) => Promise<void> = async () => {};
+  onSmartExtract: () => void = () => {};
+  onExportText: () => Promise<void> = async () => {};
+  onSearchNotes: () => void = () => {};
   onSaveStateChange: (state: string) => void = () => {};
   onToggleFavorite: (note: NoteItem) => void = () => {};
+
+  private handleBackRequest(): void {
+    if (this.activeModal.length > 0) { this.activeModal = ''; return; }
+    if (this.jumpDialogOpen) { this.jumpDialogOpen = false; return; }
+    if (this.moreMenuOpen) { this.moreMenuOpen = false; return; }
+    if (this.exitDialogOpen) { if (!this.exitSaving) { this.exitDialogOpen = false; } return; }
+    if (this.isPhone && this.splitMode !== 'none') { this.splitMode = 'none'; return; }
+    if (!this.exitSaving) { this.exitDialogOpen = true; }
+  }
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
@@ -54,6 +68,9 @@ export struct HuaweiDocWorkspace {
   @State clearTrigger: number = 0;
   @State moreMenuOpen: boolean = false;
   @State exitDialogOpen: boolean = false;
+  @State exitSaving: boolean = false;
+  @State exitSaveToken: number = 0;
+  private loadedNoteId: string = '';
 
   // 导航与功能区状态
   @State activeTab: HuaweiTabType = 'file';
@@ -61,7 +78,7 @@ export struct HuaweiDocWorkspace {
   @State activeModal: HuaweiDocDialogType = '';
 
   // 页码与阅读控制
-  @State currentPage: number = 4;
+  @State currentPage: number = 1;
   @State totalPages: number = 9;
   @State zoomPercent: number = 100;
   @State isContinuousScroll: boolean = true;
@@ -80,8 +97,10 @@ export struct HuaweiDocWorkspace {
   }
 
   aboutToAppear(): void {
+    this.loadedNoteId = this.note.id;
     if (this.isDocumentOrExam()) {
-      const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount : 9;
+      const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount :
+        (this.note.id.startsWith('note-seed-') ? 9 : 1);
       this.totalPages = count;
       this.currentPage = Math.min(this.currentPage, count);
     } else {
@@ -91,12 +110,21 @@ export struct HuaweiDocWorkspace {
   }
 
   onNoteChanged(): void {
+    if (this.loadedNoteId === this.note.id) { return; }
+    this.loadedNoteId = this.note.id;
     this.activeModal = '';
     this.jumpDialogOpen = false;
     if (this.isDocumentOrExam()) {
-      const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount : 9;
+      const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount :
+        (this.note.id.startsWith('note-seed-') ? 9 : 1);
       this.totalPages = count;
     }
+  }
+
+  private saveAndExit(): void {
+    if (this.exitSaving) { return; }
+    this.exitSaving = true;
+    this.exitSaveToken++;
   }
 
   private pageNumbersList(): number[] {
@@ -729,46 +757,34 @@ export struct HuaweiDocWorkspace {
         // 功能网格 (Obsidian 极简几何矢量符号卡片) - 静态双行布局，杜绝虚拟化网格与多层撕裂
         Column({ space: 10 }) {
           Row({ space: 10 }) {
-            this.moreActionItem('⭳', '保存沙箱', '持久化落盘', () => {
-              this.onSaved(this.note, this.note.contentDetail);
+            this.moreActionItem('⭳', '保存并退出', '确认保存', () => {
               animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
                 this.moreMenuOpen = false;
-              });
-              this.showToast('文档与批注已保存至本地沙箱');
-            })
-            this.moreActionItem('↗', '另存为', 'PDF/Docx', () => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.moreMenuOpen = false;
-                this.activeModal = 'save_as';
+                this.exitDialogOpen = true;
               });
             })
-            this.moreActionItem('⇄', '格式转换', 'OCR提取', () => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.moreMenuOpen = false;
-                this.activeModal = 'convert';
-              });
+            this.moreActionItem('▤', '跳转页面', '指定页码', () => {
+              this.moreMenuOpen = false;
+              this.jumpDialogOpen = true;
             })
-            this.moreActionItem('⧉', '输出长图', '超清拼接', () => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.moreMenuOpen = false;
-                this.activeModal = 'export_image';
-              });
+            this.moreActionItem('✦', '文字排版', '识别图片', () => {
+              this.moreMenuOpen = false;
+              this.onSmartExtract();
+            })
+            this.moreActionItem('⭳', '导出笔记', 'Markdown 文本', () => {
+              this.moreMenuOpen = false;
+              this.onExportText();
             })
           }
           .width('100%')
-
           Row({ space: 10 }) {
-            this.moreActionItem('⎙', '无线打印', 'A4 规格', () => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.moreMenuOpen = false;
-                this.activeModal = 'print';
-              });
+            this.moreActionItem('⌕', '搜索笔记', '工作台检索', () => {
+              this.moreMenuOpen = false;
+              this.onSearchNotes();
             })
-            this.moreActionItem('⌕', '全文检索', '关键词查找', () => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.moreMenuOpen = false;
-              });
-              this.showToast('已唤起全文关键词检索');
+            this.moreActionItem('☰', '显示工具栏', '阅读工具', () => {
+              this.moreMenuOpen = false;
+              this.toggleBars(true);
             })
             this.moreActionItem(this.isContinuousScroll ? '☰' : '▯', this.isContinuousScroll ? '连续滚动' : '单页排版', '切换视图', () => {
               animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
@@ -788,7 +804,7 @@ export struct HuaweiDocWorkspace {
         }
         .width('100%')
       }
-      .width(440)
+      .width(this.isPhone ? '92%' : 440)
       .padding(20)
       .borderRadius(16)
       .backgroundColor(this.palette().surface)
@@ -1262,6 +1278,7 @@ export struct HuaweiDocWorkspace {
             .borderRadius(10)
             .height(36)
             .layoutWeight(1)
+            .enabled(!this.exitSaving)
             .onClick(() => {
               animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
                 this.exitDialogOpen = false;
@@ -1281,6 +1298,7 @@ export struct HuaweiDocWorkspace {
             .borderRadius(10)
             .height(36)
             .layoutWeight(1)
+            .enabled(!this.exitSaving)
             .onClick(() => {
               animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
                 this.exitDialogOpen = false;
@@ -1297,20 +1315,12 @@ export struct HuaweiDocWorkspace {
             .borderRadius(10)
             .height(36)
             .layoutWeight(1.2)
-            .onClick(() => {
-              this.onSaved(this.note, this.note.contentDetail);
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.exitDialogOpen = false;
-              });
-              this.showToast('文档修改已保存');
-              setTimeout(() => {
-                this.onClose();
-              }, 200);
-            })
+            .enabled(!this.exitSaving)
+            .onClick(() => this.saveAndExit())
         }
         .width('100%')
       }
-      .width(400)
+      .width(this.isPhone ? '92%' : 400)
       .padding(22)
       .borderRadius(16)
       .backgroundColor(this.palette().surface)
@@ -1337,7 +1347,7 @@ export struct HuaweiDocWorkspace {
     )
     .onClick(() => {
       animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-        this.exitDialogOpen = false;
+        if (!this.exitSaving) { this.exitDialogOpen = false; }
       });
     })
   }
@@ -1457,6 +1467,12 @@ export struct HuaweiDocWorkspace {
               HandwritingCanvas({
                 note: this.note,
                 isScratchpad: false,
+                exitSaveToken: this.exitSaveToken,
+                onCommitForExit: this.onCommitForExit,
+                onExitSaveFinished: (ok: boolean) => {
+                  this.exitSaving = false;
+                  if (ok) { this.onClose(); } else { this.showToast('保存失败，请重试'); }
+                },
                 onSaved: this.onSaved,
                 onSaveStateChange: this.onSaveStateChange
               })
@@ -1465,6 +1481,12 @@ export struct HuaweiDocWorkspace {
               PdfAnnotatorView({
                 note: this.note,
                 currentPage: this.currentPage,
+                exitSaveToken: this.exitSaveToken,
+                onCommitForExit: this.onCommitForExit,
+                onExitSaveFinished: (ok: boolean) => {
+                  this.exitSaving = false;
+                  if (ok) { this.onClose(); } else { this.showToast('保存失败，批注仍保留在当前页，请重试'); }
+                },
                 barsVisible: this.barsVisible,
                 isContinuousScroll: this.isContinuousScroll,
                 isAnnotateMode: this.isAnnotateMode,
@@ -1571,7 +1593,7 @@ export struct HuaweiDocWorkspace {
             });
           },
           onConfirm: (actionType: string, payload: string) => {
-            this.showToast(`操作成功：${actionType} (${payload})`);
+            this.showToast('当前不支持此导出或转换方式，请保留原文件。');
           }
         })
       }

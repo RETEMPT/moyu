@@ -7,6 +7,7 @@
 import { Context } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { ChatSession } from '../../common/types/ChatSession';
+import { ChatSessionSanitizer } from './ChatSessionSanitizer';
 
 const PREFERENCES_NAME: string = 'flowmind_chat';
 const SESSIONS_KEY: string = 'sessions';
@@ -39,9 +40,7 @@ export class ChatSessionService {
       if (!Array.isArray(parsed)) {
         return [];
       }
-      // updatedAt 倒序
-      parsed.sort((a: ChatSession, b: ChatSession) => b.updatedAt - a.updatedAt);
-      return parsed;
+      return ChatSessionSanitizer.normalize(parsed);
     } catch {
       return [];
     }
@@ -51,12 +50,12 @@ export class ChatSessionService {
   async saveSessions(sessions: ChatSession[]): Promise<void> {
     const prefs: preferences.Preferences = await this.ensureInit();
     // 限制数量，优先保留置顶
-    let trimmed: ChatSession[] = [...sessions];
+    let trimmed: ChatSession[] = ChatSessionSanitizer.normalize(sessions);
     if (trimmed.length > MAX_SESSIONS) {
       const pinned: ChatSession[] = trimmed.filter((s: ChatSession) => s.pinned);
       const unpinned: ChatSession[] = trimmed.filter((s: ChatSession) => !s.pinned)
         .sort((a: ChatSession, b: ChatSession) => b.updatedAt - a.updatedAt);
-      const keep: ChatSession[] = [...pinned, ...unpinned.slice(0, MAX_SESSIONS - pinned.length)];
+      const keep: ChatSession[] = [...pinned.slice(0, MAX_SESSIONS), ...unpinned.slice(0, Math.max(0, MAX_SESSIONS - pinned.length))];
       trimmed = keep;
     }
     await prefs.put(SESSIONS_KEY, JSON.stringify(trimmed));
@@ -100,11 +99,11 @@ export class ChatSessionService {
       return sessions;
     }
     return sessions.filter((s: ChatSession) => {
-      if (s.title.toLowerCase().includes(q)) {
+      if (s && s.title && s.title.toLowerCase().includes(q)) {
         return true;
       }
-      for (const m of s.messages) {
-        if (m.text.toLowerCase().includes(q)) {
+      for (const m of (s && s.messages ? s.messages : [])) {
+        if (m && m.text && m.text.toLowerCase().includes(q)) {
           return true;
         }
       }

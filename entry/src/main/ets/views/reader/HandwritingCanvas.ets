@@ -28,6 +28,9 @@ const STROKE_WIDTHS: number[] = [2, 4, 8];
 export struct HandwritingCanvas {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
   @Prop isScratchpad: boolean = false;
+  @Prop @Watch('saveForExit') exitSaveToken: number = 0;
+  onCommitForExit: (note: NoteItem, content: string) => Promise<void> = async () => {};
+  onExitSaveFinished: (ok: boolean) => void = () => {};
   onSaved: (note: NoteItem, content: string) => void = () => {};
   onSaveStateChange: (state: string) => void = () => {};
 
@@ -50,6 +53,7 @@ export struct HandwritingCanvas {
 
   private canvasScroller: Scroller = new Scroller();
   private saveTimer: number = -1;
+  private loadedNoteId: string = '';
   private canvasWidth: number = 1200;
   private canvasHeight: number = 2400;
 
@@ -58,15 +62,51 @@ export struct HandwritingCanvas {
   }
 
   aboutToAppear(): void {
+    this.loadedNoteId = this.note.id;
     this.title = this.note.title;
     this.selectedColor = this.isDarkMode ? '#F5F5F4' : '#1C1917';
     this.loadStrokes();
   }
 
   onNoteChanged(): void {
+    if (this.loadedNoteId === this.note.id) { return; }
+    this.loadedNoteId = this.note.id;
     this.title = this.note.title;
     this.loadStrokes();
     this.redrawAll();
+  }
+
+  aboutToDisappear(): void {
+    if (this.saveTimer !== -1) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = -1;
+      if (this.isScratchpad) { this.flushSave(); }
+    }
+  }
+
+  private async saveForExit(): Promise<void> {
+    if (this.saveTimer !== -1) { clearTimeout(this.saveTimer); this.saveTimer = -1; }
+    const snapshot = this.strokeSnapshot();
+    try {
+      await this.onCommitForExit(snapshot, snapshot.contentDetail);
+      this.onExitSaveFinished(true);
+    } catch {
+      this.onSaveStateChange('保存失败');
+      this.onExitSaveFinished(false);
+    }
+  }
+
+  private strokeSnapshot(): NoteItem {
+    const snapshot = JSON.parse(JSON.stringify(this.note)) as NoteItem;
+    if (this.isScratchpad) {
+      snapshot.scratchpadStrokes = JSON.stringify(this.strokes);
+    } else {
+      snapshot.strokes = JSON.stringify(this.strokes);
+      snapshot.title = this.title.trim() || '未命名手写笔记';
+      snapshot.contentDetail = `# ${snapshot.title}\n\n[白纸手写笔记]\n`;
+      snapshot.previewText = `[白纸手写] 包含 ${this.strokes.length} 条墨迹`;
+    }
+    return snapshot;
   }
 
   private loadStrokes(): void {
@@ -162,53 +202,17 @@ export struct HandwritingCanvas {
     if (this.saveTimer !== -1) {
       clearTimeout(this.saveTimer);
     }
-    this.onSaveStateChange('保存中...');
+    this.onSaveStateChange('保存中');
     this.saveTimer = setTimeout(() => {
       this.flushSave();
     }, 800);
   }
 
   private flushSave(): void {
-    const serialized = JSON.stringify(this.strokes);
-    if (this.isScratchpad) {
-      const updatedNote: NoteItem = {
-        id: this.note.id,
-        title: this.note.title,
-        category: this.note.category,
-        type: this.note.type,
-        previewText: this.note.previewText,
-        tag: this.note.tag,
-        tagColor: this.note.tagColor,
-        updateTime: this.note.updateTime,
-        contentDetail: this.note.contentDetail,
-        pageInfo: this.note.pageInfo,
-        extraInfo: this.note.extraInfo,
-        coverUrl: this.note.coverUrl,
-        strokes: this.note.strokes,
-        scratchpadStrokes: serialized
-      };
-      this.onSaved(updatedNote, updatedNote.contentDetail);
-      this.onSaveStateChange('草稿已保存');
-    } else {
-      const updatedNote: NoteItem = {
-        id: this.note.id,
-        title: this.title.trim().length > 0 ? this.title.trim() : '未命名手写笔记',
-        category: this.note.category,
-        type: this.note.type,
-        previewText: `[白纸手写] 包含 ${this.strokes.length} 条墨迹`,
-        tag: this.note.tag.length > 0 ? this.note.tag : '白纸笔记',
-        tagColor: this.note.tagColor,
-        updateTime: '刚刚',
-        contentDetail: `# ${this.title}\n\n[白纸手写笔记]\n`,
-        pageInfo: this.note.pageInfo,
-        extraInfo: this.note.extraInfo,
-        coverUrl: this.note.coverUrl,
-        strokes: serialized,
-        scratchpadStrokes: this.note.scratchpadStrokes
-      };
-      this.onSaved(updatedNote, updatedNote.contentDetail);
-      this.onSaveStateChange('已保存');
-    }
+    this.saveTimer = -1;
+    const snapshot = this.strokeSnapshot();
+    this.onSaved(snapshot, snapshot.contentDetail);
+    this.onSaveStateChange('已保存');
   }
 
   // ------------------------------------------------------------------

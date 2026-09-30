@@ -509,10 +509,36 @@ export struct AiWorkspace {
     try {
       const sessions: ChatSession[] = await this.sessionService.loadSessions();
       for (const s of sessions) {
-        if (s.id === id) {
+        if (s && s.id === id) {
           this.loadedSessionId = id;
-          this.messages = s.messages.slice();
-          this.currentAgentMode = s.agentMode;
+          const rawMessages: StoredMessage[] = (s.messages && Array.isArray(s.messages)) ? s.messages : [];
+          const safeMessages: StoredMessage[] = [];
+          for (let i = 0; i < rawMessages.length; i++) {
+            const m: StoredMessage = rawMessages[i];
+            if (!m || typeof m !== 'object') {
+              continue;
+            }
+            const msgItem: StoredMessage = {
+              id: m.id || `msg_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+              role: m.role || 'assistant',
+              text: (typeof m.text === 'string') ? m.text : '',
+              reasoningContent: (typeof m.reasoningContent === 'string') ? m.reasoningContent : undefined,
+              reasoningDurationMs: typeof m.reasoningDurationMs === 'number' ? m.reasoningDurationMs : undefined,
+              reasoningFolded: m.reasoningFolded ?? true,
+              formula: m.formula,
+              bullets: Array.isArray(m.bullets) ? m.bullets : undefined,
+              citations: Array.isArray(m.citations) ? m.citations : [],
+              agentLayer: m.agentLayer,
+              modelProfileId: m.modelProfileId,
+              createdAt: typeof m.createdAt === 'number' ? m.createdAt : Date.now(),
+              streaming: false,
+              error: (typeof m.error === 'string') ? m.error : undefined,
+              proposalStatus: m.proposalStatus
+            };
+            safeMessages.push(msgItem);
+          }
+          this.messages = safeMessages;
+          this.currentAgentMode = s.agentMode || 'auto';
           this.lastCitations = [];
           this.streamingText = '';
           this.streamingReasoning = '';
@@ -896,65 +922,119 @@ export struct AiWorkspace {
 
   /** 从文本中解析 Codex / Claude Code 风格协同方案 */
   private extractProposal(text: string): ActionProposalData | null {
+    if (!text || typeof text !== 'string') {
+      return null;
+    }
     if (!text.includes('action_proposal') && !text.includes('"actions"')) {
       return null;
     }
     try {
+      let rawData: ActionProposalData | null = null;
       const fenceMatch = text.match(/```(?:action_proposal|json)?\s*(\{[\s\S]*?"actions"[\s\S]*?\})\s*```/);
       if (fenceMatch && fenceMatch[1]) {
-        return JSON.parse(fenceMatch[1]) as ActionProposalData;
-      }
-      const jsonStart = text.indexOf('{"summary"');
-      if (jsonStart !== -1) {
-        const jsonEnd = text.lastIndexOf('}');
-        if (jsonEnd > jsonStart) {
-          const raw = text.substring(jsonStart, jsonEnd + 1);
-          return JSON.parse(raw) as ActionProposalData;
+        rawData = JSON.parse(fenceMatch[1]) as ActionProposalData;
+      } else {
+        const jsonStart = text.indexOf('{"summary"');
+        if (jsonStart !== -1) {
+          const jsonEnd = text.lastIndexOf('}');
+          if (jsonEnd > jsonStart) {
+            const raw = text.substring(jsonStart, jsonEnd + 1);
+            rawData = JSON.parse(raw) as ActionProposalData;
+          }
         }
       }
+      if (!rawData || typeof rawData !== 'object' || !Array.isArray(rawData.actions)) {
+        return null;
+      }
+      const safeSummary: string = typeof rawData.summary === 'string' ? rawData.summary : '';
+      const safeActions: ProposedActionItem[] = [];
+      for (let i = 0; i < rawData.actions.length; i++) {
+        const item = rawData.actions[i];
+        if (!item || typeof item !== 'object') {
+          continue;
+        }
+        const safeTitle = typeof item.title === 'string' ? item.title : '';
+        const safeDesc = typeof item.desc === 'string' ? item.desc : '';
+        const safeTarget = typeof item.target === 'string' ? item.target : '';
+        const safeValue = typeof item.value === 'string' ? item.value : '';
+        const safeSource = typeof item.source === 'string' ? item.source : '';
+        const safeDate = typeof item.date === 'string' ? item.date : '';
+        const safeContent = typeof item.content === 'string' ? item.content : '';
+        const safeType = typeof item.type === 'string' ? item.type : 'note';
+        const safeId = typeof item.id === 'string' && item.id.length > 0 ? item.id : `act_${i}_${Date.now()}`;
+        const actItem: ProposedActionItem = {
+          id: safeId,
+          type: safeType,
+          title: safeTitle,
+          desc: safeDesc,
+          target: safeTarget,
+          value: safeValue,
+          source: safeSource,
+          date: safeDate,
+          content: safeContent
+        };
+        safeActions.push(actItem);
+      }
+      const resProposal: ActionProposalData = {
+        summary: safeSummary,
+        actions: safeActions
+      };
+      return resProposal;
     } catch {
       return null;
     }
-    return null;
   }
 
   /** 一键采纳并应用协同方案 */
   private applyProposal(msgId: string, proposal: ActionProposalData): void {
+    if (!proposal || !proposal.actions || !Array.isArray(proposal.actions)) {
+      return;
+    }
     let count: number = 0;
     for (let i = 0; i < proposal.actions.length; i++) {
       const act = proposal.actions[i];
+      if (!act) {
+        continue;
+      }
+      const title = (typeof act.title === 'string') ? act.title : '';
+      const desc = (typeof act.desc === 'string') ? act.desc : '';
+      const target = (typeof act.target === 'string') ? act.target : '';
+      const value = (typeof act.value === 'string') ? act.value : '';
+      const source = (typeof act.source === 'string') ? act.source : '';
+      const dateStr = (typeof act.date === 'string') ? act.date : '';
+      const content = (typeof act.content === 'string') ? act.content : '';
+
       if (act.type === 'todo') {
-        const d = act.date && act.date.length > 0 ? act.date : this.getTodayDateString();
-        this.toolCreateTodo(d, act.title.length > 0 ? act.title : act.desc);
+        const d = dateStr.length > 0 ? dateStr : this.getTodayDateString();
+        this.toolCreateTodo(d, title.length > 0 ? title : desc);
         count++;
       } else if (act.type === 'tag') {
-        const iden = act.target ? act.target : act.title;
-        const tags = act.value ? act.value : act.desc;
+        const iden = target.length > 0 ? target : title;
+        const tags = value.length > 0 ? value : desc;
         if (iden.length > 0 && tags.length > 0) {
           this.toolAddTagToNote(iden, tags);
           count++;
         }
       } else if (act.type === 'link') {
-        const src = act.source ? act.source : act.title;
-        const tgt = act.target ? act.target : act.value;
-        if (src && tgt && src.length > 0 && tgt.length > 0) {
-          this.toolCreateLink(src, tgt, act.desc);
+        const src = source.length > 0 ? source : title;
+        const tgt = target.length > 0 ? target : value;
+        if (src.length > 0 && tgt.length > 0) {
+          this.toolCreateLink(src, tgt, desc);
           count++;
         }
       } else if (act.type === 'category') {
-        const iden = act.target ? act.target : act.title;
-        const cat = act.value ? act.value : act.desc;
+        const iden = target.length > 0 ? target : title;
+        const cat = value.length > 0 ? value : desc;
         if (iden.length > 0 && cat.length > 0) {
           this.toolCategorizeNote(iden, cat);
           count++;
         }
       } else if (act.type === 'note') {
-        const title = act.title;
-        const content = act.content ? act.content : (act.desc ? act.desc : `# ${title}\n\n`);
-        const cat = act.target ? act.target : '未分类';
-        const tag = act.value ? act.value : '';
+        const noteContent = content.length > 0 ? content : (desc.length > 0 ? desc : `# ${title}\n\n`);
+        const cat = target.length > 0 ? target : '未分类';
+        const tag = value.length > 0 ? value : '';
         if (title.length > 0) {
-          this.toolCreateNote(title, cat, tag, content);
+          this.toolCreateNote(title, cat, tag, noteContent);
           count++;
         }
       }
@@ -1234,7 +1314,7 @@ export struct AiWorkspace {
     if (msg.role === 'user') {
       Row() {
         Blank()
-        Text(msg.text)
+        Text(msg.text ?? '')
           .fontSize(TypographyTokens.BODY_REGULAR)
           .fontColor(Color.White)
           .padding({ left: 14, right: 14, top: 10, bottom: 10 })
@@ -1265,14 +1345,14 @@ export struct AiWorkspace {
         // 思考链展示卡片
         this.reasoningCard(msg)
 
-        if (msg.error !== undefined && msg.error.length > 0) {
+        if (msg.error !== undefined && msg.error !== null && msg.error.length > 0) {
           Text(`⚠ ${msg.error}`)
             .fontSize(TypographyTokens.CAPTION)
             .fontColor('#EF4444')
             .width('100%')
         }
 
-        if (msg.text.length > 0) {
+        if (msg.text && msg.text.length > 0) {
           this.renderMarkdownText(msg.text, false)
         }
 
@@ -1280,7 +1360,7 @@ export struct AiWorkspace {
         this.proposalCard(msg)
 
         // 引用来源芯片
-        if (msg.citations !== undefined && msg.citations.length > 0) {
+        if (msg.citations !== undefined && msg.citations !== null && msg.citations.length > 0) {
           Column({ space: 4 }) {
             Text('引用溯源')
               .fontSize(TypographyTokens.TINY)
@@ -1303,7 +1383,7 @@ export struct AiWorkspace {
         // 操作栏（一键复制 / 重新生成 / 错误重试）
         if (msg.streaming !== true) {
           Row({ space: 8 }) {
-            if (msg.text.length > 0) {
+            if (msg.text && msg.text.length > 0) {
               Row({ space: 4 }) {
                 Text('⎘')
                   .fontSize(TypographyTokens.TINY)
@@ -1316,7 +1396,7 @@ export struct AiWorkspace {
               .borderRadius(6)
               .backgroundColor(this.palette().surfaceSubtle)
               .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.copyToClipboard(msg.text))
+              .onClick(() => this.copyToClipboard(msg.text ?? ''))
             }
 
             Row({ space: 4 }) {
@@ -1333,7 +1413,7 @@ export struct AiWorkspace {
             .hoverEffect(HoverEffect.Highlight)
             .onClick(() => this.regenerateLastResponse())
 
-            if (msg.error !== undefined && msg.error.length > 0) {
+            if (msg.error !== undefined && msg.error !== null && msg.error.length > 0) {
               if (msg.error.includes('deepseek-v4-pro') || msg.error.includes('deepseek-flash') || msg.error.includes('deepseek-v4')) {
                 Row({ space: 4 }) {
                   Text('⚡')
@@ -1377,7 +1457,7 @@ export struct AiWorkspace {
   /** Codex / Claude Code 交互式协同方案卡片 */
   @Builder
   proposalCard(msg: StoredMessage) {
-    if (this.extractProposal(msg.text) !== null) {
+    if (msg.text && typeof msg.text === 'string' && this.extractProposal(msg.text) !== null) {
       this.renderProposalCardContent(msg, this.extractProposal(msg.text)!)
     }
   }
@@ -1447,7 +1527,7 @@ export struct AiWorkspace {
       .alignItems(VerticalAlign.Center)
 
       // 方案概述
-      if (proposal.summary.length > 0) {
+      if (proposal.summary && proposal.summary.length > 0) {
         Text(proposal.summary)
           .fontSize(TypographyTokens.CAPTION)
           .fontColor(this.palette().inkSecondary)
@@ -1456,7 +1536,7 @@ export struct AiWorkspace {
 
       // 方案执行清单
       Column({ space: 6 }) {
-        ForEach(proposal.actions, (act: ProposedActionItem, idx: number) => {
+        ForEach(proposal.actions || [], (act: ProposedActionItem, idx: number) => {
           Row({ space: 8 }) {
             // 类型徽标
             Row() {
@@ -1470,7 +1550,7 @@ export struct AiWorkspace {
             .backgroundColor(act.type === 'todo' ? 'rgba(5,150,105,0.1)' : (act.type === 'tag' ? 'rgba(217,119,6,0.1)' : (act.type === 'link' ? 'rgba(99,102,241,0.1)' : this.palette().accentSoft)))
 
             Column({ space: 2 }) {
-              Text(act.title.length > 0 ? act.title : (act.target ? `${act.target}: ${act.value ?? ''}` : ''))
+              Text((act.title && act.title.length > 0) ? act.title : (act.target && act.target.length > 0 ? `${act.target}: ${act.value ?? ''}` : (act.desc ?? '')))
                 .fontSize(TypographyTokens.CAPTION)
                 .fontWeight(FontWeight.Medium)
                 .fontColor(this.palette().inkPrimary)
@@ -1493,7 +1573,7 @@ export struct AiWorkspace {
           .borderRadius(8)
           .backgroundColor(this.palette().surface)
           .border({ width: 1, color: this.palette().borderSubtle })
-        }, (act: ProposedActionItem, idx: number) => `act-${idx}-${act.type}`)
+        }, (act: ProposedActionItem, idx: number) => `act-${idx}-${act.id || act.type}`)
       }
       .width('100%')
 
@@ -1566,6 +1646,9 @@ export struct AiWorkspace {
   }
 
   private parseBlocks(text: string): string[] {
+    if (!text || typeof text !== 'string') {
+      return [];
+    }
     const lines: string[] = text.split('\n');
     const blocks: string[] = [];
     let fenced: boolean = false;

@@ -8,7 +8,7 @@ FlowMind（墨语）是一款面向 HarmonyOS NEXT 的 Local-First 双链知识�
 
 ## 项目状态
 
-- **操作系统**：HarmonyOS NEXT (API 11 / API 12)
+- **操作系统**：HarmonyOS NEXT；当前工程兼容 SDK `6.1.1(24)`，目标 SDK `26.0.0`
 - **UI 框架**：ArkUI 声明式开发
 - **编程语言**：ArkTS
 - **支持设备**：Tablet 平板、Phone 手机（自适应布局）
@@ -28,6 +28,8 @@ FlowMind（墨语）是一款面向 HarmonyOS NEXT 的 Local-First 双链知识�
 - 本地示例数据与工作区资产看板。
 
 ### 阅读与批注
+- 图片 OCR 校对、本地整理与 AI Markdown 排版，支持预览编辑、原文保留和待办确认；
+- 实际 PDF 文件导入、PDFKit 原页读取与真实页数，不支持的 Word 格式提示转换；
 - PDF 多页阅读与 A4 物理页面排版；
 - 原生批注、矢量手写墨水与二次贝塞尔光滑插值；
 - 华为 MatePad 风格边读边写分屏与自由草稿白板；
@@ -161,6 +163,7 @@ hdc list targets
 | [**`PROJECT_MEMORY.md`**](./PROJECT_MEMORY.md) | 项目全景记忆、GPU 渲染避坑三大铁律与稳定性约定 |
 | [**`TECH_STACK.md`**](./TECH_STACK.md) | 技术栈全景、AI 智能体调度中枢与知识图谱架构白皮书 |
 | [**`CONTRIBUTING.md`**](./CONTRIBUTING.md) | 开源贡献指南、代码规范与 Pull Request 流程 |
+| [**工作流验收与后续改进**](./docs/WORKFLOW_REVIEW.md) | 本次改进、自动回归结果、全功能设备验收清单与已知限制 |
 | [**`SECURITY.md`**](./SECURITY.md) | 安全策略与漏洞提报通道 |
 | [**`LICENSE`**](./LICENSE) | 开源许可证 |
 

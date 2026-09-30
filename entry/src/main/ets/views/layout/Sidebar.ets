@@ -456,9 +456,12 @@ export struct Sidebar {
 
   /** 会话最后一条消息摘要 */
   private sessionPreview(session: ChatSession): string {
+    if (!session || !session.messages || !Array.isArray(session.messages)) {
+      return '暂无消息';
+    }
     for (let i = session.messages.length - 1; i >= 0; i--) {
       const m: StoredMessage = session.messages[i];
-      if (m.text.length > 0) {
+      if (m && m.text && typeof m.text === 'string' && m.text.length > 0) {
         return m.text.replace(/\n/g, ' ').slice(0, 40);
       }
     }
@@ -475,7 +478,7 @@ export struct Sidebar {
           .width(14)
           .textAlign(TextAlign.Center)
 
-        Text(session.title.length > 0 ? session.title : '新对话')
+        Text((session.title && session.title.length > 0) ? session.title : '新对话')
           .fontSize(TypographyTokens.CAPTION)
           .fontColor(session.id === this.activeSessionId ? this.palette().inkPrimary : this.palette().inkSecondary)
           .fontWeight(session.id === this.activeSessionId ? FontWeight.Medium : FontWeight.Normal)
@@ -500,7 +503,7 @@ export struct Sidebar {
       .width('100%')
 
       Row({ space: 6 }) {
-        Text(this.sessionTime(session.updatedAt))
+        Text(session.updatedAt ? this.sessionTime(session.updatedAt) : '')
           .fontSize(TypographyTokens.TINY)
           .fontColor(this.palette().inkMuted)
         Text(this.sessionPreview(session))

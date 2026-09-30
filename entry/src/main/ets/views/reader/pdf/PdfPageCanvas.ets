@@ -11,6 +11,7 @@
  */
 import { ColorPalette, TypographyTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
+import { PdfPageBackground } from './PdfPageBackground';
 import {
   AnnotationTool,
   NormalizedPoint,
@@ -22,6 +23,9 @@ import {
 @Component
 export struct PdfPageCanvas {
   @Prop pageModel: PdfPageModel;
+  @Prop sourceUri: string = '';
+  @Prop useRealPdf: boolean = false;
+  @State private pageAspectRatio: number = 0.707;
   @Prop @Watch('onStrokesChanged') strokes: PageAnnotationStroke[] = [];
   @Prop isAnnotateMode: boolean = false;
   @Prop tool: AnnotationTool = 'pen';
@@ -199,10 +203,14 @@ export struct PdfPageCanvas {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       // ---- 第一层：PDF 页面原生排版层 (Paper View) ----
+      if (this.useRealPdf) {
+        PdfPageBackground({ sourceUri: this.sourceUri, pageIndex: this.pageModel.pageIndex,
+          onAspectRatio: (ratio: number) => { this.pageAspectRatio = ratio; } })
+      } else {
       Column() {
         // 页眉信息：试卷科目与防伪标记
         Row() {
-          Text('绝密 ★ 启用前')
+          Text('示例资料 · 演示用')
             .fontSize(TypographyTokens.CAPTION)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.isDarkMode ? '#71717A' : '#A1A1AA')
@@ -303,6 +311,7 @@ export struct PdfPageCanvas {
       .height('100%')
       .padding({ left: 32, right: 32, top: 28, bottom: 24 })
       .backgroundColor(this.isDarkMode ? '#1C1C1E' : '#FFFFFF')
+      }
 
       // ---- 第二层：归一化矢量批注 Canvas 图层 ----
       Canvas(this.context)
@@ -312,7 +321,7 @@ export struct PdfPageCanvas {
         .onTouch((event: TouchEvent) => this.handleTouch(event))
     }
     .width('100%')
-    .aspectRatio(0.707) // A4 纸比例 1 : 1.414 (宽/高 ≈ 0.707)
+    .aspectRatio(this.useRealPdf ? this.pageAspectRatio : 0.707)
     .borderRadius(8)
     .shadow({
       radius: 16,

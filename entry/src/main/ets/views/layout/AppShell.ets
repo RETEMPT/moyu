@@ -8,7 +8,7 @@
  *
  * 内容区与上下文面板通过 @BuilderParam 插槽注入，外壳只负责布局与响应式决策。
  */
-import { curves, mediaquery } from '@kit.ArkUI';
+import { mediaquery } from '@kit.ArkUI';
 import { ColorPalette, LayoutTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
@@ -39,6 +39,7 @@ export struct AppShell {
 
   onToggleSidebar: () => void = () => {};
   onToggleContext: () => void = () => {};
+  onLayoutModeChange: (singleColumn: boolean, threeColumn: boolean) => void = () => {};
   onOpenSearch: () => void = () => {};
   onSelectNav: (navKey: string) => void = () => {};
   onToggleSpace: (spaceId: string) => void = () => {};
@@ -85,10 +86,13 @@ export struct AppShell {
 
   private onThreeColumnChange = (result: mediaquery.MediaQueryResult): void => {
     this.isThreeColumn = result.matches;
+    this.onLayoutModeChange(!this.isTwoColumn, this.isThreeColumn);
   };
 
   private onTwoColumnChange = (result: mediaquery.MediaQueryResult): void => {
     this.isTwoColumn = result.matches;
+    AppStorage.setOrCreate('flowmindSingleColumn', !result.matches);
+    this.onLayoutModeChange(!this.isTwoColumn, this.isThreeColumn);
   };
 
   private onPhoneChange = (result: mediaquery.MediaQueryResult): void => {
@@ -111,6 +115,8 @@ export struct AppShell {
     this.isTwoColumn = twoColumn.matches;
     this.isPhone = phone.matches;
     AppStorage.setOrCreate('flowmindIsPhone', phone.matches);
+    AppStorage.setOrCreate('flowmindSingleColumn', !twoColumn.matches);
+    this.onLayoutModeChange(!twoColumn.matches, threeColumn.matches);
 
     threeColumn.on('change', this.onThreeColumnChange);
     twoColumn.on('change', this.onTwoColumnChange);
@@ -207,7 +213,7 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.START)
               .combine(TransitionEffect.OPACITY)
-              .animation({ curve: curves.springMotion(0.28, 0.76) })
+              .animation({ duration: 200, curve: Curve.EaseInOut })
           )
         }
 
@@ -242,7 +248,7 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.END)
               .combine(TransitionEffect.OPACITY)
-              .animation({ curve: curves.springMotion(0.28, 0.76) })
+              .animation({ duration: 200, curve: Curve.EaseInOut })
           )
         }
       }
@@ -261,19 +267,19 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.START)
               .combine(TransitionEffect.OPACITY)
-              .animation({ curve: curves.springMotion(0.28, 0.76) })
+              .animation({ duration: 200, curve: Curve.EaseInOut })
           )
 
           Column()
             .layoutWeight(1)
             .height('100%')
             .backgroundColor('rgba(0,0,0,0.25)')
-            .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+            .transition(TransitionEffect.OPACITY.animation({ duration: 200, curve: Curve.EaseInOut }))
             .onClick(() => this.onToggleSidebar())
         }
         .width('100%')
         .height('100%')
-        .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+        .transition(TransitionEffect.OPACITY.animation({ duration: 200, curve: Curve.EaseInOut }))
       }
 
       // ---- 单栏 / 双栏：上下文面板浮层 ----
@@ -283,7 +289,7 @@ export struct AppShell {
             .layoutWeight(1)
             .height('100%')
             .backgroundColor('rgba(0,0,0,0.25)')
-            .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+            .transition(TransitionEffect.OPACITY.animation({ duration: 200, curve: Curve.EaseInOut }))
             .onClick(() => this.onToggleContext())
 
           Column() {
@@ -295,12 +301,12 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.END)
               .combine(TransitionEffect.OPACITY)
-              .animation({ curve: curves.springMotion(0.28, 0.76) })
+              .animation({ duration: 200, curve: Curve.EaseInOut })
           )
         }
         .width('100%')
         .height('100%')
-        .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+        .transition(TransitionEffect.OPACITY.animation({ duration: 200, curve: Curve.EaseInOut }))
       }
     }
     .width('100%')

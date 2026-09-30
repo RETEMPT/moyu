@@ -30,6 +30,8 @@ import {
   NAV_TODO,
   NAV_TRASH,
   SAVE_IDLE,
+  SAVE_SAVING,
+  SAVE_FAILED,
   TRASH_RETENTION_DAYS
 } from '../common/constants/WorkspaceConstants';
 import { NoteStorageService } from '../services/NoteStorageService';
@@ -68,6 +70,7 @@ import { NameNoteSheet } from '../views/layout/sheets/NameNoteSheet';
 import { SmartExtractSheet } from '../views/layout/sheets/SmartExtractSheet';
 import { SmartContent } from '../common/types/SmartContent';
 import { SmartTask } from '../common/types/SmartTask';
+import { SmartCaptureService, SmartCaptureStorage } from '../services/smart/SmartCaptureService';
 
 /** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
 interface PendingNoteCreate {
@@ -148,6 +151,9 @@ struct Index {
   @State searchVisible: boolean = false;
   @State settingsVisible: boolean = false;
   @State smartExtractVisible: boolean = false;
+  @State smartExtractCloseToken: number = 0;
+  @State documentBackToken: number = 0;
+  @StorageProp('flowmindSingleColumn') singleColumn: boolean = false;
   /** 新建笔记的命名弹层意图；非空即显示 NameNoteSheet。 */
   @State pendingCreate: PendingNoteCreate | null = null;
   @State toastVisible: boolean = false;
@@ -184,6 +190,35 @@ struct Index {
     }
     this.appContext = getContext(this) as common.UIAbilityContext;
     return this.appContext;
+  }
+
+  private dismissNavigationOverlay(): void {
+    if (this.singleColumn) { this.sidebarCollapsed = true; this.contextPanelOpen = false; }
+  }
+
+  onBackPress(): boolean {
+    if (this.activeSheet.length > 0) { this.activeSheet = ''; return true; }
+    if (this.createProjectOpen) { this.createProjectOpen = false; return true; }
+    if (this.pendingCreate !== null) { this.pendingCreate = null; return true; }
+    if (this.smartExtractVisible) { this.smartExtractCloseToken++; return true; }
+    if (this.settingsVisible) { this.settingsVisible = false; return true; }
+    if (this.searchVisible) { this.searchVisible = false; return true; }
+    if (this.fullScreenDocOpen) { this.documentBackToken++; return true; }
+    if (this.singleColumn && this.contextPanelOpen) { this.contextPanelOpen = false; return true; }
+    if (this.singleColumn && !this.sidebarCollapsed) { this.sidebarCollapsed = true; return true; }
+    if (this.readingOpen) { this.closeReading(); return true; }
+    if (this.activeNav !== NAV_HOME) { this.activeNav = NAV_HOME; this.activeSpaceId = ''; return true; }
+    return false;
+  }
+
+  private closeReading(): void {
+    if (this.saveState === SAVE_SAVING || this.saveState === SAVE_FAILED) {
+      this.notify(this.saveState === SAVE_SAVING ? '正在保存，请稍候再返回' : '保存失败，请先重试保存');
+      return;
+    }
+    this.readingOpen = false;
+    this.activeNoteId = '';
+    this.outlineItems = [];
   }
 
   aboutToAppear(): void {
@@ -269,6 +304,10 @@ struct Index {
   }
 
   private handleSelectSession(session: ChatSession): void {
+    this.dismissNavigationOverlay();
+    if (!session || !session.id) {
+      return;
+    }
     this.activeNav = NAV_AI;
     this.readingOpen = false;
     this.fullScreenDocOpen = false;
@@ -277,6 +316,7 @@ struct Index {
   }
 
   private handleNewSession(): void {
+    this.dismissNavigationOverlay();
     this.activeNav = NAV_AI;
     this.readingOpen = false;
     this.fullScreenDocOpen = false;
@@ -373,26 +413,27 @@ struct Index {
       const stored: NoteItem[] = await this.storage.loadTrash(context);
       const now: number = Date.now();
       const keep: NoteItem[] = [];
-      const expiredIds: string[] = [];
+      const expired: NoteItem[] = [];
       for (let i = 0; i < stored.length; i++) {
         const rawDeletedAt: number | undefined = stored[i].deletedAt;
         const deletedAt: number = rawDeletedAt === undefined ? now : rawDeletedAt;
         const ageDays: number = (now - deletedAt) / (24 * 60 * 60 * 1000);
         if (ageDays > TRASH_RETENTION_DAYS) {
-          expiredIds.push(stored[i].id);
+          expired.push(stored[i]);
         } else {
           keep.push(stored[i]);
         }
       }
-      this.trash = keep;
-      for (let i = 0; i < expiredIds.length; i++) {
+      for (let i = 0; i < expired.length; i++) {
         try {
-          await this.storage.delete(context, expiredIds[i]);
+          await this.storage.delete(context, expired[i].id, expired[i].sourceUri || '');
         } catch (error) {
-          console.error(`超期笔记文件清理失败 (${expiredIds[i]}): ${JSON.stringify(error)}`);
+          keep.push(expired[i]);
+          console.error(`超期笔记文件清理失败 (${expired[i].id}): ${JSON.stringify(error)}`);
         }
       }
-      if (expiredIds.length > 0) {
+      this.trash = keep;
+      if (expired.length > 0) {
         await this.persistTrash();
       }
     } catch (error) {
@@ -795,6 +836,7 @@ struct Index {
   }
 
   private openNote(note: NoteItem): void {
+    this.dismissNavigationOverlay();
     if (this.isHeavyDocument(note)) {
       // PDF / 试卷 / 稿纸手写：进入独立全屏华为风阅读器工作台
       this.fullScreenDocNote = note;
@@ -1132,19 +1174,21 @@ struct Index {
     this.notify(`已恢复「${note.title}」`);
   }
 
-  /** 彻底删除单篇（不可恢复，需二次确认）：移除回收站条目并删掉沙箱 .md。 */
+  /** 彻底删除单篇：先清理应用内文件，失败时保留回收站条目供重试。 */
   private async purgeNote(note: NoteItem): Promise<void> {
     const confirmed: boolean = await this.confirmDestructive(`彻底删除「${note.title}」？此操作不可恢复。`);
     if (!confirmed) {
       return;
     }
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    this.trash = this.removeById(this.trash, note.id);
     try {
-      await this.storage.delete(context, note.id);
+      await this.storage.delete(context, note.id, note.sourceUri || '');
     } catch (error) {
       console.error(`彻底删除失败 (${note.id}): ${JSON.stringify(error)}`);
+      this.notify('文件删除失败，已保留回收站条目，请重试');
+      return;
     }
+    this.trash = this.removeById(this.trash, note.id);
     await this.persistTrash();
     this.notify('已彻底删除');
   }
@@ -1160,20 +1204,19 @@ struct Index {
       return;
     }
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const ids: string[] = [];
-    for (let i = 0; i < this.trash.length; i++) {
-      ids.push(this.trash[i].id);
-    }
-    this.trash = [];
-    for (let i = 0; i < ids.length; i++) {
+    const pending: NoteItem[] = this.trash.slice();
+    const failed: NoteItem[] = [];
+    for (let i = 0; i < pending.length; i++) {
       try {
-        await this.storage.delete(context, ids[i]);
+        await this.storage.delete(context, pending[i].id, pending[i].sourceUri || '');
       } catch (error) {
-        console.error(`清空回收站失败 (${ids[i]}): ${JSON.stringify(error)}`);
+        failed.push(pending[i]);
+        console.error(`清空回收站失败 (${pending[i].id}): ${JSON.stringify(error)}`);
       }
     }
+    this.trash = failed;
     await this.persistTrash();
-    this.notify('回收站已清空');
+    this.notify(failed.length === 0 ? '回收站已清空' : `有 ${failed.length} 篇文件清理失败，已保留供重试`);
   }
 
   /** 不可恢复操作的二次确认；对话框不可用时按「取消」处理，绝不误删。 */
@@ -1555,102 +1598,26 @@ struct Index {
    * 黄金闭环：智能提取落地为双链知识卡并注入待办日程
    */
   private async handleCommitSmartExtract(content: SmartContent, selectedTasks: SmartTask[]): Promise<void> {
-    const context: common.UIAbilityContext = this.getAbilityContext();
-    const now = new Date();
-    const dateKey = `${now.getFullYear()}-${(now.getMonth() + 1 < 10 ? '0' : '') + (now.getMonth() + 1)}-${(now.getDate() < 10 ? '0' : '') + now.getDate()}`;
-    const noteId = `note-${Date.now()}`;
-
-    // 1. 将勾选的待办事项直接存入待办日历
-    for (let i = 0; i < selectedTasks.length; i++) {
-      const task = selectedTasks[i];
-      const deadlineText = task.deadline && task.deadline.length > 0 ? ` [截止: ${task.deadline}]` : '';
-      const todoNow = Date.now() + i;
-      const todo: TodoItem = {
-        id: `todo-${todoNow}-${this.todos.length}`,
-        date: dateKey,
-        title: `${task.title}${deadlineText}`,
-        done: false,
-        noteRefs: [noteId],
-        createdAt: todoNow,
-        updatedAt: todoNow
-      };
-      this.todos = [todo].concat(this.todos);
-    }
-    if (selectedTasks.length > 0) {
-      await this.persistTodos();
-    }
-
-    // 2. 构造 Markdown 正文、结构化块与双链
-    let body = `# ${content.title}\n\n`;
-    body += `> ✦ **AI 智能提炼摘要**：${content.summary}\n\n`;
-
-    if (content.keyPoints && content.keyPoints.length > 0) {
-      body += `## 核心要点\n\n`;
-      for (let i = 0; i < content.keyPoints.length; i++) {
-        body += `- ${content.keyPoints[i]}\n`;
+    const context = this.getAbilityContext();
+    const persistence: SmartCaptureStorage = {
+      currentNotes: () => this.notes,
+      currentTodos: () => this.todos,
+      writeDocument: async (note: NoteItem) => { await this.storage.create(context, note); },
+      writeNotes: async (notes: NoteItem[]) => {
+        await this.storage.save(notes);
+        this.notes = notes;
+        this.rebuildSpaces();
+      },
+      writeTodos: async (todos: TodoItem[]) => {
+        await this.todoStorage.saveTodos(context, todos);
+        this.todos = todos;
       }
-      body += `\n`;
-    }
-
-    if (content.entities && content.entities.length > 0) {
-      body += `## 关键实体与信息\n\n`;
-      for (let i = 0; i < content.entities.length; i++) {
-        const ent = content.entities[i];
-        body += `- **${ent.name}** (${ent.type})：${ent.description || '核心概念'}\n`;
-      }
-      body += `\n`;
-    }
-
-    if (selectedTasks.length > 0) {
-      body += `## 行动待办清单\n\n`;
-      for (let i = 0; i < selectedTasks.length; i++) {
-        const t = selectedTasks[i];
-        body += `- [ ] ${t.title}${t.deadline ? ' ⏳ ' + t.deadline : ''}\n`;
-      }
-      body += `\n`;
-    }
-
-    if (content.relations && content.relations.length > 0) {
-      body += `## 知识网络关联\n\n`;
-      for (let i = 0; i < content.relations.length; i++) {
-        const rel = content.relations[i];
-        body += `- [[${rel.targetTitle}]]（${rel.reason || '关联考点'}）\n`;
-      }
-      body += `\n`;
-    }
-
-    const tags = content.tags && content.tags.length > 0 ? content.tags : ['智能提取', '知识卡'];
-    body += tags.map((t: string) => `#${t}`).join(' ') + '\n';
-
-    // 3. 创建 NoteItem
-    const newNote: NoteItem = {
-      id: noteId,
-      title: content.title,
-      category: '计算机基础',
-      type: 'Markdown',
-      previewText: content.summary,
-      tag: tags[0],
-      tagColor: '#4F46E5',
-      updateTime: '刚刚',
-      contentDetail: body,
-      tags: tags,
-      aiSummary: content.summary,
-      aiTags: tags,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
     };
-
-    this.notes = [newNote].concat(this.notes);
-    try {
-      await this.storage.create(context, newNote);
-    } catch (e) {
-      console.warn(`保存智能笔记失败: ${JSON.stringify(e)}`);
-    }
-    await this.persistSnapshot();
-    this.rebuildSpaces();
-    this.refreshGraph();
-    this.openNote(newNote);
-    this.notify(`已生成「${content.title}」并同步 ${selectedTasks.length} 条待办！`);
+    const note = await SmartCaptureService.commit(content, selectedTasks, persistence);
+    this.refreshStats();
+    await this.refreshGraph();
+    this.openNote(note);
+    this.notify('已保存「' + content.title + '」与 ' + selectedTasks.length + ' 条待办');
   }
 
   /** 切换待办完成态：未完成（红）↔ 已完成（绿）。 */
@@ -1750,8 +1717,9 @@ struct Index {
           category: targetCategory,
           type: result.noteType !== undefined ? result.noteType : (isPdf ? 'PDF' : 'Markdown'),
           sourceType: isPdf ? 'pdf' : 'document',
-          pageCount: isPdf ? 9 : 1,
-          pageInfo: isPdf ? '9 页 · 研读真题' : '',
+          sourceUri: result.sourceUri,
+          pageCount: result.pageCount || 1,
+          pageInfo: isPdf ? (result.pageCount || 1) + ' 页' : '',
           previewText: document.content.length > 48 ? `${document.content.substring(0, 48)}…` : document.content,
           tag: isPdf ? 'PDF文献' : '导入',
           tagColor: isPdf ? '#E11D48' : '#2563EB',
@@ -1761,8 +1729,9 @@ struct Index {
           createdAt: now.getTime(),
           updatedAt: now.getTime()
         };
-        this.notes = [note].concat(this.notes);
-        await this.persistSnapshot();
+        const nextNotes = [note].concat(this.notes);
+        await this.storage.save(nextNotes);
+        this.notes = nextNotes;
         this.rebuildSpaces();
         this.refreshGraph();
         this.notify(`已导入 ${document.fileName}`);
@@ -1794,6 +1763,7 @@ struct Index {
       this.notes = this.notes.slice();
     }
     this.readingNote = note;
+    if (this.fullScreenDocNote.id === note.id) { this.fullScreenDocNote = note; }
     this.persistSnapshot();
     this.refreshGraph();
   }
@@ -1832,9 +1802,7 @@ struct Index {
           this.openNoteByTitle(title);
         },
         onBack: () => {
-          this.readingOpen = false;
-          this.activeNoteId = '';
-          this.outlineItems = [];
+          this.closeReading();
         },
         onToggleAnnotation: () => {
           this.annotationPaneOpen = !this.annotationPaneOpen;
@@ -1960,6 +1928,7 @@ struct Index {
         onToggleContextPanel: () => {
           animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
             this.contextPanelOpen = !this.contextPanelOpen;
+            if (this.singleColumn && this.contextPanelOpen) { this.sidebarCollapsed = true; }
           });
         },
         onPinnedNotesChange: (pinned: NoteItem[]) => {
@@ -2115,14 +2084,20 @@ struct Index {
         onBreadcrumbClick: (index: number, segment: string) => {
           this.onBreadcrumbClick(index, segment);
         },
+        onLayoutModeChange: (singleColumn: boolean, threeColumn: boolean) => {
+          this.sidebarCollapsed = singleColumn;
+          this.contextPanelOpen = threeColumn;
+        },
         onToggleSidebar: () => {
           animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
             this.sidebarCollapsed = !this.sidebarCollapsed;
+            if (this.singleColumn && !this.sidebarCollapsed) { this.contextPanelOpen = false; }
           });
         },
         onToggleContext: () => {
           animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
             this.contextPanelOpen = !this.contextPanelOpen;
+            if (this.singleColumn && this.contextPanelOpen) { this.sidebarCollapsed = true; }
           });
         },
         onOpenSearch: () => {
@@ -2131,6 +2106,7 @@ struct Index {
           });
         },
         onSelectNav: (navKey: string) => {
+          this.dismissNavigationOverlay();
           this.activeNav = navKey;
           this.readingOpen = false;
           this.fullScreenDocOpen = false;
@@ -2159,6 +2135,7 @@ struct Index {
           });
         },
         onSelectSpace: (spaceId: string) => {
+          this.dismissNavigationOverlay();
           this.activeSpaceId = this.activeSpaceId === spaceId ? '' : spaceId;
           this.activeNav = NAV_LIBRARY;
           this.readingOpen = false;
@@ -2241,6 +2218,23 @@ struct Index {
       if (this.fullScreenDocOpen) {
         HuaweiDocWorkspace({
           note: this.fullScreenDocNote,
+          backRequestToken: this.documentBackToken,
+          onCommitForExit: async (note: NoteItem, content: string) => {
+            note.contentDetail = content;
+            note.updatedAt = Date.now();
+            await this.storage.saveDocument(this.getAbilityContext(), note, content);
+            const nextNotes = this.notes.map((item: NoteItem) => item.id === note.id ? note : item);
+            await this.storage.save(nextNotes);
+            this.notes = nextNotes;
+            this.fullScreenDocNote = note;
+            this.saveState = SAVE_IDLE;
+          },
+          onSmartExtract: () => { this.smartExtractVisible = true; },
+          onExportText: async () => {
+            const result = await this.storage.exportDocument(this.getAbilityContext(), this.fullScreenDocNote);
+            if (result.status !== 'cancelled') { this.notify(result.message); }
+          },
+          onSearchNotes: () => { this.searchVisible = true; },
           onClose: () => {
             this.fullScreenDocOpen = false;
             this.activeNoteId = '';
@@ -2294,8 +2288,10 @@ struct Index {
               this.smartExtractVisible = false;
             });
           },
+          closeToken: this.smartExtractCloseToken,
+          onOpenModelSettings: () => { this.activeSheet = 'model_settings'; },
           onCommit: (content: SmartContent, selectedTasks: SmartTask[]) => {
-            this.handleCommitSmartExtract(content, selectedTasks);
+            return this.handleCommitSmartExtract(content, selectedTasks);
           }
         })
       }
