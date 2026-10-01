@@ -17,6 +17,7 @@ import { ChatSession } from '../../common/types/ChatSession';
 import { SAVE_IDLE } from '../../common/constants/WorkspaceConstants';
 import { GlobalTopBar } from './GlobalTopBar';
 import { Sidebar } from './Sidebar';
+import { BottomNavBar } from './BottomNavBar';
 
 @Component
 export struct AppShell {
@@ -85,10 +86,12 @@ export struct AppShell {
 
   private onThreeColumnChange = (result: mediaquery.MediaQueryResult): void => {
     this.isThreeColumn = result.matches;
+    this.updateCompactFlag();
   };
 
   private onTwoColumnChange = (result: mediaquery.MediaQueryResult): void => {
     this.isTwoColumn = result.matches;
+    this.updateCompactFlag();
   };
 
   private onPhoneChange = (result: mediaquery.MediaQueryResult): void => {
@@ -111,6 +114,7 @@ export struct AppShell {
     this.isTwoColumn = twoColumn.matches;
     this.isPhone = phone.matches;
     AppStorage.setOrCreate('flowmindIsPhone', phone.matches);
+    this.updateCompactFlag();
 
     threeColumn.on('change', this.onThreeColumnChange);
     twoColumn.on('change', this.onTwoColumnChange);
@@ -151,6 +155,16 @@ export struct AppShell {
   /** 上下文面板是否以浮层形式呈现（单栏 / 双栏） */
   private isContextOverlay(): boolean {
     return !this.isThreeColumn && this.contextPanelOpen;
+  }
+
+  /** 是否单栏（<840vp）：手机端形态，用底部 Tab 替代抽屉作为主导航 */
+  private isSingleColumn(): boolean {
+    return !this.isTwoColumn && !this.isThreeColumn;
+  }
+
+  /** 广播单栏状态，供 Index 在手机端默认收起抽屉 */
+  private updateCompactFlag(): void {
+    AppStorage.setOrCreate('flowmindIsCompact', this.isSingleColumn());
   }
 
   @Builder
@@ -230,6 +244,14 @@ export struct AppShell {
           .layoutWeight(1)
           .alignItems(HorizontalAlign.Center)
           .backgroundColor(this.palette().canvas)
+
+          // ---- 手机端（真·手机断点，不含平板分屏/桌面窄窗口）：底部 Tab 主导航 ----
+          if (this.isPhone) {
+            BottomNavBar({
+              activeNav: this.activeNav,
+              onSelectNav: this.onSelectNav
+            })
+          }
         }
         .layoutWeight(1)
         .height('100%')

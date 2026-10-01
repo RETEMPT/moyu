@@ -104,6 +104,9 @@ export class LayoutTokens {
   // UI/UX Pro Max 触控与间距阶梯
   static readonly MIN_TOUCH_TARGET: number = 44;
 
+  // 手机端底部 Tab 导航栏高度 (>= MIN_TOUCH_TARGET，保证单手拇指可达热区)
+  static readonly BOTTOM_NAV_HEIGHT: number = 56;
+
   // 响应式物理断点 (vp)
   static readonly BREAKPOINT_TABLET_LARGE: number = 1200; // 三栏 (侧边栏 + 正文 + 上下文面板)
   static readonly BREAKPOINT_TABLET_MEDIUM: number = 840;  // 双栏 (侧边栏/抽屉 + 正文)

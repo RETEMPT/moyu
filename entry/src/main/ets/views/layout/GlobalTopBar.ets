@@ -62,6 +62,7 @@ export struct GlobalTopBar {
         .textAlign(TextAlign.Center)
         .borderRadius(6)
         .hoverEffect(HoverEffect.Highlight)
+        .responseRegion({ x: (this.iconSize() - 44) / 2, y: (this.iconSize() - 44) / 2, width: 44, height: 44 })
         .onClick(() => this.onToggleSidebar())
 
       Row({ space: 6 }) {
@@ -101,6 +102,7 @@ export struct GlobalTopBar {
         .textAlign(TextAlign.Center)
         .borderRadius(6)
         .hoverEffect(HoverEffect.Highlight)
+        .responseRegion({ x: 0, y: (this.iconSize() - 44) / 2, width: '100%', height: 44 })
         .onClick(() => this.onOpenSearch())
 
       if (this.showContextToggle) {
@@ -113,6 +115,7 @@ export struct GlobalTopBar {
           .borderRadius(6)
           .backgroundColor(this.contextPanelOpen ? this.palette().accentSoft : Color.Transparent)
           .hoverEffect(HoverEffect.Highlight)
+          .responseRegion({ x: 0, y: (this.iconSize() - 44) / 2, width: '100%', height: 44 })
           .onClick(() => this.onToggleContext())
       }
     }

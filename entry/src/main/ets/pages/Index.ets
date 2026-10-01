@@ -103,6 +103,19 @@ struct Index {
   @State contextPanelOpen: boolean = true;
   @State contextTab: string = CONTEXT_TAB_OUTLINE;
 
+  // 手机端（真·手机断点）标志，由 AppShell 通过 mediaquery 广播。
+  // 手机端主导航改由底部 Tab 承担，这里联动收起抽屉与上下文浮层，避免遮挡内容。
+  @StorageLink('flowmindIsPhone') @Watch('onPhoneLayoutChange') isPhone: boolean = false;
+
+  onPhoneLayoutChange(): void {
+    if (this.isPhone) {
+      this.sidebarCollapsed = true;
+      this.contextPanelOpen = false;
+    } else {
+      this.sidebarCollapsed = false;
+    }
+  }
+
   // ---- 资料库筛选 ----
   @State searchText: string = '';
   @State activeFilter: string = FILTER_ALL;

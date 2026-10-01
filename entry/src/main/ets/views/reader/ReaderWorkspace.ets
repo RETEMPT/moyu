@@ -114,6 +114,7 @@ export struct ReaderWorkspace {
         .borderRadius(6)
         .backgroundColor(this.palette().surfaceSubtle)
         .hoverEffect(HoverEffect.Highlight)
+        .responseRegion({ x: 0, y: -10, width: '100%', height: 44 })
         .onClick(() => this.onBack())
 
         // 功能7：收藏切换，写回 note.favorite 并落盘（由 Index.toggleFavorite 处理）
@@ -148,6 +149,7 @@ export struct ReaderWorkspace {
               .borderRadius(6)
               .backgroundColor(this.palette().surfaceSubtle)
               .hoverEffect(HoverEffect.Highlight)
+              .responseRegion({ x: 0, y: -10, width: '100%', height: 44 })
               .onClick(() => {
                 this.deleteArmed = false;
               })
@@ -158,6 +160,7 @@ export struct ReaderWorkspace {
               .borderRadius(6)
               .backgroundColor(this.palette().danger)
               .hoverEffect(HoverEffect.Highlight)
+              .responseRegion({ x: 0, y: -10, width: '100%', height: 44 })
               .onClick(() => {
                 this.deleteArmed = false;
                 this.onDeleteNote(this.note);
@@ -180,6 +183,7 @@ export struct ReaderWorkspace {
           .borderRadius(6)
           .backgroundColor(this.palette().surfaceSubtle)
           .hoverEffect(HoverEffect.Highlight)
+          .responseRegion({ x: 0, y: -10, width: '100%', height: 44 })
           .onClick(() => {
             this.deleteArmed = true;
           })

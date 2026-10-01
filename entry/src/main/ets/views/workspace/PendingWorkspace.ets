@@ -52,6 +52,7 @@ export struct PendingWorkspace {
         .margin({ top: 6 })
       }
       .width(360)
+      .constraintSize({ maxWidth: '92%' })
       .alignItems(HorizontalAlign.Center)
       .padding(24)
       .borderRadius(10)
