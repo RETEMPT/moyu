@@ -245,8 +245,8 @@ export struct AppShell {
           .alignItems(HorizontalAlign.Center)
           .backgroundColor(this.palette().canvas)
 
-          // ---- 单栏（手机端）：底部 Tab 主导航 ----
-          if (this.isSingleColumn()) {
+          // ---- 手机端（真·手机断点，不含平板分屏/桌面窄窗口）：底部 Tab 主导航 ----
+          if (this.isPhone) {
             BottomNavBar({
               activeNav: this.activeNav,
               onSelectNav: this.onSelectNav

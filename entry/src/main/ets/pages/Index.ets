@@ -103,12 +103,12 @@ struct Index {
   @State contextPanelOpen: boolean = true;
   @State contextTab: string = CONTEXT_TAB_OUTLINE;
 
-  // 单栏（<840vp 手机端）标志，由 AppShell 通过 mediaquery 广播。
+  // 手机端（真·手机断点）标志，由 AppShell 通过 mediaquery 广播。
   // 手机端主导航改由底部 Tab 承担，这里联动收起抽屉与上下文浮层，避免遮挡内容。
-  @StorageLink('flowmindIsCompact') @Watch('onCompactLayoutChange') isCompactLayout: boolean = false;
+  @StorageLink('flowmindIsPhone') @Watch('onPhoneLayoutChange') isPhone: boolean = false;
 
-  onCompactLayoutChange(): void {
-    if (this.isCompactLayout) {
+  onPhoneLayoutChange(): void {
+    if (this.isPhone) {
       this.sidebarCollapsed = true;
       this.contextPanelOpen = false;
     } else {
