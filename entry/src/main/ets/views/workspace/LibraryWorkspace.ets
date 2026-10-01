@@ -7,6 +7,7 @@
 import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
+import { NoteCoverVisual } from '../reader/NoteCoverVisual';
 import { FILTER_ALL, NOTE_FILTERS } from '../../common/constants/WorkspaceConstants';
 import { noteRenderKey } from '../../common/utils/ForEachKeys';
 
@@ -171,6 +172,9 @@ export struct LibraryWorkspace {
   @Builder
   noteCard(note: NoteItem) {
     Row({ space: 12 }) {
+      if (note.coverUrl && note.coverUrl.length > 0) {
+        NoteCoverVisual({ source: note.coverUrl }).width(56).height(64).borderRadius(8).clip(true)
+      }
       Column({ space: 4 }) {
         Row({ space: 8 }) {
           Text(note.title)

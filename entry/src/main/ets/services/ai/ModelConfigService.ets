@@ -10,6 +10,7 @@
 import { Context } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { ModelProfile, createDefaultProfile } from '../../common/types/ModelConfig';
+import { ModelProfilePolicy } from './ModelProfilePolicy';
 
 const PREFERENCES_NAME: string = 'flowmind_model';
 const PROFILES_KEY: string = 'profiles';
@@ -44,19 +45,12 @@ export class ModelConfigService {
       if (!Array.isArray(parsed) || parsed.length === 0) {
         return [createDefaultProfile()];
       }
-      let needsSave: boolean = false;
+      const restored: ModelProfile[] = [];
       for (const p of parsed) {
-        p.apiKey = this.sanitizeKey(p.apiKey);
-        if (p.modelId === 'deepseek-v4') {
-          p.modelId = 'deepseek-v4-pro';
-          needsSave = true;
-        }
+        const normalized = ModelProfilePolicy.restore(p);
+        if (normalized !== null && !restored.some((item: ModelProfile) => item.id === normalized.id)) { restored.push(normalized); }
       }
-      if (needsSave) {
-        await prefs.put(PROFILES_KEY, JSON.stringify(parsed));
-        await prefs.flush();
-      }
-      return parsed;
+      return restored.length > 0 ? restored : [createDefaultProfile()];
     } catch {
       return [createDefaultProfile()];
     }
@@ -113,6 +107,8 @@ export class ModelConfigService {
 
   /** 保存单个档案（upsert）并落盘 */
   async upsertProfile(profile: ModelProfile): Promise<ModelProfile[]> {
+    const error = ModelProfilePolicy.validate(profile);
+    if (error.length > 0) { throw new Error(error); }
     const profiles: ModelProfile[] = await this.loadProfiles();
     let found: boolean = false;
     for (let i = 0; i < profiles.length; i++) {
@@ -129,6 +125,30 @@ export class ModelConfigService {
     return profiles;
   }
 
+  /** Publish activation only after both profile and active ID are flushed. */
+  async saveAndActivate(profile: ModelProfile): Promise<ModelProfile[]> {
+    const error = ModelProfilePolicy.validate(profile);
+    if (error.length > 0) { throw new Error(error); }
+    const profiles = await this.loadProfiles();
+    const index = profiles.findIndex((p: ModelProfile) => p.id === profile.id);
+    if (index >= 0) { profiles[index] = profile; } else { profiles.push(profile); }
+    const prefs = await this.ensureInit();
+    const oldProfiles = await prefs.get(PROFILES_KEY, '[]');
+    const oldActive = await prefs.get(ACTIVE_KEY, '');
+    try {
+      await prefs.put(PROFILES_KEY, JSON.stringify(profiles));
+      await prefs.put(ACTIVE_KEY, profile.id);
+      await prefs.flush();
+    } catch {
+      await prefs.put(PROFILES_KEY, oldProfiles);
+      await prefs.put(ACTIVE_KEY, oldActive);
+      throw new Error('配置保存失败');
+    }
+    AppStorage.setOrCreate<string>(ACTIVE_STORAGE_KEY, profile.id);
+    AppStorage.setOrCreate<number>('flowmindModelRevision', Date.now());
+    return profiles;
+  }
+
   /** 删除档案；不允许删除最后一个 */
   async deleteProfile(id: string): Promise<ModelProfile[]> {
     const profiles: ModelProfile[] = await this.loadProfiles();
@@ -136,7 +156,14 @@ export class ModelConfigService {
       return profiles;
     }
     const filtered: ModelProfile[] = profiles.filter((p: ModelProfile) => p.id !== id);
-    await this.saveProfiles(filtered);
+    const prefs = await this.ensureInit();
+    const activeId = await this.getActiveProfileId();
+    const nextActive = activeId === id ? filtered[0].id : activeId;
+    await prefs.put(PROFILES_KEY, JSON.stringify(filtered));
+    await prefs.put(ACTIVE_KEY, nextActive);
+    await prefs.flush();
+    AppStorage.setOrCreate<string>(ACTIVE_STORAGE_KEY, nextActive);
+    AppStorage.setOrCreate<number>('flowmindModelRevision', Date.now());
     return filtered;
   }
 

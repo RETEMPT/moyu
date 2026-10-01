@@ -9,11 +9,12 @@
  *   2. 应用色彩模式（影响系统绘制元素）
  *   3. 桌面图标（浅色=白底墨笔，深色=曜石霓虹）
  */
-import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { ThemeManager } from '../../common/theme/ThemeManager';
 import { normalizeThemeMode, ThemeMode, THEME_MODE_OPTIONS, ThemeModeOption, themeModeLabel } from '../../common/theme/ThemeMode';
 import { BrandMark } from '../brand/BrandMark';
+import { promptAction } from '@kit.ArkUI';
 
 @Component
 export struct AppearanceSheet {
@@ -22,6 +23,7 @@ export struct AppearanceSheet {
   onLoadSeedData: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindReduceMotion') reduceMotion: boolean = false;
   /** 当前选中的模式。初值取自 ThemeManager，切换后由本组件维护以驱动选中态重绘。 */
   @State selectedMode: ThemeMode = ThemeMode.SYSTEM;
 
@@ -75,6 +77,7 @@ export struct AppearanceSheet {
 
   build() {
     Column() {
+      Scroll() {
       Column({ space: 0 }) {
         // ---- 标题 ----
         Row({ space: 10 }) {
@@ -94,8 +97,8 @@ export struct AppearanceSheet {
           Text('✕')
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().inkSecondary)
-            .width(28)
-            .height(28)
+            .width(44)
+            .height(44)
             .textAlign(TextAlign.Center)
             .borderRadius(6)
             .hoverEffect(HoverEffect.Highlight)
@@ -116,6 +119,17 @@ export struct AppearanceSheet {
         }
         .width('100%')
         .padding({ left: 6, right: 6, top: 8, bottom: 8 })
+
+        Row({ space: 10 }) {
+          Column({ space: 4 }) {
+            Text('减少动态效果').fontSize(14).fontColor(this.palette().inkPrimary)
+            Text('关闭过渡动画和卡片缩放').fontSize(12).fontColor(this.palette().inkSecondary)
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+          Toggle({ type: ToggleType.Switch, isOn: this.reduceMotion }).onChange(async (value: boolean) => {
+            try { await ThemeManager.setReduceMotion(value); }
+            catch { promptAction.showToast({ message: '设置保存失败，请重试' }); }
+          })
+        }.height(60).padding({ left: 14, right: 14 }).width('100%')
 
         Divider()
           .strokeWidth(1)
@@ -143,7 +157,7 @@ export struct AppearanceSheet {
         // ---- 隐私与离线优先 (Local-First) ----
         Column({ space: 8 }) {
           Row({ space: 6 }) {
-            Text('🛡')
+            Text('◇')
               .fontSize(14)
             Text('离线优先与隐私安全 (Local-First)')
               .fontSize(TypographyTokens.CAPTION)
@@ -152,21 +166,21 @@ export struct AppearanceSheet {
           }
           .width('100%')
 
-          Text('所有随笔、PDF批注、手写笔迹与智能图谱均存储于设备沙箱内部，不强制依赖云端账号，无隐私上传。AI 模型默认采用端侧启发或用户自持密钥直连。')
+          Text('笔记、封面、批注和待办保存在设备应用目录。离线排版不调用模型；远程 AI 会将问题、选中的文档和检索片段发送到你配置的模型服务。')
             .fontSize(TypographyTokens.TINY)
             .fontColor(this.palette().inkMuted)
             .lineHeight(16)
             .width('100%')
 
           Row({ space: 8 }) {
-            Text('已启用沙箱私有加密存储')
+            Text('本机保存')
               .fontSize(TypographyTokens.TINY)
               .fontColor(this.palette().accent)
               .padding({ left: 8, right: 8, top: 4, bottom: 4 })
               .borderRadius(6)
               .backgroundColor(this.palette().accentSoft)
 
-            Text('零云端留存')
+            Text('远程服务留存规则由服务商决定')
               .fontSize(TypographyTokens.TINY)
               .fontColor(this.palette().inkSecondary)
               .padding({ left: 8, right: 8, top: 4, bottom: 4 })
@@ -219,19 +233,19 @@ export struct AppearanceSheet {
       .transition(
         TransitionEffect.scale({ x: 0.95, y: 0.95 })
           .combine(TransitionEffect.OPACITY)
-          .animation({ duration: 180, curve: Curve.EaseInOut })
+          .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
       )
       .onClick(() => {
         // 消费卡片内的点击，避免冒泡到遮罩导致面板被关闭
       })
+      }.width('94%').constraintSize({ maxWidth: 480 }).height('88%').scrollBar(BarState.Auto)
     }
     .width('100%')
     .height('100%')
-    .justifyContent(FlexAlign.Start)
+    .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-    .padding({ top: 96 })
     .backgroundColor('rgba(0,0,0,0.25)')
-    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
+    .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
     .onClick(() => this.onClose())
   }
 }

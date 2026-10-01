@@ -165,7 +165,7 @@ export struct HuaweiDocWorkspace {
 
   /** 切换顶底栏显隐 */
   private toggleBars(visible: boolean): void {
-    animateTo({ curve: Curve.EaseInOut }, () => {
+    animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
       this.barsVisible = visible;
     });
   }
@@ -312,7 +312,7 @@ export struct HuaweiDocWorkspace {
         .shadow(!this.isAnnotateMode ? { radius: 6, color: this.isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.06)', offsetY: 1 } : { radius: 0, color: 'transparent' })
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
-          animateTo({ curve: Curve.EaseInOut }, () => {
+          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.isAnnotateMode = false;
             this.showToast('已进入阅读模式：触控滑动翻页，防误触');
           });
@@ -335,7 +335,7 @@ export struct HuaweiDocWorkspace {
         .shadow(this.isAnnotateMode ? { radius: 6, color: this.isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.06)', offsetY: 1 } : { radius: 0, color: 'transparent' })
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
-          animateTo({ curve: Curve.EaseInOut }, () => {
+          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.isAnnotateMode = true;
             this.isPenPaletteExpanded = true;
             this.showToast('已进入手写批注模式：可随时落笔书写或点击退出');
@@ -462,7 +462,7 @@ export struct HuaweiDocWorkspace {
       .border({ width: 1, color: this.isDarkMode ? '#5C2229' : '#FCA5A5' })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
-        animateTo({ curve: Curve.EaseInOut }, () => {
+        animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
           this.isAnnotateMode = false;
           this.showToast('已退出批注，恢复阅读模式');
         });
@@ -658,7 +658,7 @@ export struct HuaweiDocWorkspace {
       .border({ width: 1, color: this.palette().borderSubtle })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => {
-        animateTo({ curve: Curve.EaseInOut }, () => {
+        animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
           this.isPenPaletteExpanded = false;
         });
       })
@@ -675,7 +675,7 @@ export struct HuaweiDocWorkspace {
     .border({ width: 1, color: this.palette().borderSubtle })
     .margin({ bottom: 20 })
     .zIndex(60)
-    .animation({ duration: 180, curve: Curve.EaseInOut })
+    .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
   }
 
   // ------------------------------------------------------------------
@@ -707,7 +707,7 @@ export struct HuaweiDocWorkspace {
     .margin({ right: 24, bottom: 24 })
     .zIndex(60)
     .onClick(() => {
-      animateTo({ curve: Curve.EaseInOut }, () => {
+      animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
         if (!this.isAnnotateMode) {
           this.isAnnotateMode = true;
           this.isPenPaletteExpanded = true;
@@ -1035,7 +1035,7 @@ export struct HuaweiDocWorkspace {
     .translate({ y: this.barsVisible ? 0 : 96 })
     .opacity(this.barsVisible ? 1 : 0)
     .enabled(this.barsVisible)
-    .animation({ duration: 180, curve: Curve.EaseInOut })
+    .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
   }
 
   // ------------------------------------------------------------------

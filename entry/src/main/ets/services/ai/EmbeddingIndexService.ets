@@ -16,8 +16,10 @@ export class EmbeddingIndexService {
   private static instance: EmbeddingIndexService | null = null;
 
   private vectors: Map<string, number[]> = new Map();
+  private texts: Map<string, string> = new Map();
   /** 当前向量所属的 (档案 id + 向量模型) 组合 */
   private signature: string = '';
+  private generation: number = 0;
 
   static getInstance(): EmbeddingIndexService {
     if (EmbeddingIndexService.instance === null) {
@@ -29,7 +31,7 @@ export class EmbeddingIndexService {
   /** 该档案是否具备向量检索条件 */
   static canEmbed(profile: ModelProfile): boolean {
     const model: string = profile.embeddingModelId ?? '';
-    return model.length > 0 && profile.apiKey.length > 0 && profile.protocol !== 'anthropic';
+    return profile.semanticSearch === true && model.length > 0 && profile.apiKey.length > 0 && profile.protocol !== 'anthropic';
   }
 
   private signatureOf(profile: ModelProfile): string {
@@ -38,7 +40,9 @@ export class EmbeddingIndexService {
 
   /** 丢弃全部缓存（换档案或换模型时调用） */
   clear(): void {
+    this.generation++;
     this.vectors.clear();
+    this.texts.clear();
     this.signature = '';
   }
 
@@ -46,7 +50,7 @@ export class EmbeddingIndexService {
    * 确保这批片段都有向量。
    * @returns 是否成功（false 时调用方应退化为关键词检索）
    */
-  async ensure(profile: ModelProfile, chunks: Chunk[]): Promise<boolean> {
+  async ensure(profile: ModelProfile, chunks: Chunk[], cancelled?: () => boolean): Promise<boolean> {
     if (!EmbeddingIndexService.canEmbed(profile)) {
       return false;
     }
@@ -60,11 +64,16 @@ export class EmbeddingIndexService {
       this.clear();
       this.signature = signature;
     }
+    const generation = ++this.generation;
+    const active = new Set<string>(chunks.map((chunk: Chunk) => chunk.id));
+    this.vectors.forEach((value: number[], id: string) => {
+      if (!active.has(id)) { this.vectors.delete(id); this.texts.delete(id); }
+    });
 
     const missing: Chunk[] = [];
     for (const c of chunks) {
       const cached: number[] | undefined = this.vectors.get(c.id);
-      if (cached === undefined || cached.length === 0) {
+      if (cached === undefined || cached.length === 0 || this.texts.get(c.id) !== `${c.noteTitle}\n${c.headingPath}\n${c.text}`) {
         missing.push(c);
       }
     }
@@ -74,6 +83,7 @@ export class EmbeddingIndexService {
 
     try {
       for (let start = 0; start < missing.length; start += EMBED_BATCH) {
+        if (cancelled?.()) { return false; }
         const batch: Chunk[] = missing.slice(start, start + EMBED_BATCH);
         const texts: string[] = [];
         for (const c of batch) {
@@ -81,12 +91,14 @@ export class EmbeddingIndexService {
           texts.push(`${c.noteTitle}\n${c.headingPath}\n${c.text}`);
         }
         const vecs: number[][] = await provider.embed(profile, texts);
-        if (vecs.length !== batch.length) {
+        if (generation !== this.generation || cancelled?.()) { return false; }
+        if (vecs.length !== batch.length || vecs.some((vector: number[]) => !Array.isArray(vector) || !vector.length || vector.some((value: number) => !Number.isFinite(value)))) {
           return false;
         }
         for (let i = 0; i < batch.length; i++) {
           if (vecs[i].length > 0) {
             this.vectors.set(batch[i].id, vecs[i]);
+            this.texts.set(batch[i].id, texts[i]);
           }
         }
       }

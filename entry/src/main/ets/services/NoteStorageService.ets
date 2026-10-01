@@ -1,4 +1,5 @@
 import { Context } from '@kit.AbilityKit';
+import { NoteCoverService } from './NoteCoverService';
 import { preferences } from '@kit.ArkData';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { NoteItem } from '../common/types/NoteItem';
@@ -107,7 +108,7 @@ export class NoteStorageService {
   /**
    * 删除笔记正文和应用内 PDF 副本。不存在时跳过，失败向调用方报告。
    */
-  async delete(context: Context, noteId: string, sourceUri: string = ''): Promise<void> {
+  async delete(context: Context, noteId: string, sourceUri: string = '', coverUrl: string = ''): Promise<void> {
     await this.ensureInitialized(context);
     const prefix: string = `${context.filesDir}/documents/`;
     const name: string = sourceUri.startsWith(prefix) ? sourceUri.substring(prefix.length) : '';
@@ -118,6 +119,7 @@ export class NoteStorageService {
     }
     const filePath: string = this.filePath(noteId);
     if (await fileIo.access(filePath)) { await fileIo.unlink(filePath); }
+    await NoteCoverService.removeManaged(context, coverUrl);
   }
 
   /**

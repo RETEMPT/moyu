@@ -8,8 +8,8 @@
  *
  * 内容区与上下文面板通过 @BuilderParam 插槽注入，外壳只负责布局与响应式决策。
  */
-import { mediaquery } from '@kit.ArkUI';
-import { ColorPalette, LayoutTokens } from '../../common/constants/DesignTokens';
+
+import { ColorPalette, LayoutTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
@@ -71,11 +71,8 @@ export struct AppShell {
 
   @State isThreeColumn: boolean = false;
   @State isTwoColumn: boolean = false;
-  @State isPhone: boolean = false;
+  @State isPhone: boolean = true;
 
-  private threeColumnListener: mediaquery.MediaQueryListener | undefined = undefined;
-  private twoColumnListener: mediaquery.MediaQueryListener | undefined = undefined;
-  private phoneListener: mediaquery.MediaQueryListener | undefined = undefined;
 
   @Builder
   emptyPanel() {
@@ -84,57 +81,24 @@ export struct AppShell {
   @BuilderParam content: () => void = this.emptyPanel;
   @BuilderParam contextPanel: () => void = this.emptyPanel;
 
-  private onThreeColumnChange = (result: mediaquery.MediaQueryResult): void => {
-    this.isThreeColumn = result.matches;
-    this.onLayoutModeChange(!this.isTwoColumn, this.isThreeColumn);
-  };
-
-  private onTwoColumnChange = (result: mediaquery.MediaQueryResult): void => {
-    this.isTwoColumn = result.matches;
-    AppStorage.setOrCreate('flowmindSingleColumn', !result.matches);
-    this.onLayoutModeChange(!this.isTwoColumn, this.isThreeColumn);
-  };
-
-  private onPhoneChange = (result: mediaquery.MediaQueryResult): void => {
-    this.isPhone = result.matches;
-    AppStorage.setOrCreate('flowmindIsPhone', result.matches);
-  };
-
   aboutToAppear(): void {
-    const threeColumn: mediaquery.MediaQueryListener =
-      mediaquery.matchMediaSync(`(width >= ${LayoutTokens.BREAKPOINT_TABLET_LARGE}vp)`);
-    const twoColumn: mediaquery.MediaQueryListener =
-      mediaquery.matchMediaSync(`(width >= ${LayoutTokens.BREAKPOINT_TABLET_MEDIUM}vp)`);
-    const phone: mediaquery.MediaQueryListener =
-      mediaquery.matchMediaSync(`(width < ${LayoutTokens.BREAKPOINT_PHONE}vp)`);
-
-    this.threeColumnListener = threeColumn;
-    this.twoColumnListener = twoColumn;
-    this.phoneListener = phone;
-    this.isThreeColumn = threeColumn.matches;
-    this.isTwoColumn = twoColumn.matches;
-    this.isPhone = phone.matches;
-    AppStorage.setOrCreate('flowmindIsPhone', phone.matches);
-    AppStorage.setOrCreate('flowmindSingleColumn', !twoColumn.matches);
-    this.onLayoutModeChange(!twoColumn.matches, threeColumn.matches);
-
-    threeColumn.on('change', this.onThreeColumnChange);
-    twoColumn.on('change', this.onTwoColumnChange);
-    phone.on('change', this.onPhoneChange);
+    AppStorage.setOrCreate('flowmindIsPhone', true);
+    AppStorage.setOrCreate('flowmindSingleColumn', true);
+    this.onLayoutModeChange(true, false);
   }
 
-  aboutToDisappear(): void {
-    if (this.threeColumnListener !== undefined) {
-      this.threeColumnListener.off('change', this.onThreeColumnChange);
-    }
-    if (this.twoColumnListener !== undefined) {
-      this.twoColumnListener.off('change', this.onTwoColumnChange);
-    }
-    if (this.phoneListener !== undefined) {
-      this.phoneListener.off('change', this.onPhoneChange);
-    }
+  /** Use the actual shell width, including split windows and constrained panes. */
+  private updateLayout(width: number): void {
+    if (!Number.isFinite(width) || width <= 0) { return; }
+    const three = width >= LayoutTokens.BREAKPOINT_TABLET_LARGE;
+    const two = width >= LayoutTokens.BREAKPOINT_TABLET_MEDIUM;
+    const phone = width < LayoutTokens.BREAKPOINT_PHONE;
+    const changed = three !== this.isThreeColumn || two !== this.isTwoColumn;
+    this.isThreeColumn = three; this.isTwoColumn = two; this.isPhone = phone;
+    AppStorage.setOrCreate('flowmindIsPhone', phone);
+    AppStorage.setOrCreate('flowmindSingleColumn', !two);
+    if (changed) { this.onLayoutModeChange(!two, three); }
   }
-
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
   }
@@ -213,7 +177,7 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.START)
               .combine(TransitionEffect.OPACITY)
-              .animation({ duration: 200, curve: Curve.EaseInOut })
+              .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
           )
         }
 
@@ -248,7 +212,7 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.END)
               .combine(TransitionEffect.OPACITY)
-              .animation({ duration: 200, curve: Curve.EaseInOut })
+              .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
           )
         }
       }
@@ -267,19 +231,19 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.START)
               .combine(TransitionEffect.OPACITY)
-              .animation({ duration: 200, curve: Curve.EaseInOut })
+              .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
           )
 
           Column()
             .layoutWeight(1)
             .height('100%')
             .backgroundColor('rgba(0,0,0,0.25)')
-            .transition(TransitionEffect.OPACITY.animation({ duration: 200, curve: Curve.EaseInOut }))
+            .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
             .onClick(() => this.onToggleSidebar())
         }
         .width('100%')
         .height('100%')
-        .transition(TransitionEffect.OPACITY.animation({ duration: 200, curve: Curve.EaseInOut }))
+        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
       }
 
       // ---- 单栏 / 双栏：上下文面板浮层 ----
@@ -289,7 +253,7 @@ export struct AppShell {
             .layoutWeight(1)
             .height('100%')
             .backgroundColor('rgba(0,0,0,0.25)')
-            .transition(TransitionEffect.OPACITY.animation({ duration: 200, curve: Curve.EaseInOut }))
+            .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
             .onClick(() => this.onToggleContext())
 
           Column() {
@@ -301,16 +265,17 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.END)
               .combine(TransitionEffect.OPACITY)
-              .animation({ duration: 200, curve: Curve.EaseInOut })
+              .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
           )
         }
         .width('100%')
         .height('100%')
-        .transition(TransitionEffect.OPACITY.animation({ duration: 200, curve: Curve.EaseInOut }))
+        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
       }
     }
     .width('100%')
     .height('100%')
+    .onAreaChange((before: Area, after: Area) => this.updateLayout(Number(after.width)))
     .backgroundColor(this.palette().canvas)
   }
 }

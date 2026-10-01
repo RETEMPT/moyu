@@ -133,14 +133,15 @@ export class TypographyTokens {
 }
 
 export class AnimationTokens {
-  static readonly DURATION_FAST: number = 180;
-  static readonly DURATION_NORMAL: number = 250;
-  static readonly DURATION_SPLIT: number = 280;
-  static readonly DURATION_PAGE_TRANSITION: number = 300;
-  static readonly SCALE_PRESSED: number = 0.97;
-  static readonly SCALE_LIFTED: number = 1.02;
-  static readonly SCALE_MODAL_ENTER: number = 0.94;
-  static readonly CURVE_STANDARD: Curve = Curve.FastOutSlowIn;
+  static duration(milliseconds: number): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 0 : milliseconds; }
+  static get DURATION_FAST(): number { return AnimationTokens.duration(180); }
+  static get DURATION_NORMAL(): number { return AnimationTokens.duration(250); }
+  static get DURATION_SPLIT(): number { return AnimationTokens.duration(250); }
+  static get DURATION_PAGE_TRANSITION(): number { return AnimationTokens.duration(250); }
+  static get SCALE_PRESSED(): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 1 : 0.97; }
+  static get SCALE_LIFTED(): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 1 : 1.02; }
+  static get SCALE_MODAL_ENTER(): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 1 : 0.94; }
+  static readonly CURVE_STANDARD: Curve = Curve.EaseInOut;
 }
 
 export class ResourceTypeTokens {

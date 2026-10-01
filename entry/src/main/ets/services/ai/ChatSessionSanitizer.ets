@@ -23,6 +23,7 @@ export class ChatSessionSanitizer {
           citations: ChatSessionSanitizer.citations(message.citations || []),
           agentLayer: message.agentLayer, modelProfileId: typeof message.modelProfileId === 'string' ? message.modelProfileId : undefined,
           error: typeof message.error === 'string' ? message.error : undefined,
+          proposalAppliedIds: Array.isArray(message.proposalAppliedIds) ? message.proposalAppliedIds.filter((id: string) => typeof id === 'string') : [],
           proposalStatus: ['pending', 'accepted', 'dismissed'].includes(message.proposalStatus || '') ? message.proposalStatus : undefined };
         messages.push(safe);
       }

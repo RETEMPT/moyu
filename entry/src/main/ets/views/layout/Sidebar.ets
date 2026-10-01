@@ -36,8 +36,8 @@ import { MoveNoteSheet } from './sheets/MoveNoteSheet';
 import { TagSheet } from './sheets/TagSheet';
 import { TemplateSheet } from './sheets/TemplateSheet';
 
-const ROW_HEIGHT: number = 38;
-const FILE_ROW_HEIGHT: number = 36;
+const ROW_HEIGHT: number = 44;
+const FILE_ROW_HEIGHT: number = 44;
 
 /** 侧栏中段模式：项目资料树 / 对话记录列表 */
 export const SIDEBAR_MODE_TREE: string = 'tree';
@@ -178,10 +178,10 @@ export struct Sidebar {
           .height(16)
           .textAlign(TextAlign.Center)
           .rotate({ angle: space.isOpen ? 90 : 0 })
-          .animation({ curve: curves.springMotion(0.25, 0.76) })
+          .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
 
         // 项目专属图标与颜色指示
-        Text(space.icon && space.icon.length > 0 ? space.icon : '📁')
+        Text(space.icon && space.icon.length > 0 ? space.icon : '▦')
           .fontSize(TypographyTokens.BODY_REGULAR)
 
         // 项目名称
@@ -213,7 +213,7 @@ export struct Sidebar {
           .hoverEffect(HoverEffect.Highlight)
           .onClick(() => {
             this.suppressRowClick = true;
-            animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.liftedItemId = `project-${space.id}`;
               this.onOpenSheet('project_menu', space, null);
             });
@@ -235,7 +235,7 @@ export struct Sidebar {
           ? (this.isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)')
           : Color.Transparent
       })
-      .animation({ curve: curves.springMotion(0.25, 0.76) })
+      .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
       // 触控即时凹陷体感
       .onTouch((event: TouchEvent) => {
         if (event.type === TouchType.Down) {
@@ -255,9 +255,9 @@ export struct Sidebar {
       })
       // 长按：280ms 快速浮起并呼出操作菜单
       .gesture(
-        LongPressGesture({ repeat: false, duration: 280 })
+        LongPressGesture({ repeat: false, duration: AnimationTokens.DURATION_FAST })
           .onAction(() => {
-            animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.liftedItemId = `project-${space.id}`;
               this.onOpenSheet('project_menu', space, null);
             });
@@ -295,7 +295,7 @@ export struct Sidebar {
         .transition(
           TransitionEffect.OPACITY
             .combine(TransitionEffect.scale({ y: 0.8, centerY: 0 }))
-            .animation({ curve: curves.springMotion(0.25, 0.76) })
+            .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
         )
       }
     }
@@ -336,7 +336,7 @@ export struct Sidebar {
           .hoverEffect(HoverEffect.Highlight)
           .onClick(() => {
             this.suppressRowClick = true;
-            animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.liftedItemId = `note-${note.id}`;
               this.onOpenSheet('note_menu', null, note);
             });
@@ -358,7 +358,7 @@ export struct Sidebar {
       y: this.getItemScale(`note-${note.id}`)
     })
     .shadow(this.getItemShadow(`note-${note.id}`))
-    .animation({ curve: curves.springMotion(0.25, 0.76) })
+    .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
     // 短按凹陷
     .onTouch((event: TouchEvent) => {
       if (event.type === TouchType.Down) {
@@ -377,9 +377,9 @@ export struct Sidebar {
     })
     // 长按：280ms 呼出文件操作菜单
     .gesture(
-      LongPressGesture({ repeat: false, duration: 280 })
+      LongPressGesture({ repeat: false, duration: AnimationTokens.DURATION_FAST })
         .onAction(() => {
-          animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.liftedItemId = `note-${note.id}`;
             this.onOpenSheet('note_menu', null, note);
           });
@@ -392,13 +392,12 @@ export struct Sidebar {
   // ------------------------------------------------------------------
 
   @Builder
-  navRow(icon: string, label: string, navKey: string, badge: number = 0) {
+  navRow(icon: Resource, label: string, navKey: string, badge: number = 0) {
     Row({ space: 8 }) {
-      Text(icon)
-        .fontSize(TypographyTokens.CAPTION)
-        .fontColor(this.activeNav === navKey ? this.palette().accent : this.palette().inkSecondary)
-        .width(16)
-        .textAlign(TextAlign.Center)
+      Image(icon)
+        .width(18)
+        .height(18)
+        .objectFit(ImageFit.Contain)
       Text(label)
         .fontSize(TypographyTokens.BODY_REGULAR)
         .fontColor(this.activeNav === navKey ? this.palette().inkPrimary : this.palette().inkSecondary)
@@ -415,16 +414,17 @@ export struct Sidebar {
       }
     }
     .width('100%')
-    .height(38)
+    .height(44)
     .padding({ left: 10, right: 10 })
     .borderRadius(8)
     .backgroundColor(this.activeNav === navKey ? this.palette().activeBg : Color.Transparent)
+    .accessibilityText(label)
     .border({ width: { left: this.activeNav === navKey ? 3 : 0 }, color: { left: this.palette().accent } })
     .scale({
       x: this.getItemScale(`nav-${navKey}`),
       y: this.getItemScale(`nav-${navKey}`)
     })
-    .animation({ curve: curves.springMotion(0.25, 0.76) })
+    .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
     .onTouch((event: TouchEvent) => {
       if (event.type === TouchType.Down) {
         this.pressedItemId = `nav-${navKey}`;
@@ -524,7 +524,7 @@ export struct Sidebar {
       x: this.getItemScale(`session-${session.id}`),
       y: this.getItemScale(`session-${session.id}`)
     })
-    .animation({ curve: curves.springMotion(0.25, 0.76) })
+    .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
     .onTouch((event: TouchEvent) => {
       if (event.type === TouchType.Down) {
         this.pressedItemId = `session-${session.id}`;
@@ -540,7 +540,7 @@ export struct Sidebar {
       this.onSelectSession(session);
     })
     .gesture(
-      LongPressGesture({ repeat: false, duration: 280 })
+      LongPressGesture({ repeat: false, duration: AnimationTokens.DURATION_FAST })
         .onAction(() => {
           this.onTogglePinSession(session);
         })
@@ -691,7 +691,7 @@ export struct Sidebar {
           x: this.getItemScale('brand-home'),
           y: this.getItemScale('brand-home')
         })
-        .animation({ curve: curves.springMotion(0.25, 0.76) })
+        .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
         .onTouch((event: TouchEvent) => {
           if (event.type === TouchType.Down) {
             this.pressedItemId = 'brand-home';
@@ -704,9 +704,9 @@ export struct Sidebar {
 
         // ---- 快速搜索入口 ----
         Row({ space: 8 }) {
-          Text('⌕')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().inkMuted)
+          Image($r('app.media.ic_search'))
+            .width(18)
+            .height(18)
           Text('快速搜索')
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().inkMuted)
@@ -719,7 +719,7 @@ export struct Sidebar {
             .backgroundColor(this.palette().surface)
         }
         .width('100%')
-        .height(38)
+        .height(44)
         .padding({ left: 10, right: 10 })
         .borderRadius(10)
         .backgroundColor(this.palette().surfaceSubtle)
@@ -730,12 +730,12 @@ export struct Sidebar {
 
         // ---- 全局核心功能导航 ----
         Column({ space: 2 }) {
-          this.navRow('◍', '知识图谱', NAV_GRAPH)
-          this.navRow('⬡', '自由白板', NAV_CANVAS)
-          this.navRow('✦', 'AI 墨客', NAV_AI)
-          this.navRow('⭐', '收藏', NAV_FAVORITE, this.favoriteCount)
-          this.navRow('☑', '待办', NAV_TODO, this.todoPendingCount)
-          this.navRow('🗑', '回收站', NAV_TRASH, this.trashCount)
+          this.navRow($r('app.media.ic_graph'), '知识图谱', NAV_GRAPH)
+          this.navRow($r('app.media.ic_canvas'), '自由白板', NAV_CANVAS)
+          this.navRow($r('app.media.ic_sparkle'), 'AI 墨客', NAV_AI)
+          this.navRow($r('app.media.ic_star'), '收藏', NAV_FAVORITE, this.favoriteCount)
+          this.navRow($r('app.media.ic_check'), '待办', NAV_TODO, this.todoPendingCount)
+          this.navRow($r('app.media.ic_trash'), '回收站', NAV_TRASH, this.trashCount)
         }
         .width('100%')
         .margin({ bottom: 8 })

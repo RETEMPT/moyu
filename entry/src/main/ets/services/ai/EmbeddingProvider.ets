@@ -65,7 +65,10 @@ class OpenAiEmbeddingProvider implements EmbeddingProvider {
       model: profile.embeddingModelId ?? '',
       input: texts
     });
-    const resp: http.HttpResponse = await http.createHttp().request(url, {
+    const client = http.createHttp();
+    let resp: http.HttpResponse;
+    try {
+      resp = await client.request(url, {
       method: http.RequestMethod.POST,
       header: {
         'Content-Type': 'application/json',
@@ -75,7 +78,8 @@ class OpenAiEmbeddingProvider implements EmbeddingProvider {
       expectDataType: http.HttpDataType.STRING,
       connectTimeout: 15000,
       readTimeout: 60000
-    });
+      });
+    } finally { client.destroy(); }
     if (resp.responseCode !== 200) {
       throw new Error(`HTTP ${resp.responseCode}: ${String(resp.result).slice(0, 160)}`);
     }
@@ -119,7 +123,10 @@ class GeminiEmbeddingProvider implements EmbeddingProvider {
         content: { parts: [{ text: t }] }
       });
     }
-    const resp: http.HttpResponse = await http.createHttp().request(url, {
+    const client = http.createHttp();
+    let resp: http.HttpResponse;
+    try {
+      resp = await client.request(url, {
       method: http.RequestMethod.POST,
       header: {
         'Content-Type': 'application/json',
@@ -129,7 +136,8 @@ class GeminiEmbeddingProvider implements EmbeddingProvider {
       expectDataType: http.HttpDataType.STRING,
       connectTimeout: 15000,
       readTimeout: 60000
-    });
+      });
+    } finally { client.destroy(); }
     if (resp.responseCode !== 200) {
       throw new Error(`HTTP ${resp.responseCode}: ${String(resp.result).slice(0, 160)}`);
     }

@@ -10,7 +10,7 @@
  *   6. 物理弹性微交互与流畅动效 (springMotion)
  */
 import { curves } from '@kit.ArkUI';
-import { picker } from '@kit.CoreFileKit';
+import { NoteCoverVisual } from '../reader/NoteCoverVisual';
 import { ColorPalette, LayoutTokens, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
@@ -29,10 +29,10 @@ interface FilterOption {
 
 const SHELF_FILTERS: FilterOption[] = [
   { key: 'all', label: '全部' },
-  { key: 'pinned', label: '📌 置顶' },
+  { key: 'pinned', label: '▣ 置顶' },
   { key: 'pdf', label: '🗎 PDF真题' },
   { key: 'handwriting', label: '✎ 随堂稿纸' },
-  { key: 'favorite', label: '⭐ 重点收藏' }
+  { key: 'favorite', label: '☆ 重点收藏' }
 ];
 
 @Component
@@ -45,7 +45,7 @@ export struct HomeWorkspace {
   onCreateNote: () => void = () => {};
   onImportDocument: () => void = () => {};
   onOpenGraph: () => void = () => {};
-  onUploadCover: (noteId: string, uri: string) => void = () => {};
+  onChooseCover: (noteId: string) => void = () => {};
   onTogglePin: (note: NoteItem) => void = () => {};
   onToggleFavorite: (note: NoteItem) => void = () => {};
   onDeleteNote: (noteId: string) => void = () => {};
@@ -62,22 +62,6 @@ export struct HomeWorkspace {
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
-  }
-
-  /** 打开系统相册选择封面图 */
-  private async pickCover(noteId: string): Promise<void> {
-    try {
-      const photoPicker = new picker.PhotoViewPicker();
-      const options = new picker.PhotoSelectOptions();
-      options.MIMEType = picker.PhotoViewMIMETypes.IMAGE_TYPE;
-      options.maxSelectNumber = 1;
-      const result = await photoPicker.select(options);
-      if (result.photoUris && result.photoUris.length > 0) {
-        this.onUploadCover(noteId, result.photoUris[0]);
-      }
-    } catch (err) {
-      // 静默处理用户取消
-    }
   }
 
   private isPdfNote(note: NoteItem): boolean {
@@ -129,10 +113,9 @@ export struct HomeWorkspace {
         Stack({ alignContent: Alignment.TopEnd }) {
           if (note.coverUrl && note.coverUrl.length > 0) {
             // 用户自定义图片封面
-            Image(note.coverUrl)
+            NoteCoverVisual({ source: note.coverUrl })
               .width('100%')
               .height('100%')
-              .objectFit(ImageFit.Cover)
           } else if (this.isPdfNote(note)) {
             // PDF 专属典雅排版
             this.pdfVisualCover(note)
@@ -144,19 +127,23 @@ export struct HomeWorkspace {
             this.markdownVisualCover(note)
           }
 
-          // 悬浮相册更换按钮（仅 hover/按下出现）
-          if (this.hoveredCardId === note.id || this.pressedCardId === note.id) {
-            Text('📷')
-              .fontSize(12)
-              .width(26)
-              .height(26)
-              .textAlign(TextAlign.Center)
-              .borderRadius(13)
-              .backgroundColor('rgba(0,0,0,0.55)')
-              .margin({ right: 8, bottom: 8 })
-              .onClick(() => {
-                this.pickCover(note.id);
-              })
+          if (!this.isPdfNote(note) && !this.isHandwritingNote(note)) {
+            Row() {
+              Image($r('app.media.ic_cover_white'))
+                .width(18)
+                .height(18)
+                .objectFit(ImageFit.Contain)
+            }
+            .width(44)
+            .height(44)
+            .justifyContent(FlexAlign.Center)
+            .borderRadius(10)
+            .backgroundColor('rgba(0,0,0,0.55)')
+            .margin({ right: 8, bottom: 8 })
+            .accessibilityText('选择笔记封面')
+            .onClick(() => {
+              this.onChooseCover(note.id);
+            })
           }
         }
         .width('100%')
@@ -176,7 +163,7 @@ export struct HomeWorkspace {
               .layoutWeight(1)
 
             if (note.isPinned === true) {
-              Text('📌')
+              Text('▣')
                 .fontSize(11)
             }
             if (note.favorite === true) {
@@ -224,7 +211,7 @@ export struct HomeWorkspace {
       x: this.pressedCardId === note.id ? AnimationTokens.SCALE_PRESSED : 1.0,
       y: this.pressedCardId === note.id ? AnimationTokens.SCALE_PRESSED : 1.0
     })
-    .animation({ curve: curves.springMotion(0.28, 0.76) })
+    .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
     .bindContextMenu(this.cardContextMenu(note), ResponseType.LongPress)
     .bindContextMenu(this.cardContextMenu(note), ResponseType.RightClick)
     .onTouch((event: TouchEvent) => {
@@ -377,7 +364,7 @@ export struct HomeWorkspace {
   cardContextMenu(note: NoteItem) {
     Menu() {
       MenuItem({
-        content: note.isPinned === true ? '📌 取消置顶' : '📌 置顶此文档'
+        content: note.isPinned === true ? '▣ 取消置顶' : '▣ 置顶此文档'
       })
       .onClick(() => {
         this.onTogglePin(note);
@@ -390,15 +377,12 @@ export struct HomeWorkspace {
         this.onToggleFavorite(note);
       })
 
-      MenuItem({
-        content: '📷 更换封面'
-      })
-      .onClick(() => {
-        this.pickCover(note.id);
-      })
+      if (!this.isPdfNote(note) && !this.isHandwritingNote(note)) {
+        MenuItem({ content: '更换封面' }).onClick(() => this.onChooseCover(note.id))
+      }
 
       MenuItem({
-        content: '🗑 移至回收站'
+        content: '⌫ 移至回收站'
       })
       .onClick(() => {
         this.onDeleteNote(note.id);
@@ -411,12 +395,14 @@ export struct HomeWorkspace {
   // ------------------------------------------------------------------
 
   @Builder
-  statBentoCard(icon: string, label: string, value: string, hint: string, iconBg: string, targetNav: string) {
+  statBentoCard(icon: Resource, label: string, value: string, hint: string, iconBg: string, targetNav: string) {
     Column({ space: 8 }) {
       Row() {
         Row() {
-          Text(icon)
-            .fontSize(15)
+          Image(icon)
+            .width(18)
+            .height(18)
+            .objectFit(ImageFit.Contain)
         }
         .width(32)
         .height(32)
@@ -426,7 +412,7 @@ export struct HomeWorkspace {
 
         Blank()
 
-        Text(value)
+        Text(`${label === '本地笔记' ? this.recentNotes.length : label === '双向链接' ? this.stats.linkCount : label === '待创建概念' ? this.stats.unresolvedCount : this.stats.tagCount}`)
           .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.palette().inkPrimary)
@@ -498,20 +484,21 @@ export struct HomeWorkspace {
             .width('100%')
             .alignItems(VerticalAlign.Center)
 
-            // 快捷操作胶囊岛（统一高度 36vp、统一内边距与字体风格）
-            Row({ space: 8 }) {
+            // 手机两列换行，避免第四项被裁剪；图标使用同一套 24px 线框。
+            Flex({ wrap: FlexWrap.Wrap, space: { main: { value: 8, unit: 1 }, cross: { value: 8, unit: 1 } } }) {
               // 主要行动：记随笔
               Row({ space: 5 }) {
-                Text('+')
-                  .fontSize(14)
-                  .fontWeight(FontWeight.Bold)
-                  .fontColor(Color.White)
+                Image($r('app.media.ic_note_white'))
+                  .width(18)
+                  .height(18)
                 Text('记随笔')
                   .fontSize(TypographyTokens.CAPTION)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(Color.White)
               }
-              .height(36)
+              .width(this.isPhone ? '48%' : 112)
+              .height(44)
+              .justifyContent(FlexAlign.Center)
               .padding({ left: 14, right: 14 })
               .borderRadius(18)
               .backgroundColor(this.palette().accent)
@@ -521,15 +508,17 @@ export struct HomeWorkspace {
 
               // 智能提取
               Row({ space: 5 }) {
-                Text('✦')
-                  .fontSize(13)
-                  .fontColor(this.palette().accent)
+                Image($r('app.media.ic_sparkle'))
+                  .width(18)
+                  .height(18)
                 Text('智能提取')
                   .fontSize(TypographyTokens.CAPTION)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(this.palette().accent)
               }
-              .height(36)
+              .width(this.isPhone ? '48%' : 112)
+              .height(44)
+              .justifyContent(FlexAlign.Center)
               .padding({ left: 14, right: 14 })
               .borderRadius(18)
               .backgroundColor(this.palette().accentSoft)
@@ -539,15 +528,17 @@ export struct HomeWorkspace {
 
               // 导入文档
               Row({ space: 5 }) {
-                Text('🗎')
-                  .fontSize(13)
-                  .fontColor(this.palette().inkPrimary)
+                Image($r('app.media.ic_import'))
+                  .width(18)
+                  .height(18)
                 Text('导入文档')
                   .fontSize(TypographyTokens.CAPTION)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(this.palette().inkPrimary)
               }
-              .height(36)
+              .width(this.isPhone ? '48%' : 112)
+              .height(44)
+              .justifyContent(FlexAlign.Center)
               .padding({ left: 14, right: 14 })
               .borderRadius(18)
               .backgroundColor(this.palette().surface)
@@ -557,15 +548,17 @@ export struct HomeWorkspace {
 
               // 星系图谱
               Row({ space: 5 }) {
-                Text('◍')
-                  .fontSize(13)
-                  .fontColor(this.palette().accent)
+                Image($r('app.media.ic_graph'))
+                  .width(18)
+                  .height(18)
                 Text('星系图谱')
                   .fontSize(TypographyTokens.CAPTION)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(this.palette().accent)
               }
-              .height(36)
+              .width(this.isPhone ? '48%' : 112)
+              .height(44)
+              .justifyContent(FlexAlign.Center)
               .padding({ left: 14, right: 14 })
               .borderRadius(18)
               .backgroundColor(this.palette().surface)
@@ -582,29 +575,27 @@ export struct HomeWorkspace {
           // ---- 2. Bento 资产矩阵看板 ----
           GridRow({ columns: this.isPhone ? 2 : 4, gutter: this.isPhone ? 10 : 12 }) {
             GridCol() {
-              this.statBentoCard('📄', '本地笔记', `${this.stats.noteCount}`, 'Markdown 事实源', 'rgba(37,99,235,0.12)', NAV_LIBRARY)
+              this.statBentoCard($r('app.media.ic_note'), '本地笔记', `${this.stats.noteCount}`, 'Markdown 事实源', 'rgba(37,99,235,0.12)', NAV_LIBRARY)
             }
             GridCol() {
-              this.statBentoCard('🔗', '双向链接', `${this.stats.linkCount}`, '[[概念]] 已解析', 'rgba(99,102,241,0.12)', NAV_GRAPH)
+              this.statBentoCard($r('app.media.ic_link'), '双向链接', `${this.stats.linkCount}`, '[[概念]] 已解析', 'rgba(99,102,241,0.12)', NAV_GRAPH)
             }
             GridCol() {
-              this.statBentoCard('✦', '待创建概念', `${this.stats.unresolvedCount}`, '思维脉络待扩充', 'rgba(217,119,6,0.12)', NAV_GRAPH)
+              this.statBentoCard($r('app.media.ic_sparkle'), '待创建概念', `${this.stats.unresolvedCount}`, '思维脉络待扩充', 'rgba(217,119,6,0.12)', NAV_GRAPH)
             }
             GridCol() {
-              this.statBentoCard('🏷', '聚合标签', `${this.stats.tagCount}`, '#标签 自动归档', 'rgba(5,150,105,0.12)', NAV_LIBRARY)
+              this.statBentoCard($r('app.media.ic_tag'), '聚合标签', `${this.stats.tagCount}`, '#标签 自动归档', 'rgba(5,150,105,0.12)', NAV_LIBRARY)
             }
           }
           .width('100%')
           .margin({ bottom: 22 })
 
           // ---- 3. 知识书架与多维筛选 ----
-          Row() {
+          Column({ space: 8 }) {
             Text('知识书架')
               .fontSize(TypographyTokens.BODY_LARGE)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.palette().inkPrimary)
-
-            Blank()
 
             // 筛选标签栏 (横向滚动)
             Scroll() {
@@ -628,9 +619,10 @@ export struct HomeWorkspace {
             }
             .scrollable(ScrollDirection.Horizontal)
             .scrollBar(BarState.Off)
+            .width('100%')
           }
           .width('100%')
-          .alignItems(VerticalAlign.Center)
+          .alignItems(HorizontalAlign.Start)
           .margin({ bottom: 12 })
 
           if (this.displayNotes().length === 0) {
@@ -651,7 +643,7 @@ export struct HomeWorkspace {
             .alignItems(HorizontalAlign.Center)
             .margin({ bottom: 20 })
           } else {
-            GridRow({ columns: this.isPhone ? 2 : 3, gutter: this.isPhone ? 10 : 14 }) {
+            GridRow({ columns: this.isPhone ? 1 : 3, gutter: this.isPhone ? 10 : 14 }) {
               ForEach(this.displayNotes(), (note: NoteItem) => {
                 GridCol() {
                   this.shelfCard(note)

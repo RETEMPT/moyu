@@ -81,6 +81,8 @@ export class ThemeManager {
       ThemeManager.store = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
       const stored: number = await ThemeManager.store.get(THEME_MODE_KEY, ThemeMode.SYSTEM as number) as number;
       ThemeManager.mode = normalizeThemeMode(stored);
+      const reduce = await ThemeManager.store.get('reduceMotion', false);
+      AppStorage.setOrCreate<boolean>('flowmindReduceMotion', reduce === true);
     } catch (error) {
       console.error(`主题偏好读取失败，回退为跟随系统: ${JSON.stringify(error)}`);
       ThemeManager.mode = ThemeMode.SYSTEM;
@@ -105,6 +107,13 @@ export class ThemeManager {
     } catch (error) {
       console.error(`主题偏好写入失败: ${JSON.stringify(error)}`);
     }
+  }
+
+  static async setReduceMotion(value: boolean): Promise<void> {
+    if (ThemeManager.store === null) { throw new Error('外观设置尚未初始化'); }
+    await ThemeManager.store.put('reduceMotion', value);
+    await ThemeManager.store.flush();
+    AppStorage.setOrCreate<boolean>('flowmindReduceMotion', value);
   }
 
   /**
