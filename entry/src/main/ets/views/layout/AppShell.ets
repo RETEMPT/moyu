@@ -17,6 +17,7 @@ import { ChatSession } from '../../common/types/ChatSession';
 import { SAVE_IDLE } from '../../common/constants/WorkspaceConstants';
 import { GlobalTopBar } from './GlobalTopBar';
 import { Sidebar } from './Sidebar';
+import { BottomNavBar } from './BottomNavBar';
 
 @Component
 export struct AppShell {
@@ -93,7 +94,7 @@ export struct AppShell {
     const three = width >= LayoutTokens.BREAKPOINT_TABLET_LARGE;
     const two = width >= LayoutTokens.BREAKPOINT_TABLET_MEDIUM;
     const phone = width < LayoutTokens.BREAKPOINT_PHONE;
-    const changed = three !== this.isThreeColumn || two !== this.isTwoColumn;
+    const changed = three !== this.isThreeColumn || two !== this.isTwoColumn || phone !== this.isPhone;
     this.isThreeColumn = three; this.isTwoColumn = two; this.isPhone = phone;
     AppStorage.setOrCreate('flowmindIsPhone', phone);
     AppStorage.setOrCreate('flowmindSingleColumn', !two);
@@ -200,6 +201,13 @@ export struct AppShell {
           .layoutWeight(1)
           .alignItems(HorizontalAlign.Center)
           .backgroundColor(this.palette().canvas)
+
+          if (this.isPhone) {
+            BottomNavBar({
+              activeNav: this.activeNav,
+              onSelectNav: this.onSelectNav
+            })
+          }
         }
         .layoutWeight(1)
         .height('100%')
