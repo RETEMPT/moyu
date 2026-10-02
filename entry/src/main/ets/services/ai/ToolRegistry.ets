@@ -13,6 +13,11 @@ import { ChatMessage } from '../../common/types/ModelConfig';
 
 /** 内置工具清单 */
 export const AGENT_TOOLS: AgentToolSpec[] = [
+  { name: 'note_outline', description: '读取指定笔记的标题大纲，快速定位章节。', permission: 'read',
+    params: [{ name: 'identifier', jsonType: 'string', description: '笔记完整标题或 ID', required: true }] },
+  { name: 'list_todos', description: '列出真实待办、日期与完成状态，便于规划复习。', permission: 'read',
+    params: [{ name: 'date', jsonType: 'string', description: 'YYYY-MM-DD，留空查看全部日期', required: false },
+      { name: 'status', jsonType: 'string', description: 'all、pending 或 done', required: false }] },
   {
     name: 'search_notes',
     description: '在当前资料库中按关键词检索笔记片段，返回命中的笔记标题、章节与正文摘录。用于回答关于用户笔记内容的问题。',
@@ -134,7 +139,7 @@ export function buildOpenAiToolsJson(tools: AgentToolSpec[]): string {
       }
     }
 
-    const paramsSchema: string = `{"type":"object","properties":{${properties}},"required":${JSON.stringify(required)}}`;
+    const paramsSchema: string = `{"type":"object","properties":{${properties}},"required":${JSON.stringify(required)},"additionalProperties":false}`;
     out += `{"type":"function","function":{"name":${JSON.stringify(t.name)},`
       + `"description":${JSON.stringify(t.description)},"parameters":${paramsSchema}}}`;
   }
@@ -144,6 +149,8 @@ export function buildOpenAiToolsJson(tools: AgentToolSpec[]): string {
 
 /** 取工具调用的展示名（用于确认弹窗标题） */
 export function toolDisplayName(name: string): string {
+  if (name === 'note_outline') { return '读取章节大纲'; }
+  if (name === 'list_todos') { return '查看待办日程'; }
   if (name === 'search_notes') {
     return '检索笔记';
   }

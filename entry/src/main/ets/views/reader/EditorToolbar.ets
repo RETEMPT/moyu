@@ -11,7 +11,7 @@
  * 图片 / OCR / 录音属后续阶段，点击暂提示「即将上线」。仅编辑模式下悬浮于正文底部。
  */
 import { curves } from '@kit.ArkUI';
-import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 
 @Component
@@ -35,7 +35,7 @@ export struct EditorToolbar {
   }
 
   private togglePanel(name: string): void {
-    animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+    animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
       this.openPanel = this.openPanel === name ? '' : name;
     });
   }

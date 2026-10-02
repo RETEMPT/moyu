@@ -16,6 +16,7 @@ import { NoteStorageService } from '../../services/NoteStorageService';
 import { TimeFormat } from '../../common/utils/TimeFormat';
 import { SAVE_FAILED, SAVE_IDLE, SAVE_SAVING } from '../../common/constants/WorkspaceConstants';
 import { EditorToolbar } from './EditorToolbar';
+import { NoteCoverVisual } from './NoteCoverVisual';
 
 /** 输入停止后延迟落盘的毫秒数 */
 const AUTOSAVE_DELAY_MS: number = 800;
@@ -79,6 +80,7 @@ export struct MarkdownReader {
   @Prop jumpLine: number = -1;
   /** 标题或正文落盘成功后回调，父组件据此刷新列表快照 */
   onSaved: (note: NoteItem, content: string) => void = () => {};
+  onChooseCover: () => void = () => {};
   /** 落盘状态变化：已保存 / 保存中 / 保存失败 */
   onSaveStateChange: (state: string) => void = () => {};
   /** 正文块解析完成后回传大纲，供 OutlinePanel 复用 */
@@ -147,6 +149,14 @@ export struct MarkdownReader {
     if (this.editingNote !== null) {
       this.editingNote.title = this.note.title;
       this.editingNote.category = this.note.category;
+      this.editingNote.coverUrl = this.note.coverUrl;
+      this.editingNote.tag = this.note.tag;
+      this.editingNote.tagColor = this.note.tagColor;
+      this.editingNote.updateTime = this.note.updateTime;
+      this.editingNote.updatedAt = this.note.updatedAt;
+      this.editingNote.tags = this.note.tags;
+      this.editingNote.favorite = this.note.favorite;
+      this.editingNote.isPinned = this.note.isPinned;
     }
     this.title = this.note.title;
   }
@@ -212,7 +222,10 @@ export struct MarkdownReader {
       coverUrl: source.coverUrl,
       strokes: source.strokes,
       scratchpadStrokes: source.scratchpadStrokes,
-      pageAnnotations: source.pageAnnotations
+      pageAnnotations: source.pageAnnotations,
+      favorite: source.favorite, tags: source.tags, createdAt: source.createdAt, updatedAt: source.updatedAt,
+      isPinned: source.isPinned, sourceUri: source.sourceUri, sourceType: source.sourceType,
+      pageCount: source.pageCount, documentMeta: source.documentMeta, aiSummary: source.aiSummary, aiTags: source.aiTags
     };
   }
 
@@ -294,7 +307,10 @@ export struct MarkdownReader {
       coverUrl: note.coverUrl,
       strokes: note.strokes,
       scratchpadStrokes: note.scratchpadStrokes,
-      pageAnnotations: note.pageAnnotations
+      pageAnnotations: note.pageAnnotations,
+      favorite: note.favorite, tags: note.tags, createdAt: note.createdAt, updatedAt: note.updatedAt,
+      isPinned: note.isPinned, sourceUri: note.sourceUri, sourceType: note.sourceType,
+      pageCount: note.pageCount, documentMeta: note.documentMeta, aiSummary: note.aiSummary, aiTags: note.aiTags
     };
   }
 
@@ -708,14 +724,14 @@ export struct MarkdownReader {
 
   /** 进入编辑模式并弹出键盘 */
   private enterEdit(): void {
-    animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+    animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
       this.isEditing = true;
     });
   }
 
   /** 退出编辑模式：收起格式栏 + 落盘 */
   private exitEdit(): void {
-    animateTo({ curve: curves.springMotion(0.25, 0.76) }, () => {
+    animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
       this.isEditing = false;
       this.isFormatBarVisible = false;
     });
@@ -929,6 +945,7 @@ export struct MarkdownReader {
           .fontColor(this.isEditing ? Color.White : this.palette().inkPrimary)
       }
       .padding({ left: 10, right: 12, top: 5, bottom: 5 })
+      .height(44)
       .borderRadius(8)
       .backgroundColor(this.isEditing ? this.palette().accent : this.palette().surfaceSubtle)
       .hoverEffect(HoverEffect.Highlight)
@@ -943,7 +960,7 @@ export struct MarkdownReader {
       // 编辑状态下显示常用快捷入口：双向链接、待办、标签
       if (this.isEditing) {
         Row({ space: 4 }) {
-          Text('🔗')
+          Text('↔')
             .fontSize(12)
           Text('[[双链]]')
             .fontSize(TypographyTokens.CAPTION)
@@ -951,6 +968,7 @@ export struct MarkdownReader {
             .fontColor(this.palette().link)
         }
         .padding({ left: 8, right: 10, top: 5, bottom: 5 })
+        .height(44)
         .borderRadius(8)
         .backgroundColor(this.palette().accentSoft)
         .hoverEffect(HoverEffect.Highlight)
@@ -967,6 +985,7 @@ export struct MarkdownReader {
             .fontColor(this.palette().inkSecondary)
         }
         .padding({ left: 8, right: 10, top: 5, bottom: 5 })
+        .height(44)
         .borderRadius(8)
         .backgroundColor(this.palette().surfaceSubtle)
         .hoverEffect(HoverEffect.Highlight)
@@ -975,6 +994,11 @@ export struct MarkdownReader {
         })
       }
 
+      if (!this.isEditing) {
+        Text('▧ 封面').fontSize(12).height(44).padding({ left: 12, right: 12 })
+          .fontColor(this.palette().inkSecondary).backgroundColor(this.palette().surfaceSubtle)
+          .borderRadius(8).accessibilityText('更换或移除笔记封面').onClick(() => this.onChooseCover())
+      }
       Blank()
 
       Text(this.saveState)
@@ -994,6 +1018,11 @@ export struct MarkdownReader {
       Column() {
         this.editorToolbar()
 
+        if (!this.isEditing && this.note.coverUrl && this.note.coverUrl.length > 0) {
+          NoteCoverVisual({ source: this.note.coverUrl }).width('100%').height(this.isPhone ? 104 : 140)
+            .borderRadius(12).clip(true).margin({ bottom: 16 }).onClick(() => {})
+        }
+
         if (this.isEditing) {
           TextInput({ text: this.title, placeholder: '无标题' })
             .fontSize(TypographyTokens.TITLE_HERO)
@@ -1003,7 +1032,7 @@ export struct MarkdownReader {
             .backgroundColor(Color.Transparent)
             .padding(0)
             .width('100%')
-            .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.25, 0.76) }))
+            .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
             .onChange((value: string) => {
               this.title = value;
               this.scheduleSave();
@@ -1014,7 +1043,7 @@ export struct MarkdownReader {
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().inkPrimary)
             .width('100%')
-            .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.25, 0.76) }))
+            .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
             .onClick(() => this.enterEdit())
         }
 
@@ -1026,9 +1055,6 @@ export struct MarkdownReader {
       .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 20 })
       .onClick(() => {
         // 头部区域点击消费，防止触发根节点退出编辑
-        if (!this.isEditing) {
-          this.enterEdit();
-        }
       })
 
       // ---- 正文区 ----
@@ -1085,7 +1111,7 @@ export struct MarkdownReader {
         .layoutWeight(1)
         .width('100%')
         .scrollBar(BarState.Auto)
-        .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.25, 0.76) }))
+        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
       }
       }
       .width('100%')

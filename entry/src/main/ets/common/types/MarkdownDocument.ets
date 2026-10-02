@@ -24,5 +24,7 @@ export interface DocumentTransferResult {
    * 从而永远走不进 PDF 原盘批注阅读器（ReaderWorkspace 按 type 分流）。
    */
   noteType?: string;
+  sourceUri?: string;
+  pageCount?: number;
   message: string;
 }

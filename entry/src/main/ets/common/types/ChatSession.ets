@@ -35,6 +35,7 @@ export interface StoredMessage {
   streaming?: boolean;
   error?: string;
   proposalStatus?: 'pending' | 'accepted' | 'dismissed';
+  proposalAppliedIds?: string[];
 }
 
 /** 会话 */

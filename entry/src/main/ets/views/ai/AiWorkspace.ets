@@ -11,7 +11,7 @@
 import { curves, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
-import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import {
   ChatSession,
@@ -21,6 +21,10 @@ import {
   createMessage
 } from '../../common/types/ChatSession';
 import { ModelProfile } from '../../common/types/ModelConfig';
+import { WorkspaceToolExecutor } from '../../services/ai/WorkspaceToolExecutor';
+import { ModelProfilePolicy } from '../../services/ai/ModelProfilePolicy';
+import { NoteToolReader } from '../../services/ai/NoteToolReader';
+import { ActionProposalService, ActionProposalData, ProposedActionItem } from '../../services/ai/ActionProposalService';
 import { AgentOrchestrator, AgentLayer, AgentRunContext, CurrentDocContext } from '../../services/ai/AgentOrchestrator';
 import { ChatSessionService } from '../../services/ai/ChatSessionService';
 import { ModelConfigService, ACTIVE_STORAGE_KEY } from '../../services/ai/ModelConfigService';
@@ -108,235 +112,10 @@ interface CreateNoteArgs {
   content?: string;
 }
 
-/** 智能体协同规划条目 */
-export interface ProposedActionItem {
-  id: string;
-  type: string; // 'todo' | 'tag' | 'link' | 'category' | 'note'
-  title: string;
-  desc: string;
-  target?: string;
-  value?: string;
-  source?: string;
-  date?: string;
-  content?: string;
-}
-
-/** 智能体方案提案数据 */
-export interface ActionProposalData {
-  summary: string;
-  actions: ProposedActionItem[];
-}
-
-/**
- * 智能体工具执行器
- */
-class WorkspaceToolExecutor implements AgentToolExecutor {
-  private searchFn: (query: string, limit: number) => string;
-  private listFn: (category: string) => string;
-  private readFn: (identifier: string) => string;
-  private summarizeFn: () => string;
-  private createTodoFn: (date: string, title: string) => string;
-  private addTagFn: (identifier: string, tags: string) => string;
-  private createLinkFn: (sourceIdentifier: string, targetTitle: string, reason?: string) => string;
-  private categorizeFn: (identifier: string, category: string) => string;
-  private createNoteFn: (title: string, category: string, tag: string, content: string) => string;
-  private onProgress: (text: string) => void;
-
-  constructor(
-    searchFn: (query: string, limit: number) => string,
-    listFn: (category: string) => string,
-    readFn: (identifier: string) => string,
-    summarizeFn: () => string,
-    createTodoFn: (date: string, title: string) => string,
-    addTagFn: (identifier: string, tags: string) => string,
-    createLinkFn: (sourceIdentifier: string, targetTitle: string, reason?: string) => string,
-    categorizeFn: (identifier: string, category: string) => string,
-    createNoteFn: (title: string, category: string, tag: string, content: string) => string,
-    onProgress: (text: string) => void
-  ) {
-    this.searchFn = searchFn;
-    this.listFn = listFn;
-    this.readFn = readFn;
-    this.summarizeFn = summarizeFn;
-    this.createTodoFn = createTodoFn;
-    this.addTagFn = addTagFn;
-    this.createLinkFn = createLinkFn;
-    this.categorizeFn = categorizeFn;
-    this.createNoteFn = createNoteFn;
-    this.onProgress = onProgress;
-  }
-
-  async execute(toolName: string, argsJson: string): Promise<AgentToolResult> {
-    if (toolName === 'search_notes') {
-      let args: SearchNotesArgs = {};
-      try {
-        args = JSON.parse(argsJson) as SearchNotesArgs;
-      } catch {
-        return { ok: false, content: '参数不是合法 JSON，请重新给出符合 schema 的参数。' };
-      }
-      const query: string = (args.query ?? '').trim();
-      if (query.length === 0) {
-        return { ok: false, content: 'query 不能为空。' };
-      }
-      this.onProgress(`正在检索「${query}」…`);
-      const limit: number = args.limit !== undefined && args.limit > 0 ? Math.min(args.limit, 10) : 5;
-      const content: string = this.searchFn(query, limit);
-      this.onProgress('');
-      return { ok: true, content };
-    }
-
-    if (toolName === 'list_notes') {
-      let args: ListNotesArgs = {};
-      try {
-        args = JSON.parse(argsJson) as ListNotesArgs;
-      } catch {
-        return { ok: false, content: '参数不是合法 JSON，请重新给出符合 schema 的参数。' };
-      }
-      this.onProgress('正在读取笔记目录…');
-      const content: string = this.listFn((args.category ?? '').trim());
-      this.onProgress('');
-      return { ok: true, content };
-    }
-
-    if (toolName === 'read_note') {
-      let args: ReadNoteArgs = {};
-      try {
-        args = JSON.parse(argsJson) as ReadNoteArgs;
-      } catch {
-        return { ok: false, content: '参数不是合法 JSON，请重新给出符合 schema 的参数。' };
-      }
-      const iden: string = (args.identifier ?? '').trim();
-      if (iden.length === 0) {
-        return { ok: false, content: 'identifier 不能为空。' };
-      }
-      this.onProgress(`正在研读笔记「${iden}」…`);
-      const content: string = this.readFn(iden);
-      this.onProgress('');
-      return { ok: true, content };
-    }
-
-    if (toolName === 'summarize_vault') {
-      this.onProgress('正在盘点知识库全景…');
-      const content: string = this.summarizeFn();
-      this.onProgress('');
-      return { ok: true, content };
-    }
-
-    if (toolName === 'create_todo') {
-      let args: CreateTodoArgs = {};
-      try {
-        args = JSON.parse(argsJson) as CreateTodoArgs;
-      } catch {
-        return { ok: false, content: '参数不是合法 JSON，请重新给出符合 schema 的参数。' };
-      }
-      const title: string = (args.title ?? '').trim();
-      if (title.length === 0) {
-        return { ok: false, content: 'title 不能为空。' };
-      }
-      this.onProgress('正在创建待办事项…');
-      const content: string = this.createTodoFn(this.normalizeDate(args.date), title);
-      this.onProgress('');
-      return { ok: true, content };
-    }
-
-    if (toolName === 'add_tag_to_note') {
-      let args: AddTagArgs = {};
-      try {
-        args = JSON.parse(argsJson) as AddTagArgs;
-      } catch {
-        return { ok: false, content: '参数不是合法 JSON。' };
-      }
-      const iden: string = (args.identifier ?? '').trim();
-      const tags: string = (args.tags ?? '').trim();
-      if (iden.length === 0 || tags.length === 0) {
-        return { ok: false, content: 'identifier 与 tags 均不能为空。' };
-      }
-      this.onProgress(`正在为「${iden}」追加标签…`);
-      const content: string = this.addTagFn(iden, tags);
-      this.onProgress('');
-      return { ok: true, content };
-    }
-
-    if (toolName === 'create_link') {
-      let args: CreateLinkArgs = {};
-      try {
-        args = JSON.parse(argsJson) as CreateLinkArgs;
-      } catch {
-        return { ok: false, content: '参数不是合法 JSON。' };
-      }
-      const src: string = (args.sourceIdentifier ?? '').trim();
-      const tgt: string = (args.targetTitle ?? '').trim();
-      if (src.length === 0 || tgt.length === 0) {
-        return { ok: false, content: 'sourceIdentifier 与 targetTitle 均不能为空。' };
-      }
-      this.onProgress(`正在建立指向「${tgt}」的双链…`);
-      const content: string = this.createLinkFn(src, tgt, args.reason);
-      this.onProgress('');
-      return { ok: true, content };
-    }
-
-    if (toolName === 'categorize_note') {
-      let args: CategorizeNoteArgs = {};
-      try {
-        args = JSON.parse(argsJson) as CategorizeNoteArgs;
-      } catch {
-        return { ok: false, content: '参数不是合法 JSON。' };
-      }
-      const iden: string = (args.identifier ?? '').trim();
-      const cat: string = (args.category ?? '').trim();
-      if (iden.length === 0 || cat.length === 0) {
-        return { ok: false, content: 'identifier 与 category 均不能为空。' };
-      }
-      this.onProgress(`正在将「${iden}」分类归入「${cat}」…`);
-      const content: string = this.categorizeFn(iden, cat);
-      this.onProgress('');
-      return { ok: true, content };
-    }
-
-    if (toolName === 'create_note') {
-      let args: CreateNoteArgs = {};
-      try {
-        args = JSON.parse(argsJson) as CreateNoteArgs;
-      } catch {
-        return { ok: false, content: '参数不是合法 JSON。' };
-      }
-      const title: string = (args.title ?? '').trim();
-      const contentText: string = (args.content ?? '').trim();
-      if (title.length === 0) {
-        return { ok: false, content: 'title 不能为空。' };
-      }
-      this.onProgress(`正在创建新笔记「${title}」…`);
-      const content: string = this.createNoteFn(title, args.category ?? '未分类', args.tag ?? '', contentText);
-      this.onProgress('');
-      return { ok: true, content };
-    }
-
-    return { ok: false, content: `未注册工具: ${toolName}` };
-  }
-
-  private normalizeDate(raw: string | undefined): string {
-    const d: Date = new Date();
-    const today: string = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-    if (raw === undefined) {
-      return today;
-    }
-    const trimmed: string = raw.trim();
-    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-      return trimmed;
-    }
-    if (trimmed === '明天') {
-      const t: Date = new Date(d.getTime() + 24 * 60 * 60 * 1000);
-      return `${t.getFullYear()}-${pad2(t.getMonth() + 1)}-${pad2(t.getDate())}`;
-    }
-    return today;
-  }
-}
-
-function pad2(n: number): string {
-  return n < 10 ? `0${n}` : `${n}`;
-}
-
+function pad2(value: number): string { return String(value).padStart(2, '0'); }
 const QUICK_PROMPTS: QuickPrompt[] = [
+  { title: '自测题卡', badge: '自测', desc: '从资料生成题目和参考答案', query: '请根据我附加的笔记生成 5 道自测题，分别列出参考答案与依据。不足以出题时先说明缺少哪些资料。' },
+  { title: '比较观点', badge: '比较', desc: '并列比较多份笔记的异同', query: '请比较我附加的笔记：并列列出共同结论、分歧与各自依据，并标注来源；不要补充资料里没有的信息。' },
   { title: '智能规划', badge: '规划', desc: '梳理分类、双链与待办', query: '请深度分析我的知识库现状，提出具体的分类标签、双向链接与待办复习规划，并以 action_proposal 格式输出协同方案供我一键确认。' },
   { title: '文档提炼', badge: '提炼', desc: '总结核心要点与逻辑', query: '请帮我提炼当前文档的核心结论与主要推导步骤。' },
   { title: '双链关联', badge: '关联', desc: '挖掘笔记间的潜在联系', query: '检索我的全部笔记，分析其中可能存在的跨学科或双向关联概念。' },
@@ -362,16 +141,18 @@ export struct AiWorkspace {
   onPinnedNotesChange: (pinned: NoteItem[]) => void = () => {};
   onToggleContextPanel: () => void = () => {};
   onOpenModelSettings: () => void = () => {};
-  onCreateTodo: (dateKey: string, title: string) => void = () => {};
-  onAddTagToNote: (identifier: string, tags: string) => void = () => {};
-  onCreateLinkBetweenNotes: (sourceIdentifier: string, targetTitle: string) => void = () => {};
-  onCategorizeNote: (identifier: string, category: string) => void = () => {};
-  onCreateNewNote: (title: string, category: string, tag: string, content: string) => void = () => {};
+  onCreateTodo: (dateKey: string, title: string) => Promise<void> = async () => {};
+  onAddTagToNote: (identifier: string, tags: string) => Promise<void> = async () => {};
+  onCreateLinkBetweenNotes: (sourceIdentifier: string, targetTitle: string) => Promise<void> = async () => {};
+  onCategorizeNote: (identifier: string, category: string) => Promise<void> = async () => {};
+  onCreateNewNote: (title: string, category: string, tag: string, content: string) => Promise<void> = async () => {};
   onOpenSearch: () => void = () => {};
   onSmartExtract: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp(ACTIVE_STORAGE_KEY) @Watch('onActiveProfileChanged') activeProfileId: string = '';
+  @StorageProp('flowmindModelRevision') @Watch('onActiveProfileChanged') modelRevision: number = 0;
+  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   @State messages: StoredMessage[] = [];
   @State inputText: string = '';
@@ -393,6 +174,8 @@ export struct AiWorkspace {
   @State plusMenuOpen: boolean = false;
   @State selectedThinkingBudget: number = 16384;
   @State isThinkingEnabled: boolean = true;
+  @State applyingProposal: string = '';
+  @State proposalFeedback: string = '';
 
   private orchestrator: AgentOrchestrator = new AgentOrchestrator();
   private sessionService: ChatSessionService = ChatSessionService.getInstance();
@@ -403,8 +186,11 @@ export struct AiWorkspace {
   private servicesReady: boolean = false;
   private cancelled: boolean = false;
   private blinkTimer: number = -1;
+  private alive: boolean = true;
+  private requestId: number = 0;
 
   aboutToAppear(): void {
+    this.alive = true;
     this.pinnedNotes = this.externalPinnedNotes.slice();
     if (this.prefilledPrompt.length > 0) {
       this.inputText = this.prefilledPrompt;
@@ -418,6 +204,8 @@ export struct AiWorkspace {
   }
 
   aboutToDisappear(): void {
+    this.alive = false;
+    this.cancelStream();
     if (this.blinkTimer !== -1) {
       clearInterval(this.blinkTimer);
     }
@@ -454,6 +242,7 @@ export struct AiWorkspace {
     if (this.activeSessionId === this.loadedSessionId) {
       return;
     }
+    this.cancelStream();
     this.loadSessionById(this.activeSessionId);
   }
 
@@ -461,8 +250,8 @@ export struct AiWorkspace {
     try {
       this.profiles = await ModelConfigService.getInstance().loadProfiles();
       const profile = await ModelConfigService.getInstance().getActiveProfile();
-      this.modelLabel = profile.apiKey.length === 0 ? `${profile.label} (未配密钥)` : profile.label;
-      this.isModelReasoningType = profile.isReasoningModel ?? (profile.modelId.includes('reasoner') || profile.modelId.includes('r1'));
+      this.modelLabel = ModelProfilePolicy.validate(profile).length > 0 ? `${profile.label} · 待配置` : `${profile.label} · 已配置`;
+      this.isModelReasoningType = profile.isReasoningModel === true && /^(o1|o3|o4)/.test(profile.modelId);
     } catch {
       this.modelLabel = '未配置模型';
       this.isModelReasoningType = false;
@@ -472,6 +261,7 @@ export struct AiWorkspace {
   }
 
   private async switchActiveProfile(profileId: string): Promise<void> {
+    if (this.isLoading || this.applyingProposal.length > 0) { return; }
     this.modelMenuOpen = false;
     try {
       await ModelConfigService.getInstance().setActiveProfileId(profileId);
@@ -509,10 +299,36 @@ export struct AiWorkspace {
     try {
       const sessions: ChatSession[] = await this.sessionService.loadSessions();
       for (const s of sessions) {
-        if (s.id === id) {
+        if (s && s.id === id) {
           this.loadedSessionId = id;
-          this.messages = s.messages.slice();
-          this.currentAgentMode = s.agentMode;
+          const rawMessages: StoredMessage[] = (s.messages && Array.isArray(s.messages)) ? s.messages : [];
+          const safeMessages: StoredMessage[] = [];
+          for (let i = 0; i < rawMessages.length; i++) {
+            const m: StoredMessage = rawMessages[i];
+            if (!m || typeof m !== 'object') {
+              continue;
+            }
+            const msgItem: StoredMessage = {
+              id: m.id || `msg_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+              role: m.role || 'assistant',
+              text: (typeof m.text === 'string') ? m.text : '',
+              reasoningContent: (typeof m.reasoningContent === 'string') ? m.reasoningContent : undefined,
+              reasoningDurationMs: typeof m.reasoningDurationMs === 'number' ? m.reasoningDurationMs : undefined,
+              reasoningFolded: m.reasoningFolded ?? true,
+              formula: m.formula,
+              bullets: Array.isArray(m.bullets) ? m.bullets : undefined,
+              citations: Array.isArray(m.citations) ? m.citations : [],
+              agentLayer: m.agentLayer,
+              modelProfileId: m.modelProfileId,
+              createdAt: typeof m.createdAt === 'number' ? m.createdAt : Date.now(),
+              streaming: false,
+              error: (typeof m.error === 'string') ? m.error : undefined,
+              proposalStatus: m.proposalStatus
+            };
+            safeMessages.push(msgItem);
+          }
+          this.messages = safeMessages;
+          this.currentAgentMode = s.agentMode || 'auto';
           this.lastCitations = [];
           this.streamingText = '';
           this.streamingReasoning = '';
@@ -550,7 +366,7 @@ export struct AiWorkspace {
   // 上下文与检索
   // ------------------------------------------------------------------
 
-  private async retrieve(query: string): Promise<ChatCitation[]> {
+  private async retrieve(query: string, profile: ModelProfile, cancelled: () => boolean): Promise<ChatCitation[]> {
     const docs: MarkdownDocument[] = [];
     for (const n of this.allNotes) {
       docs.push({
@@ -562,7 +378,7 @@ export struct AiWorkspace {
         updatedAt: 0
       });
     }
-    const hits: RetrievalHit[] = this.retriever.search(docs, query, 6);
+    const hits: RetrievalHit[] = await this.retriever.searchHybrid(docs, query, profile, 6, cancelled);
     const citations: ChatCitation[] = [];
     for (const h of hits) {
       citations.push({
@@ -605,133 +421,72 @@ export struct AiWorkspace {
   // ------------------------------------------------------------------
 
   private async sendMessage(): Promise<void> {
-    const q: string = this.inputText.trim();
-    if (q.length === 0 || this.isLoading) {
-      return;
-    }
-
-    const userMsg: StoredMessage = createMessage('user', q);
-    this.messages = [...this.messages, userMsg];
-    this.inputText = '';
-    this.isLoading = true;
-    this.streamingText = '';
-    this.streamingReasoning = '';
-    this.scrollToBottom();
-
-    let layer: AgentLayer;
-    if (this.currentAgentMode === 'auto') {
-      layer = this.orchestrator.classify(q);
-      if (layer === 'L1' && (this.currentNote === null || this.currentNote === undefined)) {
-        layer = 'L3';
-      }
-    } else {
-      layer = this.currentAgentMode;
-    }
-    this.runningLayer = layer;
-
-    const docCtx: CurrentDocContext | undefined = layer === 'L1' ? this.buildCurrentDocContext() : undefined;
-    const pinned: string[] = [];
-    for (const n of this.pinnedNotes) {
-      pinned.push(`【${n.title}】（所属工程/分类：${n.category.length > 0 ? n.category : '未分类'}）\n${n.contentDetail ?? ''}`);
-    }
-
-    let hits: ChatCitation[] = [];
-    if (layer === 'L3') {
-      this.toolStatus = '检索切片中…';
-      hits = await this.retrieve(q);
-      this.toolStatus = '';
-      if (this.loadedSessionId !== this.activeSessionId) {
-        this.isLoading = false;
-        this.streamingText = '';
-        this.streamingReasoning = '';
-        return;
-      }
-    }
-    this.lastCitations = hits;
-    this.emitContext();
-
-    const ctx: AgentRunContext = {
-      query: q,
-      history: this.messages.slice(0, -1),
-      currentDoc: docCtx,
-      pinnedNotes: pinned,
-      retrievalHits: hits,
-      learningContext: layer === 'L2' ? this.buildLearningContext() : undefined,
-      tools: this.toolsEnabled ? AGENT_TOOLS : undefined,
-      executor: this.buildExecutor(),
-      confirm: (toolName: string, argsJson: string) => this.confirmTool(toolName, argsJson)
-    };
-
+    const query = this.inputText.trim();
+    if (!query || this.isLoading || this.applyingProposal.length > 0) { return; }
+    const request = ++this.requestId;
+    const session = this.loadedSessionId;
+    this.cancelled = false; this.isLoading = true; this.toolStatus = '准备上下文…';
+    const current = (): boolean => this.alive && !this.cancelled && request === this.requestId && session === this.loadedSessionId;
     try {
-      const activeProf = await ModelConfigService.getInstance().getActiveProfile();
-      if (this.selectedThinkingBudget > 0) {
-        activeProf.thinkingBudget = this.selectedThinkingBudget;
-        activeProf.maxTokens = Math.max(activeProf.maxTokens, this.selectedThinkingBudget + 2048);
-      } else {
-        activeProf.thinkingBudget = 0;
-      }
-      await ModelConfigService.getInstance().upsertProfile(activeProf);
-    } catch {
-      // ignore
-    }
-
-    this.cancelled = false;
-    try {
-      await this.orchestrator.run(
-        layer,
-        ctx,
-        (text: string, done: boolean, reasoningText?: string) => {
-          this.streamingText = text;
-          if (reasoningText !== undefined && reasoningText.length > 0) {
-            this.streamingReasoning = reasoningText;
-          }
+      const configured = await ModelConfigService.getInstance().getActiveProfile();
+      if (!current()) { return; }
+      const error = ModelProfilePolicy.validate(configured);
+      if (error) { this.toolStatus = ''; promptAction.showToast({ message: error }); return; }
+      const profile = ModelProfilePolicy.restore(configured)!;
+      profile.thinkingBudget = this.isThinkingEnabled ? Math.min(this.selectedThinkingBudget, Math.max(0, configured.maxTokens - 1024)) : 0;
+      let layer: AgentLayer = this.currentAgentMode === 'auto' ? this.orchestrator.classify(query) : this.currentAgentMode;
+      if (layer === 'L1' && !this.currentNote) { layer = 'L3'; }
+      this.runningLayer = layer;
+      const history = this.messages.slice();
+      this.messages = [...this.messages, createMessage('user', query)]; this.inputText = '';
+      this.streamingText = ''; this.streamingReasoning = ''; this.scrollToBottom();
+      const pinned = this.pinnedNotes.map((note: NoteItem) => `【${note.title}】\n${note.contentDetail}`);
+      let hits: ChatCitation[] = [];
+      if (layer === 'L3') { this.toolStatus = '正在检索笔记…'; hits = await this.retrieve(query, profile, () => !current()); }
+      if (!current()) { return; }
+      this.lastCitations = hits; this.emitContext(); this.toolStatus = '模型正在生成…';
+      const ctx: AgentRunContext = { query, history, profile,
+        currentDoc: layer === 'L1' ? this.buildCurrentDocContext() : undefined,
+        pinnedNotes: pinned, retrievalHits: hits,
+        learningContext: layer === 'L2' ? this.buildLearningContext() : undefined,
+        tools: this.toolsEnabled ? AGENT_TOOLS : [], executor: this.buildExecutor(),
+        isCancelled: () => !current(),
+        confirm: (name: string, args: string) => this.confirmTool(name, args) };
+      await this.orchestrator.run(layer, ctx,
+        (text: string, done: boolean, reasoning?: string) => {
+          if (!current()) { return; }
+          this.streamingText = text; this.streamingReasoning = reasoning || '';
           if (done) {
-            this.isLoading = false;
-            this.toolStatus = '';
-            const aiMsg: StoredMessage = createMessage('assistant', text);
-            aiMsg.agentLayer = layer;
-            if (reasoningText !== undefined && reasoningText.length > 0) {
-              aiMsg.reasoningContent = reasoningText;
-              aiMsg.reasoningFolded = true;
-            }
-            if (hits.length > 0) {
-              aiMsg.citations = hits;
-            }
-            this.messages = [...this.messages, aiMsg];
-            this.streamingText = '';
-            this.streamingReasoning = '';
-            this.scrollToBottom();
-            this.persistSession();
+            const message = createMessage('assistant', text); message.agentLayer = layer;
+            if (reasoning) { message.reasoningContent = reasoning; message.reasoningFolded = true; }
+            if (hits.length) { message.citations = hits; }
+            this.messages = [...this.messages, message];
+            this.streamingText = ''; this.streamingReasoning = ''; this.toolStatus = '';
+            this.scrollToBottom(); this.persistSession();
           }
-        },
-        (handle: StreamHandle) => {
-          this.streamHandle = handle;
-        }
-      );
-    } catch (err) {
-      this.isLoading = false;
-      this.streamingText = '';
-      this.streamingReasoning = '';
-      this.toolStatus = '';
-      this.appendError(err instanceof Error ? err.message : '智能体请求失败');
-    }
-  }
-
-  private buildExecutor(): WorkspaceToolExecutor {
-    return new WorkspaceToolExecutor(
-      (query: string, limit: number) => this.toolSearchNotes(query, limit),
-      (category: string) => this.toolListNotes(category),
-      (identifier: string) => this.toolReadNote(identifier),
-      () => this.toolSummarizeVault(),
-      (date: string, title: string) => this.toolCreateTodo(date, title),
-      (identifier: string, tags: string) => this.toolAddTagToNote(identifier, tags),
-      (sourceIdentifier: string, targetTitle: string, reason?: string) => this.toolCreateLink(sourceIdentifier, targetTitle, reason),
-      (identifier: string, category: string) => this.toolCategorizeNote(identifier, category),
-      (title: string, category: string, tag: string, content: string) => this.toolCreateNote(title, category, tag, content),
-      (text: string) => {
-        this.toolStatus = text;
+        }, (handle: StreamHandle) => { if (current()) { this.streamHandle = handle; } else { handle.abort(); } });
+    } catch (error) {
+      if (current()) {
+        this.streamingText = ''; this.streamingReasoning = ''; this.toolStatus = '';
+        this.appendError(error instanceof Error ? error.message : '智能体请求失败'); this.persistSession();
       }
-    );
+    } finally { if (request === this.requestId && this.alive) { this.isLoading = false; this.streamHandle = null; } }
+  }
+  private buildExecutor(): WorkspaceToolExecutor {
+    return new WorkspaceToolExecutor({
+      search: (query: string, limit: number) => this.toolSearchNotes(query, limit),
+      list: (category: string) => this.toolListNotes(category),
+      read: (identifier: string) => this.toolReadNote(identifier),
+      summarize: () => this.toolSummarizeVault(),
+      outline: (identifier: string) => this.toolNoteOutline(identifier),
+      todos: (date: string, status: string) => this.toolListTodos(date, status),
+      createTodo: (date: string, title: string) => this.toolCreateTodo(date, title),
+      addTag: (identifier: string, tags: string) => this.toolAddTagToNote(identifier, tags),
+      createLink: (source: string, target: string, reason?: string) => this.toolCreateLink(source, target, reason),
+      categorize: (identifier: string, category: string) => this.toolCategorizeNote(identifier, category),
+      createNote: (title: string, category: string, tag: string, content: string) => this.toolCreateNote(title, category, tag, content),
+      progress: (text: string) => { if (this.alive) { this.toolStatus = text; } }
+    });
   }
 
   private toolSearchNotes(query: string, limit: number): string {
@@ -776,20 +531,19 @@ export struct AiWorkspace {
   }
 
   private toolReadNote(identifier: string): string {
-    const target: string = identifier.trim().toLowerCase();
-    for (const n of this.allNotes) {
-      if (n.id.toLowerCase() === target || n.title.toLowerCase() === target) {
-        return `【${n.title}】\n所属分类: ${n.category || '未分类'}\n标签: ${n.tag || '无'}\n更新时间: ${n.updateTime}\n正文全文:\n${n.contentDetail || '（空文档）'}`;
-      }
-    }
-    for (const n of this.allNotes) {
-      if (n.title.toLowerCase().includes(target)) {
-        return `【${n.title}】\n所属分类: ${n.category || '未分类'}\n标签: ${n.tag || '无'}\n更新时间: ${n.updateTime}\n正文全文:\n${n.contentDetail || '（空文档）'}`;
-      }
-    }
-    return `未在知识库中找到名为「${identifier}」的笔记。`;
+    const note = NoteToolReader.resolve(this.allNotes, identifier);
+    const body = note.contentDetail.slice(0, 24000);
+    return `【${note.title}】 ID: ${note.id}\n分类: ${note.category || '未分类'}\n标签: ${note.tag || '无'}\n正文:\n${body || '（空文档）'}${body.length < note.contentDetail.length ? '\n（内容较长，已截取前 24000 字符）' : ''}`;
   }
 
+  private toolNoteOutline(identifier: string): string { return NoteToolReader.outline(NoteToolReader.resolve(this.allNotes, identifier)); }
+
+  private toolListTodos(date: string, status: string): string {
+    const tasks = this.todos.filter((todo: TodoItem) => (!date || todo.date === date) &&
+      (status === 'all' || (status === 'done' ? todo.done : !todo.done)));
+    return tasks.length ? tasks.slice(0, 50).map((todo: TodoItem) =>
+      `${todo.done ? '[x]' : '[ ]'} ${todo.date} · ${todo.title}`).join('\n') : '没有符合条件的待办';
+  }
   private toolSummarizeVault(): string {
     const catMap: Map<string, number> = new Map();
     const tagSet: Set<string> = new Set();
@@ -812,28 +566,28 @@ export struct AiWorkspace {
     return `【FlowMind 知识库全景概览】\n- 笔记总数: ${this.allNotes.length} 篇\n- 分类统计:${catList}\n- 标签数量: ${tagSet.size} 个\n- 待办事项: ${this.todos.length} 项 (未完成 ${this.todos.filter((t: TodoItem) => !t.done).length} 项)`;
   }
 
-  private toolCreateTodo(date: string, title: string): string {
-    this.onCreateTodo(date, title);
+  private async toolCreateTodo(date: string, title: string): Promise<string> {
+    await this.onCreateTodo(date, title);
     return `已成功创建待办：[${date}] ${title}`;
   }
 
-  private toolAddTagToNote(identifier: string, tags: string): string {
-    this.onAddTagToNote(identifier, tags);
+  private async toolAddTagToNote(identifier: string, tags: string): Promise<string> {
+    await this.onAddTagToNote(identifier, tags);
     return `已为笔记「${identifier}」添加标签：${tags}`;
   }
 
-  private toolCreateLink(sourceIdentifier: string, targetTitle: string, reason?: string): string {
-    this.onCreateLinkBetweenNotes(sourceIdentifier, targetTitle);
+  private async toolCreateLink(sourceIdentifier: string, targetTitle: string, reason?: string): Promise<string> {
+    await this.onCreateLinkBetweenNotes(sourceIdentifier, targetTitle);
     return `已在笔记「${sourceIdentifier}」中追加双向链接 [[${targetTitle}]]`;
   }
 
-  private toolCategorizeNote(identifier: string, category: string): string {
-    this.onCategorizeNote(identifier, category);
+  private async toolCategorizeNote(identifier: string, category: string): Promise<string> {
+    await this.onCategorizeNote(identifier, category);
     return `已将笔记「${identifier}」归档入项目「${category}」`;
   }
 
-  private toolCreateNote(title: string, category: string, tag: string, content: string): string {
-    this.onCreateNewNote(title, category, tag, content);
+  private async toolCreateNote(title: string, category: string, tag: string, content: string): Promise<string> {
+    await this.onCreateNewNote(title, category, tag, content);
     return `已成功新建笔记「${title}」`;
   }
 
@@ -841,8 +595,10 @@ export struct AiWorkspace {
     if (this.cancelled) {
       return false;
     }
-    // 用户已全局授权自动同意：直接放行执行，无需弹窗打断
-    return true;
+    const result = await promptAction.showDialog({ title: `确认${toolDisplayName(toolName)}`,
+      message: this.describeToolArgs(toolName, argsJson).slice(0, 600),
+      buttons: [{ text: '取消', color: this.palette().inkSecondary }, { text: '执行', color: this.palette().accent }] });
+    return !this.cancelled && this.alive && result.index === 1;
   }
 
   private describeToolArgs(toolName: string, argsJson: string): string {
@@ -896,81 +652,97 @@ export struct AiWorkspace {
 
   /** 从文本中解析 Codex / Claude Code 风格协同方案 */
   private extractProposal(text: string): ActionProposalData | null {
+    if (!text || typeof text !== 'string') {
+      return null;
+    }
     if (!text.includes('action_proposal') && !text.includes('"actions"')) {
       return null;
     }
     try {
+      let rawData: ActionProposalData | null = null;
       const fenceMatch = text.match(/```(?:action_proposal|json)?\s*(\{[\s\S]*?"actions"[\s\S]*?\})\s*```/);
       if (fenceMatch && fenceMatch[1]) {
-        return JSON.parse(fenceMatch[1]) as ActionProposalData;
-      }
-      const jsonStart = text.indexOf('{"summary"');
-      if (jsonStart !== -1) {
-        const jsonEnd = text.lastIndexOf('}');
-        if (jsonEnd > jsonStart) {
-          const raw = text.substring(jsonStart, jsonEnd + 1);
-          return JSON.parse(raw) as ActionProposalData;
+        rawData = JSON.parse(fenceMatch[1]) as ActionProposalData;
+      } else {
+        const jsonStart = text.indexOf('{"summary"');
+        if (jsonStart !== -1) {
+          const jsonEnd = text.lastIndexOf('}');
+          if (jsonEnd > jsonStart) {
+            const raw = text.substring(jsonStart, jsonEnd + 1);
+            rawData = JSON.parse(raw) as ActionProposalData;
+          }
         }
       }
+      if (!rawData || typeof rawData !== 'object' || !Array.isArray(rawData.actions)) {
+        return null;
+      }
+      const safeSummary: string = typeof rawData.summary === 'string' ? rawData.summary : '';
+      const safeActions: ProposedActionItem[] = [];
+      for (let i = 0; i < rawData.actions.length; i++) {
+        const item = rawData.actions[i];
+        if (!item || typeof item !== 'object') {
+          continue;
+        }
+        const safeTitle = typeof item.title === 'string' ? item.title : '';
+        const safeDesc = typeof item.desc === 'string' ? item.desc : '';
+        const safeTarget = typeof item.target === 'string' ? item.target : '';
+        const safeValue = typeof item.value === 'string' ? item.value : '';
+        const safeSource = typeof item.source === 'string' ? item.source : '';
+        const safeDate = typeof item.date === 'string' ? item.date : '';
+        const safeContent = typeof item.content === 'string' ? item.content : '';
+        const safeType = typeof item.type === 'string' ? item.type : 'note';
+        const safeId = typeof item.id === 'string' && item.id.length > 0 ? item.id : `act_${i}_${Date.now()}`;
+        const actItem: ProposedActionItem = {
+          id: safeId,
+          type: safeType,
+          title: safeTitle,
+          desc: safeDesc,
+          target: safeTarget,
+          value: safeValue,
+          source: safeSource,
+          date: safeDate,
+          content: safeContent
+        };
+        safeActions.push(actItem);
+      }
+      const resProposal: ActionProposalData = {
+        summary: safeSummary,
+        actions: safeActions
+      };
+      return resProposal;
     } catch {
       return null;
     }
-    return null;
   }
 
   /** 一键采纳并应用协同方案 */
-  private applyProposal(msgId: string, proposal: ActionProposalData): void {
-    let count: number = 0;
-    for (let i = 0; i < proposal.actions.length; i++) {
-      const act = proposal.actions[i];
-      if (act.type === 'todo') {
-        const d = act.date && act.date.length > 0 ? act.date : this.getTodayDateString();
-        this.toolCreateTodo(d, act.title.length > 0 ? act.title : act.desc);
-        count++;
-      } else if (act.type === 'tag') {
-        const iden = act.target ? act.target : act.title;
-        const tags = act.value ? act.value : act.desc;
-        if (iden.length > 0 && tags.length > 0) {
-          this.toolAddTagToNote(iden, tags);
-          count++;
-        }
-      } else if (act.type === 'link') {
-        const src = act.source ? act.source : act.title;
-        const tgt = act.target ? act.target : act.value;
-        if (src && tgt && src.length > 0 && tgt.length > 0) {
-          this.toolCreateLink(src, tgt, act.desc);
-          count++;
-        }
-      } else if (act.type === 'category') {
-        const iden = act.target ? act.target : act.title;
-        const cat = act.value ? act.value : act.desc;
-        if (iden.length > 0 && cat.length > 0) {
-          this.toolCategorizeNote(iden, cat);
-          count++;
-        }
-      } else if (act.type === 'note') {
-        const title = act.title;
-        const content = act.content ? act.content : (act.desc ? act.desc : `# ${title}\n\n`);
-        const cat = act.target ? act.target : '未分类';
-        const tag = act.value ? act.value : '';
-        if (title.length > 0) {
-          this.toolCreateNote(title, cat, tag, content);
-          count++;
-        }
+  private async applyProposal(msgId: string, proposal: ActionProposalData): Promise<void> {
+    if (this.applyingProposal || this.isLoading) { return; }
+    const message = this.messages.find((item: StoredMessage) => item.id === msgId);
+    if (!message || message.proposalStatus === 'accepted' || !Array.isArray(proposal.actions)) { return; }
+    const session = this.loadedSessionId;
+    this.applyingProposal = msgId; this.proposalFeedback = '';
+    try {
+      const profile = await ModelConfigService.getInstance().getActiveProfile();
+      if (profile.toolAccess === 'none' || profile.toolAccess === 'read') { throw new Error('当前档案只允许读取，请在工具设置中开启“写入前确认”'); }
+      const executor = this.buildExecutor();
+      const completed = message.proposalAppliedIds || [];
+      for (let i = 0; i < proposal.actions.length; i++) {
+        if (!this.alive || session !== this.loadedSessionId) { throw new Error('已停止应用此方案'); }
+        const action = proposal.actions[i]; const key = `${i}:${action.id || action.type}`;
+        if (completed.includes(key)) { continue; }
+        this.proposalFeedback = `正在执行 ${i + 1}/${proposal.actions.length}…`;
+        const result = await ActionProposalService.execute(action, executor);
+        if (!result.ok) { throw new Error(`第 ${i + 1} 项未完成：${result.content}`); }
+        completed.push(key); message.proposalAppliedIds = completed.slice(); this.messages = this.messages.slice();
+        await this.persistSession(true);
       }
-    }
-    const next: StoredMessage[] = [];
-    for (const m of this.messages) {
-      if (m.id === msgId) {
-        m.proposalStatus = 'accepted';
-      }
-      next.push(m);
-    }
-    this.messages = next;
-    this.persistSession();
-    promptAction.showToast({ message: `✓ 已全部接受并应用 ${count} 项知识库变更！` });
+      message.proposalStatus = 'accepted'; this.messages = this.messages.slice(); await this.persistSession(true);
+      this.proposalFeedback = `已保存 ${completed.length} 项变更`;
+    } catch (error) {
+      this.proposalFeedback = `${error instanceof Error ? error.message : '执行失败'}。已完成的项目会保留，重试时跳过。`;
+    } finally { this.applyingProposal = ''; this.toolStatus = ''; }
   }
-
   /** 忽略协同方案 */
   private dismissProposal(msgId: string): void {
     const next: StoredMessage[] = [];
@@ -993,6 +765,7 @@ export struct AiWorkspace {
   }
 
   private cancelStream(): void {
+    this.requestId++;
     this.cancelled = true;
     if (this.streamHandle !== null) {
       this.streamHandle.abort();
@@ -1016,12 +789,12 @@ export struct AiWorkspace {
     }
   }
 
-  private async persistSession(): Promise<void> {
+  private async persistSession(strict: boolean = false): Promise<void> {
     if (!this.servicesReady) {
       return;
     }
     try {
-      if (this.activeSessionId.length === 0) {
+      if (this.loadedSessionId.length === 0) {
         const session: ChatSession = createEmptySession();
         session.messages = this.messages;
         session.agentMode = this.currentAgentMode;
@@ -1034,7 +807,7 @@ export struct AiWorkspace {
       } else {
         const sessions: ChatSession[] = await this.sessionService.loadSessions();
         for (const s of sessions) {
-          if (s.id === this.activeSessionId) {
+          if (s.id === this.loadedSessionId) {
             s.messages = this.messages;
             s.agentMode = this.currentAgentMode;
             s.updatedAt = Date.now();
@@ -1049,6 +822,7 @@ export struct AiWorkspace {
       }
     } catch (error) {
       console.error(`会话保存失败: ${JSON.stringify(error)}`);
+      if (strict) { throw new Error('变更已完成，但执行记录未能保存，请勿重复创建'); }
     }
   }
 
@@ -1169,6 +943,7 @@ export struct AiWorkspace {
   }
 
   private startNewChat(): void {
+    if (this.applyingProposal.length > 0) { return; }
     if (this.isLoading) {
       this.cancelStream();
     }
@@ -1234,7 +1009,7 @@ export struct AiWorkspace {
     if (msg.role === 'user') {
       Row() {
         Blank()
-        Text(msg.text)
+        Text(msg.text ?? '')
           .fontSize(TypographyTokens.BODY_REGULAR)
           .fontColor(Color.White)
           .padding({ left: 14, right: 14, top: 10, bottom: 10 })
@@ -1265,14 +1040,14 @@ export struct AiWorkspace {
         // 思考链展示卡片
         this.reasoningCard(msg)
 
-        if (msg.error !== undefined && msg.error.length > 0) {
+        if (msg.error !== undefined && msg.error !== null && msg.error.length > 0) {
           Text(`⚠ ${msg.error}`)
             .fontSize(TypographyTokens.CAPTION)
             .fontColor('#EF4444')
             .width('100%')
         }
 
-        if (msg.text.length > 0) {
+        if (msg.text && msg.text.length > 0) {
           this.renderMarkdownText(msg.text, false)
         }
 
@@ -1280,7 +1055,7 @@ export struct AiWorkspace {
         this.proposalCard(msg)
 
         // 引用来源芯片
-        if (msg.citations !== undefined && msg.citations.length > 0) {
+        if (msg.citations !== undefined && msg.citations !== null && msg.citations.length > 0) {
           Column({ space: 4 }) {
             Text('引用溯源')
               .fontSize(TypographyTokens.TINY)
@@ -1303,7 +1078,7 @@ export struct AiWorkspace {
         // 操作栏（一键复制 / 重新生成 / 错误重试）
         if (msg.streaming !== true) {
           Row({ space: 8 }) {
-            if (msg.text.length > 0) {
+            if (msg.text && msg.text.length > 0) {
               Row({ space: 4 }) {
                 Text('⎘')
                   .fontSize(TypographyTokens.TINY)
@@ -1316,7 +1091,7 @@ export struct AiWorkspace {
               .borderRadius(6)
               .backgroundColor(this.palette().surfaceSubtle)
               .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.copyToClipboard(msg.text))
+              .onClick(() => this.copyToClipboard(msg.text ?? ''))
             }
 
             Row({ space: 4 }) {
@@ -1333,7 +1108,7 @@ export struct AiWorkspace {
             .hoverEffect(HoverEffect.Highlight)
             .onClick(() => this.regenerateLastResponse())
 
-            if (msg.error !== undefined && msg.error.length > 0) {
+            if (msg.error !== undefined && msg.error !== null && msg.error.length > 0) {
               if (msg.error.includes('deepseek-v4-pro') || msg.error.includes('deepseek-flash') || msg.error.includes('deepseek-v4')) {
                 Row({ space: 4 }) {
                   Text('⚡')
@@ -1377,7 +1152,7 @@ export struct AiWorkspace {
   /** Codex / Claude Code 交互式协同方案卡片 */
   @Builder
   proposalCard(msg: StoredMessage) {
-    if (this.extractProposal(msg.text) !== null) {
+    if (msg.text && typeof msg.text === 'string' && this.extractProposal(msg.text) !== null) {
       this.renderProposalCardContent(msg, this.extractProposal(msg.text)!)
     }
   }
@@ -1447,7 +1222,7 @@ export struct AiWorkspace {
       .alignItems(VerticalAlign.Center)
 
       // 方案概述
-      if (proposal.summary.length > 0) {
+      if (proposal.summary && proposal.summary.length > 0) {
         Text(proposal.summary)
           .fontSize(TypographyTokens.CAPTION)
           .fontColor(this.palette().inkSecondary)
@@ -1456,11 +1231,11 @@ export struct AiWorkspace {
 
       // 方案执行清单
       Column({ space: 6 }) {
-        ForEach(proposal.actions, (act: ProposedActionItem, idx: number) => {
+        ForEach(proposal.actions || [], (act: ProposedActionItem, idx: number) => {
           Row({ space: 8 }) {
             // 类型徽标
             Row() {
-              Text(act.type === 'todo' ? '📅 待办' : (act.type === 'tag' ? '🏷 标签' : (act.type === 'link' ? '🔗 双链' : (act.type === 'category' ? '📁 归档' : '📝 新建'))))
+              Text(act.type === 'todo' ? '☐ 待办' : (act.type === 'tag' ? '＃ 标签' : (act.type === 'link' ? '↔ 双链' : (act.type === 'category' ? '▦ 归档' : '✎ 新建'))))
                 .fontSize(11)
                 .fontWeight(FontWeight.Medium)
                 .fontColor(act.type === 'todo' ? '#059669' : (act.type === 'tag' ? '#D97706' : (act.type === 'link' ? '#6366F1' : this.palette().accent)))
@@ -1470,7 +1245,7 @@ export struct AiWorkspace {
             .backgroundColor(act.type === 'todo' ? 'rgba(5,150,105,0.1)' : (act.type === 'tag' ? 'rgba(217,119,6,0.1)' : (act.type === 'link' ? 'rgba(99,102,241,0.1)' : this.palette().accentSoft)))
 
             Column({ space: 2 }) {
-              Text(act.title.length > 0 ? act.title : (act.target ? `${act.target}: ${act.value ?? ''}` : ''))
+              Text((act.title && act.title.length > 0) ? act.title : (act.target && act.target.length > 0 ? `${act.target}: ${act.value ?? ''}` : (act.desc ?? '')))
                 .fontSize(TypographyTokens.CAPTION)
                 .fontWeight(FontWeight.Medium)
                 .fontColor(this.palette().inkPrimary)
@@ -1493,10 +1268,13 @@ export struct AiWorkspace {
           .borderRadius(8)
           .backgroundColor(this.palette().surface)
           .border({ width: 1, color: this.palette().borderSubtle })
-        }, (act: ProposedActionItem, idx: number) => `act-${idx}-${act.type}`)
+        }, (act: ProposedActionItem, idx: number) => `act-${idx}-${act.id || act.type}`)
       }
       .width('100%')
 
+      if (this.proposalFeedback.length > 0) {
+        Text(this.proposalFeedback).fontSize(12).lineHeight(18).fontColor(this.palette().inkSecondary).width('100%')
+      }
       // 操作交互栏：接受并应用 / 拒绝
       if (msg.proposalStatus !== 'accepted' && msg.proposalStatus !== 'dismissed') {
         Row({ space: 10 }) {
@@ -1505,12 +1283,13 @@ export struct AiWorkspace {
               .fontSize(12)
               .fontWeight(FontWeight.Bold)
               .fontColor(Color.White)
-            Text('接受并执行变更 (Accept & Apply)')
+            Text(this.applyingProposal === msg.id ? '正在保存…' : '确认执行方案')
               .fontSize(TypographyTokens.CAPTION)
               .fontWeight(FontWeight.Bold)
               .fontColor(Color.White)
           }
           .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+          .height(44).enabled(!this.isLoading && this.applyingProposal.length === 0)
           .borderRadius(8)
           .backgroundColor(this.palette().accent)
           .hoverEffect(HoverEffect.Highlight)
@@ -1527,6 +1306,7 @@ export struct AiWorkspace {
               .fontColor(this.palette().inkMuted)
           }
           .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          .height(44).enabled(this.applyingProposal.length === 0)
           .borderRadius(8)
           .backgroundColor(this.palette().surface)
           .border({ width: 1, color: this.palette().borderSubtle })
@@ -1566,6 +1346,9 @@ export struct AiWorkspace {
   }
 
   private parseBlocks(text: string): string[] {
+    if (!text || typeof text !== 'string') {
+      return [];
+    }
     const lines: string[] = text.split('\n');
     const blocks: string[] = [];
     let fenced: boolean = false;
@@ -1732,7 +1515,7 @@ export struct AiWorkspace {
         .fontColor(this.palette().inkMuted)
         .maxLines(2)
     }
-    .width(260)
+    .width('47%')
     .padding(14)
     .borderRadius(12)
     .backgroundColor(this.palette().surfaceSubtle)
@@ -2149,7 +1932,7 @@ export struct AiWorkspace {
                 .height('100%')
                 .borderRadius(9)
                 .backgroundColor(this.palette().accent)
-                .animation({ curve: curves.springMotion(0.24, 0.72) })
+                .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
 
               // 四个刻度点
               Row() {
@@ -2181,7 +1964,7 @@ export struct AiWorkspace {
                 .backgroundColor(this.isDarkMode ? '#E2E8F0' : '#2D3748')
                 .shadow({ radius: 4, color: 'rgba(0,0,0,0.25)', offsetY: 1 })
                 .margin({ left: this.getKnobOffset(this.getBudgetStep(this.selectedThinkingBudget)) })
-                .animation({ curve: curves.springMotion(0.24, 0.72) })
+                .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
             }
             .width(76)
             .height(18)
@@ -2195,7 +1978,7 @@ export struct AiWorkspace {
               }
               const ratio: number = Math.max(0, Math.min(1, touch.x / 76));
               const step: number = Math.min(3, Math.floor(ratio * 4));
-              animateTo({ curve: curves.springMotion(0.24, 0.72) }, () => {
+              animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
                 this.setThinkingBudgetByStep(step, false);
               });
             })
@@ -2204,7 +1987,7 @@ export struct AiWorkspace {
                 return;
               }
               const nextStep: number = (this.getBudgetStep(this.selectedThinkingBudget) + 1) % 4;
-              animateTo({ curve: curves.springMotion(0.24, 0.72) }, () => {
+              animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
                 this.setThinkingBudgetByStep(nextStep, false);
               });
             })
@@ -2253,150 +2036,46 @@ export struct AiWorkspace {
       TransitionEffect.OPACITY
         .combine(TransitionEffect.scale({ x: 0.92, y: 0.92, centerX: '24vp', centerY: '100%' }))
         .combine(TransitionEffect.translate({ y: 12 }))
-        .animation({ curve: curves.springMotion(0.28, 0.72) })
+        .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
     )
   }
 
   build() {
     Stack({ alignContent: Alignment.TopEnd }) {
       Column() {
-        // 1. 顶栏 (Header)
-        Row({ space: 10 }) {
-          Row({ space: 6 }) {
-            Text('✦')
-              .fontSize(TypographyTokens.BODY_LARGE)
-              .fontColor(this.palette().accent)
-            Text('AI 墨客')
-              .fontSize(TypographyTokens.BODY_LARGE)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.palette().inkPrimary)
-          }
-
-          // 分段滑块模式切换 (Segmented Tabs)
+        Column({ space: 6 }) {
+          Row({ space: 8 }) {
+            Text('AI 墨客').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
+            Row({ space: 6 }) {
+              Text(this.modelLabel).fontSize(12).fontColor(this.palette().inkSecondary).maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+              Text('▾').fontSize(12).fontColor(this.palette().inkMuted)
+            }.layoutWeight(1).height(44).padding({ left: 10, right: 10 }).borderRadius(8)
+              .backgroundColor(this.palette().surfaceSubtle).enabled(!this.isLoading && !this.applyingProposal)
+              .accessibilityText('切换模型档案').onClick(() => { this.modelMenuOpen = !this.modelMenuOpen; })
+            Text('+').fontSize(22).fontColor(this.palette().inkPrimary).width(44).height(44).textAlign(TextAlign.Center)
+              .accessibilityText('新对话').enabled(!this.applyingProposal).onClick(() => this.startNewChat())
+            Text('▤').fontSize(20).fontColor(this.palette().inkSecondary).width(44).height(44).textAlign(TextAlign.Center)
+              .accessibilityText('查看来源与上下文').onClick(() => this.onToggleContextPanel())
+            Text('⚙').fontSize(20).fontColor(this.palette().inkSecondary).width(44).height(44).textAlign(TextAlign.Center)
+              .accessibilityText('模型与工具设置').enabled(!this.isLoading && !this.applyingProposal).onClick(() => this.onOpenModelSettings())
+          }.width('100%')
           Row({ space: 4 }) {
             ForEach(MODE_TABS, (item: AgentModeTabItem) => {
-              Text(item.title)
-                .fontSize(TypographyTokens.TINY)
-                .fontWeight(this.currentAgentMode === item.mode ? FontWeight.Medium : FontWeight.Normal)
-                .fontColor(this.currentAgentMode === item.mode ? this.palette().accent : this.palette().inkMuted)
-                .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-                .borderRadius(8)
-                .backgroundColor(this.currentAgentMode === item.mode ? this.palette().accentSoft : Color.Transparent)
-                .animation({ duration: 180, curve: Curve.EaseInOut })
-                .onClick(() => {
-                  this.currentAgentMode = item.mode as AgentLayer | 'auto';
-                })
+              Text(item.title).fontSize(13).fontWeight(this.currentAgentMode === item.mode ? FontWeight.Medium : FontWeight.Normal)
+                .fontColor(this.currentAgentMode === item.mode ? this.palette().inkPrimary : this.palette().inkMuted)
+                .layoutWeight(1).height(44).textAlign(TextAlign.Center).borderRadius(8)
+                .backgroundColor(this.currentAgentMode === item.mode ? this.palette().surfaceSubtle : Color.Transparent)
+                .enabled(!this.isLoading && !this.applyingProposal)
+                .onClick(() => { this.currentAgentMode = item.mode as AgentLayer | 'auto'; })
             }, (item: AgentModeTabItem) => item.mode)
-          }
-          .padding(3)
-          .borderRadius(10)
-          .backgroundColor(this.palette().surfaceSubtle)
-
-          // 新对话快捷按键
-          Row({ space: 4 }) {
-            Text('+')
-              .fontSize(TypographyTokens.BODY_LARGE)
-              .fontColor(this.palette().accent)
-            Text('新对话')
-              .fontSize(TypographyTokens.TINY)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.palette().inkPrimary)
-          }
-          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-          .borderRadius(8)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => this.startNewChat())
-
-          Blank()
-
-          // 模型切换快捷芯片 (带下拉箭头)
-          Row({ space: 6 }) {
-            Circle({ width: 8, height: 8 })
-              .fill(this.modelLabel.includes('未配') ? '#F59E0B' : '#22C55E')
-            Text(this.modelLabel)
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(this.palette().inkSecondary)
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-            if (this.isModelReasoningType) {
-              Text(`✦ ${this.getBudgetShortLabel(this.selectedThinkingBudget)}`)
-                .fontSize(TypographyTokens.TINY)
-                .fontColor(this.palette().accent)
-                .padding({ left: 4, right: 4, top: 1, bottom: 1 })
-                .borderRadius(4)
-                .backgroundColor(this.palette().accentSoft)
-            }
-            Text(this.modelMenuOpen ? '▲' : '▼')
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(this.palette().inkMuted)
-          }
-          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-          .borderRadius(12)
-          .backgroundColor(this.modelMenuOpen ? this.palette().accentSoft : this.palette().surfaceSubtle)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.modelMenuOpen = !this.modelMenuOpen;
-          })
-
-          // 上下文侧栏切换快捷按键
-          Row({ space: 4 }) {
-            Text('▤')
-              .fontSize(TypographyTokens.BODY_REGULAR)
-              .fontColor(this.pinnedNotes.length > 0 ? this.palette().accent : this.palette().inkMuted)
-            Text('上下文')
-              .fontSize(TypographyTokens.TINY)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.palette().inkPrimary)
-            if (this.pinnedNotes.length > 0) {
-              Text(`${this.pinnedNotes.length}`)
-                .fontSize(TypographyTokens.TINY)
-                .fontColor(Color.White)
-                .padding({ left: 5, right: 5, top: 1, bottom: 1 })
-                .borderRadius(8)
-                .backgroundColor(this.palette().accent)
-            }
-          }
-          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-          .borderRadius(8)
-          .backgroundColor(this.contextPanelOpen ? this.palette().accentSoft : this.palette().surfaceSubtle)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.onToggleContextPanel();
-          })
-
-          // 独立快速检索图标按钮（防止挤压）
-          Row() {
-            Text('⌕')
-              .fontSize(TypographyTokens.TITLE_SUB)
-              .fontColor(this.palette().inkSecondary)
-          }
-          .width(32).height(32)
-          .justifyContent(FlexAlign.Center)
-          .borderRadius(8)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => this.onOpenSearch())
-
-          // 设置按钮
-          Text('⚙')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().inkSecondary)
-            .width(32).height(32)
-            .textAlign(TextAlign.Center)
-            .borderRadius(8)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => this.onOpenModelSettings())
-        }
-        .width('100%')
-        .height(52)
-        .padding({ left: 16, right: 16 })
-        .backgroundColor(this.palette().surface)
-        .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
-
+          }.width('100%')
+        }.width('100%').padding({ left: this.isPhone ? 12 : 20, right: this.isPhone ? 12 : 20, top: 6, bottom: 6 })
+          .backgroundColor(this.palette().surface)
+          .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
       // 2. 消息流与欢迎看板
       if (this.messages.length === 0 && !this.isLoading) {
+        Scroll() {
         Column({ space: 16 }) {
           Text('✦')
             .fontSize(36)
@@ -2415,7 +2094,7 @@ export struct AiWorkspace {
 
           if (this.currentNote !== null && this.currentNote !== undefined) {
             Row({ space: 6 }) {
-              Text('📌 伴读锁定')
+              Text('▣ 伴读文档')
                 .fontSize(TypographyTokens.TINY)
                 .fontColor(this.palette().accent)
               Text(`《${this.currentNote.title}》`)
@@ -2437,13 +2116,14 @@ export struct AiWorkspace {
             }, (qp: QuickPrompt) => qp.title)
           }
           .constraintSize({ maxWidth: 560 })
+          .width('100%')
           .padding({ left: 16, right: 16 })
         }
-        .layoutWeight(1)
         .width('100%')
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
-        .padding({ bottom: 40 })
+        .padding({ top: 24, bottom: 24 })
+        }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
       } else {
         Scroll(this.scroller) {
           Column({ space: 14 }) {
@@ -2526,7 +2206,7 @@ export struct AiWorkspace {
         // 挂载工程上下文纤薄 Chip 贴附栏（有文档时才显示）
         if (this.pinnedNotes.length > 0) {
           Row({ space: 6 }) {
-            Text('📁')
+            Text('▦')
               .fontSize(TypographyTokens.TINY)
 
             ForEach(this.pinnedNotes, (n: NoteItem) => {
@@ -2574,7 +2254,7 @@ export struct AiWorkspace {
               .fontWeight(FontWeight.Bold)
               .fontColor(this.plusMenuOpen || this.pinnedNotes.length > 0 ? this.palette().accent : this.palette().inkSecondary)
               .rotate({ angle: this.plusMenuOpen ? 90 : 0 })
-              .animation({ curve: curves.springMotion(0.28, 0.72) })
+              .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
             if (this.pinnedNotes.length > 0) {
               Text(`${this.pinnedNotes.length}`)
                 .fontSize(TypographyTokens.TINY)
@@ -2591,7 +2271,7 @@ export struct AiWorkspace {
           .backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : this.palette().surfaceSubtle)
           .hoverEffect(HoverEffect.Highlight)
           .onClick(() => {
-            animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.plusMenuOpen = !this.plusMenuOpen;
             });
           })
@@ -2623,7 +2303,7 @@ export struct AiWorkspace {
           .backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : this.palette().surfaceSubtle)
           .hoverEffect(HoverEffect.Highlight)
           .onClick(() => {
-            animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.plusMenuOpen = !this.plusMenuOpen;
             });
           })

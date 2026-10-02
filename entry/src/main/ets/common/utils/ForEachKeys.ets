@@ -29,7 +29,7 @@ import { SpaceFolder } from '../types/SpaceFolder';
 export function noteRenderKey(note: NoteItem): string {
   const tags: string = note.tags !== undefined ? note.tags.join(',') : note.tag;
   const updated: number = note.updatedAt ?? 0;
-  return `${note.id}|${note.title}|${note.type}|${note.tag}|${tags}|${updated}`;
+  return `${note.id}|${note.title}|${note.type}|${note.category}|${note.tag}|${tags}|${updated}|${note.coverUrl || ''}|${note.favorite === true}|${note.isPinned === true}`;
 }
 
 /**

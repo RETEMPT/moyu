@@ -1,851 +1,335 @@
-/**
- * 模型设置面板 (ModelSettingsSheet)
- *
- * 遵循 DeepSeek-Harness 极客架构规范与 Obsidian × Notion 高端商务美学：
- * 1. 顶部一键应用官方与主流预设（DeepSeek-V3 官方、DeepSeek-R1 思考、硅基流动、本地 Ollama）
- * 2. 三分类高阶控制中枢（接入服务、推理与思考超参、智能体与提示词）
- * 3. 严格遵循 HarmonyOS GPU 光栅化渲染避坑铁律（单层居中 Column 蒙层，单调 EaseInOut 缓动）
- */
-import { curves } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
-import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
+import { AnimationTokens, ColorPalette } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
-import {
-  ModelProfile,
-  ProviderProtocol,
-  ModelPresetTemplate,
-  getPresetTemplates,
-  createDefaultProfile
-} from '../../common/types/ModelConfig';
+import { ModelProfile, ModelPresetTemplate, ProviderProtocol, getPresetTemplates, createDefaultProfile } from '../../common/types/ModelConfig';
 import { ModelConfigService } from '../../services/ai/ModelConfigService';
+import { ModelProfilePolicy } from '../../services/ai/ModelProfilePolicy';
 import { createProvider } from '../../services/ai/ModelProvider';
-import { BrandMark } from '../brand/BrandMark';
-import { AGENT_TOOLS } from '../../services/ai/ToolRegistry';
+import { AGENT_TOOLS, toolDisplayName } from '../../services/ai/ToolRegistry';
 import { AgentToolSpec } from '../../common/types/AgentTypes';
 
-interface ProtocolOption {
-  label: string;
-  value: ProviderProtocol;
-  hint: string;
-}
-
-const PROTOCOL_OPTIONS: ProtocolOption[] = [
-  { label: 'OpenAI 兼容', value: 'openai-compat', hint: 'DeepSeek / SiliconFlow / Ollama / 中转' },
-  { label: 'Gemini', value: 'gemini', hint: 'Google AI Studio 原生协议' },
-  { label: 'Anthropic', value: 'anthropic', hint: 'Claude API 原生协议' }
+interface ProtocolOption { label: string; value: ProviderProtocol; }
+const PROTOCOLS: ProtocolOption[] = [
+  { label: '兼容 API', value: 'openai-compat' }, { label: 'Gemini', value: 'gemini' }, { label: 'Anthropic', value: 'anthropic' }
 ];
-
-interface QuickParamChip {
-  label: string;
-  value: number;
-}
-
-const TEMP_PRESETS: QuickParamChip[] = [
-  { label: '0.0 极度精确', value: 0.0 },
-  { label: '0.6 R1推荐', value: 0.6 },
-  { label: '0.7 伴读主力', value: 0.7 },
-  { label: '1.0 创意发散', value: 1.0 }
-];
-
-const TOKEN_PRESETS: QuickParamChip[] = [
-  { label: '2K', value: 2048 },
-  { label: '4K', value: 4096 },
-  { label: '8K', value: 8192 },
-  { label: '16K', value: 16384 }
-];
-
-interface ModelIdChip {
-  label: string;
-  id: string;
-}
-
-const COMMON_MODEL_IDS: ModelIdChip[] = [
-  { label: 'deepseek-v4-pro (旗舰版)', id: 'deepseek-v4-pro' },
-  { label: 'deepseek-flash (闪速版)', id: 'deepseek-flash' },
-  { label: 'deepseek-chat (官方通用)', id: 'deepseek-chat' },
-  { label: 'deepseek-reasoner (深度思考)', id: 'deepseek-reasoner' }
+interface AccessOption { label: string; value: 'none' | 'read' | 'confirm-write'; }
+const ACCESS_OPTIONS: AccessOption[] = [
+  { label: '关闭工具', value: 'none' }, { label: '只读检索', value: 'read' }, { label: '写入前确认', value: 'confirm-write' }
 ];
 
 @Component
 export struct ModelSettingsSheet {
   onClose: () => void = () => {};
-
-  @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-
+  @Prop @Watch('requestClose') closeToken: number = 0;
+  @StorageProp('flowmindDarkMode') dark: boolean = false;
+  @StorageProp('flowmindIsPhone') phone: boolean = false;
   @State profiles: ModelProfile[] = [];
   @State currentId: string = '';
-  @State currentTab: number = 0; // 0: 接入服务, 1: 推理超参, 2: 提示词与工具
-
-  // 表单字段
+  @State activeId: string = '';
+  @State tab: number = 0;
   @State label: string = '';
   @State protocol: ProviderProtocol = 'openai-compat';
   @State baseUrl: string = '';
   @State apiKey: string = '';
   @State modelId: string = '';
-  @State embeddingModelId: string = '';
-  @State temperature: number = 0.7;
-  @State maxTokens: number = 4096;
+  @State embeddingId: string = '';
+  @State semanticSearch: boolean = false;
+  @State temperature: string = '0.7';
+  @State maxTokens: string = '8192';
   @State stream: boolean = true;
-  @State isReasoningModel: boolean = false;
   @State systemPrompt: string = '';
-
-  // 状态反馈
-  @State testResult: string = '';
-  @State testLatency: number = -1;
-  @State testing: boolean = false;
+  @State toolAccess: 'none' | 'read' | 'confirm-write' = 'confirm-write';
+  @State rounds: string = '5';
+  @State busy: boolean = false;
   @State showKey: boolean = false;
+  @State feedback: string = '';
+  @State feedbackError: boolean = false;
+  @State closeWarning: boolean = false;
+  @State deleteWarning: boolean = false;
+  private drafts: Map<string, ModelProfile> = new Map();
+  private newProfiles: Set<string> = new Set();
+  private alive: boolean = true;
+  private createdAt: number = 0;
 
-  aboutToAppear(): void {
-    this.initAndLoad();
-  }
+  aboutToAppear(): void { this.alive = true; this.load(); }
+  aboutToDisappear(): void { this.alive = false; }
+  private palette(): ColorPalette { return ThemeHelper.paletteOfDark(this.dark); }
+  private report(message: string, error: boolean = false): void { this.feedback = message; this.feedbackError = error; }
+  private changed(): void { this.feedback = ''; this.deleteWarning = false; this.closeWarning = false; }
 
-  private async initAndLoad(): Promise<void> {
+  private async load(): Promise<void> {
+    this.busy = true;
     try {
-      const ctx = getContext(this) as common.UIAbilityContext;
-      await ModelConfigService.getInstance().init(ctx);
-    } catch (error) {
-      console.error(`模型配置自初始化跳过: ${JSON.stringify(error)}`);
-    }
-    try {
-      this.profiles = await ModelConfigService.getInstance().loadProfiles();
-      const active: ModelProfile = await ModelConfigService.getInstance().getActiveProfile();
-      this.fillForm(active);
-    } catch (error) {
-      console.error(`模型配置加载失败: ${JSON.stringify(error)}`);
-      this.testResult = '✗ 配置读取失败';
-    }
+      const service = ModelConfigService.getInstance();
+      await service.init(getContext(this) as common.UIAbilityContext);
+      const profiles = await service.loadProfiles();
+      const active = await service.getActiveProfile();
+      if (!this.alive) { return; }
+      this.profiles = profiles; this.activeId = active.id; this.fill(active);
+    } catch { if (this.alive) { this.report('配置读取失败，请关闭后重试', true); } }
+    finally { if (this.alive) { this.busy = false; } }
   }
 
-  private fillForm(p: ModelProfile): void {
-    this.currentId = p.id;
-    this.label = p.label;
-    this.protocol = p.protocol;
-    this.baseUrl = p.baseUrl;
-    this.apiKey = p.apiKey;
-    this.modelId = p.modelId;
-    this.embeddingModelId = p.embeddingModelId ?? '';
-    this.temperature = p.temperature;
-    this.maxTokens = p.maxTokens;
-    this.stream = p.stream;
-    this.isReasoningModel = p.isReasoningModel ?? (p.modelId.includes('reasoner') || p.modelId.includes('r1'));
-    this.systemPrompt = p.systemPrompt ?? '';
-    this.testResult = '';
-    this.testLatency = -1;
+  private fill(p: ModelProfile): void {
+    this.currentId = p.id; this.createdAt = p.createdAt;
+    this.label = p.label; this.protocol = p.protocol; this.baseUrl = p.baseUrl;
+    this.apiKey = p.apiKey; this.modelId = p.modelId; this.embeddingId = p.embeddingModelId || '';
+    this.semanticSearch = p.semanticSearch === true;
+    this.temperature = `${p.temperature}`; this.maxTokens = `${p.maxTokens}`; this.stream = p.stream;
+    this.systemPrompt = p.systemPrompt; this.toolAccess = p.toolAccess || 'confirm-write'; this.rounds = `${p.maxToolRounds || 5}`;
+    this.showKey = false; this.changed();
   }
 
-  private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+  private form(): ModelProfile {
+    const previous = this.profiles.find((p: ModelProfile) => p.id === this.currentId);
+    return { id: this.currentId, label: this.label.trim(), protocol: this.protocol,
+      baseUrl: this.baseUrl.trim().replace(/\/+$/, ''), apiKey: this.apiKey.trim(), modelId: this.modelId.trim(),
+      embeddingModelId: this.embeddingId.trim(), temperature: Number(this.temperature), maxTokens: Number(this.maxTokens),
+      semanticSearch: this.semanticSearch,
+      stream: this.stream, systemPrompt: this.systemPrompt, toolAccess: this.toolAccess, maxToolRounds: Number(this.rounds),
+      isReasoningModel: previous?.isReasoningModel, thinkingBudget: previous?.thinkingBudget,
+      createdAt: this.createdAt, updatedAt: previous?.updatedAt || this.createdAt };
   }
 
-  private applyPreset(preset: ModelPresetTemplate): void {
-    this.label = preset.profile.label;
-    this.protocol = preset.profile.protocol;
-    this.baseUrl = preset.profile.baseUrl;
-    if (preset.profile.apiKey.length > 0) {
-      this.apiKey = preset.profile.apiKey;
-    }
-    this.modelId = preset.profile.modelId;
-    this.embeddingModelId = preset.profile.embeddingModelId ?? '';
-    this.temperature = preset.profile.temperature;
-    this.maxTokens = preset.profile.maxTokens;
-    this.stream = preset.profile.stream;
-    this.isReasoningModel = preset.profile.isReasoningModel ?? false;
-    this.testResult = `已载入预设「${preset.name}」配置`;
-    this.testLatency = -1;
+  private signature(p: ModelProfile): string {
+    const clone = JSON.parse(JSON.stringify(p)) as ModelProfile;
+    clone.updatedAt = 0;
+    clone.toolAccess = p.toolAccess || 'confirm-write'; clone.maxToolRounds = p.maxToolRounds ?? 5;
+    clone.embeddingModelId = p.embeddingModelId || ''; clone.semanticSearch = p.semanticSearch === true;
+    clone.isReasoningModel = p.isReasoningModel === true;
+    return JSON.stringify(clone);
+  }
+
+  private switchProfile(p: ModelProfile): void {
+    if (this.busy || this.currentId === p.id) { return; }
+    this.drafts.set(this.currentId, this.form());
+    this.fill(this.drafts.get(p.id) || p);
+  }
+
+  private add(): void {
+    if (this.busy) { return; }
+    this.drafts.set(this.currentId, this.form());
+    const p = createDefaultProfile(); p.id = `profile_${Date.now()}_${this.profiles.length}`; p.label = '新模型档案';
+    this.profiles = [...this.profiles, p]; this.drafts.set(p.id, p); this.newProfiles.add(p.id); this.fill(p);
+    this.report('新档案尚未保存，填写后点击“保存并启用”');
+  }
+
+  private preset(preset: ModelPresetTemplate): void {
+    const key = this.baseUrl.replace(/\/+$/, '') === preset.profile.baseUrl.replace(/\/+$/, '') && this.protocol === preset.profile.protocol ? this.apiKey : '';
+    const copy = ModelProfilePolicy.restore(preset.profile)!;
+    copy.id = this.currentId; copy.apiKey = preset.profile.apiKey || key; copy.createdAt = this.createdAt;
+    this.fill(copy);
+    this.report('预设已填入，请核对模型 ID、密钥和服务地址后测试');
+  }
+
+  private requestClose(): void {
+    if (this.busy) { return; }
+    this.drafts.set(this.currentId, this.form());
+    let dirty = this.newProfiles.size > 0;
+    this.drafts.forEach((draft: ModelProfile, id: string) => {
+      const original = this.profiles.find((p: ModelProfile) => p.id === id);
+      if (!original || this.signature(original) !== this.signature(draft)) { dirty = true; }
+    });
+    if (dirty) { this.closeWarning = true; } else { this.onClose(); }
   }
 
   private async save(): Promise<void> {
-    const svc: ModelConfigService = ModelConfigService.getInstance();
-    const cleanLabel: string = this.label.trim();
-    const cleanBaseUrl: string = this.baseUrl.trim();
-    const cleanApiKey: string = this.apiKey.trim();
-    const cleanModelId: string = this.modelId.trim();
-    const cleanEmbedding: string = this.embeddingModelId.trim();
-
-    this.label = cleanLabel;
-    this.baseUrl = cleanBaseUrl;
-    this.apiKey = cleanApiKey;
-    this.modelId = cleanModelId;
-    this.embeddingModelId = cleanEmbedding;
-
-    let found: boolean = false;
-    for (const p of this.profiles) {
-      if (p.id === this.currentId) {
-        p.label = cleanLabel;
-        p.protocol = this.protocol;
-        p.baseUrl = cleanBaseUrl;
-        p.apiKey = cleanApiKey;
-        p.modelId = cleanModelId;
-        p.embeddingModelId = cleanEmbedding;
-        p.temperature = this.temperature;
-        p.maxTokens = this.maxTokens;
-        p.stream = this.stream;
-        p.isReasoningModel = this.isReasoningModel;
-        p.systemPrompt = this.systemPrompt;
-        p.updatedAt = Date.now();
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      const np: ModelProfile = createDefaultProfile();
-      np.label = cleanLabel;
-      np.protocol = this.protocol;
-      np.baseUrl = cleanBaseUrl;
-      np.apiKey = cleanApiKey;
-      np.modelId = cleanModelId;
-      np.embeddingModelId = cleanEmbedding;
-      np.temperature = this.temperature;
-      np.maxTokens = this.maxTokens;
-      np.stream = this.stream;
-      np.isReasoningModel = this.isReasoningModel;
-      np.systemPrompt = this.systemPrompt;
-      this.profiles.push(np);
-      this.currentId = np.id;
-    }
-    await svc.saveProfiles(this.profiles);
-    await svc.setActiveProfileId(this.currentId);
-    this.testResult = '✓ 已保存并激活当前档案配置';
-  }
-
-  private async testConnection(): Promise<void> {
-    this.testing = true;
-    this.testResult = '正在发起探测请求，校验端点与密钥连通性…';
-    this.testLatency = -1;
+    if (this.busy) { return; }
+    const p = this.form(); const error = ModelProfilePolicy.validate(p);
+    if (error.length > 0) { this.report(error, true); return; }
+    this.busy = true;
     try {
-      const profile: ModelProfile = this.buildProfile();
-      const provider = createProvider(profile.protocol);
-      const result = await provider.testConnection(profile);
-      this.testLatency = result.latencyMs;
-      this.testResult = result.ok
-        ? `✓ 连通正常 · 延迟 ${result.latencyMs}ms (${this.latencyRating(result.latencyMs)})`
-        : `✗ ${result.message}`;
-    } catch (err) {
-      this.testResult = `✗ ${err instanceof Error ? err.message : '未知异常'}`;
-    }
-    this.testing = false;
+      p.updatedAt = Date.now();
+      const saved = await ModelConfigService.getInstance().saveAndActivate(p);
+      if (!this.alive) { return; }
+      const pending = this.profiles.filter((item: ModelProfile) => this.newProfiles.has(item.id) && item.id !== p.id);
+      this.profiles = saved.concat(pending); this.activeId = p.id; this.drafts.delete(p.id); this.newProfiles.delete(p.id); this.fill(p);
+      this.report('档案已保存并启用。连接状态请单独测试。');
+    } catch { this.report('保存失败，输入已保留，请重试', true); }
+    finally { this.busy = false; }
   }
 
-  private latencyRating(ms: number): string {
-    if (ms < 350) {
-      return '极速';
-    }
-    if (ms < 800) {
-      return '良好';
-    }
-    return '偏高';
+  private async test(): Promise<void> {
+    if (this.busy) { return; }
+    const p = this.form(); const error = ModelProfilePolicy.validate(p);
+    if (error) { this.report(error, true); return; }
+    this.busy = true; this.report('正在测试此表单的模型连接…');
+    try {
+      const result = await createProvider(p.protocol).testConnection(p);
+      if (this.alive) { this.report(result.ok ? `连接测试通过 · ${result.latencyMs} ms；尚未保存的输入需另行保存。` : `连接测试失败：${result.message}`, !result.ok); }
+    } catch { if (this.alive) { this.report('连接测试失败，请检查地址、密钥和网络', true); } }
+    finally { if (this.alive) { this.busy = false; } }
   }
 
-  private buildProfile(): ModelProfile {
-    return {
-      id: this.currentId || `profile_${Date.now()}`,
-      label: this.label.trim(),
-      protocol: this.protocol,
-      baseUrl: this.baseUrl.trim(),
-      apiKey: this.apiKey.trim(),
-      modelId: this.modelId.trim(),
-      embeddingModelId: this.embeddingModelId.trim(),
-      temperature: this.temperature,
-      maxTokens: this.maxTokens,
-      stream: this.stream,
-      isReasoningModel: this.isReasoningModel,
-      systemPrompt: this.systemPrompt,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    };
-  }
-
-  private async switchProfile(id: string): Promise<void> {
-    for (const p of this.profiles) {
-      if (p.id === id) {
-        this.fillForm(p);
-        const svc: ModelConfigService = ModelConfigService.getInstance();
-        await svc.setActiveProfileId(id);
-        return;
-      }
-    }
-  }
-
-  private async addProfile(): Promise<void> {
-    const np: ModelProfile = createDefaultProfile();
-    np.label = '新模型档案';
-    this.profiles.push(np);
-    this.fillForm(np);
-  }
-
-  private async removeProfile(): Promise<void> {
-    if (this.profiles.length <= 1) {
-      this.testResult = '至少保留一个模型档案';
+  private async remove(): Promise<void> {
+    if (this.busy) { return; }
+    if (this.newProfiles.has(this.currentId)) {
+      const id = this.currentId; this.newProfiles.delete(id); this.drafts.delete(id);
+      this.profiles = this.profiles.filter((p: ModelProfile) => p.id !== id);
+      this.fill(this.drafts.get(this.activeId) || this.profiles.find((p: ModelProfile) => p.id === this.activeId) || this.profiles[0]);
       return;
     }
-    const svc: ModelConfigService = ModelConfigService.getInstance();
-    this.profiles = await svc.deleteProfile(this.currentId);
-    if (this.profiles.length > 0) {
-      this.fillForm(this.profiles[0]);
+    this.busy = true;
+    try {
+      const saved = await ModelConfigService.getInstance().deleteProfile(this.currentId);
+      this.drafts.delete(this.currentId); this.profiles = saved;
+      const active = await ModelConfigService.getInstance().getActiveProfile(); this.activeId = active.id; this.fill(active);
+      this.report('档案已删除');
+    } catch { this.report('删除失败，请重试', true); }
+    finally { this.busy = false; this.deleteWarning = false; }
+  }
+
+  @Builder
+  hint(text: string) { Text(text).fontSize(12).lineHeight(20).fontColor(this.palette().inkSecondary).width('100%') }
+  @Builder
+  field(label: string, value: () => string, placeholder: string, update: (value: string) => void) {
+    Column({ space: 6 }) {
+      Text(label).fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).width('100%')
+      TextInput({ text: value(), placeholder }).height(48).fontSize(14).backgroundColor(this.palette().surfaceSubtle)
+        .fontColor(this.palette().inkPrimary).onChange((text: string) => { update(text); this.changed(); })
+    }.width('100%')
+  }
+
+  @Builder
+  connection() {
+    Scroll() {
+      Row({ space: 8 }) {
+        ForEach(getPresetTemplates(), (p: ModelPresetTemplate) => {
+          Column({ space: 5 }) {
+            Text(p.name).fontSize(13).fontWeight(FontWeight.Medium).maxLines(2).fontColor(this.palette().inkPrimary)
+            Text(p.description).fontSize(11).maxLines(3).fontColor(this.palette().inkSecondary)
+          }.width(160).height(100).padding(12).alignItems(HorizontalAlign.Start).borderRadius(10)
+            .backgroundColor(this.palette().surfaceSubtle).onClick(() => this.preset(p))
+        }, (p: ModelPresetTemplate) => p.name)
+      }
+    }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+    this.field('档案名称', () => this.label, '例如：学习助手', (v: string) => { this.label = v; })
+    Row({ space: 6 }) {
+      ForEach(PROTOCOLS, (p: ProtocolOption) => {
+        Button(p.label).height(44).layoutWeight(1).fontSize(12)
+          .backgroundColor(this.protocol === p.value ? this.palette().accent : this.palette().surfaceSubtle)
+          .fontColor(this.protocol === p.value ? Color.White : this.palette().inkSecondary)
+          .onClick(() => { this.protocol = p.value; this.changed(); })
+      }, (p: ProtocolOption) => p.value)
+    }.width('100%')
+    this.field('服务地址', () => this.baseUrl, 'https://…', (v: string) => {
+      if (v.split('/')[2] !== this.baseUrl.split('/')[2]) { this.apiKey = ''; }
+      this.baseUrl = v;
+    })
+    this.hint(this.protocol === 'gemini' ? 'Gemini 地址应含 API 版本，例如 /v1beta。' : this.protocol === 'anthropic' ? '填写服务根地址，程序追加 /v1/messages。' : '填写兼容 API 的根地址（通常以 /v1 结尾），程序追加 /chat/completions。')
+    Row({ space: 8 }) {
+      TextInput({ text: this.apiKey, placeholder: 'API Key' }).type(this.showKey ? InputType.Normal : InputType.Password)
+        .height(48).layoutWeight(1).fontSize(14).backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary)
+        .onChange((v: string) => { this.apiKey = v; this.changed(); })
+      Button(this.showKey ? '隐藏' : '显示').width(64).height(44).onClick(() => { this.showKey = !this.showKey; })
+    }.width('100%')
+    this.field('模型 ID', () => this.modelId, '服务商控制台中的实际 ID', (v: string) => { this.modelId = v; })
+    this.hint('密钥保存在本机应用配置中。调用远程模型时，会向所填服务地址发送问题和选中的笔记内容。')
+  }
+
+  @Builder
+  output() {
+    this.field('温度 · 0–2', () => this.temperature, '0.7', (v: string) => { this.temperature = v; })
+    this.field('输出 Token 上限 · 256–65536', () => this.maxTokens, '8192', (v: string) => { this.maxTokens = v; })
+    Row() {
+      Text('流式输出').fontSize(14).fontColor(this.palette().inkPrimary).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.stream }).onChange((v: boolean) => { this.stream = v; this.changed(); })
+    }.height(48).width('100%')
+    this.hint('关闭流式后，答案完整返回再显示；当前原生工具调用需要兼容 API 和流式输出。参数上限仍受模型服务限制。')
+    Row() {
+      Text('启用语义检索').fontSize(14).fontColor(this.palette().inkPrimary).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.semanticSearch }).onChange((v: boolean) => { this.semanticSearch = v; this.changed(); })
+    }.height(48).width('100%')
+    if (this.semanticSearch) {
+      this.field('向量模型 ID', () => this.embeddingId, '服务支持的 embedding 模型', (v: string) => { this.embeddingId = v; })
     }
+    this.hint('默认使用本地关键词检索。开启语义检索会把资料库笔记片段发送到所配向量服务；服务不支持或失败时回退本地检索。')
+    Text('附加系统提示词').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).width('100%')
+    TextArea({ text: this.systemPrompt, placeholder: '例如：先给结论，再列出资料依据；使用中文。' }).height(180).fontSize(14)
+      .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary)
+      .onChange((v: string) => { this.systemPrompt = v; this.changed(); })
+  }
+
+  @Builder
+  tools() {
+    ForEach(ACCESS_OPTIONS, (option: AccessOption) => {
+      Button(option.label).height(48).width('100%')
+        .backgroundColor(this.toolAccess === option.value ? this.palette().accent : this.palette().surfaceSubtle)
+        .fontColor(this.toolAccess === option.value ? Color.White : this.palette().inkSecondary)
+        .onClick(() => { this.toolAccess = option.value; this.changed(); })
+    }, (option: AccessOption) => option.value)
+    this.field('工具循环上限 · 1–6 轮', () => this.rounds, '5', (v: string) => { this.rounds = v; })
+    this.hint('读取资料无需确认。创建待办、修改标签、建立双链、移动分类和新建笔记，每次写入前均需确认。Gemini / Anthropic 当前仅支持文本回答与手动采纳方案。')
+    ForEach(AGENT_TOOLS, (tool: AgentToolSpec) => {
+      Row({ space: 10 }) {
+        Text(tool.permission === 'read' ? '读取' : '写入').fontSize(11).fontColor(this.palette().inkMuted).width(32)
+        Column({ space: 4 }) {
+          Text(toolDisplayName(tool.name)).fontSize(14).fontColor(this.palette().inkPrimary)
+          Text(tool.description).fontSize(12).fontColor(this.palette().inkSecondary)
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+      }.width('100%').padding(10).borderRadius(8).backgroundColor(this.palette().surfaceSubtle)
+    }, (tool: AgentToolSpec) => tool.name)
   }
 
   build() {
-    // 遮罩蒙层：遵循 GPU 光栅化避坑铁律，单层居中 Column
     Column() {
-      Column({ space: 0 }) {
-        // 1. 顶栏
-        Row({ space: 10 }) {
-          BrandMark({ markSize: 28 })
-          Column({ space: 2 }) {
-            Row({ space: 6 }) {
-              Text('模型接入与智能体设置')
-                .fontSize(TypographyTokens.TITLE_SUB)
-                .fontWeight(FontWeight.Bold)
-                .fontColor(this.palette().inkPrimary)
-            }
-            Text('配置模型 API 端点、密钥、超参及智能体运行规则')
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(this.palette().inkMuted)
-          }
-          .alignItems(HorizontalAlign.Start)
-          .layoutWeight(1)
-
-          Text('✕')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().inkSecondary)
-            .width(28).height(28)
-            .textAlign(TextAlign.Center)
-            .borderRadius(6)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => this.onClose())
-        }
-        .width('100%')
-        .padding({ left: 16, right: 14, top: 14, bottom: 12 })
-
-        Divider().strokeWidth(1).color(this.palette().borderSubtle)
-
-        // 2. 档案切换行
-        Row({ space: 6 }) {
-          Text('档案')
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkMuted)
-            .margin({ right: 2 })
-
-          ForEach(this.profiles, (p: ModelProfile) => {
-            Text(p.label)
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(p.id === this.currentId ? Color.White : this.palette().inkSecondary)
-              .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-              .borderRadius(12)
-              .backgroundColor(p.id === this.currentId ? this.palette().accent : this.palette().surfaceSubtle)
-              .animation({ duration: 180, curve: Curve.EaseInOut })
-              .onClick(() => this.switchProfile(p.id))
-          }, (p: ModelProfile) => p.id)
-
-          Text('+')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().accent)
-            .width(26).height(26)
-            .textAlign(TextAlign.Center)
-            .borderRadius(13)
-            .backgroundColor(this.palette().accentSoft)
-            .onClick(() => this.addProfile())
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 10, bottom: 8 })
-
-        // 3. 选项卡切换（Tab 0: 接入, Tab 1: 推理超参, Tab 2: 智能体与提示词）
-        Row({ space: 8 }) {
-          Text('⚡ 接入与预设')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTab === 0 ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTab === 0 ? this.palette().accent : this.palette().inkSecondary)
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .borderRadius(6)
-            .backgroundColor(this.currentTab === 0 ? this.palette().accentSoft : Color.Transparent)
-            .animation({ duration: 180, curve: Curve.EaseInOut })
-            .onClick(() => { this.currentTab = 0; })
-
-          Text('⚙ 推理与思考超参')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTab === 1 ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTab === 1 ? this.palette().accent : this.palette().inkSecondary)
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .borderRadius(6)
-            .backgroundColor(this.currentTab === 1 ? this.palette().accentSoft : Color.Transparent)
-            .animation({ duration: 180, curve: Curve.EaseInOut })
-            .onClick(() => { this.currentTab = 1; })
-
-          Text('✦ 智能体与工具')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTab === 2 ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTab === 2 ? this.palette().accent : this.palette().inkSecondary)
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .borderRadius(6)
-            .backgroundColor(this.currentTab === 2 ? this.palette().accentSoft : Color.Transparent)
-            .animation({ duration: 180, curve: Curve.EaseInOut })
-            .onClick(() => { this.currentTab = 2; })
-        }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 4, bottom: 10 })
-
-        Divider().strokeWidth(1).color(this.palette().borderSubtle)
-
-        // 4. 表单内容区
+      Column({ space: 12 }) {
+        Row() {
+          Text('模型与 AI 工具').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
+          Button('✕').height(44).width(44).enabled(!this.busy).accessibilityText('关闭模型设置').onClick(() => this.requestClose())
+        }.width('100%')
         Scroll() {
-          Column({ space: 10 }) {
-            // TAB 0: 接入服务与一键预设
-            if (this.currentTab === 0) {
-              // 预设模版快速卡片网格
-              Column({ space: 6 }) {
-                Text('一键应用主流预设')
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor(this.palette().inkMuted)
-                  .width('100%')
-
-                Row({ space: 8 }) {
-                  ForEach(getPresetTemplates(), (preset: ModelPresetTemplate) => {
-                    Column({ space: 2 }) {
-                      Text(preset.name)
-                        .fontSize(TypographyTokens.TINY)
-                        .fontWeight(FontWeight.Medium)
-                        .fontColor(this.palette().inkPrimary)
-                        .maxLines(1)
-                      Text(preset.description)
-                        .fontSize(TypographyTokens.TINY)
-                        .fontColor(this.palette().inkMuted)
-                        .maxLines(1)
-                    }
-                    .layoutWeight(1)
-                    .padding(8)
-                    .borderRadius(8)
-                    .backgroundColor(this.palette().surfaceSubtle)
-                    .border({ width: 1, color: this.palette().borderSubtle })
-                    .onClick(() => this.applyPreset(preset))
-                  }, (preset: ModelPresetTemplate) => preset.name)
-                }
-                .width('100%')
-              }
-              .width('100%')
-              .padding({ top: 6, bottom: 4 })
-
-              Divider().strokeWidth(1).color(this.palette().borderSubtle)
-
-              // 基础表单输入
-              Row({ space: 8 }) {
-                Text('档案名称').fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkSecondary).width(80)
-                TextInput({ text: this.label })
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkPrimary)
-                  .backgroundColor(this.palette().surfaceSubtle)
-                  .borderRadius(6)
-                  .height(34)
-                  .layoutWeight(1)
-                  .onChange((v: string) => { this.label = v; })
-              }
-              .width('100%')
-
-              Row({ space: 8 }) {
-                Text('协议类型').fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkSecondary).width(80)
-                Row({ space: 6 }) {
-                  ForEach(PROTOCOL_OPTIONS, (opt: ProtocolOption) => {
-                    Row({ space: 4 }) {
-                      Circle({ width: 12, height: 12 })
-                        .fill(this.protocol === opt.value ? this.palette().accent : Color.Transparent)
-                        .stroke(this.protocol === opt.value ? this.palette().accent : this.palette().border)
-                        .strokeWidth(1.5)
-                      Text(opt.label)
-                        .fontSize(TypographyTokens.TINY)
-                        .fontColor(this.protocol === opt.value ? this.palette().inkPrimary : this.palette().inkMuted)
-                    }
-                    .padding({ left: 8, right: 8, top: 6, bottom: 6 })
-                    .borderRadius(6)
-                    .backgroundColor(this.protocol === opt.value ? this.palette().accentSoft : this.palette().surfaceSubtle)
-                    .onClick(() => { this.protocol = opt.value; })
-                  }, (opt: ProtocolOption) => opt.value)
-                }
-                .layoutWeight(1)
-              }
-              .width('100%')
-
-              Row({ space: 8 }) {
-                Text('Base URL').fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkSecondary).width(80)
-                TextInput({ text: this.baseUrl, placeholder: 'https://api.deepseek.com/v1' })
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkPrimary)
-                  .placeholderColor(this.palette().inkMuted)
-                  .backgroundColor(this.palette().surfaceSubtle)
-                  .borderRadius(6)
-                  .height(34)
-                  .layoutWeight(1)
-                  .onChange((v: string) => { this.baseUrl = v; })
-              }
-              .width('100%')
-
-              Row({ space: 8 }) {
-                Text('API Key').fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkSecondary).width(80)
-                TextInput({ text: this.apiKey, placeholder: 'sk-…' })
-                  .type(InputType.Password)
-                  .showPassword(this.showKey)
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkPrimary)
-                  .placeholderColor(this.palette().inkMuted)
-                  .backgroundColor(this.palette().surfaceSubtle)
-                  .borderRadius(6)
-                  .height(34)
-                  .layoutWeight(1)
-                  .onChange((v: string) => { this.apiKey = v; })
-                Text(this.showKey ? '隐藏' : '显示')
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor(this.palette().accent)
-                  .padding({ left: 6, right: 6, top: 6, bottom: 6 })
-                  .onClick(() => { this.showKey = !this.showKey; })
-              }
-              .width('100%')
-
-              Row({ space: 8 }) {
-                Text('模型 ID').fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkSecondary).width(80)
-                TextInput({ text: this.modelId, placeholder: 'deepseek-chat' })
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkPrimary)
-                  .placeholderColor(this.palette().inkMuted)
-                  .backgroundColor(this.palette().surfaceSubtle)
-                  .borderRadius(6)
-                  .height(34)
-                  .layoutWeight(1)
-                  .onChange((v: string) => { this.modelId = v; })
-              }
-              .width('100%')
-
-              // 常用官方与主流模型 ID 快速选择
-              Row({ space: 6 }) {
-                Text('快捷填入:').fontSize(TypographyTokens.TINY).fontColor(this.palette().inkMuted)
-                ForEach(COMMON_MODEL_IDS, (chip: ModelIdChip) => {
-                  Text(chip.label)
-                    .fontSize(TypographyTokens.TINY)
-                    .fontColor(this.modelId === chip.id ? this.palette().accent : this.palette().inkSecondary)
-                    .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-                    .borderRadius(4)
-                    .backgroundColor(this.modelId === chip.id ? this.palette().accentSoft : this.palette().surfaceSubtle)
-                    .onClick(() => {
-                      this.modelId = chip.id;
-                      if (chip.id.includes('reasoner') || chip.id.includes('r1')) {
-                        this.isReasoningModel = true;
-                      }
-                    })
-                }, (chip: ModelIdChip) => chip.id)
-              }
-              .width('100%')
-              .padding({ left: 88, bottom: 4 })
-
-              Row({ space: 8 }) {
-                Text('向量模型').fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkSecondary).width(80)
-                TextInput({ text: this.embeddingModelId, placeholder: '可选，如 BAAI/bge-m3' })
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkPrimary)
-                  .placeholderColor(this.palette().inkMuted)
-                  .backgroundColor(this.palette().surfaceSubtle)
-                  .borderRadius(6)
-                  .height(34)
-                  .layoutWeight(1)
-                  .onChange((v: string) => { this.embeddingModelId = v; })
-              }
-              .width('100%')
+          Row({ space: 8 }) {
+            ForEach(this.profiles, (p: ModelProfile) => {
+              Button(`${p.id === this.activeId ? '● ' : ''}${p.label}`).height(44).fontSize(12)
+                .backgroundColor(this.currentId === p.id ? this.palette().accent : this.palette().surfaceSubtle)
+                .fontColor(this.currentId === p.id ? Color.White : this.palette().inkPrimary).onClick(() => this.switchProfile(p))
+            }, (p: ModelProfile) => p.id)
+            Button('+ 档案').height(44).onClick(() => this.add())
+          }.enabled(!this.busy)
+        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+        Row({ space: 8 }) {
+          ForEach(['连接', '输出', '工具'], (name: string, index: number) => {
+            Button(name).height(44).layoutWeight(1).fontSize(14)
+              .backgroundColor(this.tab === index ? this.palette().surfaceSubtle : Color.Transparent)
+              .fontColor(this.tab === index ? this.palette().inkPrimary : this.palette().inkMuted).onClick(() => { this.tab = index; })
+          }, (name: string) => name)
+        }.width('100%')
+        Scroll() {
+          Column({ space: 14 }) {
+            if (this.tab === 0) { this.connection() } else if (this.tab === 1) { this.output() } else { this.tools() }
+            if (this.profiles.length > 1) {
+              Button('删除当前档案').height(44).width('100%').onClick(() => { this.deleteWarning = true; })
             }
-
-            // TAB 1: 推理与思考超参
-            if (this.currentTab === 1) {
-              // 深度思考模型模式
-              Row({ space: 8 }) {
-                Column({ space: 2 }) {
-                  Text('深度思考 / 思考流解析')
-                    .fontSize(TypographyTokens.CAPTION)
-                    .fontWeight(FontWeight.Medium)
-                    .fontColor(this.palette().inkPrimary)
-                  Text('开启后自动捕获并展示链式思考过程')
-                    .fontSize(TypographyTokens.TINY)
-                    .fontColor(this.palette().inkMuted)
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-
-                Toggle({ type: ToggleType.Switch, isOn: this.isReasoningModel })
-                  .selectedColor(this.palette().accent)
-                  .onChange((isOn: boolean) => { this.isReasoningModel = isOn; })
-              }
-              .width('100%')
-              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-              .borderRadius(8)
-              .backgroundColor(this.palette().surfaceSubtle)
-
-              // 流式传输
-              Row({ space: 8 }) {
-                Column({ space: 2 }) {
-                  Text('流式输出 (Stream)')
-                    .fontSize(TypographyTokens.CAPTION)
-                    .fontWeight(FontWeight.Medium)
-                    .fontColor(this.palette().inkPrimary)
-                  Text('逐字/逐片段下发文本与思考流，提供极致打字机反馈')
-                    .fontSize(TypographyTokens.TINY)
-                    .fontColor(this.palette().inkMuted)
-                }
-                .alignItems(HorizontalAlign.Start)
-                .layoutWeight(1)
-
-                Toggle({ type: ToggleType.Switch, isOn: this.stream })
-                  .selectedColor(this.palette().accent)
-                  .onChange((isOn: boolean) => { this.stream = isOn; })
-              }
-              .width('100%')
-              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-              .borderRadius(8)
-              .backgroundColor(this.palette().surfaceSubtle)
-
-              // 温度
-              Column({ space: 6 }) {
-                Row({ space: 8 }) {
-                  Text('采样温度 (Temperature)').fontSize(TypographyTokens.CAPTION)
-                    .fontColor(this.palette().inkSecondary).layoutWeight(1)
-                  Text(this.temperature.toFixed(2))
-                    .fontSize(TypographyTokens.CAPTION)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor(this.palette().accent)
-                }
-                .width('100%')
-
-                Slider({ value: this.temperature * 50, min: 0, max: 100, step: 2 })
-                  .width('100%')
-                  .selectedColor(this.palette().accent)
-                  .onChange((v: number) => {
-                    this.temperature = Math.round(v / 50 * 100) / 100;
-                  })
-
-                Row({ space: 6 }) {
-                  ForEach(TEMP_PRESETS, (preset: QuickParamChip) => {
-                    Text(preset.label)
-                      .fontSize(TypographyTokens.TINY)
-                      .fontColor(this.temperature === preset.value ? this.palette().accent : this.palette().inkMuted)
-                      .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-                      .borderRadius(4)
-                      .backgroundColor(this.temperature === preset.value ? this.palette().accentSoft : this.palette().surfaceSubtle)
-                      .onClick(() => { this.temperature = preset.value; })
-                  }, (preset: QuickParamChip) => preset.label)
-                }
-                .width('100%')
-              }
-              .width('100%')
-              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-              .borderRadius(8)
-              .backgroundColor(this.palette().surfaceSubtle)
-
-              // 最大 Token
-              Column({ space: 6 }) {
-                Row({ space: 8 }) {
-                  Text('最大输出 Token (Max Tokens)').fontSize(TypographyTokens.CAPTION)
-                    .fontColor(this.palette().inkSecondary).layoutWeight(1)
-                  TextInput({ text: `${this.maxTokens}` })
-                    .fontSize(TypographyTokens.CAPTION)
-                    .fontColor(this.palette().inkPrimary)
-                    .backgroundColor(this.palette().surface)
-                    .width(90).height(30)
-                    .borderRadius(4)
-                    .onChange((v: string) => {
-                      const n = parseInt(v);
-                      if (!isNaN(n) && n > 0) {
-                        this.maxTokens = n;
-                      }
-                    })
-                }
-                .width('100%')
-
-                Row({ space: 6 }) {
-                  ForEach(TOKEN_PRESETS, (preset: QuickParamChip) => {
-                    Text(preset.label)
-                      .fontSize(TypographyTokens.TINY)
-                      .fontColor(this.maxTokens === preset.value ? this.palette().accent : this.palette().inkMuted)
-                      .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-                      .borderRadius(4)
-                      .backgroundColor(this.maxTokens === preset.value ? this.palette().accentSoft : this.palette().surfaceSubtle)
-                      .onClick(() => { this.maxTokens = preset.value; })
-                  }, (preset: QuickParamChip) => preset.label)
-                }
-                .width('100%')
-              }
-              .width('100%')
-              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-              .borderRadius(8)
-              .backgroundColor(this.palette().surfaceSubtle)
-            }
-
-            // TAB 2: 智能体与提示词
-            if (this.currentTab === 2) {
-              Column({ space: 6 }) {
-                Text('自定义系统附加指令')
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(this.palette().inkPrimary)
-                  .width('100%')
-                Text('追加在核心角色提示词之后，可用于定制回答语气或特定领域的排版偏好。')
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor(this.palette().inkMuted)
-                  .width('100%')
-
-                TextArea({ text: this.systemPrompt, placeholder: '例如：回答请优先使用中文，数理定理务必标明适用边界…' })
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().inkPrimary)
-                  .placeholderColor(this.palette().inkMuted)
-                  .backgroundColor(this.palette().surfaceSubtle)
-                  .borderRadius(8)
-                  .height(100)
-                  .width('100%')
-                  .onChange((v: string) => { this.systemPrompt = v; })
-              }
-              .width('100%')
-              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-              .borderRadius(8)
-              .backgroundColor(this.palette().surfaceSubtle)
-
-              // 内置工具清单
-              Column({ space: 6 }) {
-                Text('智能体工具链')
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(this.palette().inkPrimary)
-                  .width('100%')
-
-                ForEach(AGENT_TOOLS, (tool: AgentToolSpec) => {
-                  Row({ space: 8 }) {
-                    Text(tool.permission === 'read' ? '只读' : '写权限')
-                      .fontSize(TypographyTokens.TINY)
-                      .fontColor(tool.permission === 'read' ? '#3B82F6' : '#F59E0B')
-                      .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                      .borderRadius(4)
-                      .backgroundColor(this.palette().surface)
-
-                    Column({ space: 1 }) {
-                      Text(tool.name)
-                        .fontSize(TypographyTokens.CAPTION)
-                        .fontWeight(FontWeight.Medium)
-                        .fontColor(this.palette().inkPrimary)
-                      Text(tool.description)
-                        .fontSize(TypographyTokens.TINY)
-                        .fontColor(this.palette().inkMuted)
-                        .maxLines(1)
-                    }
-                    .alignItems(HorizontalAlign.Start)
-                    .layoutWeight(1)
-                  }
-                  .width('100%')
-                  .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-                  .borderRadius(6)
-                  .backgroundColor(this.palette().surface)
-                }, (tool: AgentToolSpec) => tool.name)
-              }
-              .width('100%')
-              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-              .borderRadius(8)
-              .backgroundColor(this.palette().surfaceSubtle)
-            }
-          }
-          .width('100%')
-          .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+          }.width('100%').alignItems(HorizontalAlign.Start).enabled(!this.busy)
+        }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+        if (this.feedback.length > 0) {
+          Text(this.feedback).fontSize(12).lineHeight(18).width('100%').fontColor(this.feedbackError ? this.palette().danger : this.palette().inkSecondary)
         }
-        .layoutWeight(1)
-        .width('100%')
-        .scrollBar(BarState.Auto)
-
-        Divider().strokeWidth(1).color(this.palette().borderSubtle)
-
-        // 5. 诊断与反馈面板
-        if (this.testResult.length > 0) {
-          Column({ space: 4 }) {
-            Row({ space: 6 }) {
-              Circle({ width: 6, height: 6 })
-                .fill(this.testResult.startsWith('✓') ? '#22C55E' : (this.testResult.startsWith('✗') ? '#EF4444' : this.palette().accent))
-              Text(this.testResult.startsWith('✓') ? '连通性测试通过' : (this.testResult.startsWith('✗') ? '连通异常诊断与排查' : '状态反馈'))
-                .fontSize(TypographyTokens.TINY)
-                .fontWeight(FontWeight.Medium)
-                .fontColor(this.testResult.startsWith('✓') ? '#22C55E' : (this.testResult.startsWith('✗') ? '#EF4444' : this.palette().accent))
-            }
-            Text(this.testResult)
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(this.palette().inkPrimary)
-              .lineHeight(18)
-              .width('100%')
-          }
-          .width('100%')
-          .padding(10)
-          .margin({ left: 16, right: 16, top: 8, bottom: 4 })
-          .borderRadius(8)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .border({ width: 1, color: this.testResult.startsWith('✓') ? 'rgba(34, 197, 94, 0.25)' : (this.testResult.startsWith('✗') ? 'rgba(239, 68, 68, 0.25)' : this.palette().borderSubtle) })
+        if (this.deleteWarning) {
+          Row({ space: 8 }) {
+            Button('确认删除档案').height(44).layoutWeight(1).enabled(!this.busy).onClick(() => this.remove())
+            Button('取消').height(44).layoutWeight(1).onClick(() => { this.deleteWarning = false; })
+          }.width('100%')
         }
-
-        // 6. 底部动作栏
-        Row({ space: 10 }) {
-          Button(this.testing ? '探测中…' : '测试连接')
-            .type(ButtonType.Normal)
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().accent)
-            .backgroundColor(this.palette().accentSoft)
-            .borderRadius(8)
-            .height(36)
-            .enabled(!this.testing)
-            .onClick(() => this.testConnection())
-
-          Button('删除档案')
-            .type(ButtonType.Normal)
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkMuted)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .borderRadius(8)
-            .height(36)
-            .onClick(() => this.removeProfile())
-
-          Blank()
-
-          Button('保存并应用')
-            .type(ButtonType.Normal)
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(Color.White)
-            .backgroundColor(this.palette().accent)
-            .borderRadius(8)
-            .height(36)
-            .padding({ left: 16, right: 16 })
-            .onClick(() => {
-              this.save();
-            })
+        if (this.closeWarning) {
+          this.hint('还有未保存的配置。可以切回对应档案保存，或放弃本次修改后关闭。')
+          Row({ space: 8 }) {
+            Button('继续编辑').height(44).layoutWeight(1).onClick(() => { this.closeWarning = false; })
+            Button('放弃修改并关闭').height(44).layoutWeight(1).onClick(() => this.onClose())
+          }.width('100%')
+        } else {
+          Row({ space: 8 }) {
+            Button(this.busy ? '处理中…' : '测试连接').height(48).layoutWeight(1).enabled(!this.busy).onClick(() => this.test())
+              .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary)
+            Button('保存并启用').height(48).layoutWeight(1).enabled(!this.busy).onClick(() => this.save())
+          }.width('100%')
         }
-        .width('100%')
-        .padding({ left: 16, right: 16, top: 10, bottom: 14 })
-
-        // 安全提示
-        Text('密钥与配置均落盘于端侧 Preferences，零云端上传，导出时自动脱敏。')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .width('100%')
-          .padding({ left: 16, right: 16, bottom: 10 })
-      }
-      .width('100%')
-      .constraintSize({ maxWidth: 640 })
-      .borderRadius(16)
-      .backgroundColor(this.palette().surface)
-      .shadow({ radius: 36, color: 'rgba(0,0,0,0.28)' })
-      .border({ width: 1, color: this.palette().border })
-      .onClick(() => {
-        // 阻止冒泡
-      })
-    }
-    .width('100%')
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .padding({ top: 30, bottom: 30 })
-    .backgroundColor('rgba(0,0,0,0.35)')
-    .transition(TransitionEffect.OPACITY.animation({ duration: 180, curve: Curve.EaseInOut }))
-    .onClick(() => this.onClose())
+      }.width(this.phone ? '100%' : '92%').constraintSize({ maxWidth: 700 }).height(this.phone ? '100%' : '90%')
+        .padding(this.phone ? 16 : 24).borderRadius(this.phone ? 0 : 16).backgroundColor(this.palette().surface).onClick(() => {})
+    }.width('100%').height('100%').alignItems(HorizontalAlign.Center).justifyContent(FlexAlign.Center)
+      .backgroundColor('rgba(0,0,0,0.36)')
+      .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
+      .onClick(() => this.requestClose())
   }
 }

@@ -12,7 +12,7 @@
  */
 import { curves } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
-import { ColorPalette, TypographyTokens } from '../../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { NoteItem } from '../../../common/types/NoteItem';
 import { ModelProfile } from '../../../common/types/ModelConfig';
@@ -626,7 +626,7 @@ export struct HuaweiAiSplitPanel {
       if (this.settingsOpen) {
         ModelSettingsSheet({
           onClose: () => {
-            animateTo({ curve: curves.springMotion(0.28, 0.72) }, () => {
+            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.settingsOpen = false;
             });
             this.refreshModelLabel();

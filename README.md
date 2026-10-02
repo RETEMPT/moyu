@@ -8,7 +8,7 @@ FlowMind（墨语）是一款面向 HarmonyOS NEXT 的 Local-First 双链知识�
 
 ## 项目状态
 
-- **操作系统**：HarmonyOS NEXT (API 11 / API 12)
+- **操作系统**：HarmonyOS NEXT；当前工程兼容 SDK `6.1.1(24)`，目标 SDK `26.0.0`
 - **UI 框架**：ArkUI 声明式开发
 - **编程语言**：ArkTS
 - **支持设备**：Tablet 平板、Phone 手机（自适应布局）
@@ -22,12 +22,15 @@ FlowMind（墨语）是一款面向 HarmonyOS NEXT 的 Local-First 双链知识�
 
 ### 知识库与笔记
 - Markdown 笔记编辑和沉浸式阅读；
+- 应用内笔记封面：四款离线风格、相册图片、更换／移除，阅读页与资料列表同步；
 - `[[双链]]` 解析、反向链接直达与全文检索；
 - 项目、资料库、回收站与移动归类；
 - 目录大纲、上下文抽屉与快速全局搜索；
 - 本地示例数据与工作区资产看板。
 
 ### 阅读与批注
+- 图片 OCR 校对、本地整理与 AI Markdown 排版，支持预览编辑、原文保留和待办确认；
+- 实际 PDF 文件导入、PDFKit 原页读取与真实页数，不支持的 Word 格式提示转换；
 - PDF 多页阅读与 A4 物理页面排版；
 - 原生批注、矢量手写墨水与二次贝塞尔光滑插值；
 - 华为 MatePad 风格边读边写分屏与自由草稿白板；
@@ -41,7 +44,13 @@ FlowMind（墨语）是一款面向 HarmonyOS NEXT 的 Local-First 双链知识�
 - 力导向关系图谱工作区；
 - 资料库与待处理内容；
 - AI 墨客分级工作区（自动 / L1 伴读 / L2 学情 / L3 跨库）；
+- 多模型档案、连接测试、输出参数、附加提示词和工具权限；未保存输入在档案切换时保留；
+- 11 种笔记与待办工具、六类研读快捷场景，写操作逐次确认并等待保存结果；
+- 默认本地关键词检索，可主动开启语义检索；远程调用的数据范围在配置页说明；
 - 浅色、深色与跟随系统主题模式。
+- 可持久化的“减少动态效果”，主要页面与弹层统一使用短时缓动。
+
+本轮设计依据、能力边界和验证记录见 [设计调研与实现](docs/DESIGN_REVIEW.md) 与 [完整功能验收清单](docs/WORKFLOW_REVIEW.md)。
 
 ---
 
@@ -106,7 +115,14 @@ FlowMind（墨语）是一款面向 HarmonyOS NEXT 的 Local-First 双链知识�
 
 # 一键编译并安装拉起到在线设备/模拟器
 .\deploy_hap.bat
+
+# 多设备时指定目标；已构建时可跳过编译
+.\deploy_hap.bat -Target 127.0.0.1:5555 -SkipBuild
 ```
+
+部署脚本只选择 `Connected` 设备，确认连接后再安装；传输中断最多重试三次，并检查实际安装结果和应用前台状态，不仅依赖 hdc 退出码。可通过 `-StudioDir` 指定其他 DevEco 安装目录；存在不早于 unsigned 包的 signed 包时优先使用 signed 包。
+
+若 DevEco 提示 `FileTransfer Failed`，先确认模拟器已完成启动、`hdc list targets -v` 中目标为 `Connected`。构建成功不代表连接稳定；可以运行上述 `-SkipBuild` 命令重新部署，保留应用数据。真机需要满足设备签名要求，脚本不会自动卸载应用或修改签名配置。
 
 构建产物位于：
 ```text
@@ -161,6 +177,7 @@ hdc list targets
 | [**`PROJECT_MEMORY.md`**](./PROJECT_MEMORY.md) | 项目全景记忆、GPU 渲染避坑三大铁律与稳定性约定 |
 | [**`TECH_STACK.md`**](./TECH_STACK.md) | 技术栈全景、AI 智能体调度中枢与知识图谱架构白皮书 |
 | [**`CONTRIBUTING.md`**](./CONTRIBUTING.md) | 开源贡献指南、代码规范与 Pull Request 流程 |
+| [**工作流验收与后续改进**](./docs/WORKFLOW_REVIEW.md) | 本次改进、自动回归结果、全功能设备验收清单与已知限制 |
 | [**`SECURITY.md`**](./SECURITY.md) | 安全策略与漏洞提报通道 |
 | [**`LICENSE`**](./LICENSE) | 开源许可证 |
 

@@ -23,5 +23,10 @@ export interface SmartContent {
   relations: SmartRelation[];
   keyPoints?: string[];
   rawMarkdown?: string;
+  /** 排版正文与原文分开保留。 */
+  formattedMarkdown?: string;
+  processingMode?: 'ai' | 'local';
+  processingNotice?: string;
+  category?: string;
   createdAt: number;
 }
