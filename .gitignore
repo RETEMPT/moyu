@@ -13,6 +13,7 @@
 # tools/generate-icons.mjs 的光栅化中转目录，正常跑完会自行删除
 /.tmp-icons
 /.build.log
+/.release-build.log
 /.workflow-tests.log
 /.design-qa/
 /.codegenie/

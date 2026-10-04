@@ -20,7 +20,7 @@ jobs:
           node-version: '22'
       - name: Install service test compiler
         run: npm install --no-save --ignore-scripts typescript@4.9.5
-      - name: Verify OCR, formatting, persistence, sessions and PDF services
+      - name: Verify learning workflows, OCR, PDF, backups, persistence and AI
         run: node tools/verify-workflows.mjs
       - name: Check whitespace errors
         run: git diff --check HEAD^ HEAD
