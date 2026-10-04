@@ -21,6 +21,8 @@ export struct AppearanceSheet {
   onClose: () => void = () => {};
   /** 补入本机缺失的示例数据（含 PDF / 试卷，是进入原盘批注阅读器的入口） */
   onLoadSeedData: () => void = () => {};
+  onOpenBackup: () => void = () => {};
+  onOpenPrivacy: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindReduceMotion') reduceMotion: boolean = false;
@@ -83,7 +85,7 @@ export struct AppearanceSheet {
         Row({ space: 10 }) {
           BrandMark({ markSize: 34 })
           Column({ space: 2 }) {
-            Text('外观')
+            Text('外观与数据')
               .fontSize(TypographyTokens.TITLE_SUB)
               .fontWeight(FontWeight.Medium)
               .fontColor(this.palette().inkPrimary)
@@ -197,6 +199,8 @@ export struct AppearanceSheet {
           .strokeWidth(1)
           .color(this.palette().borderSubtle)
 
+        Button('学习资料备份与恢复').height(44).width('100%').onClick(() => this.onOpenBackup())
+        Button('隐私与数据说明').height(44).width('100%').onClick(() => this.onOpenPrivacy())
         // ---- 数据：补入示例 ----
         Column({ space: 6 }) {
           Text('示例数据')

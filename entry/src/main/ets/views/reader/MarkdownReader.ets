@@ -157,6 +157,7 @@ export struct MarkdownReader {
       this.editingNote.tags = this.note.tags;
       this.editingNote.favorite = this.note.favorite;
       this.editingNote.isPinned = this.note.isPinned;
+      this.editingNote.pdfTextJson = this.note.pdfTextJson;
     }
     this.title = this.note.title;
   }
@@ -225,7 +226,8 @@ export struct MarkdownReader {
       pageAnnotations: source.pageAnnotations,
       favorite: source.favorite, tags: source.tags, createdAt: source.createdAt, updatedAt: source.updatedAt,
       isPinned: source.isPinned, sourceUri: source.sourceUri, sourceType: source.sourceType,
-      pageCount: source.pageCount, documentMeta: source.documentMeta, aiSummary: source.aiSummary, aiTags: source.aiTags
+      pageCount: source.pageCount, pdfTextJson: source.pdfTextJson,
+      documentMeta: source.documentMeta, aiSummary: source.aiSummary, aiTags: source.aiTags
     };
   }
 
@@ -310,7 +312,8 @@ export struct MarkdownReader {
       pageAnnotations: note.pageAnnotations,
       favorite: note.favorite, tags: note.tags, createdAt: note.createdAt, updatedAt: note.updatedAt,
       isPinned: note.isPinned, sourceUri: note.sourceUri, sourceType: note.sourceType,
-      pageCount: note.pageCount, documentMeta: note.documentMeta, aiSummary: note.aiSummary, aiTags: note.aiTags
+      pageCount: note.pageCount, pdfTextJson: note.pdfTextJson,
+      documentMeta: note.documentMeta, aiSummary: note.aiSummary, aiTags: note.aiTags
     };
   }
 

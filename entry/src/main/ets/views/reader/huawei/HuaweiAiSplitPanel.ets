@@ -15,6 +15,7 @@ import { common } from '@kit.AbilityKit';
 import { ColorPalette, TypographyTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { NoteItem } from '../../../common/types/NoteItem';
+import { StudySourceService } from '../../../services/study/StudySourceService';
 import { ModelProfile } from '../../../common/types/ModelConfig';
 import { CurrentDocContext, AgentRunContext } from '../../../services/ai/AgentOrchestrator';
 import { AgentOrchestrator } from '../../../services/ai/AgentOrchestrator';
@@ -152,7 +153,7 @@ export struct HuaweiAiSplitPanel {
   private async runL1(query: string): Promise<void> {
     const doc: CurrentDocContext = {
       title: this.note.title,
-      content: this.note.contentDetail ?? '',
+      content: StudySourceService.context(this.note),
       outline: ''
     };
     const ctx: AgentRunContext = {

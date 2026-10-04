@@ -48,4 +48,10 @@ export class OcrService {
       }
     }
   }
+
+  /** Caller retains ownership of a rendered PDF page and must release it. */
+  async recognizePixelMap(pixelMap: image.PixelMap): Promise<string> {
+    const result = await textRecognition.recognizeText({ pixelMap: pixelMap });
+    return result && typeof result.value === 'string' ? result.value.trim() : '';
+  }
 }

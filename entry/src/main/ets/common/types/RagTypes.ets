@@ -6,6 +6,7 @@ export interface Chunk {
   text: string;
   startLine: number;
   tokenEstimate: number;
+  pageNumber?: number;
 }
 
 export interface Citation {
@@ -15,6 +16,7 @@ export interface Citation {
   chunkText: string;
   score: number;
   startLine?: number;
+  pageNumber?: number;
 }
 
 export interface RetrievalHit {

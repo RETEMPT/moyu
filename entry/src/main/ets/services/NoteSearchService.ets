@@ -6,6 +6,7 @@ import { NoteItem } from '../common/types/NoteItem';
 import { NoteSearchResult } from '../common/types/NoteSearchResult';
 import { NoteStorageService } from './NoteStorageService';
 import { MarkdownParserService } from './MarkdownParserService';
+import { StudySourceService } from './study/StudySourceService';
 
 export class NoteSearchService {
   private readonly storage: NoteStorageService;
@@ -38,7 +39,9 @@ export class NoteSearchService {
       const document: MarkdownDocument = await this.readDocument(context, note);
       const parsed: MarkdownParseResult = this.parser.parse(document);
       const titleMatch: boolean = this.matches(note.title, normalizedQuery, regex);
-      const contentMatch: boolean = this.matches(document.content, normalizedQuery, regex);
+      const bodyMatch = this.matches(document.content, normalizedQuery, regex);
+      const pageMatch = StudySourceService.pages(note).find((page) => this.matches(page.text, normalizedQuery, regex));
+      const contentMatch: boolean = bodyMatch || pageMatch !== undefined;
       const matchedTags: string[] = [];
       for (const tag of parsed.tags) {
         if (this.matches(tag.value, normalizedQuery, regex)
@@ -54,7 +57,8 @@ export class NoteSearchService {
           matchedTitle: titleMatch,
           matchedContent: contentMatch,
           matchedTags,
-          preview: this.preview(document.content, normalizedQuery, regex)
+          preview: this.preview(!bodyMatch && pageMatch ? pageMatch.text : document.content, normalizedQuery, regex),
+          pageNumber: !bodyMatch && pageMatch ? pageMatch.pageNumber : undefined
         });
       }
     }

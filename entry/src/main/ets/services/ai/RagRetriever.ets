@@ -121,7 +121,8 @@ export class RagRetriever {
         headingPath: hit.chunk.headingPath,
         chunkText: hit.chunk.text,
         score: hit.score,
-        startLine: hit.chunk.startLine
+        startLine: hit.chunk.startLine,
+        pageNumber: hit.chunk.pageNumber
       };
       citations.push(citation);
     }

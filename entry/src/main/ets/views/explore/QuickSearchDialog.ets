@@ -28,6 +28,7 @@ export struct QuickSearchDialog {
 
   onClose: () => void = () => {};
   onSelectNote: (note: NoteItem) => void = () => {};
+  onSelectSource: (note: NoteItem, pageNumber: number) => void = () => {};
 
   @State keyword: string = '';
   @State results: NoteSearchResult[] = [];
@@ -359,6 +360,7 @@ export struct QuickSearchDialog {
                   }
                   .width('100%')
 
+                  if (result.pageNumber) { Text(`PDF 第 ${result.pageNumber} 页`).fontSize(12).fontColor(this.palette().accent) }
                   if (result.preview.length > 0) {
                     this.highlightedPreview(result.preview)
                   }
@@ -370,7 +372,7 @@ export struct QuickSearchDialog {
                 .onClick(() => {
                   const note: NoteItem | undefined = this.resolveNote(result.noteId);
                   if (note !== undefined) {
-                    this.onSelectNote(note);
+                    if (result.pageNumber) { this.onSelectSource(note, result.pageNumber); } else { this.onSelectNote(note); }
                   }
                 })
               }

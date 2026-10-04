@@ -16,6 +16,7 @@ import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { UnresolvedLink } from '../../common/types/LinkGraph';
 import { WorkspaceStats } from '../../common/types/WorkspaceStats';
+import { CourseSummary } from '../../common/types/StudyTypes';
 import { BrandMark } from '../brand/BrandMark';
 import { noteRenderKey } from '../../common/utils/ForEachKeys';
 import { NAV_LIBRARY, NAV_GRAPH } from '../../common/constants/WorkspaceConstants';
@@ -40,6 +41,8 @@ export struct HomeWorkspace {
   @Prop stats: WorkspaceStats = { noteCount: 0, linkCount: 0, unresolvedCount: 0, tagCount: 0 };
   @Prop recentNotes: NoteItem[] = [];
   @Prop unresolvedLinks: UnresolvedLink[] = [];
+  @Prop courses: CourseSummary[] = [];
+  onOpenStudy: (course: string) => void = () => {};
 
   onSelectNote: (note: NoteItem) => void = () => {};
   onCreateNote: () => void = () => {};
@@ -464,7 +467,7 @@ export struct HomeWorkspace {
                     .fontSize(TypographyTokens.TITLE_HERO)
                     .fontWeight(FontWeight.Bold)
                     .fontColor(this.palette().inkPrimary)
-                  Text('第二大脑')
+                  Text('课程研读')
                     .fontSize(TypographyTokens.CAPTION)
                     .fontWeight(FontWeight.Medium)
                     .fontColor(this.palette().accent)
@@ -474,7 +477,7 @@ export struct HomeWorkspace {
                 }
                 .alignItems(VerticalAlign.Bottom)
 
-                Text('离线优先、隐私可控，让每篇随想与文档都连成思考的星系。')
+                Text('整理课程资料，回到原文核对，让每次复习都有据可循。')
                   .fontSize(TypographyTokens.BODY_REGULAR)
                   .fontColor(this.palette().inkSecondary)
               }
@@ -571,6 +574,29 @@ export struct HomeWorkspace {
           .width('100%')
           .alignItems(HorizontalAlign.Start)
           .margin({ bottom: 20 })
+
+          Column({ space: 8 }) {
+            Row() {
+              Text('课程学习与复习').fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
+              Button('全部题卡').height(44).onClick(() => this.onOpenStudy(''))
+            }.width('100%')
+            Text('按资料分类组织课程；在侧栏新建项目即可建立课程资料区。').fontSize(12).fontColor(this.palette().inkSecondary).width('100%')
+            GridRow({ columns: this.isPhone ? 1 : 2, gutter: 8 }) {
+              ForEach(this.courses.slice(0, 4), (course: CourseSummary) => {
+                GridCol() {
+                  Row({ space: 10 }) {
+                    Image($r('app.media.ic_note')).width(22).height(22)
+                    Column({ space: 4 }) {
+                      Text(course.name).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).maxLines(1)
+                      Text(`${course.noteCount} 份资料 · ${course.cardCount} 道题卡 · ${course.todoCount} 项关联待办`).fontSize(12).fontColor(this.palette().inkSecondary).maxLines(2)
+                    }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                    Text(course.dueCount ? `${course.dueCount} 道待复习` : '创建题卡').fontSize(12).fontColor(this.palette().accent)
+                  }.width('100%').padding(12).constraintSize({ minHeight: 72 }).borderRadius(12).backgroundColor(this.palette().surfaceSubtle)
+                    .accessibilityText(`${course.name}，${course.dueCount} 道待复习题卡`).onClick(() => this.onOpenStudy(course.name))
+                }
+              }, (course: CourseSummary) => course.name)
+            }.width('100%')
+          }.width('100%').margin({ bottom: 18 })
 
           // ---- 2. Bento 资产矩阵看板 ----
           GridRow({ columns: this.isPhone ? 2 : 4, gutter: this.isPhone ? 10 : 12 }) {

@@ -74,6 +74,15 @@ import { NoteCoverSheet } from '../views/layout/sheets/NoteCoverSheet';
 import { SmartContent } from '../common/types/SmartContent';
 import { SmartTask } from '../common/types/SmartTask';
 import { SmartCaptureService, SmartCaptureStorage } from '../services/smart/SmartCaptureService';
+import { ReviewCard, PdfTextPage } from '../common/types/StudyTypes';
+import { ReviewStorageService } from '../services/study/ReviewStorageService';
+import { ReviewPolicy } from '../services/study/ReviewPolicy';
+import { StudySourceService } from '../services/study/StudySourceService';
+import { StudySheet } from '../views/study/StudySheet';
+import { PdfTextSheet } from '../views/study/PdfTextSheet';
+import { StudyBackupSheet } from '../views/study/StudyBackupSheet';
+import { StudyRestoreService } from '../services/study/StudyRestoreService';
+import { PrivacySheet } from '../views/settings/PrivacySheet';
 
 /** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
 interface PendingNoteCreate {
@@ -159,6 +168,19 @@ struct Index {
   @State coverCloseToken: number = 0;
   @State modelCloseToken: number = 0;
   @State documentBackToken: number = 0;
+  @State reviewCards: ReviewCard[] = [];
+  @State studyVisible: boolean = false;
+  @State studyCourse: string = '';
+  @State studyCloseToken: number = 0;
+  @State backupVisible: boolean = false;
+  @State backupCloseToken: number = 0;
+  @State privacyVisible: boolean = false;
+  @State pdfExtractNoteId: string = '';
+  @State pdfExtractPage: number = 1;
+  @State pdfExtractCloseToken: number = 0;
+  @State sourcePage: number = 1;
+  @State sourceJumpToken: number = 0;
+  private reviewStorage: ReviewStorageService = new ReviewStorageService();
   @StorageProp('flowmindSingleColumn') singleColumn: boolean = false;
   /** 新建笔记的命名弹层意图；非空即显示 NameNoteSheet。 */
   @State pendingCreate: PendingNoteCreate | null = null;
@@ -203,6 +225,10 @@ struct Index {
   }
 
   onBackPress(): boolean {
+    if (this.privacyVisible) { this.privacyVisible = false; return true; }
+    if (this.backupVisible) { this.backupCloseToken++; return true; }
+    if (this.studyVisible) { this.studyCloseToken++; return true; }
+    if (this.pdfExtractNoteId) { this.pdfExtractCloseToken++; return true; }
     if (this.coverNoteId.length > 0) { this.coverCloseToken++; return true; }
     if (this.activeSheet === 'model_settings') { this.modelCloseToken++; return true; }
     if (this.activeSheet.length > 0) { this.activeSheet = ''; return true; }
@@ -267,6 +293,8 @@ struct Index {
     await this.loadTrash(context);
     await this.loadTodos(context);
     await this.loadSessions(context);
+    try { this.reviewCards = await this.reviewStorage.load(context); }
+    catch { this.notify('复习记录读取失败，原数据已保留'); }
     // 模型配置也在这里初始化：AI 视图自行取 Context 有竞态，
     // 由持有 Context 的 Index 统一初始化，视图侧只读单例。
     try {
@@ -861,6 +889,7 @@ struct Index {
     const current = this.notes.find((item: NoteItem) => item.id === note.id);
     if (!current) { this.notify('笔记已被移走'); return; }
     note = current;
+    this.sourcePage = 1;
     this.dismissNavigationOverlay();
     if (this.isHeavyDocument(note)) {
       // PDF / 试卷 / 稿纸手写：进入独立全屏华为风阅读器工作台
@@ -888,6 +917,30 @@ struct Index {
       }
     }
     this.notify('目标笔记不存在');
+  }
+
+  private openStudySource(noteId: string, pageNumber?: number, line?: number): void {
+    const note = this.notes.find((item: NoteItem) => item.id === noteId);
+    if (!note) { this.notify('来源资料已被移除'); return; }
+    if (pageNumber && (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > (note.pageCount || 0))) {
+      this.notify('来源页码已无效，请重新核对资料'); return;
+    }
+    this.openNote(note);
+    if (pageNumber && this.fullScreenDocOpen) {
+      this.sourcePage = Math.max(1, Math.min(note.pageCount || 1, pageNumber)); this.sourceJumpToken++;
+    } else if (line && this.readingOpen) { this.jumpLine = line - 1; this.jumpToken++; }
+  }
+
+  private async savePdfText(pages: PdfTextPage[]): Promise<void> {
+    const note = this.notes.find((item: NoteItem) => item.id === this.pdfExtractNoteId);
+    if (!note) { throw new Error('资料已移除'); }
+    const previous = note.pdfTextJson;
+    note.pdfTextJson = StudySourceService.merge(note, pages);
+    try { await this.storage.save(this.notes); }
+    catch { note.pdfTextJson = previous; throw new Error('文字索引保存失败'); }
+    this.notes = this.notes.slice();
+    if (this.fullScreenDocNote.id === note.id) { this.fullScreenDocNote = note; }
+    this.notify('已保存校对文字，可用于搜索与课程自测');
   }
 
   private openNoteByTitle(title: string): void {
@@ -1748,6 +1801,9 @@ struct Index {
   }
 
   private handleSaved(note: NoteItem, content: string): void {
+    // Readers own text/strokes; PDF indexing owns this field. A stale reader callback must not roll it back.
+    const current = this.notes.find((item: NoteItem) => item.id === note.id);
+    if (current?.pdfTextJson !== undefined) { note.pdfTextJson = current.pdfTextJson; }
     const now: number = Date.now();
     note.updatedAt = now;
     note.updateTime = this.formatTime(new Date(now));
@@ -1821,6 +1877,8 @@ struct Index {
         stats: this.stats,
         recentNotes: this.notes,
         unresolvedLinks: this.linkGraph.unresolvedLinks,
+        courses: ReviewPolicy.courses(this.notes, this.reviewCards, this.todos),
+        onOpenStudy: (course: string) => { this.studyCourse = course; this.studyVisible = true; },
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onImportDocument: () => this.importDocument(),
@@ -1918,6 +1976,8 @@ struct Index {
       .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
     } else {
       AiWorkspace({
+        onOpenCitation: (c: ChatCitation) => this.openStudySource(c.noteId, c.pageNumber, c.startLine),
+        reviewCards: this.reviewCards,
         allNotes: this.notes,
         todos: this.todos,
         stats: this.stats,
@@ -2018,7 +2078,7 @@ struct Index {
         onStartChatWithContext: (prefilled: string) => {
           this.aiPrefilledPrompt = prefilled;
         },
-        onPreviewSource: (c: ChatCitation) => this.openNoteById(c.noteId),
+        onPreviewSource: (c: ChatCitation) => this.openStudySource(c.noteId, c.pageNumber, c.startLine),
         onOpenModelSettings: () => {
           this.activeSheet = 'model_settings';
         },
@@ -2212,6 +2272,9 @@ struct Index {
       if (this.fullScreenDocOpen) {
         HuaweiDocWorkspace({
           note: this.fullScreenDocNote,
+          sourcePage: this.sourcePage,
+          sourceJumpToken: this.sourceJumpToken,
+          onExtractPdfText: (page: number) => { this.pdfExtractNoteId = this.fullScreenDocNote.id; this.pdfExtractPage = page; },
           backRequestToken: this.documentBackToken,
           onCommitForExit: async (note: NoteItem, content: string) => {
             note.contentDetail = content;
@@ -2245,9 +2308,41 @@ struct Index {
         .height('100%')
       }
 
+      if (this.privacyVisible) { PrivacySheet({ onClose: () => { this.privacyVisible = false; } }) }
+      if (this.backupVisible) {
+        StudyBackupSheet({ notes: this.notes, cards: this.reviewCards, closeToken: this.backupCloseToken,
+          onClose: () => { this.backupVisible = false; },
+          onRestore: (note: NoteItem, cards: ReviewCard[]) => StudyRestoreService.commit(note, cards, {
+            notes: () => this.notes, cards: () => this.reviewCards,
+            create: async (item: NoteItem) => { await this.storage.create(this.getAbilityContext(), item); },
+            saveNotes: (notes: NoteItem[]) => this.storage.save(notes),
+            saveCards: (items: ReviewCard[]) => this.reviewStorage.save(this.getAbilityContext(), items),
+            remove: (item: NoteItem) => this.storage.delete(this.getAbilityContext(), item.id, item.sourceUri || '', item.coverUrl || ''),
+            publishNotes: (notes: NoteItem[]) => { this.notes = notes; this.rebuildSpaces(); this.refreshStats(); this.refreshGraph(); },
+            publishCards: (items: ReviewCard[]) => { this.reviewCards = items; }
+          }) })
+      }
+      if (this.studyVisible) {
+        StudySheet({ notes: this.notes, cards: this.reviewCards, course: this.studyCourse,
+          closeToken: this.studyCloseToken,
+          onClose: () => { this.studyVisible = false; },
+          onSave: async (cards: ReviewCard[]) => {
+            await this.reviewStorage.save(this.getAbilityContext(), cards);
+            this.reviewCards = cards;
+          },
+          onSource: (noteId: string, page?: number) => this.openStudySource(noteId, page) })
+      }
+      if (this.pdfExtractNoteId && this.notes.some((note: NoteItem) => note.id === this.pdfExtractNoteId)) {
+        PdfTextSheet({ note: this.notes.find((note: NoteItem) => note.id === this.pdfExtractNoteId)!,
+          initialPage: this.pdfExtractPage, closeToken: this.pdfExtractCloseToken,
+          onClose: () => { this.pdfExtractNoteId = ''; },
+          onSave: (pages: PdfTextPage[]) => this.savePdfText(pages) })
+      }
+
       if (this.searchVisible) {
         QuickSearchDialog({
           notes: this.notes,
+          onSelectSource: (note: NoteItem, page: number) => { this.searchVisible = false; this.openStudySource(note.id, page); },
           onClose: () => {
             animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.searchVisible = false;
@@ -2264,6 +2359,11 @@ struct Index {
 
       if (this.settingsVisible) {
         AppearanceSheet({
+          onOpenPrivacy: () => { this.settingsVisible = false; this.privacyVisible = true; },
+          onOpenBackup: () => {
+            if (this.readingOpen || this.fullScreenDocOpen) { this.notify('请先保存并退出当前阅读，再备份学习资料'); return; }
+            this.settingsVisible = false; this.backupVisible = true;
+          },
           onClose: () => {
             animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.settingsVisible = false;

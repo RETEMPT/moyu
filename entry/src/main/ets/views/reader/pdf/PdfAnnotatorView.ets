@@ -247,7 +247,8 @@ export struct PdfAnnotatorView {
       pageAnnotations: serialized,
       favorite: this.note.favorite, tags: this.note.tags, createdAt: this.note.createdAt, updatedAt: this.note.updatedAt,
       isPinned: this.note.isPinned, sourceUri: this.note.sourceUri, sourceType: this.note.sourceType,
-      pageCount: this.note.pageCount, documentMeta: this.note.documentMeta, aiSummary: this.note.aiSummary, aiTags: this.note.aiTags
+      pageCount: this.note.pageCount, pdfTextJson: this.note.pdfTextJson,
+      documentMeta: this.note.documentMeta, aiSummary: this.note.aiSummary, aiTags: this.note.aiTags
     };
     return updatedNote;
   }

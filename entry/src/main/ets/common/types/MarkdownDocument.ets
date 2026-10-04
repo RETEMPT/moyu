@@ -8,6 +8,7 @@ export interface MarkdownDocument {
   filePath: string;
   content: string;
   updatedAt: number;
+  pageNumber?: number;
 }
 
 export type DocumentTransferStatus = 'imported' | 'exported' | 'unsupported' | 'cancelled' | 'failed';

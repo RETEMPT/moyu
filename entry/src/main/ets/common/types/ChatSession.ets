@@ -13,6 +13,8 @@ export interface ChatCitation {
   headingPath: string;
   chunkText: string;
   score: number;
+  pageNumber?: number;
+  startLine?: number;
 }
 
 /** 持久化消息 */

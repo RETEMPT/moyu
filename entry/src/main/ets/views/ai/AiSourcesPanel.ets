@@ -793,8 +793,8 @@ export struct AiSourcesPanel {
             }
             .width('100%')
 
-            if (c.headingPath.length > 0) {
-              Text(`§ ${c.headingPath}`)
+            if (c.headingPath.length > 0 || c.pageNumber) {
+              Text(c.pageNumber ? `第 ${c.pageNumber} 页` : `§ ${c.headingPath}`)
                 .fontSize(TypographyTokens.TINY)
                 .fontColor(this.palette().inkSecondary)
                 .maxLines(1)
@@ -819,7 +819,7 @@ export struct AiSourcesPanel {
           .margin({ bottom: 4 })
           .hoverEffect(HoverEffect.Highlight)
           .onClick(() => this.onPreviewSource(c))
-        }, (c: ChatCitation) => `${c.noteId}-${c.headingPath}-${c.score}`)
+        }, (c: ChatCitation) => `${c.noteId}-${c.pageNumber || 0}-${c.headingPath}-${c.startLine || 0}`)
       }
     }
     .width('100%')

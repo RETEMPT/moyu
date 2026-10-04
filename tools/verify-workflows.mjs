@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
-// Run pure ArkTS service logic with platform adapters mocked. HAP compilation
+// Run ArkTS service and view snapshot logic with platform adapters mocked. HAP compilation
 // separately verifies ArkTS types and UI; these tests do not emulate ArkUI.
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -498,7 +498,7 @@ test('damaged sessions and messages preserve valid history without crashes', () 
   assert.equal(sessions[1].title, '新对话');
 });
 
-function pdfService({ status = 0, pageCount = 3, renderFails = false, copyFails = false } = {}) {
+function pdfService({ status = 0, pageCount = 3, renderFails = false, copyFails = false, pageTexts = [], ocrFails = false } = {}) {
   const calls = [];
   const bitmap = { release: async () => {} };
   class PdfDocument {
@@ -512,12 +512,15 @@ function pdfService({ status = 0, pageCount = 3, renderFails = false, copyFails 
           calls.push(['render', matrix.width, matrix.height]);
           if (renderFails) throw Error('render');
           return bitmap;
-        }, release: () => calls.push('page-release') };
+        }, getTextContent: () => pageTexts[index] || '', release: () => calls.push('page-release') };
     }
   }
   class PdfMatrix {}
   const mocks = {
     '@kit.PDFKit': { pdfService: { PdfDocument, PdfMatrix, ParseResult: { PARSE_SUCCESS: 0, PARSE_ERROR_PASSWORD: 3 } } },
+    [path.resolve(root, `${base}services/ocr/OcrService.ets`)]: { OcrService: { getInstance: () => ({ recognizePixelMap: async () => {
+      calls.push('ocr'); if (ocrFails) throw Error('ocr'); return '扫描页真实文字';
+    } }) } },
     '@kit.CoreFileKit': { fileIo: { OpenMode: { READ_ONLY: 0 }, accessSync: () => true,
       statSync: () => ({ size: 8000 }), openSync: () => ({ fd: 1 }), closeSync: () => calls.push('file-close'),
       copyFile: async () => { if (copyFails) throw Error('disk'); calls.push('copied'); },
@@ -656,4 +659,270 @@ test('text import retains full text and cancel performs no writes', async () => 
   const cancelled = importService('');
   assert.equal((await cancelled.service.importDocument({ filesDir: '/sandbox' })).status, 'cancelled');
   assert.equal(cancelled.calls.length, 0);
+});
+
+const { StudySourceService } = load(`${base}services/study/StudySourceService.ets`);
+const { ReviewPolicy } = load(`${base}services/study/ReviewPolicy.ets`);
+const { StudyBackupPolicy } = load(`${base}services/study/StudyBackupPolicy.ets`);
+const { StudyRestoreService } = load(`${base}services/study/StudyRestoreService.ets`);
+const studyNote = overrides => ({ id: 'course_note', title: '操作系统', category: '操作系统', type: 'Markdown',
+  previewText: '', tag: '', tagColor: '#2563EB', updateTime: '', contentDetail: '死锁的必要条件包括互斥、占有且等待、不剥夺和循环等待。', ...overrides });
+const pdfStudyNote = () => studyNote({ type: 'PDF', sourceType: 'pdf', pageCount: 3,
+  pdfTextJson: JSON.stringify([{ pageNumber: 1, text: '银行家算法通过安全性检查避免进入不安全状态。', method: 'text', extractedAt: 1 },
+    { pageNumber: 2, text: '进程虚拟地址需要转换为物理地址。', method: 'ocr', extractedAt: 2 }]) });
+
+test('PDF text batches use real page numbers and empty pages are not fabricated', async () => {
+  const f = pdfService({ pageTexts: ['第一页原文', '', '第三页原文'] });
+  const progress = [];
+  const pages = await f.service.extractPages('/sandbox/book.pdf', 1, 3, false, () => false, page => progress.push(page));
+  assert.deepEqual(plain(pages).map(p => [p.pageNumber, p.text, p.method]), [[1, '第一页原文', 'text'], [2, '', 'text'], [3, '第三页原文', 'text']]);
+  assert.deepEqual(progress, [1, 2, 3]); assert.ok(!f.calls.includes('ocr'));
+  assert.equal(f.calls.filter(c => c === 'page-release').length, 3);
+  assert.equal(f.calls.filter(c => c === 'document-release').length, 1);
+});
+test('PDF scan OCR is opt-in and rendered page maps are released on failure', async () => {
+  const f = pdfService({ pageTexts: ['原文', ''], ocrFails: true });
+  let released = 0; f.bitmap.release = async () => { released++; };
+  await assert.rejects(f.service.extractPages('/sandbox/book.pdf', 1, 2, true, () => false, () => {}), /ocr/);
+  assert.equal(released, 1); assert.ok(f.calls.includes('ocr'));
+  assert.equal(f.calls.filter(c => c === 'document-release').length, 2);
+});
+test('PDF extraction cancels between pages and rejects overlarge or invalid ranges', async () => {
+  const f = pdfService(); let cancel = false;
+  await assert.rejects(f.service.extractPages('/sandbox/book.pdf', 1, 3, false, () => cancel, () => { cancel = true; }), /取消/);
+  assert.equal(f.calls.filter(c => c === 'page-release').length, 1);
+  for (const range of [[0, 1], [1, 31], [2, 1], [1.5, 2], [1, 4]])
+    await assert.rejects(f.service.extractPages('/sandbox/book.pdf', ...range, false, () => false, () => {}));
+});
+test('PDF index isolates malformed pages and merges only reviewed page replacements', () => {
+  const note = pdfStudyNote();
+  const replacement = [{ pageNumber: 2, text: '已校对文字', method: 'ocr', extractedAt: 7 }];
+  const merged = StudySourceService.pages({ ...note, pdfTextJson: StudySourceService.merge(note, replacement) });
+  assert.equal(merged.length, 2); assert.equal(merged[0].text, '银行家算法通过安全性检查避免进入不安全状态。');
+  assert.equal(merged[1].text, '已校对文字');
+  const bad = [{ pageNumber: 0, text: '假页', method: 'text' }, { pageNumber: 8, text: '越界页', method: 'text' }, null];
+  assert.equal(StudySourceService.pages({ ...note, pdfTextJson: JSON.stringify(bad) }).length, 0);
+  assert.equal(StudySourceService.pages({ ...note, pdfTextJson: 'broken' }).length, 0);
+});
+test('PDF chunks carry page provenance and IDs do not collide across pages', () => {
+  const { ChunkIndexService } = load(`${base}services/ai/ChunkIndexService.ets`);
+  const index = new ChunkIndexService();
+  const chunks = StudySourceService.documents([pdfStudyNote()]).flatMap(doc => plain(index.build(doc)));
+  assert.equal(new Set(chunks.map(c => c.id)).size, chunks.length);
+  assert.ok(chunks.some(c => c.pageNumber === 1 && c.text.includes('银行家')));
+  assert.ok(chunks.some(c => c.pageNumber === 2 && c.text.includes('物理地址')));
+});
+test('PDF annotation snapshots retain indexed text and source metadata while saving current strokes', () => {
+  // Execute the actual pure snapshot method, without instantiating ArkUI or simulating gestures.
+  const source = fs.readFileSync(path.resolve(root, `${base}views/reader/pdf/PdfAnnotatorView.ets`), 'utf8');
+  const method = source.match(/  private annotationSnapshot\(\): NoteItem \{[\s\S]*?\n  \}/)?.[0];
+  assert.ok(method, 'Reader snapshot method must exist');
+  const module = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(`class Snapshot { ${method} } module.exports = Snapshot;`,
+    { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, { module, JSON });
+  const instance = new module.exports(); const note = studyNote({ sourceType: 'pdf', sourceUri: '/sandbox/documents/real.pdf', coverUrl: 'cover:ink' });
+  instance.note = note; instance.pages = [1, 2]; instance.pageStrokes = { 1: [{ points: [{ x: 1, y: 2 }] }] };
+  const result = plain(instance.annotationSnapshot());
+  assert.equal(result.pdfTextJson, note.pdfTextJson); assert.equal(result.sourceUri, note.sourceUri);
+  assert.equal(result.coverUrl, note.coverUrl); assert.deepEqual(JSON.parse(result.pageAnnotations).pages, instance.pageStrokes);
+  assert.equal(note.pageAnnotations, undefined);
+});
+test('review feedback retains total reviews while resetting successful repetitions after forgetting', () => {
+  const date = new Date(2026, 9, 4, 12).getTime();
+  const card = ReviewPolicy.create(studyNote(), { question: '死锁条件是什么？', answer: '四个必要条件', sourceText: '' }, date);
+  const good = ReviewPolicy.rate(card, 'good', date);
+  assert.equal(good.intervalDays, 3); assert.equal(good.reviewCount, 1);
+  const again = ReviewPolicy.rate(good, 'again', date);
+  assert.equal(again.intervalDays, 1); assert.equal(again.reviewCount, 2); assert.equal(again.repetitions, 0); assert.equal(again.lapses, 1);
+  assert.equal(card.reviewCount, 0); assert.ok(again.dueAt > date);
+  assert.throws(() => ReviewPolicy.rate(card, 'bad', date));
+});
+test('review intervals stay bounded and malformed persisted rows do not enter the UI', () => {
+  const card = ReviewPolicy.create(studyNote(), { question: 'Q', answer: 'A', sourceText: '' }, 1);
+  const normalized = ReviewPolicy.normalize([null, { ...card, question: 42 }, { ...card, intervalDays: 999 }, card]);
+  assert.equal(normalized.length, 1); assert.equal(normalized[0].intervalDays, 180);
+  assert.equal(ReviewPolicy.rate({ ...card, intervalDays: 180, repetitions: 99 }, 'good', 1).intervalDays, 180);
+});
+test('AI review drafts require an exact source excerpt from the claimed PDF page', () => {
+  const note = pdfStudyNote();
+  const good = { question: '银行家算法如何避免风险？', answer: '执行安全性检查', sourceText: '银行家算法通过安全性检查', pageNumber: 1 };
+  assert.equal(ReviewPolicy.generated(JSON.stringify([good]), note).length, 1);
+  for (const draft of [{ ...good, pageNumber: 2 }, { ...good, pageNumber: 99 }, { ...good, sourceText: '资料从未说过的内容' },
+    { ...good, question: '' }, { ...good, sourceText: '短文' }]) assert.throws(() => ReviewPolicy.generated(JSON.stringify([draft]), note));
+  assert.equal(ReviewPolicy.generated(JSON.stringify([good, good]), note).length, 1);
+  assert.throws(() => ReviewPolicy.generated('[{"answer":"虚构内容"}]', note));
+});
+test('course summaries exclude removed source notes and count only linked unfinished tasks', () => {
+  const card = ReviewPolicy.create(studyNote(), { question: 'Q', answer: 'A', sourceText: '' }, 1);
+  const summary = ReviewPolicy.courses([studyNote()], [card, { ...card, id: 'other', noteId: 'deleted' }],
+    [{ done: false, noteRefs: [card.noteId] }, { done: true, noteRefs: [card.noteId] }, { done: false, noteRefs: [] }], 10)[0];
+  assert.equal(summary.noteCount, 1); assert.equal(summary.dueCount, 1); assert.equal(summary.cardCount, 1); assert.equal(summary.todoCount, 1);
+});
+const studyBackup = () => ({ schemaVersion: 1, id: 'backup123', createdAt: 1, notes: [studyNote()], cards: [], assets: [] });
+test('study backup strips device paths, model credentials, unknown properties and keeps bundled covers', () => {
+  const backup = studyBackup();
+  backup.notes[0] = studyNote({ sourceUri: '/outside/private.pdf', apiKey: 'secret', modelConfig: { secret: true }, coverUrl: 'cover:ink' });
+  const normalized = plain(StudyBackupPolicy.validate(backup));
+  assert.equal(normalized.notes[0].coverUrl, 'cover:ink');
+  assert.ok(!JSON.stringify(normalized).includes('secret')); assert.ok(!JSON.stringify(normalized).includes('/outside'));
+});
+test('study backup rejects duplicate IDs, traversal IDs, invalid assets and orphaned cards', () => {
+  const backup = studyBackup();
+  for (const input of [{ ...backup, notes: [studyNote({ id: '../note' })] }, { ...backup, notes: [studyNote({ id: undefined })] },
+    { ...backup, notes: [studyNote(), studyNote()] }, { ...backup, assets: [{ noteId: 'missing', kind: 'pdf', data: 'YWJj' }] },
+    { ...backup, assets: [{ noteId: 'course_note', kind: 'pdf', data: '***bad' }] }, { ...backup, schemaVersion: 9 }])
+    assert.throws(() => StudyBackupPolicy.validate(input));
+  const card = ReviewPolicy.create(studyNote(), { question: 'Q', answer: 'A', sourceText: '' });
+  assert.throws(() => StudyBackupPolicy.validate({ ...backup, cards: [{ ...card, noteId: 'missing' }] }));
+  assert.equal(StudyBackupPolicy.restoreId(backup, 0), StudyBackupPolicy.restoreId(backup, 0));
+});
+test('backup restoration reconnects unique internal links and retains external, ambiguous and code-block links', () => {
+  const backup = studyBackup();
+  backup.notes = [studyNote({ contentDetail: '[[目标|章节]] [[外部]] [[同名]]\n```text\n[[目标]]\n```\n\n    [[目标]]' }),
+    studyNote({ id: 'target', title: '目标' }), studyNote({ id: 'same1', title: '同名' }), studyNote({ id: 'same2', title: '同名' })];
+  const text = StudyBackupPolicy.restoreContent(backup, 0);
+  assert.ok(text.startsWith('[[目标（备份恢复）|章节]] [[外部]] [[同名]]'));
+  assert.ok(text.includes('```text\n[[目标]]\n```')); assert.ok(text.includes('    [[目标]]'));
+  assert.equal(backup.notes[0].contentDetail.includes('（备份恢复）'), false);
+  assert.notEqual(StudyBackupPolicy.restoreTitle(backup, 2), StudyBackupPolicy.restoreTitle(backup, 3));
+  assert.ok(StudyBackupPolicy.restoreTitle({ ...backup, notes: [studyNote({ title: '长'.repeat(500) })] }, 0).length <= 500);
+});
+test('PDF backups reject missing originals instead of exporting a broken reading copy', async () => {
+  const backup = studyBackup(); backup.notes[0].sourceType = 'pdf';
+  assert.throws(() => StudyBackupPolicy.validate(backup), /缺少原 PDF/);
+  const f = backupFileFixture();
+  await assert.rejects(f.service.exportFile({ filesDir: '/sandbox' }, backup.notes, []), /缺少原 PDF/);
+});
+function restoreFixture() {
+  let notes = [studyNote({ id: 'original' })]; let cards = []; const calls = []; let failCards = false; let failNotes = false;
+  const ports = { notes: () => notes, cards: () => cards, create: async note => { calls.push(['create', note.id]); },
+    saveNotes: async next => { calls.push(['save-notes', next.length]); if (failNotes && next.length > 1) throw Error('disk'); },
+    saveCards: async next => { if (failCards) throw Error('cards'); calls.push(['save-cards', next.length]); },
+    remove: async note => calls.push(['remove', note.id]), publishNotes: next => { notes = next; }, publishCards: next => { cards = next; } };
+  return { ports, calls, notes: () => notes, cards: () => cards, failCards: value => { failCards = value; }, failNotes: value => { failNotes = value; } };
+}
+test('backup restoration preserves original data and stable IDs make repeated imports idempotent', async () => {
+  const f = restoreFixture(); const note = studyNote({ id: 'restored' });
+  const card = ReviewPolicy.create(note, { question: 'Q', answer: 'A', sourceText: '' });
+  await StudyRestoreService.commit(note, [card], f.ports); await StudyRestoreService.commit(note, [card], f.ports);
+  assert.equal(f.notes().length, 2); assert.equal(f.cards().length, 1);
+  assert.equal(f.notes()[0].id, 'original'); assert.equal(f.calls.filter(c => c[0] === 'create').length, 1);
+});
+test('failed backup note write rolls back metadata and cleans only the new note', async () => {
+  const f = restoreFixture(); f.failNotes(true);
+  await assert.rejects(StudyRestoreService.commit(studyNote({ id: 'restored' }), [], f.ports), /资料保存/);
+  assert.equal(f.notes().length, 1); assert.ok(f.calls.some(c => c[0] === 'remove' && c[1] === 'restored'));
+});
+test('failed backup card write retains a valid restored note and retry fills missing cards', async () => {
+  const f = restoreFixture(); const note = studyNote({ id: 'restored' });
+  const card = ReviewPolicy.create(note, { question: 'Q', answer: 'A', sourceText: '' });
+  f.failCards(true); await assert.rejects(StudyRestoreService.commit(note, [card], f.ports), /题卡保存失败/);
+  assert.equal(f.notes().length, 2); assert.equal(f.cards().length, 0);
+  f.failCards(false); await StudyRestoreService.commit(note, [card], f.ports);
+  assert.equal(f.notes().length, 2); assert.equal(f.cards().length, 1);
+});
+
+function backupFileFixture({ selected = ['/picked/backup.json'], failPdf = false, failImage = false, shortRead = false } = {}) {
+  const files = new Map(); const opened = new Map(); const calls = []; let fd = 0;
+  const mocks = {
+    '@kit.AbilityKit': {},
+    '@kit.CoreFileKit': { picker: { DocumentSelectOptions: class {}, DocumentSaveOptions: class {}, DocumentViewPicker: class {
+      async select() { return selected; } async save() { return selected; }
+    } }, fileIo: { OpenMode: { READ_ONLY: 0, WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 },
+      accessSync: () => true, mkdirSync: () => {},
+      open: async filename => { opened.set(++fd, filename); return { fd }; },
+      close: async file => { calls.push(['close', file.fd]); },
+      statSync: descriptor => ({ size: files.get(typeof descriptor === 'number' ? opened.get(descriptor) : descriptor)?.length ?? 0 }),
+      read: async (descriptor, buffer) => { const bytes = files.get(opened.get(descriptor)); new Uint8Array(buffer).set(bytes); return bytes.length - (shortRead ? 1 : 0); },
+      write: async (descriptor, value) => { const bytes = typeof value === 'string' ? Buffer.from(value) : Buffer.from(value); files.set(opened.get(descriptor), bytes); return bytes.length; },
+      fsync: async descriptor => calls.push(['flush', descriptor]),
+      unlink: async filename => { files.delete(filename); calls.push(['unlink', filename]); }
+    } },
+    '@kit.ArkTS': { util: { Base64Helper: class {
+      encodeToStringSync(bytes) { return Buffer.from(bytes).toString('base64'); }
+      decodeSync(value) { return Buffer.from(value, 'base64'); } // Deliberately returns a pooled view with a nonzero byteOffset.
+    }, TextEncoder: class { encodeInto(text) { return Buffer.from(text); } },
+    TextDecoder: class { decodeToString(bytes) { return Buffer.from(bytes).toString('utf8'); } } } },
+    '@kit.ImageKit': { image: { createImageSource: filename => ({ getImageInfo: async () => {
+      if (failImage) throw Error('broken image'); return { size: { width: 1, height: 1 } };
+    }, release: async () => calls.push(['image-release', filename]) }) } },
+    [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: { PdfDocumentService: { getInstance: () => ({
+      getPdfInfo: async filename => { if (failPdf) throw Error('broken pdf'); return { pageCount: 2 }; }
+    }) } }
+  };
+  const { StudyBackupService } = load(`${base}services/study/StudyBackupService.ets`, mocks);
+  return { service: StudyBackupService, files, calls };
+}
+function reviewStorageFixture(initial = '[]') {
+  let raw = initial; let failFlush = false; const writes = [];
+  const prefs = { get: async () => raw, put: async (key, value) => { raw = value; writes.push(value); },
+    flush: async () => { if (failFlush) throw Error('disk'); } };
+  const { ReviewStorageService } = load(`${base}services/study/ReviewStorageService.ets`, {
+    '@kit.AbilityKit': {}, '@kit.ArkData': { preferences: { getPreferences: async () => prefs } }
+  });
+  return { service: new ReviewStorageService(), raw: () => raw, writes, failFlush: value => { failFlush = value; } };
+}
+test('review persistence survives reopen and failed flush rolls back the preference cache', async () => {
+  const f = reviewStorageFixture(); const card = ReviewPolicy.create(studyNote(), { question: 'Q', answer: 'A', sourceText: '' });
+  assert.equal((await f.service.load({})).length, 0); await f.service.save({}, [card]);
+  assert.equal((await f.service.load({}))[0].question, 'Q'); const previous = f.raw();
+  f.failFlush(true); await assert.rejects(f.service.save({}, []), /保存失败/);
+  assert.equal(f.raw(), previous); assert.equal((await f.service.load({})).length, 1);
+});
+test('unreadable review storage blocks writes rather than overwriting the original data', async () => {
+  for (const raw of ['{broken', '{"unrecognized":true}']) {
+    const f = reviewStorageFixture(raw); await assert.rejects(f.service.load({}), /损坏/);
+    await assert.rejects(f.service.save({}, []), /阻止覆盖/); assert.equal(f.raw(), raw); assert.equal(f.writes.length, 0);
+  }
+});
+test('local backup exports actual PDF and cover bytes without credentials and selection validates the package', async () => {
+  const f = backupFileFixture(); const context = { filesDir: '/sandbox' };
+  f.files.set('/sandbox/documents/book.pdf', Buffer.from('%PDF-1.7\noriginal'));
+  f.files.set('/sandbox/covers/photo.img', Buffer.from('original image bytes'));
+  const note = studyNote({ type: 'PDF', sourceType: 'pdf', sourceUri: '/sandbox/documents/book.pdf', coverUrl: '/sandbox/covers/photo.img', apiKey: 'never-export' });
+  assert.equal(await f.service.exportFile(context, [note], []), true);
+  const backup = JSON.parse(f.files.get('/picked/backup.json').toString('utf8'));
+  assert.equal(backup.assets.length, 2);
+  assert.equal(Buffer.from(backup.assets[0].data, 'base64').toString(), '%PDF-1.7\noriginal');
+  assert.ok(!JSON.stringify(backup).includes('never-export'));
+  assert.ok(!JSON.stringify(backup).includes('/sandbox'));
+  assert.equal((await f.service.selectFile(context)).notes.length, 1);
+  assert.equal(f.calls.filter(c => c[0] === 'close').length, 4);
+});
+test('bundled sample backups remain labeled examples and do not block an initial full backup', async () => {
+  const { seedNotes } = load(`${base}common/seed/SeedContent.ets`); const f = backupFileFixture();
+  assert.equal(await f.service.exportFile({ filesDir: '/sandbox' }, seedNotes(), []), true);
+  const backup = JSON.parse(f.files.get('/picked/backup.json').toString());
+  const index = backup.notes.findIndex(note => note.id === 'note-seed-pdf'); assert.ok(index >= 0);
+  const note = await f.service.materialize({ filesDir: '/sandbox' }, backup, index, StudyBackupPolicy.restoreTitle(backup, index));
+  assert.ok(note.id.startsWith('note-seed-')); assert.equal(note.sourceUri, undefined); assert.equal(note.pageCount, 9);
+  assert.equal(note.pageAnnotations, backup.notes[index].pageAnnotations);
+});
+test('backup picker cancellation performs no output and partial reads fail explicitly', async () => {
+  const cancelled = backupFileFixture({ selected: [] });
+  assert.equal(await cancelled.service.exportFile({ filesDir: '/sandbox' }, [studyNote()], []), false);
+  assert.equal(await cancelled.service.selectFile({ filesDir: '/sandbox' }), null);
+  assert.equal(cancelled.files.size, 0);
+  const partial = backupFileFixture({ shortRead: true });
+  partial.files.set('/picked/backup.json', Buffer.from(JSON.stringify(studyBackup())));
+  await assert.rejects(partial.service.selectFile({ filesDir: '/sandbox' }), /未完整读取/);
+  assert.equal(partial.calls.filter(c => c[0] === 'close').length, 1);
+});
+test('backup restoration writes only decoded asset views and verifies real PDF pages', async () => {
+  const f = backupFileFixture(); const backup = studyBackup();
+  backup.assets = [{ noteId: 'course_note', kind: 'pdf', data: Buffer.from('%PDF-1.7\noriginal').toString('base64') }];
+  const restored = await f.service.materialize({ filesDir: '/sandbox' }, backup, 0, '恢复副本');
+  assert.ok(restored.sourceUri.startsWith('/sandbox/documents/restore_backup123_0_'));
+  assert.equal(restored.pageCount, 2); assert.equal(f.files.get(restored.sourceUri).toString(), '%PDF-1.7\noriginal');
+  assert.equal(backup.notes[0].id, 'course_note');
+});
+test('failed backup PDF or cover validation removes newly created attachments', async () => {
+  for (const kind of ['pdf', 'cover']) {
+    const f = backupFileFixture({ failPdf: kind === 'pdf', failImage: kind === 'cover' }); const backup = studyBackup();
+    backup.assets = [{ noteId: 'course_note', kind, data: Buffer.from('bad asset').toString('base64') }];
+    await assert.rejects(f.service.materialize({ filesDir: '/sandbox' }, backup, 0, '恢复副本'));
+    assert.equal(f.files.size, 0); assert.equal(f.calls.filter(c => c[0] === 'unlink').length, 1);
+    assert.equal(f.calls.filter(c => c[0] === 'close').length, 1);
+    if (kind === 'cover') assert.equal(f.calls.filter(c => c[0] === 'image-release').length, 1);
+  }
 });

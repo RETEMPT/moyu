@@ -410,7 +410,7 @@ export class AgentOrchestrator {
         prompt += `\n\n<knowledge_excerpts>\n`;
         for (let i = 0; i < ctx.retrievalHits.length; i++) {
           const h: ChatCitation = ctx.retrievalHits[i];
-          prompt += `〔片段 ${i + 1}〕${h.noteTitle} · ${h.headingPath}\n${h.chunkText}\n\n`;
+          prompt += `〔片段 ${i + 1}〕${h.noteTitle} · ${h.pageNumber ? `第 ${h.pageNumber} 页` : h.headingPath}\n${h.chunkText}\n\n`;
         }
         prompt += `</knowledge_excerpts>`;
       } else {

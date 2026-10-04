@@ -44,7 +44,9 @@ export class ChatSessionSanitizer {
       .map((c: ChatCitation) => {
         const citation: ChatCitation = { noteId: c.noteId, noteTitle: c.noteTitle, chunkText: c.chunkText,
           headingPath: typeof c.headingPath === 'string' ? c.headingPath : '',
-          score: typeof c.score === 'number' ? c.score : 0 };
+          score: typeof c.score === 'number' ? c.score : 0,
+          pageNumber: Number.isInteger(c.pageNumber) && (c.pageNumber || 0) > 0 ? c.pageNumber : undefined,
+          startLine: Number.isInteger(c.startLine) && (c.startLine || 0) > 0 ? c.startLine : undefined };
         return citation;
       });
   }

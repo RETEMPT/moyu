@@ -34,6 +34,9 @@ export type SplitModeType = 'none' | 'ai' | 'scratchpad';
 export struct HuaweiDocWorkspace {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
   @Prop @Watch('handleBackRequest') backRequestToken: number = 0;
+  @Prop sourcePage: number = 1;
+  @Prop @Watch('onSourceJump') sourceJumpToken: number = 0;
+  onExtractPdfText: (page: number) => void = () => {};
   onClose: () => void = () => {};
   onSaved: (note: NoteItem, content: string) => void = () => {};
   onCommitForExit: (note: NoteItem, content: string) => Promise<void> = async () => {};
@@ -96,13 +99,17 @@ export struct HuaweiDocWorkspace {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
   }
 
+  private onSourceJump(): void {
+    this.currentPage = Math.max(1, Math.min(this.totalPages, this.sourcePage));
+  }
+
   aboutToAppear(): void {
     this.loadedNoteId = this.note.id;
     if (this.isDocumentOrExam()) {
       const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount :
         (this.note.id.startsWith('note-seed-') ? 9 : 1);
       this.totalPages = count;
-      this.currentPage = Math.min(this.currentPage, count);
+      this.currentPage = Math.max(1, Math.min(this.sourcePage, count));
     } else {
       this.currentPage = 1;
       this.totalPages = 1;
@@ -754,6 +761,12 @@ export struct HuaweiDocWorkspace {
         }
         .width('100%')
 
+        if (this.note.sourceType === 'pdf' && this.note.sourceUri) {
+          Button('提取 PDF 文字并核对页码').width('100%').height(44).onClick(() => {
+            this.moreMenuOpen = false;
+            this.onExtractPdfText(this.currentPage);
+          })
+        }
         // 功能网格 (Obsidian 极简几何矢量符号卡片) - 静态双行布局，杜绝虚拟化网格与多层撕裂
         Column({ space: 10 }) {
           Row({ space: 10 }) {

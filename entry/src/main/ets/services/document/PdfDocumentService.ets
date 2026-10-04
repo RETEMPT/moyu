@@ -12,6 +12,8 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { pdfService } from '@kit.PDFKit';
 import { image } from '@kit.ImageKit';
 import { PdfPageModel } from '../../common/types/PdfAnnotationTypes';
+import { PdfTextPage } from '../../common/types/StudyTypes';
+import { OcrService } from '../ocr/OcrService';
 
 export interface PdfDocumentInfo {
   filePath: string;
@@ -113,6 +115,41 @@ export class PdfDocumentService {
     if (result !== pdfService.ParseResult.PARSE_SUCCESS) {
       throw new Error('PDF 无法读取，请检查文件是否损坏或设备是否支持 PDFKit');
     }
+  }
+
+  /** Bounded batches keep extraction cancellable; reviewed results alone enter the index. */
+  async extractPages(filePath: string, start: number, end: number, scanOcr: boolean,
+    cancelled: () => boolean, progress: (page: number) => void): Promise<PdfTextPage[]> {
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end - start >= 30) {
+      throw new Error('每次请选择 1～30 页');
+    }
+    const document = new pdfService.PdfDocument();
+    const result: PdfTextPage[] = [];
+    try {
+      this.loadDocument(document, filePath);
+      if (end > document.getPageCount()) { throw new Error('页码超出资料范围'); }
+      for (let pageNumber = start; pageNumber <= end; pageNumber++) {
+        if (cancelled()) { throw new Error('已取消提取'); }
+        progress(pageNumber);
+        let page: pdfService.PdfPage | null = null;
+        try {
+          page = document.getPage(pageNumber - 1);
+          let text = page.getTextContent().trim();
+          let method: 'text' | 'ocr' = 'text';
+          if (!text && scanOcr) {
+            const rendered = this.renderPage(filePath, pageNumber - 1);
+            try { text = await OcrService.getInstance().recognizePixelMap(rendered.pixelMap); method = 'ocr'; }
+            finally { await rendered.pixelMap.release(); }
+          }
+          if (text.length > 80000) { throw new Error(`第 ${pageNumber} 页文字过多，请缩小页面内容`); }
+          result.push({ pageNumber: pageNumber, text: text, method: method, extractedAt: Date.now() });
+        } finally { if (page !== null) { page.release(); } }
+        // Yield between synchronous PDF calls for cancel/input events on the UI thread.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+      if (cancelled()) { throw new Error('已取消提取'); }
+      return result;
+    } finally { document.releaseDocument(); }
   }
 
   /**

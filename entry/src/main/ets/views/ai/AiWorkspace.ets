@@ -31,6 +31,9 @@ import { ModelConfigService, ACTIVE_STORAGE_KEY } from '../../services/ai/ModelC
 import { RagRetriever } from '../../services/ai/RagRetriever';
 import { StreamHandle } from '../../services/ai/ModelProvider';
 import { NoteItem } from '../../common/types/NoteItem';
+import { StudySourceService } from '../../services/study/StudySourceService';
+import { ReviewCard } from '../../common/types/StudyTypes';
+import { ReviewPolicy } from '../../services/study/ReviewPolicy';
 import { TodoItem } from '../../common/types/TodoItem';
 import { WorkspaceStats } from '../../common/types/WorkspaceStats';
 import { MarkdownDocument } from '../../common/types/MarkdownDocument';
@@ -127,6 +130,7 @@ export struct AiWorkspace {
   currentNote: NoteItem | null = null;
   allNotes: NoteItem[] = [];
   todos: TodoItem[] = [];
+  reviewCards: ReviewCard[] = [];
   stats: WorkspaceStats = { noteCount: 0, linkCount: 0, unresolvedCount: 0, tagCount: 0 };
 
   @Prop @Watch('onActiveSessionIdChanged') activeSessionId: string = '';
@@ -148,6 +152,7 @@ export struct AiWorkspace {
   onCreateNewNote: (title: string, category: string, tag: string, content: string) => Promise<void> = async () => {};
   onOpenSearch: () => void = () => {};
   onSmartExtract: () => void = () => {};
+  onOpenCitation: (citation: ChatCitation) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp(ACTIVE_STORAGE_KEY) @Watch('onActiveProfileChanged') activeProfileId: string = '';
@@ -367,17 +372,7 @@ export struct AiWorkspace {
   // ------------------------------------------------------------------
 
   private async retrieve(query: string, profile: ModelProfile, cancelled: () => boolean): Promise<ChatCitation[]> {
-    const docs: MarkdownDocument[] = [];
-    for (const n of this.allNotes) {
-      docs.push({
-        id: n.id,
-        title: n.title,
-        fileName: `${n.title}.md`,
-        filePath: '',
-        content: n.contentDetail ?? '',
-        updatedAt: 0
-      });
-    }
+    const docs: MarkdownDocument[] = StudySourceService.documents(this.allNotes);
     const hits: RetrievalHit[] = await this.retriever.searchHybrid(docs, query, profile, 6, cancelled);
     const citations: ChatCitation[] = [];
     for (const h of hits) {
@@ -386,7 +381,9 @@ export struct AiWorkspace {
         noteTitle: h.chunk.noteTitle,
         headingPath: h.chunk.headingPath,
         chunkText: h.chunk.text,
-        score: h.score
+        score: h.score,
+        pageNumber: h.chunk.pageNumber,
+        startLine: h.chunk.startLine
       });
     }
     return citations;
@@ -398,7 +395,7 @@ export struct AiWorkspace {
     }
     return {
       title: this.currentNote.title,
-      content: this.currentNote.contentDetail ?? '',
+      content: StudySourceService.context(this.currentNote),
       outline: ''
     };
   }
@@ -412,6 +409,10 @@ export struct AiWorkspace {
     out += `\n【待办任务】\n共 ${this.todos.length} 项：\n`;
     for (const t of this.todos.slice(0, 15)) {
       out += `- [${t.done ? 'x' : ' '}] ${t.title}（日期：${t.date}）\n`;
+    }
+    out += '\n【课程自测记录】\n以下是用户的复习自评，不等同于考试成绩或完整能力测评。\n';
+    for (const course of ReviewPolicy.courses(this.allNotes, this.reviewCards, this.todos).slice(0, 15)) {
+      out += `- ${course.name}：${course.cardCount} 道已建题卡，${course.dueCount} 道到期复习。\n`;
     }
     return out;
   }
@@ -440,7 +441,7 @@ export struct AiWorkspace {
       const history = this.messages.slice();
       this.messages = [...this.messages, createMessage('user', query)]; this.inputText = '';
       this.streamingText = ''; this.streamingReasoning = ''; this.scrollToBottom();
-      const pinned = this.pinnedNotes.map((note: NoteItem) => `【${note.title}】\n${note.contentDetail}`);
+      const pinned = this.pinnedNotes.map((note: NoteItem) => `【${note.title}】\n${StudySourceService.context(note)}`);
       let hits: ChatCitation[] = [];
       if (layer === 'L3') { this.toolStatus = '正在检索笔记…'; hits = await this.retrieve(query, profile, () => !current()); }
       if (!current()) { return; }
@@ -490,24 +491,14 @@ export struct AiWorkspace {
   }
 
   private toolSearchNotes(query: string, limit: number): string {
-    const docs: MarkdownDocument[] = [];
-    for (const n of this.allNotes) {
-      docs.push({
-        id: n.id,
-        title: n.title,
-        fileName: `${n.title}.md`,
-        filePath: '',
-        content: n.contentDetail ?? '',
-        updatedAt: 0
-      });
-    }
+    const docs: MarkdownDocument[] = StudySourceService.documents(this.allNotes);
     const hits: RetrievalHit[] = this.retriever.search(docs, query, limit);
     if (hits.length === 0) {
       return `未检索到与「${query}」相关的笔记切片。`;
     }
     let out: string = '';
     for (const h of hits) {
-      out += `〔${h.chunk.noteTitle} · ${h.chunk.headingPath.length > 0 ? h.chunk.headingPath : '正文'}〕\n`
+      out += `〔${h.chunk.noteTitle} · ${h.chunk.pageNumber ? `第 ${h.chunk.pageNumber} 页` : h.chunk.headingPath || '正文'}〕\n`
         + `${h.chunk.text.slice(0, 800)}\n\n`;
     }
     return out;
@@ -532,7 +523,7 @@ export struct AiWorkspace {
 
   private toolReadNote(identifier: string): string {
     const note = NoteToolReader.resolve(this.allNotes, identifier);
-    const body = note.contentDetail.slice(0, 24000);
+    const body = StudySourceService.context(note, 24000);
     return `【${note.title}】 ID: ${note.id}\n分类: ${note.category || '未分类'}\n标签: ${note.tag || '无'}\n正文:\n${body || '（空文档）'}${body.length < note.contentDetail.length ? '\n（内容较长，已截取前 24000 字符）' : ''}`;
   }
 
@@ -1062,13 +1053,16 @@ export struct AiWorkspace {
               .fontColor(this.palette().inkMuted)
             Flex({ wrap: FlexWrap.Wrap, space: { main: { value: 6, unit: 1 }, cross: { value: 4, unit: 1 } } }) {
               ForEach(msg.citations, (c: ChatCitation) => {
-                Text(`〔${c.noteTitle} · ${c.headingPath || '正文'}〕`)
+                Text(`〔${c.noteTitle} · ${c.pageNumber ? `第 ${c.pageNumber} 页` : c.headingPath || '正文'}〕`)
                   .fontSize(TypographyTokens.TINY)
                   .fontColor(this.palette().accent)
                   .padding({ left: 8, right: 8, top: 4, bottom: 4 })
                   .borderRadius(6)
                   .backgroundColor(this.palette().accentSoft)
-              }, (c: ChatCitation) => `${c.noteId}-${c.headingPath}`)
+                  .constraintSize({ minHeight: 44 })
+                  .accessibilityText(`查看${c.noteTitle}${c.pageNumber ? `第 ${c.pageNumber} 页` : '原文'}`)
+                  .onClick(() => this.onOpenCitation(c))
+              }, (c: ChatCitation) => `${c.noteId}-${c.pageNumber || 0}-${c.headingPath}-${c.startLine || 0}`)
             }
           }
           .width('100%')
