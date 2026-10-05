@@ -17,7 +17,7 @@
  *    - 智能体 Function Calling 工具箱总控与权限说明
  */
 import { curves, promptAction } from '@kit.ArkUI';
-import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, LayoutTokens, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { ChatCitation } from '../../common/types/ChatSession';
 import { NoteItem } from '../../common/types/NoteItem';
@@ -91,7 +91,7 @@ export struct AiSourcesPanel {
 
   /** 切换文件夹展开折叠 */
   private toggleFolderExpand(space: SpaceFolder): void {
-    animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+    animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
       const current: boolean = this.isFolderExpanded(space);
       this.folderOpenStates[space.id] = !current;
     });
@@ -264,7 +264,7 @@ export struct AiSourcesPanel {
       .justifyContent(FlexAlign.Center)
       .borderRadius(6)
       .backgroundColor(this.activeTab === 'explorer' ? this.palette().accentSoft : Color.Transparent)
-      .animation({ duration: 180, curve: Curve.EaseInOut })
+      .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
       .onClick(() => {
         this.activeTab = 'explorer';
       })
@@ -286,7 +286,7 @@ export struct AiSourcesPanel {
       .justifyContent(FlexAlign.Center)
       .borderRadius(6)
       .backgroundColor(this.activeTab === 'tools' ? this.palette().accentSoft : Color.Transparent)
-      .animation({ duration: 180, curve: Curve.EaseInOut })
+      .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
       .onClick(() => {
         this.activeTab = 'tools';
       })
@@ -325,7 +325,7 @@ export struct AiSourcesPanel {
         .border({ width: 1, color: this.palette().borderSubtle })
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
-          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.projectDropdownOpen = !this.projectDropdownOpen;
           });
         })
@@ -347,7 +347,7 @@ export struct AiSourcesPanel {
         .backgroundColor(this.palette().accentSoft)
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
-          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.isCreatingProject = !this.isCreatingProject;
           });
         })
@@ -793,8 +793,8 @@ export struct AiSourcesPanel {
             }
             .width('100%')
 
-            if (c.headingPath.length > 0) {
-              Text(`§ ${c.headingPath}`)
+            if (c.headingPath.length > 0 || c.pageNumber) {
+              Text(c.pageNumber ? `第 ${c.pageNumber} 页` : `§ ${c.headingPath}`)
                 .fontSize(TypographyTokens.TINY)
                 .fontColor(this.palette().inkSecondary)
                 .maxLines(1)
@@ -819,7 +819,7 @@ export struct AiSourcesPanel {
           .margin({ bottom: 4 })
           .hoverEffect(HoverEffect.Highlight)
           .onClick(() => this.onPreviewSource(c))
-        }, (c: ChatCitation) => `${c.noteId}-${c.headingPath}-${c.score}`)
+        }, (c: ChatCitation) => `${c.noteId}-${c.pageNumber || 0}-${c.headingPath}-${c.startLine || 0}`)
       }
     }
     .width('100%')
@@ -950,7 +950,7 @@ export struct AiSourcesPanel {
         .backgroundColor(this.searchExpanded || this.searchKeyword.length > 0 ? this.palette().accentSoft : Color.Transparent)
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => {
-          animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.searchExpanded = !this.searchExpanded;
             if (!this.searchExpanded) {
               this.searchKeyword = '';

@@ -1,9 +1,11 @@
 import { Context } from '@kit.AbilityKit';
+import { NoteCoverService } from './NoteCoverService';
 import { preferences } from '@kit.ArkData';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { NoteItem } from '../common/types/NoteItem';
 import { SpaceFolder } from '../common/types/SpaceFolder';
 import { DocumentTransferResult, MarkdownDocument } from '../common/types/MarkdownDocument';
+import { PdfDocumentService } from './document/PdfDocumentService';
 
 const PREFERENCES_NAME: string = 'flowmind_notes';
 const NOTES_KEY: string = 'notes';
@@ -104,19 +106,20 @@ export class NoteStorageService {
   }
 
   /**
-   * 删除指定笔记的 Markdown 文件。文件不存在时静默返回，不抛异常。
+   * 删除笔记正文和应用内 PDF 副本。不存在时跳过，失败向调用方报告。
    */
-  async delete(context: Context, noteId: string): Promise<void> {
+  async delete(context: Context, noteId: string, sourceUri: string = '', coverUrl: string = ''): Promise<void> {
     await this.ensureInitialized(context);
-    const filePath: string = this.filePath(noteId);
-    try {
-      const exists: boolean = await fileIo.access(filePath);
-      if (exists) {
-        await fileIo.unlink(filePath);
-      }
-    } catch (error) {
-      console.error(`笔记文件删除失败 (${noteId}): ${JSON.stringify(error)}`);
+    const prefix: string = `${context.filesDir}/documents/`;
+    const name: string = sourceUri.startsWith(prefix) ? sourceUri.substring(prefix.length) : '';
+    // 只清理 documents 的直接子文件，外部选择器 URI 或异常路径不得删除。
+    if (name.length > 0 && name !== '.' && name !== '..' &&
+      !name.includes('/') && !name.includes('\\')) {
+      if (await fileIo.access(sourceUri)) { await fileIo.unlink(sourceUri); }
     }
+    const filePath: string = this.filePath(noteId);
+    if (await fileIo.access(filePath)) { await fileIo.unlink(filePath); }
+    await NoteCoverService.removeManaged(context, coverUrl);
   }
 
   /**
@@ -129,7 +132,7 @@ export class NoteStorageService {
   }
 
   /**
-   * 使用系统文件选择器导入 Markdown/TXT。PDF/Word 只报告不支持解析，不伪造正文。
+   * 导入 Markdown/TXT 与真实 PDF；未支持的 Word 格式明确提示转换。
    */
   async importDocument(context: Context): Promise<DocumentTransferResult> {
     try {
@@ -160,75 +163,35 @@ export class NoteStorageService {
       }
 
       if (/\.pdf$/i.test(fileName)) {
-        const title: string = fileName.replace(/\.pdf$/i, '');
-        const content: string = `# ${title}\n\n` +
-          `> 来源文件：${fileName} (PDF 文献)\n\n` +
-          `## 文献摘要与考点\n\n` +
-          `- 本文档已导入至应用沙箱，点击顶栏「◫ 边读边写」可开启右侧白纸草稿板进行随堂公式推演。\n` +
-          `- 涉及核心概念可直接在文中使用 \`[[双向链接]]\` 沉淀至知识图谱。\n\n` +
-          `#考研 #文献研读`;
-        const note: NoteItem = {
-          id,
-          title,
-          category: '参考资料',
-          type: 'PDF',
-          previewText: `[PDF文献] ${title}，支持边读边写双开草稿批注`,
-          tag: 'PDF文献',
-          tagColor: '#E11D48',
-          updateTime: '刚刚',
-          contentDetail: content,
-          pageInfo: '文献文档'
-        };
-        await this.ensureInitialized(context);
-        await this.writeMarkdown(note.id, content);
-        return {
-          status: 'imported',
-          document: this.documentFor(context, note, content),
-          fileName,
-          noteType: 'PDF',
-          message: `已导入 PDF 文献「${fileName}」`
-        };
-      }
-
-      if (/\.(docx|doc)$/i.test(fileName)) {
-        const title: string = fileName.replace(/\.(docx|doc)$/i, '');
-        let extractedContent: string = '';
+        const pdf = PdfDocumentService.getInstance();
+        const savedPath = await pdf.savePdfToSandbox(context, uri, fileName);
+        let count: number = 0;
         try {
-          const raw = await fileIo.readText(uri);
-          const matches = raw.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g);
-          if (matches && matches.length > 0) {
-            extractedContent = matches.map((m: string) => m.replace(/<w:t[^>]*>/, '').replace(/<\/w:t>/, '')).join(' ');
-          }
-        } catch (e) {
-          // 二进制容错
+          count = (await pdf.getPdfInfo(savedPath)).pageCount;
+        } catch (error) {
+          try { await fileIo.unlink(savedPath); } catch { /* 不残留失败导入文件 */ }
+          return { status: 'failed', message: error instanceof Error ? error.message : 'PDF 读取失败' };
         }
-        const content: string = `# ${title}\n\n` +
-          `> 来源文件：${fileName} (试卷/文档)\n\n` +
-          (extractedContent.length > 0 ? `## 试卷题目内容\n\n${extractedContent}\n\n` : '') +
-          `## 解题与批注区\n\n` +
-          `- 点击顶栏「◫ 边读边写」按钮展开右侧白纸草稿板，使用炭黑/蓝笔演练推导，红笔订正，荧光笔圈出题干关键条件。\n` +
-          `- 关联知识点考点：[[线性代数 · 特征值与特征向量]]、[[操作系统 · 死锁与银行家算法]]\n\n` +
-          `#试卷 #真题演练`;
         const note: NoteItem = {
-          id,
-          title,
-          category: '试卷题库',
-          type: 'Doc',
-          previewText: `[试卷文档] ${title}，支持边读边写做题批注与双链`,
-          tag: '试卷题目',
-          tagColor: '#2563EB',
-          updateTime: '刚刚',
-          contentDetail: content
+          id: id, title: fileName.replace(/\.pdf$/i, ''), category: '未分类', type: 'PDF',
+          previewText: 'PDF · ' + count + ' 页', tag: 'PDF', tagColor: '#E11D48', updateTime: '刚刚',
+          contentDetail: '# ' + fileName + '\n\n来源：导入的 PDF，共 ' + count + ' 页。',
+          sourceUri: savedPath, sourceType: 'pdf', pageCount: count
         };
-        await this.ensureInitialized(context);
-        await this.writeMarkdown(note.id, content);
-        return {
-          status: 'imported',
-          document: this.documentFor(context, note, content),
-          fileName,
-          noteType: 'Doc',
-          message: `已导入试卷文档「${fileName}」`
-        };
+        try {
+          await this.ensureInitialized(context);
+          await this.writeMarkdown(note.id, note.contentDetail);
+        } catch (error) {
+          try { await fileIo.unlink(savedPath); } catch { /* 无引用的导入副本清理 */ }
+          throw new Error('PDF 笔记保存失败，请检查存储空间或重试');
+        }
+        return { status: 'imported', document: this.documentFor(context, note, note.contentDetail),
+          fileName: fileName, noteType: 'PDF', sourceUri: savedPath, pageCount: count,
+          message: '已导入 PDF「' + fileName + '」' };
+      }
+      if (/\.(docx|doc)$/i.test(fileName)) {
+        return { status: 'unsupported', fileName: fileName,
+          message: '暂不支持 Word 正文解析，请转换为 PDF、Markdown 或 TXT 后导入。' };
       }
 
       return {

@@ -12,7 +12,7 @@
  *      - 沉浸式白纸底色多色笔画板
  */
 import { curves } from '@kit.ArkUI';
-import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, LayoutTokens, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { MarkdownOutlineItem } from '../../common/types/MarkdownOutlineItem';
@@ -34,6 +34,7 @@ export struct ReaderWorkspace {
   onToggleFavorite: (note: NoteItem) => void = () => {};
   onDeleteNote: (note: NoteItem) => void = () => {};
   onSaved: (note: NoteItem, content: string) => void = () => {};
+  onChooseCover: () => void = () => {};
   onSaveStateChange: (state: string) => void = () => {};
   onOutlineUpdated: (items: MarkdownOutlineItem[]) => void = () => {};
   onOpenNoteByTitle: (title: string) => void = () => {};
@@ -132,7 +133,7 @@ export struct ReaderWorkspace {
         .borderRadius(6)
         .backgroundColor(this.favorite ? this.palette().accentSoft : this.palette().surfaceSubtle)
         .hoverEffect(HoverEffect.Highlight)
-        .animation({ curve: curves.springMotion(0.25, 0.76) })
+        .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
         .onClick(() => {
           this.onToggleFavorite(this.note);
         })
@@ -151,7 +152,7 @@ export struct ReaderWorkspace {
               .onClick(() => {
                 this.deleteArmed = false;
               })
-            Text(this.isPhone ? '🗑 确认' : '确认删除')
+            Text(this.isPhone ? '⌫ 确认' : '确认删除')
               .fontSize(TypographyTokens.CAPTION)
               .fontColor(Color.White)
               .padding({ left: 10, right: 10, top: 4, bottom: 4 })
@@ -166,7 +167,7 @@ export struct ReaderWorkspace {
           .margin({ left: 8 })
         } else {
           Row({ space: 4 }) {
-            Text('🗑')
+            Text('⌫')
               .fontSize(TypographyTokens.CAPTION)
               .fontColor(this.palette().inkSecondary)
             if (!this.isPhone) {
@@ -201,7 +202,7 @@ export struct ReaderWorkspace {
                 .borderRadius(6)
                 .backgroundColor(this.activeDocMode === 'annotator' ? this.palette().accentSoft : 'transparent')
                 .onClick(() => {
-                  animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+                  animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
                     this.activeDocMode = 'annotator';
                   });
                 })
@@ -215,7 +216,7 @@ export struct ReaderWorkspace {
                 .borderRadius(6)
                 .backgroundColor(this.activeDocMode === 'split' ? this.palette().accentSoft : 'transparent')
                 .onClick(() => {
-                  animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+                  animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
                     this.activeDocMode = 'split';
                   });
                 })
@@ -229,7 +230,7 @@ export struct ReaderWorkspace {
                 .borderRadius(6)
                 .backgroundColor(this.activeDocMode === 'reader' ? this.palette().accentSoft : 'transparent')
                 .onClick(() => {
-                  animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+                  animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
                     this.activeDocMode = 'reader';
                   });
                 })
@@ -254,9 +255,9 @@ export struct ReaderWorkspace {
             .borderRadius(6)
             .backgroundColor(this.isSplitMode ? this.palette().accentSoft : this.palette().surfaceSubtle)
             .hoverEffect(HoverEffect.Highlight)
-            .animation({ curve: curves.springMotion(0.25, 0.76) })
+            .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
             .onClick(() => {
-              animateTo({ curve: curves.springMotion(0.28, 0.76) }, () => {
+              animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
                 this.isSplitMode = !this.isSplitMode;
               });
             })
@@ -282,7 +283,7 @@ export struct ReaderWorkspace {
         }
         .layoutWeight(1)
         .width('100%')
-        .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
       } else if (this.isDocumentOrExam() && this.activeDocMode === 'annotator') {
         // 模式 2：原生三层架构 PDF/试卷原盘手写批注
         Column() {
@@ -294,13 +295,14 @@ export struct ReaderWorkspace {
         }
         .layoutWeight(1)
         .width('100%')
-        .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
       } else {
         // 模式 3：双开分屏 或 纯文本研读
         Row() {
           // 左侧研读区 (试卷 / 文献 / 随笔)
           Column() {
             MarkdownReader({
+              onChooseCover: this.onChooseCover,
               note: this.note,
               jumpToken: this.jumpToken,
               jumpLine: this.jumpLine,
@@ -312,7 +314,7 @@ export struct ReaderWorkspace {
           }
           .layoutWeight(this.isSplitActive() ? 55 : 100)
           .height('100%')
-          .animation({ curve: curves.springMotion(0.28, 0.76) })
+          .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
 
           // 中间分割条 + 右侧随堂草稿板
           if (this.isSplitActive()) {
@@ -335,13 +337,13 @@ export struct ReaderWorkspace {
             .transition(
               TransitionEffect.move(TransitionEdge.END)
                 .combine(TransitionEffect.OPACITY)
-                .animation({ curve: curves.springMotion(0.28, 0.76) })
+                .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
             )
           }
         }
         .layoutWeight(1)
         .width('100%')
-        .transition(TransitionEffect.OPACITY.animation({ curve: curves.springMotion(0.28, 0.76) }))
+        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
       }
     }
     .width('100%')

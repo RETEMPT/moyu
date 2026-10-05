@@ -1,16 +1,8 @@
-/**
- * 系统级 OCR 文字识别服务 (OcrService)
- *
- * 核心能力：
- * 1. 原生对接 HarmonyOS CoreVisionKit (textRecognition)，实现端侧毫秒级高精度离线文本识别
- * 2. 自动解码图片 URI 并构建 RGBA_8888 规格的 PixelMap
- * 3. 具备环境自适应与优雅降级（如模拟器或无 NPU 环境下的保底兼容）
- */
-import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
 import { textRecognition } from '@kit.CoreVisionKit';
 
+/** 使用端侧 OCR；无文字或设备不支持时返回明确错误。 */
 export class OcrService {
   private static instance: OcrService | null = null;
 
@@ -21,46 +13,45 @@ export class OcrService {
     return OcrService.instance;
   }
 
-  /**
-   * 对指定图片 URI 进行文字识别 (OCR)
-   * @param imageUri 系统图库返回的 photoUri 或本地沙箱图片绝对路径
-   * @returns 识别提取出的纯文本正文
-   */
   async recognizeTextFromUri(imageUri: string): Promise<string> {
-    if (!imageUri || imageUri.trim().length === 0) {
+    if (imageUri.trim().length === 0) {
       throw new Error('无效的图片路径');
     }
-
+    let file: fs.File | null = null;
+    let source: image.ImageSource | null = null;
+    let pixelMap: image.PixelMap | null = null;
     try {
-      // 1. 打开图片文件句柄
-      const file = fs.openSync(imageUri, fs.OpenMode.READ_ONLY);
-      const imageSource: image.ImageSource = image.createImageSource(file.fd);
-
-      // 2. 创建 CoreVisionKit 要求的 RGBA_8888 格式 PixelMap
-      const decodingOptions: image.DecodingOptions = {
-        editable: false,
-        desiredPixelFormat: image.PixelMapFormat.RGBA_8888
-      };
-      const pixelMap: image.PixelMap = await imageSource.createPixelMap(decodingOptions);
-      fs.closeSync(file);
-
-      // 3. 构造视觉入参并调用端侧 TextRecognition 引擎
-      const visionInfo: textRecognition.VisionInfo = {
-        pixelMap: pixelMap
-      };
-      const recognitionResult: textRecognition.TextRecognitionResult = await textRecognition.recognizeText(visionInfo);
-
-      if (recognitionResult && recognitionResult.value && recognitionResult.value.trim().length > 0) {
-        return recognitionResult.value.trim();
+      file = fs.openSync(imageUri, fs.OpenMode.READ_ONLY);
+      source = image.createImageSource(file.fd);
+      const info = await source.getImageInfo();
+      // 控制手机解码内存，保持比例与文字细节。
+      const ratio = Math.min(1, 3200 / Math.max(info.size.width, info.size.height));
+      pixelMap = await source.createPixelMap({ editable: false,
+        desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
+        desiredSize: { width: Math.max(1, Math.round(info.size.width * ratio)),
+          height: Math.max(1, Math.round(info.size.height * ratio)) } });
+      const result = await textRecognition.recognizeText({ pixelMap: pixelMap });
+      const text = result && typeof result.value === 'string' ? result.value.trim() : '';
+      if (text.length === 0) {
+        throw new Error('未识别到文字，请选择清晰图片或手动粘贴文字');
       }
-    } catch (error) {
-      console.warn(`系统 CoreVisionKit OCR 异常或降级: ${JSON.stringify(error)}`);
+      return text;
+    } finally {
+      if (pixelMap !== null) {
+        try { await pixelMap.release(); } catch { /* 已释放 */ }
+      }
+      if (source !== null) {
+        try { await source.release(); } catch { /* 已释放 */ }
+      }
+      if (file !== null) {
+        try { fs.closeSync(file); } catch { /* 已关闭 */ }
+      }
     }
+  }
 
-    // 4. 环境兼容保底（如预览器环境、未配备 NPU 或纯图形无文字测试图）
-    return '【智能 OCR 识别提取结果】\n' +
-      '时间：12月26日上午 09:30，软件学院 204 会议室\n' +
-      '科目：计算机系统结构与知识管理工作台阶段成果答辩\n' +
-      '考核要求：各答辩人需提前15分钟进场，提交纸质版设计文档一份并附带演示视频。大作业截止12月25日提交。';
+  /** Caller retains ownership of a rendered PDF page and must release it. */
+  async recognizePixelMap(pixelMap: image.PixelMap): Promise<string> {
+    const result = await textRecognition.recognizeText({ pixelMap: pixelMap });
+    return result && typeof result.value === 'string' ? result.value.trim() : '';
   }
 }

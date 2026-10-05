@@ -23,6 +23,8 @@ import { AgentToolSpec, AgentToolExecutor, AgentToolResult } from '../../common/
 import { ModelProvider, StreamHandle, createProvider } from './ModelProvider';
 import { ModelConfigService } from './ModelConfigService';
 import { buildOpenAiToolsJson, findTool } from './ToolRegistry';
+import { ModelProfilePolicy } from './ModelProfilePolicy';
+import { ToolArgumentValidator } from './ToolArgumentValidator';
 
 /** Agent 层级 */
 export type AgentLayer = 'L1' | 'L2' | 'L3';
@@ -36,6 +38,8 @@ export interface CurrentDocContext {
 
 /** Agent 运行上下文 */
 export interface AgentRunContext {
+  profile?: ModelProfile;
+  isCancelled?: () => boolean;
   /** 用户提问 */
   query: string;
   /** 当前文档内容（L1） */
@@ -154,11 +158,17 @@ export class AgentOrchestrator {
     onHandle?: (handle: StreamHandle) => void
   ): Promise<StoredMessage> {
     const configService: ModelConfigService = ModelConfigService.getInstance();
-    const profile: ModelProfile = await configService.getActiveProfile();
+    const profile: ModelProfile = ctx.profile || await configService.getActiveProfile();
     const provider: ModelProvider = createProvider(profile.protocol);
 
     const messages: ChatMessage[] = this.buildMessages(layer, ctx);
-    const toolsJson: string = ctx.tools !== undefined ? buildOpenAiToolsJson(ctx.tools) : '';
+    const available = ModelProfilePolicy.availableTools(profile, ctx.tools || []);
+    const runtime: AgentRunContext = { query: ctx.query, history: ctx.history, currentDoc: ctx.currentDoc,
+      pinnedNotes: ctx.pinnedNotes, retrievalHits: ctx.retrievalHits, learningContext: ctx.learningContext,
+      profile, isCancelled: ctx.isCancelled, tools: available, executor: ctx.executor, confirm: ctx.confirm };
+    const toolsJson: string = buildOpenAiToolsJson(available);
+    messages[0].content += `\n\n今天是 ${ToolArgumentValidator.date()}。方案日期请以此为准，不要使用示例中的过去日期。`;
+    if (profile.systemPrompt.trim()) { messages[0].content += `\n\n用户的附加指令：\n${profile.systemPrompt}`; }
 
     const assistantMsg: StoredMessage = createMessage('assistant', '');
     assistantMsg.agentLayer = layer;
@@ -166,7 +176,8 @@ export class AgentOrchestrator {
     assistantMsg.streaming = true;
 
     let rounds: number = 0;
-    while (rounds < MAX_TOOL_ROUNDS) {
+    let pendingTools: boolean = false;
+    while (rounds < ModelProfilePolicy.rounds(profile) && !ctx.isCancelled?.()) {
       rounds++;
       const prefix: string = assistantMsg.text;
       const round: AgentRound = await this.runRound(
@@ -190,7 +201,8 @@ export class AgentOrchestrator {
       if (round.reasoningText.length > 0) {
         assistantMsg.reasoningContent = round.reasoningText;
       }
-      if (round.toolCalls.length === 0) {
+      pendingTools = round.toolCalls.length > 0;
+      if (!pendingTools) {
         break;
       }
 
@@ -202,12 +214,17 @@ export class AgentOrchestrator {
         toolCalls: round.toolCalls
       });
       for (const call of round.toolCalls) {
-        const result: AgentToolResult = await this.executeTool(call, ctx);
+        if (ctx.isCancelled?.()) { break; }
+        const result: AgentToolResult = await this.executeTool(call, runtime);
         messages.push({ role: 'tool', content: result.content, toolCallId: call.id });
       }
     }
 
     assistantMsg.streaming = false;
+    if (ctx.isCancelled?.()) { return assistantMsg; }
+    if (pendingTools && rounds === ModelProfilePolicy.rounds(profile)) {
+      assistantMsg.text += '\n\n本轮已达到配置的工具循环上限；尚未执行的操作可在下一次提问继续。';
+    }
     if (assistantMsg.text.trim().length === 0) {
       if (assistantMsg.reasoningContent !== undefined && assistantMsg.reasoningContent.trim().length > 0) {
         assistantMsg.text = '（已完成深度思考推演。可在上方展开查看完整推理过程；若需提炼特定文档，请在右侧栏确认伴读文档或 @ 关联笔记）';
@@ -229,6 +246,10 @@ export class AgentOrchestrator {
     onRoundText: (text: string) => void,
     onRoundReasoning: (reasoning: string) => void
   ): Promise<AgentRound> {
+    if (!profile.stream) {
+      const text = await provider.complete(profile, { messages, temperature: profile.temperature, maxTokens: profile.maxTokens, stream: false });
+      return { text, reasoningText: '', toolCalls: [] };
+    }
     let text: string = '';
     let reasoningText: string = '';
     const argBuf: Map<number, string> = new Map();
@@ -316,13 +337,16 @@ export class AgentOrchestrator {
 
   /** 执行一次工具调用：写操作必须先拿到用户确认，拿不到就拒绝 */
   private async executeTool(call: ToolCallRequest, ctx: AgentRunContext): Promise<AgentToolResult> {
-    const spec: AgentToolSpec | null = findTool(call.name);
-    if (spec === null) {
+    const spec = ctx.tools?.find((tool: AgentToolSpec) => tool.name === call.name);
+    if (spec === undefined) {
       return { ok: false, content: `没有名为 ${call.name} 的工具，请改用已有工具或直接作答。` };
     }
     if (ctx.executor === undefined) {
       return { ok: false, content: '当前没有可用的工具执行器，请直接作答。' };
     }
+    if (ctx.isCancelled?.()) { return { ok: false, content: '操作已取消' }; }
+    try { ToolArgumentValidator.parse(call.name, call.arguments); }
+    catch (error) { return { ok: false, content: error instanceof Error ? error.message : '工具参数无效' }; }
     if (spec.permission === 'write') {
       if (ctx.confirm === undefined) {
         return { ok: false, content: '该操作需要用户授权，但当前无法发起确认，已取消。请改用文字说明。' };
@@ -333,7 +357,7 @@ export class AgentOrchestrator {
       } catch {
         approved = false;
       }
-      if (!approved) {
+      if (!approved || ctx.isCancelled?.()) {
         return { ok: false, content: '用户拒绝了该操作，不要重试，改用文字说明。' };
       }
     }
@@ -386,7 +410,7 @@ export class AgentOrchestrator {
         prompt += `\n\n<knowledge_excerpts>\n`;
         for (let i = 0; i < ctx.retrievalHits.length; i++) {
           const h: ChatCitation = ctx.retrievalHits[i];
-          prompt += `〔片段 ${i + 1}〕${h.noteTitle} · ${h.headingPath}\n${h.chunkText}\n\n`;
+          prompt += `〔片段 ${i + 1}〕${h.noteTitle} · ${h.pageNumber ? `第 ${h.pageNumber} 页` : h.headingPath}\n${h.chunkText}\n\n`;
         }
         prompt += `</knowledge_excerpts>`;
       } else {

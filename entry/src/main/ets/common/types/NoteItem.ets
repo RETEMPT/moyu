@@ -38,5 +38,7 @@ export interface NoteItem {
   aiSummary?: string;
   /** AI 自动分析的智能标签列表 */
   aiTags?: string[];
+  /** 已校对的 PDF 页文字，JSON 序列化 PdfTextPage[]；不替换批注正文。 */
+  pdfTextJson?: string;
 }
 

@@ -13,6 +13,8 @@ export interface ChatCitation {
   headingPath: string;
   chunkText: string;
   score: number;
+  pageNumber?: number;
+  startLine?: number;
 }
 
 /** 持久化消息 */
@@ -35,6 +37,7 @@ export interface StoredMessage {
   streaming?: boolean;
   error?: string;
   proposalStatus?: 'pending' | 'accepted' | 'dismissed';
+  proposalAppliedIds?: string[];
 }
 
 /** 会话 */

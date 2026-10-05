@@ -8,8 +8,8 @@ import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTok
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { SAVE_FAILED, SAVE_SAVING } from '../../common/constants/WorkspaceConstants';
 
-const TOP_BAR_HEIGHT: number = 44;
-const ICON_SIZE: number = 28;
+const TOP_BAR_HEIGHT: number = 52;
+const ICON_SIZE: number = 44;
 
 @Component
 export struct GlobalTopBar {
@@ -37,7 +37,7 @@ export struct GlobalTopBar {
 
   /** 图标点击区：手机放大到接近最小触控目标，宽屏保持紧凑 */
   private iconSize(): number {
-    return this.isPhone ? 38 : ICON_SIZE;
+    return ICON_SIZE;
   }
 
   private saveStateColor(): string {
@@ -54,15 +54,19 @@ export struct GlobalTopBar {
   build() {
     Row() {
       // ---- 左区 ----
-      Text('☰')
-        .fontSize(TypographyTokens.TITLE_SUB)
-        .fontColor(this.palette().inkSecondary)
-        .width(this.iconSize())
-        .height(this.iconSize())
-        .textAlign(TextAlign.Center)
-        .borderRadius(6)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => this.onToggleSidebar())
+      Row() {
+        Image($r('app.media.ic_menu'))
+          .width(20)
+          .height(20)
+          .objectFit(ImageFit.Contain)
+      }
+      .width(this.iconSize())
+      .height(this.iconSize())
+      .justifyContent(FlexAlign.Center)
+      .borderRadius(6)
+      .hoverEffect(HoverEffect.Highlight)
+      .accessibilityText('打开导航')
+      .onClick(() => this.onToggleSidebar())
 
       Row({ space: 6 }) {
         ForEach(this.breadcrumb, (segment: string, index: number) => {
@@ -93,15 +97,19 @@ export struct GlobalTopBar {
       }
       .margin({ right: 8 })
 
-      Text('⌕')
-        .fontSize(TypographyTokens.TITLE_SUB)
-        .fontColor(this.palette().inkSecondary)
-        .width(this.iconSize())
-        .height(this.iconSize())
-        .textAlign(TextAlign.Center)
-        .borderRadius(6)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => this.onOpenSearch())
+      Row() {
+        Image($r('app.media.ic_search'))
+          .width(20)
+          .height(20)
+          .objectFit(ImageFit.Contain)
+      }
+      .width(this.iconSize())
+      .height(this.iconSize())
+      .justifyContent(FlexAlign.Center)
+      .borderRadius(6)
+      .hoverEffect(HoverEffect.Highlight)
+      .accessibilityText('搜索笔记')
+      .onClick(() => this.onOpenSearch())
 
       if (this.showContextToggle) {
         Text(this.contextPanelOpen ? '❯' : '❮')

@@ -6,4 +6,5 @@ export interface NoteSearchResult {
   matchedContent: boolean;
   matchedTags: string[];
   preview: string;
+  pageNumber?: number;
 }

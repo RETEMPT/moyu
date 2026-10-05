@@ -48,7 +48,8 @@ export class RagRetriever {
     documents: MarkdownDocument[],
     query: string,
     profile: ModelProfile,
-    limit: number = 6
+    limit: number = 6,
+    cancelled?: () => boolean
   ): Promise<RetrievalHit[]> {
     const keywordHits: RetrievalHit[] = this.search(documents, query, limit * 2);
     if (!EmbeddingIndexService.canEmbed(profile)) {
@@ -66,10 +67,11 @@ export class RagRetriever {
       return keywordHits.slice(0, limit);
     }
 
-    const indexed: boolean = await this.embedIndex.ensure(profile, chunks);
+    const indexed: boolean = await this.embedIndex.ensure(profile, chunks, cancelled);
     if (!indexed) {
       return keywordHits.slice(0, limit);
     }
+    if (cancelled?.()) { return []; }
     const queryVec: number[] = await this.embedIndex.embedQuery(profile, query);
     if (queryVec.length === 0) {
       return keywordHits.slice(0, limit);
@@ -119,7 +121,8 @@ export class RagRetriever {
         headingPath: hit.chunk.headingPath,
         chunkText: hit.chunk.text,
         score: hit.score,
-        startLine: hit.chunk.startLine
+        startLine: hit.chunk.startLine,
+        pageNumber: hit.chunk.pageNumber
       };
       citations.push(citation);
     }

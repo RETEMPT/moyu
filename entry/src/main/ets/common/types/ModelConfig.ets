@@ -10,7 +10,7 @@ export type ProviderProtocol =
   | 'openai-compat'   // POST {base}/chat/completions，SSE stream
   | 'gemini'          // POST {base}/models/{id}:generateContent
   | 'anthropic'       // POST {base}/v1/messages
-  | 'custom';         // 用户自定义 HTTP 模板
+  | 'custom';         // 旧版档案，按 OpenAI 兼容协议处理
 
 /** 一个可保存的模型配置档案 */
 export interface ModelProfile {
@@ -22,10 +22,13 @@ export interface ModelProfile {
   modelId: string;
   /** 向量化模型 id（跨库语义检索用） */
   embeddingModelId?: string;
+  semanticSearch?: boolean;
   temperature: number;
   maxTokens: number;
   stream: boolean;
   systemPrompt: string;
+  toolAccess?: 'none' | 'read' | 'confirm-write';
+  maxToolRounds?: number;
   /** 是否为 DeepSeek-R1 等深度思考/推理模型 */
   isReasoningModel?: boolean;
   /** 思考 token 预算，留空为自动 */
@@ -157,49 +160,8 @@ export function getPresetTemplates(): ModelPresetTemplate[] {
       }
     },
     {
-      name: 'DeepSeek 官方 (主力通用)',
-      description: '官方推荐主力通道（deepseek-chat），平滑升级最新旗舰版，最稳妥',
-      profile: {
-        id: `preset_ds_chat_${now}`,
-        label: 'DeepSeek 官方',
-        protocol: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com/v1',
-        apiKey: '',
-        modelId: 'deepseek-chat',
-        embeddingModelId: '',
-        temperature: 0.7,
-        maxTokens: 8192,
-        stream: true,
-        isReasoningModel: false,
-        systemPrompt: '',
-        createdAt: now,
-        updatedAt: now
-      }
-    },
-    {
-      name: 'DeepSeek 官方 (深度思考)',
-      description: '官方深度思考模型（deepseek-reasoner），链式思考推演与严谨数理证明',
-      profile: {
-        id: `preset_ds_reasoner_${now}`,
-        label: 'DeepSeek 思考',
-        protocol: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com/v1',
-        apiKey: '',
-        modelId: 'deepseek-reasoner',
-        embeddingModelId: '',
-        temperature: 0.6,
-        maxTokens: 8192,
-        stream: true,
-        isReasoningModel: true,
-        thinkingBudget: 4096,
-        systemPrompt: '',
-        createdAt: now,
-        updatedAt: now
-      }
-    },
-    {
       name: '硅基流动 (SiliconFlow 专线)',
-      description: '国内高速中转专线，稳定高并发，支持免翻免配',
+      description: '兼容服务示例，请按服务商控制台核对模型 ID',
       profile: {
         id: `preset_sf_${now}`,
         label: 'SiliconFlow 专线',
@@ -219,7 +181,7 @@ export function getPresetTemplates(): ModelPresetTemplate[] {
     },
     {
       name: 'Ollama 本地 (DeepSeek)',
-      description: '纯本地端侧离线运行，免 API Key 零成本保护隐私',
+      description: '连接已运行的 Ollama 服务；手机端请填写可达的主机地址',
       profile: {
         id: `preset_ollama_${now}`,
         label: 'Ollama 本地',

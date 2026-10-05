@@ -33,6 +33,9 @@ const STROKE_WIDTHS: number[] = [2, 4, 8];
 export struct PdfAnnotatorView {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
   @Prop @Watch('onCurrentPageChanged') currentPage: number = 1;
+  @Prop @Watch('saveForExit') exitSaveToken: number = 0;
+  onCommitForExit: (note: NoteItem, content: string) => Promise<void> = async () => {};
+  onExitSaveFinished: (ok: boolean) => void = () => {};
   @Prop barsVisible: boolean = true;
   @Prop isContinuousScroll: boolean = true;
   onSaved: (note: NoteItem, content: string) => void = () => {};
@@ -58,16 +61,13 @@ export struct PdfAnnotatorView {
   // 撤销历史栈
   private undoStack: PageAnnotationStroke[] = [];
   private saveTimer: number = -1;
+  private loadedNoteId: string = '';
 
   onCurrentPageChanged(): void {
     const idx = Math.max(0, Math.min(this.pages.length - 1, this.currentPage - 1));
     this.currentPageIdx = idx;
     try {
-      this.scroller.scrollTo({
-        xOffset: 0,
-        yOffset: idx * 920,
-        animation: { duration: 300, curve: Curve.EaseInOut }
-      });
+      this.scroller.scrollToIndex(idx, true, ScrollAlign.START);
     } catch (e) {
       // ignore
     }
@@ -80,18 +80,30 @@ export struct PdfAnnotatorView {
   }
 
   aboutToAppear(): void {
+    this.loadedNoteId = this.note.id;
     this.initPages();
     this.loadAnnotations();
   }
 
+  aboutToDisappear(): void {
+    if (this.saveTimer !== -1) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = -1;
+    }
+  }
+
   onNoteChanged(): void {
+    if (this.loadedNoteId === this.note.id) { return; }
+    this.loadedNoteId = this.note.id;
+    this.undoStack = [];
     this.initPages();
     this.loadAnnotations();
   }
 
   /** 根据文档真实页数与标题动态生成排版页面 */
   private initPages(): void {
-    const total = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount : 9;
+    const total = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount :
+      (this.note.id.startsWith('note-seed-') ? 9 : 1);
     this.pages = PdfDocumentService.getInstance().generatePageModels(total, this.note.title);
   }
 
@@ -184,7 +196,7 @@ export struct PdfAnnotatorView {
     if (this.saveTimer !== -1) {
       clearTimeout(this.saveTimer);
     }
-    this.onSaveStateChange('批注保存中...');
+    this.onSaveStateChange('保存中');
     this.saveTimer = setTimeout(() => {
       this.flushSave();
     }, 800);
@@ -192,6 +204,25 @@ export struct PdfAnnotatorView {
 
   /** 序列化并存入 NoteItem.pageAnnotations */
   private flushSave(): void {
+    this.saveTimer = -1;
+    const updatedNote = this.annotationSnapshot();
+    this.onSaved(updatedNote, updatedNote.contentDetail);
+    this.onSaveStateChange('已保存');
+  }
+
+  private async saveForExit(): Promise<void> {
+    if (this.saveTimer !== -1) { clearTimeout(this.saveTimer); this.saveTimer = -1; }
+    const snapshot = this.annotationSnapshot();
+    try {
+      await this.onCommitForExit(snapshot, snapshot.contentDetail);
+      this.onExitSaveFinished(true);
+    } catch {
+      this.onSaveStateChange('保存失败');
+      this.onExitSaveFinished(false);
+    }
+  }
+
+  private annotationSnapshot(): NoteItem {
     const data: DocumentAnnotationData = {
       version: 1,
       pageCount: this.pages.length,
@@ -213,21 +244,26 @@ export struct PdfAnnotatorView {
       coverUrl: this.note.coverUrl,
       strokes: this.note.strokes,
       scratchpadStrokes: this.note.scratchpadStrokes,
-      pageAnnotations: serialized
+      pageAnnotations: serialized,
+      favorite: this.note.favorite, tags: this.note.tags, createdAt: this.note.createdAt, updatedAt: this.note.updatedAt,
+      isPinned: this.note.isPinned, sourceUri: this.note.sourceUri, sourceType: this.note.sourceType,
+      pageCount: this.note.pageCount, pdfTextJson: this.note.pdfTextJson,
+      documentMeta: this.note.documentMeta, aiSummary: this.note.aiSummary, aiTags: this.note.aiTags
     };
-    this.onSaved(updatedNote, updatedNote.contentDetail);
-    this.onSaveStateChange('原盘批注已保存');
+    return updatedNote;
   }
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       if (this.isContinuousScroll) {
-        // ---- 连续排版视口 (可缩放、连续滚屏) ----
-        Scroll(this.scroller) {
-          Column({ space: 24 }) {
-            ForEach(this.pages, (pm: PdfPageModel) => {
+        // 连续列表按实际页面高度定位，位图由可见页管理。
+        List({ space: 24, scroller: this.scroller }) {
+          ForEach(this.pages, (pm: PdfPageModel) => {
+            ListItem() {
               PdfPageCanvas({
                 pageModel: pm,
+                sourceUri: this.note.sourceUri || '',
+                useRealPdf: !this.note.id.startsWith('note-seed-'),
                 strokes: this.pageStrokes[pm.pageIndex] || [],
                 isAnnotateMode: this.isAnnotateMode,
                 tool: this.currentTool,
@@ -237,13 +273,11 @@ export struct PdfAnnotatorView {
                 onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
                 onEraseAtPoint: (u: number, v: number) => this.handleEraseAtPoint(pm.pageIndex, u, v)
               })
-            }, (pm: PdfPageModel) => `page_${pm.pageIndex}`)
-          }
-          .width(`${100 * this.zoomScale}%`)
-          .padding({ left: 32, right: 32, top: 24, bottom: 96 })
-          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
+            }
+          }, (pm: PdfPageModel) => `page_${pm.pageIndex}`)
         }
         .width('100%')
+        .padding({ left: 32, right: 32, top: 24, bottom: 96 })
         .height('100%')
         .scrollBar(BarState.Auto)
         .backgroundColor(this.palette().canvas)
@@ -257,6 +291,8 @@ export struct PdfAnnotatorView {
           if (this.pages[this.currentPageIdx]) {
             PdfPageCanvas({
               pageModel: this.pages[this.currentPageIdx],
+              sourceUri: this.note.sourceUri || '',
+              useRealPdf: !this.note.id.startsWith('note-seed-'),
               strokes: this.pageStrokes[this.currentPageIdx] || [],
               isAnnotateMode: this.isAnnotateMode,
               tool: this.currentTool,

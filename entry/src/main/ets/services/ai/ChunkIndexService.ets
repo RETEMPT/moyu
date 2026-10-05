@@ -17,13 +17,14 @@ export class ChunkIndexService {
       const text: string = buffer.join('\n').trim();
       if (text.length > 0) {
         chunks.push({
-          id: `${document.id}:${startLine}:${chunks.length}`,
+          id: `${document.id}:${document.pageNumber || 0}:${startLine}:${chunks.length}`,
           noteId: document.id,
           noteTitle: document.title,
           headingPath: headingPath.join(' > '),
           text,
           startLine,
-          tokenEstimate: Math.ceil(text.length / 2)
+          tokenEstimate: Math.ceil(text.length / 2),
+          pageNumber: document.pageNumber
         });
       }
       buffer = [];
