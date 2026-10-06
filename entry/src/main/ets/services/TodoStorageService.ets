@@ -2,11 +2,12 @@
  * 待办与日期备忘的本地存储服务
  *
  * 与笔记正文（.md 文件）分开：待办数据量小、结构固定，直接用 Preferences
- * 存 JSON 快照即可。解析失败一律回退为空数组，绝不因脏数据让模块崩溃。
+ * 存 JSON 快照。损坏数据阻止覆盖并报告错误；写入失败恢复缓存。
  */
 import { Context } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { TodoItem, DayNote } from '../common/types/TodoItem';
+import { SnapshotStore } from './storage/SnapshotStore';
 
 const PREFERENCES_NAME: string = 'flowmind_todos';
 const TODOS_KEY: string = 'todos';
@@ -14,6 +15,7 @@ const DAYNOTES_KEY: string = 'daynotes';
 
 export class TodoStorageService {
   private todoPreferences: preferences.Preferences | null = null;
+  private snapshots: SnapshotStore = new SnapshotStore();
 
   private async ensure(context: Context): Promise<preferences.Preferences> {
     let prefs: preferences.Preferences | null = this.todoPreferences;
@@ -24,50 +26,38 @@ export class TodoStorageService {
     return prefs;
   }
 
-  /** 读取全部待办；缺失或损坏时返回空数组 */
+  /** 读取全部待办；缺失时返回空数组，损坏时报错并保留原数据 */
   async loadTodos(context: Context): Promise<TodoItem[]> {
+    try { return await this.readTodos(context); }
+    catch (error) { this.snapshots.block(TODOS_KEY); throw new Error(error instanceof Error ? error.message : '待办读取失败'); }
+  }
+
+  private async readTodos(context: Context): Promise<TodoItem[]> {
     const prefs: preferences.Preferences = await this.ensure(context);
-    const stored = await prefs.get(TODOS_KEY, '');
-    if (typeof stored !== 'string' || stored.length === 0) {
-      return [];
-    }
-    try {
-      const parsed: TodoItem[] = JSON.parse(stored) as TodoItem[];
-      return this.isTodoArray(parsed) ? parsed : [];
-    } catch (error) {
-      console.error(`待办快照解析失败: ${JSON.stringify(error)}`);
-      return [];
-    }
+    return await this.snapshots.read<TodoItem[]>(prefs, TODOS_KEY, (value: TodoItem[]) => this.isTodoArray(value)) || [];
   }
 
   /** 写入全部待办 */
   async saveTodos(context: Context, todos: TodoItem[]): Promise<void> {
     const prefs: preferences.Preferences = await this.ensure(context);
-    await prefs.put(TODOS_KEY, JSON.stringify(todos));
-    await prefs.flush();
+    await this.snapshots.write(prefs, TODOS_KEY, JSON.stringify(todos));
   }
 
-  /** 读取全部日期备忘；缺失或损坏时返回空数组 */
+  /** 读取全部日期备忘；缺失时返回空数组，损坏时报错并保留原数据 */
   async loadDayNotes(context: Context): Promise<DayNote[]> {
+    try { return await this.readDayNotes(context); }
+    catch (error) { this.snapshots.block(DAYNOTES_KEY); throw new Error(error instanceof Error ? error.message : '日期备忘读取失败'); }
+  }
+
+  private async readDayNotes(context: Context): Promise<DayNote[]> {
     const prefs: preferences.Preferences = await this.ensure(context);
-    const stored = await prefs.get(DAYNOTES_KEY, '');
-    if (typeof stored !== 'string' || stored.length === 0) {
-      return [];
-    }
-    try {
-      const parsed: DayNote[] = JSON.parse(stored) as DayNote[];
-      return this.isDayNoteArray(parsed) ? parsed : [];
-    } catch (error) {
-      console.error(`日期备忘快照解析失败: ${JSON.stringify(error)}`);
-      return [];
-    }
+    return await this.snapshots.read<DayNote[]>(prefs, DAYNOTES_KEY, (value: DayNote[]) => this.isDayNoteArray(value)) || [];
   }
 
   /** 写入全部日期备忘 */
   async saveDayNotes(context: Context, dayNotes: DayNote[]): Promise<void> {
     const prefs: preferences.Preferences = await this.ensure(context);
-    await prefs.put(DAYNOTES_KEY, JSON.stringify(dayNotes));
-    await prefs.flush();
+    await this.snapshots.write(prefs, DAYNOTES_KEY, JSON.stringify(dayNotes));
   }
 
   private isTodoArray(value: TodoItem[]): boolean {

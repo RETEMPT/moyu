@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "墨语"
+    },
+    {
+      "name": "nearby_sync_reason",
+      "value": "用于在您主动选择的可信设备间传递学习资料"
     }
   ]
 }

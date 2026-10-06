@@ -2,15 +2,15 @@ import { AnimationTokens } from '../common/constants/DesignTokens';
 /**
  * 墨语 (FlowMind) 顶层装配器
  *
- * 本文件只承担两件事：
- *   1. 持有全局状态与本地数据流（NoteStorageService / NoteSearchService）
- *   2. 把渲染委托给 AppShell 与 views/ 下的视图组件
+ * 持有全局状态、导航和现有工作区操作，装配 AppShell 与 views/ 下的组件。
+ * 阅读器保存、学习资料恢复逐步下沉到独立用例服务；其余业务操作仍在迁移中。
  *
  * 布局、样式与响应式决策一律下沉到 views/，此处不再出现大段 UI 构建代码。
  */
 import { common } from '@kit.AbilityKit';
 import { curves, promptAction } from '@kit.ArkUI';
 import { NoteItem } from '../common/types/NoteItem';
+import { ReaderSaveKind } from '../common/types/ReaderSaveKind';
 import { SpaceFolder } from '../common/types/SpaceFolder';
 import { LinkGraph, Backlink, UnresolvedLink } from '../common/types/LinkGraph';
 import { MarkdownOutlineItem } from '../common/types/MarkdownOutlineItem';
@@ -82,6 +82,7 @@ import { StudySheet } from '../views/study/StudySheet';
 import { PdfTextSheet } from '../views/study/PdfTextSheet';
 import { StudyBackupSheet } from '../views/study/StudyBackupSheet';
 import { StudyRestoreService } from '../services/study/StudyRestoreService';
+import { ReaderCommitService } from '../services/document/ReaderCommitService';
 import { PrivacySheet } from '../views/settings/PrivacySheet';
 
 /** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
@@ -198,6 +199,7 @@ struct Index {
   @State sheetNote: NoteItem | null = null;
 
   private storage: NoteStorageService = new NoteStorageService();
+  private readerCommits: ReaderCommitService = new ReaderCommitService();
   private searchService: NoteSearchService = new NoteSearchService();
   private todoStorage: TodoStorageService = new TodoStorageService();
   private chatStorage: ChatSessionService = ChatSessionService.getInstance();
@@ -270,11 +272,11 @@ struct Index {
     const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       const loaded: NoteItem[] = await this.storage.load(context, seedNotes());
-      this.notes = loaded.length > 0 ? loaded : seedNotes();
+      this.notes = loaded;
     } catch (error) {
       console.error(`本地笔记加载失败: ${JSON.stringify(error)}`);
-      this.notes = seedNotes();
-      this.notify('本地笔记读取失败，已加载示例内容');
+      this.notes = [];
+      this.notify('本地笔记读取失败，原数据已保留，请检查存储后重试');
     }
     // 恢复用户自建项目。此前 customProjects 只存在于内存，重启即丢，
     // 表现为「建完项目再打开就没了」。首次运行没有快照时回退到默认项目。
@@ -1003,13 +1005,16 @@ struct Index {
       createdAt: now.getTime(),
       updatedAt: now.getTime()
     };
-    this.notes = [note].concat(this.notes);
+    const next = [note].concat(this.notes);
     try {
       await this.storage.create(context, note);
+      await this.storage.save(next);
     } catch (error) {
       console.error(`Markdown 正文创建失败: ${JSON.stringify(error)}`);
+      this.notify('新笔记保存未完成，请检查存储后重试');
+      return;
     }
-    await this.persistSnapshot();
+    this.notes = next;
     this.rebuildSpaces();
     this.openNote(note);
     this.notify('已创建新笔记');
@@ -1800,31 +1805,18 @@ struct Index {
     }
   }
 
-  private handleSaved(note: NoteItem, content: string): void {
-    // Readers own text/strokes; PDF indexing owns this field. A stale reader callback must not roll it back.
-    const current = this.notes.find((item: NoteItem) => item.id === note.id);
-    if (current?.pdfTextJson !== undefined) { note.pdfTextJson = current.pdfTextJson; }
-    const now: number = Date.now();
-    note.updatedAt = now;
-    note.updateTime = this.formatTime(new Date(now));
-    if (note.createdAt === undefined) {
-      note.createdAt = now;
-    }
-    let changed: boolean = false;
-    for (let i = 0; i < this.notes.length; i++) {
-      if (this.notes[i].id === note.id) {
-        this.notes[i] = note;
-        changed = true;
-        break;
+  private handleSaved(note: NoteItem, content: string, kind: ReaderSaveKind = 'markdown'): Promise<void> {
+    note.updateTime = this.formatTime(new Date());
+    return this.readerCommits.commit(note, content, {
+      notes: () => this.notes,
+      saveDocument: async (item: NoteItem, text: string) => { await this.storage.saveDocument(this.getAbilityContext(), item, text); },
+      saveNotes: (items: NoteItem[]) => this.storage.save(items),
+      publish: (items: NoteItem[], saved: NoteItem) => {
+        this.notes = items; this.readingNote = saved;
+        if (this.fullScreenDocNote.id === saved.id) { this.fullScreenDocNote = saved; }
+        this.refreshGraph();
       }
-    }
-    if (changed) {
-      this.notes = this.notes.slice();
-    }
-    this.readingNote = note;
-    if (this.fullScreenDocNote.id === note.id) { this.fullScreenDocNote = note; }
-    this.persistSnapshot();
-    this.refreshGraph();
+    }, true, kind);
   }
 
   private formatTime(date: Date): string {
@@ -1867,7 +1859,7 @@ struct Index {
         onToggleAnnotation: () => {
           this.annotationPaneOpen = !this.annotationPaneOpen;
         },
-        onSaved: (note: NoteItem, content: string) => this.handleSaved(note, content),
+        onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => this.handleSaved(note, content, kind),
         onSaveStateChange: (state: string) => {
           this.saveState = state;
         }
@@ -1966,7 +1958,7 @@ struct Index {
       HandwritingCanvas({
         note: this.getOrCreateCanvasNote(),
         isScratchpad: false,
-        onSaved: (note: NoteItem, content: string) => this.handleSaved(note, content),
+        onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => this.handleSaved(note, content, kind),
         onSaveStateChange: (state: string) => {
           this.saveState = state;
         }
@@ -2276,14 +2268,8 @@ struct Index {
           sourceJumpToken: this.sourceJumpToken,
           onExtractPdfText: (page: number) => { this.pdfExtractNoteId = this.fullScreenDocNote.id; this.pdfExtractPage = page; },
           backRequestToken: this.documentBackToken,
-          onCommitForExit: async (note: NoteItem, content: string) => {
-            note.contentDetail = content;
-            note.updatedAt = Date.now();
-            await this.storage.saveDocument(this.getAbilityContext(), note, content);
-            const nextNotes = this.notes.map((item: NoteItem) => item.id === note.id ? note : item);
-            await this.storage.save(nextNotes);
-            this.notes = nextNotes;
-            this.fullScreenDocNote = note;
+          onCommitForExit: async (note: NoteItem, content: string, kind?: ReaderSaveKind) => {
+            await this.handleSaved(note, content, kind);
             this.saveState = SAVE_IDLE;
           },
           onSmartExtract: () => { this.smartExtractVisible = true; },
@@ -2296,7 +2282,7 @@ struct Index {
             this.fullScreenDocOpen = false;
             this.activeNoteId = '';
           },
-          onSaved: (note: NoteItem, content: string) => this.handleSaved(note, content),
+          onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => this.handleSaved(note, content, kind),
           onSaveStateChange: (state: string) => {
             this.saveState = state;
           },

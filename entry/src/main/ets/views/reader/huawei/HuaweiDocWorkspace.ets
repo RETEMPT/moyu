@@ -21,6 +21,7 @@ import { promptAction } from '@kit.ArkUI';
 import { ColorPalette, TypographyTokens, LayoutTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { NoteItem } from '../../../common/types/NoteItem';
+import { ReaderSaveKind } from '../../../common/types/ReaderSaveKind';
 import { AnnotationTool } from '../../../common/types/PdfAnnotationTypes';
 import { PdfAnnotatorView } from '../pdf/PdfAnnotatorView';
 import { HandwritingCanvas } from '../HandwritingCanvas';
@@ -38,8 +39,8 @@ export struct HuaweiDocWorkspace {
   @Prop @Watch('onSourceJump') sourceJumpToken: number = 0;
   onExtractPdfText: (page: number) => void = () => {};
   onClose: () => void = () => {};
-  onSaved: (note: NoteItem, content: string) => void = () => {};
-  onCommitForExit: (note: NoteItem, content: string) => Promise<void> = async () => {};
+  onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
+  onCommitForExit: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onSmartExtract: () => void = () => {};
   onExportText: () => Promise<void> = async () => {};
   onSearchNotes: () => void = () => {};

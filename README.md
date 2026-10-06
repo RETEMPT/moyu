@@ -199,6 +199,8 @@ hdc list targets
 | [**工作流验收与后续改进**](./docs/WORKFLOW_REVIEW.md) | 本次改进、自动回归结果、全功能设备验收清单与已知限制 |
 | [**校园价值评估**](./docs/CONTEST_VALUE_REVIEW.md) | 按评审权重组织价值证据、学生试用与商业路径 |
 | [**应用市场发布准备**](./docs/APP_MARKET_RELEASE.md) | 发布范围、签名、真机与审核材料的放行条件 |
+| [**多设备互通与功能取舍**](./docs/MULTIDEVICE_PLAN.md) | 附近传递候选实现、下一步同步设计、校园价值与统一发行策略 |
+| [**分层架构与数据保存**](./docs/ARCHITECTURE.md) | 用例、系统适配与存储边界，渐进迁移规则与未解决项 |
 | [**隐私与数据说明**](./docs/PRIVACY.md) | 数据流与备份范围；正式发布身份尚待核对 |
 | [**`SECURITY.md`**](./SECURITY.md) | 安全策略与漏洞提报通道 |
 | [**`LICENSE`**](./LICENSE) | 开源许可证 |

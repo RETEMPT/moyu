@@ -3,7 +3,7 @@
  *
  * Notion 风格排版：28vp 大标题 + 轻量元数据行 + Markdown 块级渲染。
  * 支持「阅读 / 编辑」模式切换；输入变化触发 800ms 防抖，
- * 通过 NoteStorageService.saveDocument 落盘到沙箱应用目录的 .md 文件。
+ * 保存交给上层 ReaderCommitService，正文与快照在同一个用例队列中处理。
  */
 import { common } from '@kit.AbilityKit';
 import { curves, KeyboardAvoidMode, promptAction } from '@kit.ArkUI';
@@ -13,6 +13,7 @@ import { NoteItem } from '../../common/types/NoteItem';
 import { MarkdownDocument } from '../../common/types/MarkdownDocument';
 import { MarkdownOutlineItem } from '../../common/types/MarkdownOutlineItem';
 import { NoteStorageService } from '../../services/NoteStorageService';
+import { ReaderSaveKind } from '../../common/types/ReaderSaveKind';
 import { TimeFormat } from '../../common/utils/TimeFormat';
 import { SAVE_FAILED, SAVE_IDLE, SAVE_SAVING } from '../../common/constants/WorkspaceConstants';
 import { EditorToolbar } from './EditorToolbar';
@@ -78,8 +79,8 @@ export struct MarkdownReader {
   @Prop @Watch('onJumpRequest') jumpToken: number = 0;
   /** 待定位的目标行号（0 基），配合 jumpToken 使用 */
   @Prop jumpLine: number = -1;
-  /** 标题或正文落盘成功后回调，父组件据此刷新列表快照 */
-  onSaved: (note: NoteItem, content: string) => void = () => {};
+  /** 上层用例负责正文与快照持久化，成功后才能更新保存状态 */
+  onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onChooseCover: () => void = () => {};
   /** 落盘状态变化：已保存 / 保存中 / 保存失败 */
   onSaveStateChange: (state: string) => void = () => {};
@@ -274,14 +275,13 @@ export struct MarkdownReader {
     }
     this.isDirty = false;
 
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const snapshot: NoteItem = this.buildSnapshot(target);
     try {
-      await this.storage.saveDocument(context, snapshot, this.content);
+      await this.onSaved(snapshot, snapshot.contentDetail, 'markdown');
+      if (this.content !== snapshot.contentDetail || this.editingNote?.id !== snapshot.id) { return; }
       this.saveState = SAVE_IDLE;
       this.displayUpdateTime = snapshot.updateTime;
       this.onSaveStateChange(SAVE_IDLE);
-      this.onSaved(snapshot, this.content);
     } catch (error) {
       // 保存失败必须显式暴露，不能伪装成成功
       console.error(`Markdown 正文保存失败: ${JSON.stringify(error)}`);
