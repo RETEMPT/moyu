@@ -2,7 +2,8 @@
 param(
     [string]$StudioDir = '',
     [ValidateSet('debug', 'release')][string]$BuildMode = 'debug',
-    [switch]$AppPackage
+    [switch]$AppPackage,
+    [switch]$Clean
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +35,15 @@ try {
     $env:DEVECO_SDK_HOME = Join-Path $StudioDir 'sdk'
     $buildArgs = @('assembleHap', '--no-daemon', '--mode', 'module', '-p', 'module=entry@default', '-p', 'product=default', '-p', "buildMode=$BuildMode")
     if ($AppPackage) { $buildArgs = @('assembleApp', '--no-daemon', '--mode', 'project', '-p', 'product=default', '-p', "buildMode=$BuildMode") }
+    if ($Clean) {
+        # Project clean alone leaves module outputs (including removed native symbols) behind.
+        & $hvigor clean '--no-daemon' '--mode' 'module' '-p' 'module=entry@default' '-p' 'product=default' '-p' "buildMode=$BuildMode"
+        if ($LASTEXITCODE -ne 0) { throw 'Module clean failed.' }
+        if ($AppPackage) {
+            & $hvigor clean '--no-daemon' '--mode' 'project' '-p' 'product=default' '-p' "buildMode=$BuildMode"
+            if ($LASTEXITCODE -ne 0) { throw 'Project clean failed.' }
+        }
+    }
     & $hvigor @buildArgs
     $buildCode = $LASTEXITCODE
 } catch {

@@ -15,7 +15,8 @@ FlowMind（墨语）是一款面向高校学生的 HarmonyOS 本地课程研读�
 - **数据策略**：Local-First 本地优先，笔记与工作区数据留存在端侧沙箱
 - **当前产物**：`entry/build/default/outputs/default/entry-default-unsigned.hap`
 - **GitHub 发行**：[v1.0.0](https://github.com/RETEMPT/moyu/releases/tag/v1.0.0)，源码与未签名开发包，详见 [发行说明](docs/RELEASE_1.0.0.md)
-- **应用市场状态**：release APP 打包通过，但未配置发布签名、未完成全量真机验收、未提交市场
+- **应用市场状态**：1.1.0 市场候选通过 release APP 编译、170 项服务与 11 项发布门槛测试；正式签名、真实发布资料与真机验收待补齐，未提交市场
+- **上架准备材料**：[提交资料与验收](release/README.md)，提供同源隐私页面、审核路径和严格发布检查
 - **开源仓库**：[RETEMPT/moyu](https://github.com/RETEMPT/moyu)
 
 ---
@@ -55,13 +56,15 @@ FlowMind（墨语）是一款面向高校学生的 HarmonyOS 本地课程研读�
 - 力导向关系图谱工作区；
 - 资料库与待处理内容；
 - AI 墨客分级工作区（自动 / L1 伴读 / L2 学情 / L3 跨库）；
-- 多模型档案、连接测试、输出参数、附加提示词和工具权限；未保存输入在档案切换时保留；
+- 精简 AI 布局：多行提问、横向引用标签、快捷场景先填入再发送；自配 API 的高级参数按需展开；
+- 云端 AI 仅提供 Seed、Qwen、DeepSeek、GLM 本机预览目录，尚未开放；可从目录新建自配 API 草稿，原档案保留；
+- 多模型档案、连接测试、输出参数、附加提示词和工具权限；未保存输入在档案切换时保留；密钥由系统密钥库保护加密保存，可单独移除；
 - 11 种笔记与待办工具、六类研读快捷场景，写操作逐次确认并等待保存结果；
-- 默认本地关键词检索，可主动开启语义检索；远程调用的数据范围在配置页说明；
+- 默认本地关键词检索，可主动开启语义检索；远程调用的数据范围在配置页说明并单独授权，修改服务地址需重新确认；
 - 浅色、深色与跟随系统主题模式。
 - 可持久化的“减少动态效果”，主要页面与弹层统一使用短时缓动。
 
-本轮设计依据、能力边界和验证记录见 [设计调研与实现](docs/DESIGN_REVIEW.md) 与 [完整功能验收清单](docs/WORKFLOW_REVIEW.md)。参赛重点见 [校园价值评估与试用方案](docs/CONTEST_VALUE_REVIEW.md)，上架目标见 [发布准备](docs/APP_MARKET_RELEASE.md)。学生效率、留存与收入数据尚未测得。
+本次 AI 布局与接入边界见 [AI 界面说明](docs/AI_INTERFACE.md)。本轮设计依据、能力边界和验证记录见 [设计调研与实现](docs/DESIGN_REVIEW.md) 与 [完整功能验收清单](docs/WORKFLOW_REVIEW.md)。参赛重点见 [校园价值评估与试用方案](docs/CONTEST_VALUE_REVIEW.md)，上架目标见 [发布准备](docs/APP_MARKET_RELEASE.md)。学生效率、留存与收入数据尚未测得。
 
 ---
 

@@ -1,5 +1,6 @@
 import { ModelProfile } from '../../common/types/ModelConfig';
 import { AgentToolSpec } from '../../common/types/AgentTypes';
+import { RemoteAiPolicy } from './RemoteAiPolicy';
 
 export class ModelProfilePolicy {
   static restore(p: ModelProfile): ModelProfile | null {
@@ -9,6 +10,12 @@ export class ModelProfilePolicy {
       thinkingBudget: Number.isFinite(p.thinkingBudget) ? p.thinkingBudget : undefined,
       baseUrl: typeof p.baseUrl === 'string' ? p.baseUrl : '',
       apiKey: typeof p.apiKey === 'string' && !p.apiKey.includes('*') ? p.apiKey : '',
+      credentialRef: typeof p.credentialRef === 'string' && /^key_[0-9a-f]{24}$/.test(p.credentialRef) ? p.credentialRef : undefined,
+      credentialUnavailable: p.credentialUnavailable === true,
+      remoteConsentVersion: p.remoteConsentVersion,
+      remoteConsentEndpoint: p.remoteConsentEndpoint,
+      remoteConsentProtocol: p.remoteConsentProtocol,
+      remoteConsentedAt: p.remoteConsentedAt,
       modelId: typeof p.modelId === 'string' ? p.modelId : '',
       embeddingModelId: typeof p.embeddingModelId === 'string' ? p.embeddingModelId : '',
       semanticSearch: p.semanticSearch === true,
@@ -21,9 +28,11 @@ export class ModelProfilePolicy {
   }
   static validate(p: ModelProfile): string {
     if (!p.label.trim()) { return '请填写档案名称'; }
-    if (!/^https?:\/\/[^\s/?#@]+(?:\/[^\s?#]*)?$/.test(p.baseUrl.trim())) { return '服务地址需为完整的 http 或 https 地址，不含密钥、查询参数或片段'; }
+    const transport = RemoteAiPolicy.transportError(p);
+    if (transport) { return transport; }
     if (!p.modelId.trim() || /[\r\n]/.test(p.modelId)) { return '请填写服务商实际提供的模型 ID'; }
-    if (!p.apiKey.trim() && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?\//.test(p.baseUrl)) { return '请填写 API Key；本机服务可留空'; }
+    if (!p.apiKey.trim() && !RemoteAiPolicy.local(p.baseUrl) && !p.credentialUnavailable) { return '请填写 API Key；本机服务可留空'; }
+    if (p.apiKey.length > 8192) { return '密钥过长，请核对复制内容'; }
     if (!Number.isFinite(p.temperature) || p.temperature < 0 || p.temperature > 2) { return '温度需在 0–2 之间'; }
     if (!Number.isInteger(p.maxTokens) || p.maxTokens < 256 || p.maxTokens > 65536) { return '输出上限需为 256–65536 的整数'; }
     if (p.systemPrompt.length > 12000) { return '附加提示词最多 12000 字符'; }

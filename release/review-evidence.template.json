@@ -1,0 +1,40 @@
+{
+  "sdk": {
+    "kind": "sdk",
+    "reviewed": false,
+    "reviewer": "",
+    "checkedAt": "",
+    "reference": "",
+    "targetSdkVersion": "26.0.0",
+    "compatibleSdkVersion": "6.1.1(24)"
+  },
+  "qualification": {
+    "kind": "qualification",
+    "reviewed": false,
+    "reviewer": "",
+    "checkedAt": "",
+    "reference": "",
+    "publisher": "",
+    "bundleName": "com.retempt.flowmind"
+  },
+  "ai-service": {
+    "kind": "ai-service",
+    "reviewed": false,
+    "reviewer": "",
+    "checkedAt": "",
+    "reference": ""
+  },
+  "signing": {
+    "kind": "signing",
+    "reviewed": false,
+    "reviewer": "",
+    "checkedAt": "",
+    "reference": "",
+    "publisher": "",
+    "bundleName": "com.retempt.flowmind",
+    "profileType": "release",
+    "distribution": "app_gallery",
+    "certificateChainSha256": "",
+    "appSha256": ""
+  }
+}

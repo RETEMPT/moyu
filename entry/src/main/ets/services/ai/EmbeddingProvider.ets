@@ -1,3 +1,4 @@
+import { RemoteAiPolicy } from './RemoteAiPolicy';
 /**
  * 向量化（Embedding）抽象
  *
@@ -59,6 +60,7 @@ class OpenAiEmbeddingProvider implements EmbeddingProvider {
     if (texts.length === 0) {
       return [];
     }
+    RemoteAiPolicy.assertAllowed(profile);
     const clean: string = profile.baseUrl.endsWith('/') ? profile.baseUrl.slice(0, -1) : profile.baseUrl;
     const url: string = `${clean}/embeddings`;
     const body: string = JSON.stringify({
@@ -76,16 +78,17 @@ class OpenAiEmbeddingProvider implements EmbeddingProvider {
       },
       extraData: body,
       expectDataType: http.HttpDataType.STRING,
-      connectTimeout: 15000,
+      maxRedirects: 0,
+        connectTimeout: 15000,
       readTimeout: 60000
       });
     } finally { client.destroy(); }
     if (resp.responseCode !== 200) {
-      throw new Error(`HTTP ${resp.responseCode}: ${String(resp.result).slice(0, 160)}`);
+      throw new Error(`向量服务返回 HTTP ${resp.responseCode}，请核对服务配置`);
     }
     const parsed: OpenAiEmbeddingResponse = JSON.parse(String(resp.result)) as OpenAiEmbeddingResponse;
     if (parsed.error !== undefined) {
-      throw new Error(parsed.error.message);
+      throw new Error('向量服务未能完成请求');
     }
     if (parsed.data === undefined || parsed.data.length === 0) {
       return [];
@@ -112,9 +115,10 @@ class GeminiEmbeddingProvider implements EmbeddingProvider {
       return [];
     }
     const model: string = profile.embeddingModelId ?? '';
+    RemoteAiPolicy.assertAllowed(profile);
     const clean: string = profile.baseUrl.endsWith('/') ? profile.baseUrl.slice(0, -1) : profile.baseUrl;
     const base: string = (clean.endsWith('/v1beta') || clean.endsWith('/v1')) ? clean : `${clean}/v1beta`;
-    const url: string = `${base}/models/${model}:batchEmbedContents`;
+    const url: string = `${base}/models/${encodeURIComponent(model)}:batchEmbedContents`;
 
     const requests: GeminiEmbedRequest[] = [];
     for (const t of texts) {
@@ -134,16 +138,17 @@ class GeminiEmbeddingProvider implements EmbeddingProvider {
       },
       extraData: JSON.stringify({ requests }),
       expectDataType: http.HttpDataType.STRING,
-      connectTimeout: 15000,
+      maxRedirects: 0,
+        connectTimeout: 15000,
       readTimeout: 60000
       });
     } finally { client.destroy(); }
     if (resp.responseCode !== 200) {
-      throw new Error(`HTTP ${resp.responseCode}: ${String(resp.result).slice(0, 160)}`);
+      throw new Error(`向量服务返回 HTTP ${resp.responseCode}，请核对服务配置`);
     }
     const parsed: GeminiBatchEmbedResponse = JSON.parse(String(resp.result)) as GeminiBatchEmbedResponse;
     if (parsed.error !== undefined) {
-      throw new Error(parsed.error.message);
+      throw new Error('向量服务未能完成请求');
     }
     if (parsed.embeddings === undefined) {
       return [];

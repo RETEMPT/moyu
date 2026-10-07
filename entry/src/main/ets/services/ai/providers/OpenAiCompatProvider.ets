@@ -1,3 +1,5 @@
+import { SseHttpClient } from '../SseHttpClient';
+import { RemoteAiPolicy } from '../RemoteAiPolicy';
 /**
  * OpenAI 兼容协议 Provider（HTTP/SSE）
  *
@@ -7,7 +9,6 @@
  * 流式使用 http.createHttp() 的 dataReceive 事件增量接收 SSE data: 行。
  */
 import { http } from '@kit.NetworkKit';
-import { util } from '@kit.ArkTS';
 import {
   ModelProfile,
   ChatCompletionRequest,
@@ -15,11 +16,12 @@ import {
   ChatMessage,
   ModelTestResult
 } from '../../../common/types/ModelConfig';
-import { ModelProvider, StreamHandle, StreamHandleImpl } from '../ModelProvider';
+import { ModelProvider, StreamHandle } from '../ModelProvider';
 
 interface OpenAiStreamDelta {
   id: string;
   choices: OpenAiChoice[];
+  error?: OpenAiError;
 }
 
 interface OpenAiChoice {
@@ -90,7 +92,7 @@ interface SerializedFunctionCall {
 
 interface StreamState {
   inThinkTag: boolean;
-  hasEmittedAnyChunk: boolean;
+  finishReason?: string;
 }
 
 export class OpenAiCompatProvider implements ModelProvider {
@@ -147,29 +149,32 @@ export class OpenAiCompatProvider implements ModelProvider {
   }
 
   async complete(profile: ModelProfile, request: ChatCompletionRequest): Promise<string> {
+    RemoteAiPolicy.assertAllowed(profile);
     const url: string = this.buildUrl(profile.baseUrl);
     const body: string = this.buildBody(profile, request, false);
     let resp: http.HttpResponse;
+    const client = http.createHttp();
     try {
-      resp = await http.createHttp().request(url, {
+      resp = await client.request(url, {
         method: http.RequestMethod.POST,
         header: this.buildHeaders(profile),
         extraData: body,
         expectDataType: http.HttpDataType.STRING,
+        maxRedirects: 0,
         connectTimeout: 15000,
         readTimeout: 60000
       });
     } catch (netErr) {
       const netMsg: string = netErr instanceof Error ? netErr.message : String(netErr);
-      throw new Error(`网络请求异常: ${netMsg}`);
-    }
+      throw new Error('网络请求失败，请检查连接后重试');
+    } finally { client.destroy(); }
 
     if (resp.responseCode !== 200) {
       throw new Error(this.describeHttpResponse(resp.responseCode, resp.result));
     }
     const parsed: OpenAiResponse = JSON.parse(String(resp.result)) as OpenAiResponse;
     if (parsed.error !== undefined) {
-      throw new Error(parsed.error.message);
+      throw new Error('AI 服务未能完成请求，请核对配置和额度');
     }
     if (parsed.choices === undefined || parsed.choices.length === 0) {
       return '';
@@ -185,260 +190,86 @@ export class OpenAiCompatProvider implements ModelProvider {
     request: ChatCompletionRequest,
     onChunk: (chunk: ChatCompletionChunk) => void
   ): Promise<StreamHandle> {
-    const url: string = this.buildUrl(profile.baseUrl);
-    const body: string = this.buildBody(profile, request, true);
-    const httpRequest = http.createHttp();
-    let aborted: boolean = false;
-    let buffer: string = '';
-    const state: StreamState = { inThinkTag: false, hasEmittedAnyChunk: false };
-    let responseStatusCode: number = 200;
-    let rawErrorBody: string = '';
-    let decoder: util.TextDecoder | null = null;
-    try {
-      decoder = util.TextDecoder.create('utf-8', { ignoreBOM: true });
-    } catch {
-      decoder = null;
-    }
-
-    return new Promise<StreamHandle>((resolve) => {
-      httpRequest.on('dataReceive', (data: ArrayBuffer) => {
-        if (aborted) {
-          return;
-        }
-        let text: string = '';
-        if (decoder !== null) {
-          try {
-            const view: Uint8Array = new Uint8Array(data);
-            text = decoder.decodeToString(view, { stream: true });
-          } catch {
-            text = this.arrayBufferToString(data);
-          }
-        } else {
-          text = this.arrayBufferToString(data);
-        }
-
-        if (responseStatusCode >= 400) {
-          rawErrorBody += text;
-          return;
-        }
-
-        buffer += text;
-        const lines: string[] = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          this.parseSseLine(line, onChunk, state);
-        }
-      });
-
-      httpRequest.on('dataEnd', () => {
-        if (aborted) {
-          return;
-        }
-        if (buffer.trim().length > 0) {
-          this.parseSseLine(buffer, onChunk, state);
-          buffer = '';
-        }
-        if (responseStatusCode >= 400) {
-          onChunk({ delta: '', done: true, error: this.describeHttpResponse(responseStatusCode, rawErrorBody) });
-          return;
-        }
-        if (!state.hasEmittedAnyChunk && rawErrorBody.length > 0) {
-          this.parseFallbackFullBody(rawErrorBody, onChunk, state);
-        }
-        onChunk({ delta: '', done: true });
-      });
-
-      // 发起流式请求：使用 requestInStream，确保 dataReceive 在运行时实时触发
-      httpRequest.requestInStream(url, {
-        method: http.RequestMethod.POST,
-        header: this.buildHeaders(profile),
-        extraData: body,
-        expectDataType: http.HttpDataType.ARRAY_BUFFER,
-        connectTimeout: 15000,
-        readTimeout: 120000
-      }).then((code: number) => {
-        responseStatusCode = code;
-        if (code >= 400 && rawErrorBody.length > 0) {
-          onChunk({ delta: '', done: true, error: this.describeHttpResponse(code, rawErrorBody) });
-        }
-      }).catch((err: Error) => {
-        if (!aborted) {
-          let msg: string = err.message;
-          if (msg.includes('23000') || msg.includes('connect')) {
-            msg += '（若在 DevEco 预览器运行，请切换至【本地模拟器】或【真机】调试）';
-          }
-          onChunk({ delta: '', done: true, error: msg });
-        }
-      });
-
-      resolve(new StreamHandleImpl(() => {
-        aborted = true;
-        httpRequest.destroy();
-      }));
-    });
+    const state: StreamState = { inThinkTag: false };
+    return SseHttpClient.open(profile, this.buildUrl(profile.baseUrl), this.buildHeaders(profile),
+      this.buildBody(profile, request, true),
+      (json: string): boolean => this.parseSsePayload(json, onChunk, state),
+      (error?: string) => onChunk({ delta: '', done: true, error, finishReason: state.finishReason }));
   }
 
-  private parseSseLine(
-    line: string,
-    onChunk: (chunk: ChatCompletionChunk) => void,
-    state: StreamState
-  ): boolean {
-    const trimmed: string = line.trim();
-    if (trimmed.length === 0 || !trimmed.startsWith('data:')) {
-      return false;
-    }
-    const payload: string = trimmed.slice(5).trim();
-    if (payload === '[DONE]') {
-      onChunk({ delta: '', done: true });
-      return true;
-    }
-    try {
-      const parsed: OpenAiStreamDelta = JSON.parse(payload) as OpenAiStreamDelta;
-      if (parsed.choices !== undefined && parsed.choices.length > 0) {
-        const choice: OpenAiChoice = parsed.choices[0];
-        const rawDelta = (choice.delta ?? {}) as Record<string, Object>;
-        let delta: string = (rawDelta.content as string) ?? '';
-        let reasoningDelta: string = (rawDelta.reasoning_content as string)
-          ?? (rawDelta.reasoning as string)
-          ?? (rawDelta.thought as string)
-          ?? (rawDelta.thinking as string)
-          ?? '';
+  private parseSsePayload(payload: string, onChunk: (chunk: ChatCompletionChunk) => void,
+    state: StreamState): boolean {
+    const parsed = JSON.parse(payload) as OpenAiStreamDelta;
+    if (parsed.error) { throw new Error('provider error'); }
+    if (parsed.choices !== undefined && parsed.choices.length > 0) {
+      const choice: OpenAiChoice = parsed.choices[0];
+      const rawDelta = (choice.delta ?? {}) as Record<string, Object>;
+      let delta: string = (rawDelta.content as string) ?? '';
+      let reasoningDelta: string = (rawDelta.reasoning_content as string)
+        ?? (rawDelta.reasoning as string)
+        ?? (rawDelta.thought as string)
+        ?? (rawDelta.thinking as string)
+        ?? '';
 
-        // 处理混在 content 里的 <think> 标签流
-        if (delta.includes('<think>')) {
-          state.inThinkTag = true;
-          const parts: string[] = delta.split('<think>');
-          if (parts[0].length > 0) {
-            state.hasEmittedAnyChunk = true;
-            onChunk({ delta: parts[0], done: false });
-          }
+      // 处理混在 content 里的 <think> 标签流
+      if (delta.includes('<think>')) {
+        state.inThinkTag = true;
+        const parts: string[] = delta.split('<think>');
+        if (parts[0].length > 0) {
+          onChunk({ delta: parts[0], done: false });
+        }
+        delta = parts[1] ?? '';
+      }
+      if (state.inThinkTag) {
+        if (delta.includes('</think>')) {
+          state.inThinkTag = false;
+          const parts: string[] = delta.split('</think>');
+          reasoningDelta += parts[0];
           delta = parts[1] ?? '';
-        }
-        if (state.inThinkTag) {
-          if (delta.includes('</think>')) {
-            state.inThinkTag = false;
-            const parts: string[] = delta.split('</think>');
-            reasoningDelta += parts[0];
-            delta = parts[1] ?? '';
-          } else {
-            reasoningDelta += delta;
-            delta = '';
-          }
-        }
-
-        const finish: string | null = choice.finish_reason;
-
-        if (reasoningDelta.length > 0) {
-          state.hasEmittedAnyChunk = true;
-          onChunk({ delta: '', reasoningDelta, done: false });
-        }
-        if (delta.length > 0) {
-          state.hasEmittedAnyChunk = true;
-          onChunk({ delta, done: false });
-        }
-        const rawCalls: OpenAiToolCallDelta[] | undefined = choice.delta?.tool_calls;
-        if (rawCalls !== undefined) {
-          for (const rc of rawCalls) {
-            state.hasEmittedAnyChunk = true;
-            onChunk({
-              delta: '',
-              done: false,
-              toolCall: {
-                index: rc.index,
-                id: rc.id,
-                name: rc.function !== undefined ? rc.function.name : undefined,
-                argumentsFragment: rc.function !== undefined ? rc.function.arguments : undefined
-              }
-            });
-          }
-        }
-        if (finish !== null) {
-          onChunk({ delta: '', done: true, finishReason: finish });
-          return true;
+        } else {
+          reasoningDelta += delta;
+          delta = '';
         }
       }
-    } catch {
-      // 非法 JSON 行跳过
+
+      const finish: string | null = choice.finish_reason;
+
+      if (reasoningDelta.length > 0) {
+        onChunk({ delta: '', reasoningDelta, done: false });
+      }
+      if (delta.length > 0) {
+        onChunk({ delta, done: false });
+      }
+      const rawCalls: OpenAiToolCallDelta[] | undefined = choice.delta?.tool_calls;
+      if (rawCalls !== undefined) {
+        for (const rc of rawCalls) {
+          onChunk({
+            delta: '',
+            done: false,
+            toolCall: {
+              index: rc.index,
+              id: rc.id,
+              name: rc.function !== undefined ? rc.function.name : undefined,
+              argumentsFragment: rc.function !== undefined ? rc.function.arguments : undefined
+            }
+          });
+        }
+      }
+      if (finish !== null && finish !== undefined) {
+        state.finishReason = finish;
+        return true;
+      }
     }
     return false;
   }
 
-  private parseFallbackFullBody(
-    bodyStr: string,
-    onChunk: (chunk: ChatCompletionChunk) => void,
-    state: StreamState
-  ): void {
-    const trimmed: string = bodyStr.trim();
-    if (trimmed.startsWith('{')) {
-      try {
-        const fullParsed = JSON.parse(trimmed) as OpenAiResponse;
-        if (fullParsed.choices !== undefined && fullParsed.choices.length > 0) {
-          const choiceMsg = fullParsed.choices[0].message;
-          const r: string = choiceMsg.reasoning_content ?? '';
-          const c: string = choiceMsg.content ?? '';
-          if (r.length > 0) {
-            state.hasEmittedAnyChunk = true;
-            onChunk({ delta: '', reasoningDelta: r, done: false });
-          }
-          if (c.length > 0) {
-            state.hasEmittedAnyChunk = true;
-            onChunk({ delta: c, done: false });
-          }
-        }
-      } catch {
-        // ignore
-      }
-    } else if (trimmed.includes('data:')) {
-      const lines: string[] = trimmed.split('\n');
-      for (const line of lines) {
-        this.parseSseLine(line, onChunk, state);
-      }
-    }
-  }
-
   /** 将 HTTP 状态码与响应体解析为对开发者友好、清晰的中文排障指导 */
   private describeHttpResponse(code: number, rawResult: Object | string | ArrayBuffer | undefined): string {
-    let bodyText = '';
-    if (rawResult instanceof ArrayBuffer) {
-      bodyText = this.arrayBufferToString(rawResult);
-    } else if (rawResult !== undefined && rawResult !== null) {
-      bodyText = String(rawResult);
-    }
-
-    let serverErrMsg = '';
-    if (bodyText.length > 0) {
-      try {
-        const json = JSON.parse(bodyText) as Record<string, Object>;
-        if (json.error !== undefined && typeof json.error === 'object') {
-          const errObj = json.error as Record<string, Object>;
-          if (typeof errObj.message === 'string') {
-            serverErrMsg = errObj.message;
-          }
-        } else if (typeof json.message === 'string') {
-          serverErrMsg = json.message as string;
-        }
-      } catch {
-        serverErrMsg = bodyText.slice(0, 160);
-      }
-    }
-
-    if (code === 401) {
-      return `[401 认证失败] API Key 无效或未生效。${serverErrMsg.length > 0 ? `服务商提示: ${serverErrMsg}` : '请检查 Key 是否完整复制，勿遗漏前缀。'}`;
-    }
-    if (code === 404) {
-      return `[404 端点未找到] 路径或模型不存在。${serverErrMsg.length > 0 ? `服务商提示: ${serverErrMsg}` : '请检查 Base URL (建议带 /v1) 或模型 ID 是否正确。'}`;
-    }
-    if (code === 429) {
-      return `[429 配额限制] 速率超限或账户余额不足。${serverErrMsg.length > 0 ? `服务商提示: ${serverErrMsg}` : '请检查服务商控制台余额。'}`;
-    }
-    if (code === 400) {
-      return `[400 参数拒绝] 请求参数不被当前模型网关支持。${serverErrMsg.length > 0 ? `服务商提示: ${serverErrMsg}` : '请检查温度或模型 ID。'}`;
-    }
-    if (code >= 500) {
-      return `[${code} 服务端异常] 上游模型服务暂时过载或故障。${serverErrMsg.length > 0 ? `服务商提示: ${serverErrMsg}` : '请稍后重试。'}`;
-    }
-    return `HTTP ${code}${serverErrMsg.length > 0 ? `: ${serverErrMsg}` : ''}`;
+    if (code === 401 || code === 403) { return '认证失败，请核对密钥及服务权限'; }
+    if (code === 404) { return '端点或模型不存在，请核对服务地址和模型 ID'; }
+    if (code === 429) { return '服务配额或速率受限，请稍后重试或核对额度'; }
+    if (code >= 500) { return 'AI 服务暂时不可用，请稍后重试'; }
+    return `AI 服务返回 HTTP ${code}，请核对配置`;
   }
 
   private buildUrl(baseUrl: string): string {
@@ -462,10 +293,9 @@ export class OpenAiCompatProvider implements ModelProvider {
 
   private buildHeaders(profile: ModelProfile): Record<string, string> {
     const key: string = (profile.apiKey ?? '').trim();
-    return {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${key}`
-    };
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (key) { headers['Authorization'] = `Bearer ${key}`; }
+    return headers;
   }
 
   private buildBody(profile: ModelProfile, request: ChatCompletionRequest, stream: boolean): string {
@@ -520,8 +350,4 @@ export class OpenAiCompatProvider implements ModelProvider {
     return arr;
   }
 
-  private arrayBufferToString(buf: ArrayBuffer): string {
-    const view: Uint8Array = new Uint8Array(buf);
-    return new util.TextDecoder('utf-8').decode(view);
-  }
 }

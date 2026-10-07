@@ -84,6 +84,7 @@ import { StudyBackupSheet } from '../views/study/StudyBackupSheet';
 import { StudyRestoreService } from '../services/study/StudyRestoreService';
 import { ReaderCommitService } from '../services/document/ReaderCommitService';
 import { PrivacySheet } from '../views/settings/PrivacySheet';
+import { PrivacyNoticeService } from '../services/PrivacyNoticeService';
 
 /** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
 interface PendingNoteCreate {
@@ -176,6 +177,9 @@ struct Index {
   @State backupVisible: boolean = false;
   @State backupCloseToken: number = 0;
   @State privacyVisible: boolean = false;
+  @State privacyWelcome: boolean = true;
+  @State privacySaving: boolean = false;
+  private privacyNotice: PrivacyNoticeService = new PrivacyNoticeService();
   @State pdfExtractNoteId: string = '';
   @State pdfExtractPage: number = 1;
   @State pdfExtractCloseToken: number = 0;
@@ -227,6 +231,7 @@ struct Index {
   }
 
   onBackPress(): boolean {
+    if (this.privacyWelcome) { this.getAbilityContext().terminateSelf(); return true; }
     if (this.privacyVisible) { this.privacyVisible = false; return true; }
     if (this.backupVisible) { this.backupCloseToken++; return true; }
     if (this.studyVisible) { this.studyCloseToken++; return true; }
@@ -270,6 +275,8 @@ struct Index {
 
   private async bootstrap(): Promise<void> {
     const context: common.UIAbilityContext = this.getAbilityContext();
+    try { this.privacyWelcome = !await this.privacyNotice.shown(context); }
+    catch { this.privacyWelcome = true; }
     try {
       const loaded: NoteItem[] = await this.storage.load(context, seedNotes());
       this.notes = loaded;
@@ -2294,7 +2301,18 @@ struct Index {
         .height('100%')
       }
 
-      if (this.privacyVisible) { PrivacySheet({ onClose: () => { this.privacyVisible = false; } }) }
+      if (this.privacyVisible || this.privacyWelcome) {
+        PrivacySheet({ welcome: this.privacyWelcome, saving: this.privacySaving,
+          onClose: () => { this.privacyVisible = false; },
+          onChoice: async (agree: boolean) => {
+            if (this.privacySaving) { return; }
+            this.privacySaving = true;
+            try { await this.privacyNotice.choose(this.getAbilityContext(), agree); this.privacyWelcome = false; }
+            catch { this.privacyWelcome = false; this.notify('选择未能保存，下次启动会再次提示'); }
+            finally { this.privacySaving = false; }
+          }
+        })
+      }
       if (this.backupVisible) {
         StudyBackupSheet({ notes: this.notes, cards: this.reviewCards, closeToken: this.backupCloseToken,
           onClose: () => { this.backupVisible = false; },

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { createHash } from 'node:crypto';
+import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 
 // Run ArkTS service and view snapshot logic with platform adapters mocked. HAP compilation
 // separately verifies ArkTS types and UI; these tests do not emulate ArkUI.
@@ -221,12 +221,15 @@ test('failed or oversized cover copies clean partial file and release source', a
 });
 
 test('configuration flush failure preserves the active profile and never broadcasts success', async () => {
-  const original = profile(); const values = new Map([['profiles', JSON.stringify([original])], ['activeProfileId', original.id]]);
+  const original = profile({ apiKey: '', credentialRef: 'key_000000000000000000000001' }); const values = new Map([['profiles', JSON.stringify([original])], ['activeProfileId', original.id]]);
   const publications = []; let fail = true;
   const prefs = { get: async (key, fallback) => values.get(key) ?? fallback, put: async (key, value) => values.set(key, value),
     flush: async () => { if (fail) throw new Error('disk full'); } };
   const { ModelConfigService } = load(`${base}services/ai/ModelConfigService.ets`, {
     '@kit.ArkData': { preferences: { getPreferences: async () => prefs } },
+    [path.resolve(root, `${base}services/ai/HuksCredentialStore.ets`)]: { HuksCredentialStore: class {
+      async init() {} async read() { return 'test-key'; } async write() { return 'key_000000000000000000000002'; } async remove() {}
+    } },
     AppStorage: { setOrCreate: (key, value) => publications.push([key, value]) }
   });
   const service = ModelConfigService.getInstance(); await service.init({});
@@ -1235,4 +1238,340 @@ test('reader commits re-read the library after file persistence and do not resur
   ports.saveDocument = async () => { notes = notes.filter(note => note.id !== 'course_note'); };
   await assert.rejects(service.commit(studyNote(), 'stale', ports, true), /移除/);
   assert.equal(notes.length, 1); assert.equal(writes, 1);
+});
+
+
+const { RemoteAiPolicy } = load(`${base}services/ai/RemoteAiPolicy.ets`);
+const consentProfile = overrides => profile({ remoteConsentVersion: RemoteAiPolicy.VERSION,
+  remoteConsentEndpoint: 'https://example.com/v1', remoteConsentProtocol: 'openai-compat', remoteConsentedAt: 1, ...overrides });
+
+test('AI consent binds version, complete endpoint and protocol; HTTP and header injection are rejected', () => {
+  assert.doesNotThrow(() => RemoteAiPolicy.assertAllowed(consentProfile()));
+  for (const change of [{ remoteConsentVersion: undefined }, { remoteConsentVersion: 0 }, { remoteConsentedAt: 0 },
+    { baseUrl: 'https://other.example/v1' }, { baseUrl: 'https://example.com/v2' }, { protocol: 'gemini' },
+    { baseUrl: 'http://example.com/v1' }, { baseUrl: 'http://localhost.evil/v1' },
+    { baseUrl: 'http://127.0.0.1:11434/v1' }, { apiKey: 'key\r\nInjected: value' }, { credentialUnavailable: true }]) {
+    assert.throws(() => RemoteAiPolicy.assertAllowed(consentProfile(change)));
+  }
+  const local = consentProfile({ baseUrl: 'http://127.0.0.1:11434/v1', apiKey: '', remoteConsentEndpoint: 'http://127.0.0.1:11434/v1' });
+  assert.doesNotThrow(() => RemoteAiPolicy.assertAllowed(local));
+});
+
+function modelFixture(initial = [profile()], changes = {}) {
+  const values = new Map([['profiles', JSON.stringify(initial)], ['activeProfileId', initial[0]?.id || '']]);
+  const secrets = new Map(); const publications = []; let counter = 0;
+  for (const p of initial) if (p.credentialRef) secrets.set(p.credentialRef, { id: p.id, key: 'original-key' });
+  const state = { failFlush: false, failEncrypt: false, ...changes };
+  const prefs = { get: async (k, fallback) => values.get(k) ?? fallback, put: async (k, v) => values.set(k, v),
+    flush: async () => { if (state.failFlush) throw Error('disk full'); } };
+  class Credentials {
+    async init() {}
+    async write(id, key) {
+      if (state.failEncrypt) throw Error('keystore unavailable');
+      const ref = `key_${(++counter + 100).toString(16).padStart(24, '0')}`;
+      secrets.set(ref, { id, key }); return ref;
+    }
+    async read(id, ref) { const value = secrets.get(ref); if (!value || value.id !== id) throw Error('missing key'); return value.key; }
+    async remove(ref) { secrets.delete(ref); }
+    async clear() { secrets.clear(); }
+  }
+  const { ModelConfigService } = load(`${base}services/ai/ModelConfigService.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => prefs } },
+    [path.resolve(root, `${base}services/ai/HuksCredentialStore.ets`)]: { HuksCredentialStore: Credentials },
+    AppStorage: { setOrCreate: (k, v) => publications.push([k, v]) }
+  });
+  return { service: ModelConfigService.getInstance(), values, secrets, publications, state };
+}
+
+test('legacy key migration encrypts before commit and no key appears in model metadata', async () => {
+  const f = modelFixture(); await f.service.init({});
+  const loaded = await f.service.loadProfiles(); assert.equal(loaded[0].apiKey, 'test-key');
+  const stored = JSON.parse(f.values.get('profiles'));
+  assert.equal(stored[0].apiKey, ''); assert.ok(stored[0].credentialRef); assert.equal(f.values.get('profiles').includes('test-key'), false);
+  assert.equal((await f.service.getActiveProfile()).apiKey, 'test-key');
+  assert.equal(f.publications.length, 0);
+});
+
+for (const failure of ['failFlush', 'failEncrypt']) test(`legacy migration preserves raw data when ${failure}`, async () => {
+  const f = modelFixture(undefined, { [failure]: true }); await f.service.init({});
+  const raw = f.values.get('profiles'); await assert.rejects(f.service.loadProfiles());
+  assert.equal(f.values.get('profiles'), raw); assert.equal(f.secrets.size, 0);
+  f.state[failure] = false; assert.equal((await f.service.loadProfiles())[0].apiKey, 'test-key');
+});
+
+test('key replacement flush failure keeps the old key and activation; successful deletion removes the reference', async () => {
+  const f = modelFixture([profile({ apiKey: '', credentialRef: 'key_000000000000000000000001' }), profile({ id: 'other', apiKey: '' })]);
+  await f.service.init({}); f.state.failFlush = true;
+  await assert.rejects(f.service.saveAndActivate(profile({ apiKey: 'replacement-key' })));
+  assert.equal((await f.service.getActiveProfile()).apiKey, 'original-key'); assert.equal(f.secrets.size, 1);
+  assert.equal(f.publications.length, 0); f.state.failFlush = false;
+  await f.service.saveAndActivate(profile({ apiKey: 'replacement-key' }));
+  assert.equal((await f.service.getActiveProfile()).apiKey, 'replacement-key'); assert.equal(f.secrets.size, 1);
+  await f.service.deleteProfile('study'); assert.equal(f.secrets.size, 0); assert.equal(await f.service.getActiveProfileId(), 'other');
+});
+
+test('unreadable device key is visible and retained when saving unrelated settings', async () => {
+  const f = modelFixture([profile({ apiKey: '', credentialRef: 'key_000000000000000000000001' })]); await f.service.init({}); f.secrets.clear();
+  const p = await f.service.getActiveProfile(); assert.equal(p.credentialUnavailable, true);
+  await f.service.saveAndActivate({ ...p, label: 'renamed' });
+  const stored = JSON.parse(f.values.get('profiles'))[0]; assert.equal(stored.credentialRef, 'key_000000000000000000000001');
+  assert.equal(stored.apiKey, ''); assert.equal(stored.credentialUnavailable, undefined);
+});
+
+test('concurrent model saves retain both profiles; corrupt metadata never becomes a default overwrite', async () => {
+  const f = modelFixture(); await f.service.init({});
+  await Promise.all([f.service.upsertProfile(profile({ id: 'a' })), f.service.upsertProfile(profile({ id: 'b' }))]);
+  assert.deepEqual(plain((await f.service.loadProfiles()).map(p => p.id)).sort(), ['a', 'b', 'study']);
+  const bad = modelFixture(); await bad.service.init({}); bad.values.set('profiles', '{broken');
+  await assert.rejects(bad.service.loadProfiles()); await assert.rejects(bad.service.upsertProfile(profile()));
+  assert.equal(bad.values.get('profiles'), '{broken');
+});
+
+function huksFixture() {
+  const values = new Map(); const sessions = new Map(); const key = randomBytes(32); let generated = false; let handle = 0;
+  const tags = { HUKS_TAG_ALGORITHM: 1, HUKS_TAG_PURPOSE: 2, HUKS_TAG_KEY_SIZE: 3, HUKS_TAG_BLOCK_MODE: 4,
+    HUKS_TAG_PADDING: 5, HUKS_TAG_NONCE: 6, HUKS_TAG_ASSOCIATED_DATA: 7, HUKS_TAG_AE_TAG: 8 };
+  const huks = { HuksTag: tags, HuksKeyAlg: { HUKS_ALG_AES: 1 }, HuksKeyPurpose: { HUKS_KEY_PURPOSE_ENCRYPT: 1, HUKS_KEY_PURPOSE_DECRYPT: 2 },
+    HuksKeySize: { HUKS_AES_KEY_SIZE_256: 256 }, HuksCipherMode: { HUKS_MODE_GCM: 32 }, HuksKeyPadding: { HUKS_PADDING_NONE: 0 },
+    isKeyItemExist: async () => generated, generateKeyItem: async () => { generated = true; },
+    initSession: async (_, options) => { const id = ++handle; sessions.set(id, options); return { handle: id }; },
+    finishSession: async (id, options) => {
+      const props = new Map(options.properties.map(p => [p.tag, p.value])); const nonce = Buffer.from(props.get(tags.HUKS_TAG_NONCE));
+      const encrypt = props.get(tags.HUKS_TAG_PURPOSE) === 1;
+      const cipher = encrypt ? createCipheriv('aes-256-gcm', key, nonce) : createDecipheriv('aes-256-gcm', key, nonce);
+      cipher.setAAD(Buffer.from(props.get(tags.HUKS_TAG_ASSOCIATED_DATA)));
+      if (!encrypt) cipher.setAuthTag(Buffer.from(props.get(tags.HUKS_TAG_AE_TAG)));
+      const data = Buffer.concat([cipher.update(Buffer.from(options.inData)), cipher.final()]);
+      sessions.delete(id); return { outData: encrypt ? Buffer.concat([data, cipher.getAuthTag()]) : data };
+    }, abortSession: async id => { sessions.delete(id); } };
+  const prefs = { get: async (k, fallback) => values.get(k) ?? fallback, put: async (k,v) => values.set(k,v), flush: async () => {} };
+  const { HuksCredentialStore } = load(`${base}services/ai/HuksCredentialStore.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => prefs } }, '@kit.UniversalKeystoreKit': { huks },
+    '@kit.CryptoArchitectureKit': { cryptoFramework: { createRandom: () => ({ generateRandom: async n => ({ data: randomBytes(n) }) }) } },
+    '@kit.ArkTS': { util: { TextEncoder: class { encodeInto(text) { return new TextEncoder().encode(text); } }, TextDecoder } }
+  });
+  return { store: new HuksCredentialStore(), values, sessions };
+}
+
+test('HUKS adapter supplies nonce, AAD and GCM tag; tampering or cross-profile use fails without plaintext fallback', async () => {
+  const f = huksFixture(); await f.store.init({});
+  const ref = await f.store.write('study', 'secret-密钥'); assert.equal(await f.store.read('study', ref), 'secret-密钥');
+  assert.ok(!f.values.get(ref).includes('secret')); await assert.rejects(f.store.read('other', ref));
+  const packet = JSON.parse(f.values.get(ref)); packet.cipher = `${packet.cipher[0] === '0' ? '1' : '0'}${packet.cipher.slice(1)}`;
+  f.values.set(ref, JSON.stringify(packet)); await assert.rejects(f.store.read('study', ref)); assert.equal(f.sessions.size, 0);
+});
+
+for (const protocol of ['openai-compat', 'gemini', 'anthropic']) test(`${protocol} rejects unapproved chat and connection tests before HTTP creation`, async () => {
+  let creations = 0;
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit': { http: { createHttp: () => { creations++; throw Error('unexpected network'); } } }, '@kit.ArkTS': { util: {} }
+  });
+  const p = profile({ protocol }); const provider = createProvider(protocol);
+  await assert.rejects(provider.complete(p, { messages: [] }));
+  await assert.rejects(provider.completeStream(p, { messages: [] }, () => {}));
+  assert.equal((await provider.testConnection(p)).ok, false); assert.equal(creations, 0);
+});
+
+for (const protocol of ['openai-compat', 'gemini']) test(`${protocol} rejects unapproved embeddings before HTTP creation`, async () => {
+  let creations = 0;
+  const { createEmbeddingProvider } = load(`${base}services/ai/EmbeddingProvider.ets`, {
+    '@kit.NetworkKit': { http: { createHttp: () => { creations++; throw Error('unexpected network'); } } }
+  });
+  await assert.rejects(createEmbeddingProvider(protocol).embed(profile({ protocol }), ['private notes'])); assert.equal(creations, 0);
+});
+
+for (const protocol of ['openai-compat', 'gemini', 'anthropic']) test(`${protocol} disables redirects and destroys non-stream HTTP resources on failure`, async () => {
+  let destroyed = 0; const requests = [];
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit': { http: { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 0 },
+      createHttp: () => ({ request: async (url, options) => { requests.push(options); return { responseCode: 401, result: 'private echoed-key' }; }, destroy: () => destroyed++ }) } },
+    '@kit.ArkTS': { util: {} }
+  });
+  const p = consentProfile({ protocol, remoteConsentProtocol: protocol });
+  await assert.rejects(createProvider(protocol).complete(p, { messages: [] }), error => !error.message.includes('echoed-key'));
+  assert.equal(requests[0].maxRedirects, 0); assert.equal(destroyed, 1);
+});
+
+
+test('removing one key preserves other profile keys; all legacy keys can be removed with HUKS unavailable', async () => {
+  const f = modelFixture([profile({apiKey:'',credentialRef:'key_000000000000000000000001'}),
+    profile({id:'other',apiKey:'',credentialRef:'key_000000000000000000000002'})]);
+  await f.service.init({}); await f.service.clearCredentials('study');
+  const profiles = await f.service.loadProfiles(); assert.equal(profiles[0].apiKey,''); assert.equal(profiles[1].apiKey,'original-key');
+  assert.equal(f.secrets.size,1); assert.equal(profiles[0].remoteConsentVersion,undefined);
+  const legacy = modelFixture([consentProfile(),consentProfile({id:'other'})],{failEncrypt:true});
+  await legacy.service.init({}); await legacy.service.clearCredentials();
+  assert.equal(legacy.values.get('profiles').includes('test-key'),false);
+  assert.ok((await legacy.service.loadProfiles()).every(p=>!p.apiKey && !p.remoteConsentVersion));
+});
+
+for (const protocol of ['openai-compat','gemini','anthropic']) test(`${protocol} streams UTF-8 across byte boundaries and closes once without callbacks after abort`, async () => {
+  const events = new Map(); let resolveStatus; let destroyed=0; const chunks=[];
+  const client = {on:(event,callback)=>events.set(event,callback),destroy:()=>destroyed++,
+    requestInStream:()=>new Promise(resolve=>{resolveStatus=resolve;})};
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit':{http:{createHttp:()=>client,RequestMethod:{POST:'POST'},HttpDataType:{ARRAY_BUFFER:1}}},
+    '@kit.ArkTS':{util:{TextDecoder:{create:()=>{const d=new TextDecoder();return {decodeToString:(bytes,options)=>d.decode(bytes,options)};}}}}
+  });
+  const p=consentProfile({protocol,remoteConsentProtocol:protocol});
+  const handle = await createProvider(protocol).completeStream(p,{messages:[]},chunk=>chunks.push(chunk));
+  const text = protocol==='openai-compat' ? 'data: {"choices":[{"delta":{"content":"中文😀"},"finish_reason":"stop"}]}' :
+    protocol==='gemini' ? 'data: {"candidates":[{"content":{"parts":[{"text":"中文😀"}]},"finishReason":"STOP"}]}' :
+    'data: {"type":"content_block_delta","delta":{"text":"中文😀"}}\ndata: {"type":"message_stop"}';
+  const bytes=new TextEncoder().encode(text); resolveStatus(200); await Promise.resolve();
+  for(const byte of bytes) events.get('dataReceive')(Uint8Array.of(byte).buffer);
+  await events.get('dataEnd')();
+  assert.equal(chunks.filter(c=>!c.done).map(c=>c.delta).join(''),'中文😀'); assert.equal(chunks.filter(c=>c.done).length,1); assert.equal(destroyed,1);
+  const count=chunks.length;handle.abort();events.get('dataReceive')(new TextEncoder().encode('data: {}\n').buffer);
+  assert.equal(chunks.length,count);assert.equal(destroyed,1);
+});
+
+test('notice rejection is recorded without authorizing remote AI, and a corrupt receipt can be replaced',async()=>{
+  const values=new Map([['notice','{broken']]);
+  const prefs={get:async(k,fallback)=>values.get(k)??fallback,put:async(k,v)=>values.set(k,v),flush:async()=>{}};
+  const { PrivacyNoticeService }=load(`${base}services/PrivacyNoticeService.ets`,{'@kit.ArkData':{preferences:{getPreferences:async()=>prefs}}});
+  const service=new PrivacyNoticeService();assert.equal(await service.shown({}),false);await service.choose({},false);
+  assert.equal(await service.shown({}),true);assert.equal(JSON.parse(values.get('notice')).agree,false);
+  assert.throws(()=>RemoteAiPolicy.assertAllowed(profile()));
+});
+
+
+test('explicit model reset recovers corrupt metadata; failed reset preserves the original snapshot', async () => {
+  const f=modelFixture();await f.service.init({});f.values.set('profiles','{broken');await assert.rejects(f.service.loadProfiles());
+  f.state.failFlush=true;await assert.rejects(f.service.resetProfiles());assert.equal(f.values.get('profiles'),'{broken');
+  f.state.failFlush=false;await f.service.resetProfiles();const profiles=await f.service.loadProfiles();
+  assert.equal(profiles.length,1);assert.equal(profiles[0].apiKey,'');assert.equal(profiles[0].remoteConsentVersion,undefined);
+  assert.equal(await f.service.getActiveProfileId(),profiles[0].id);
+});
+
+
+test('SSE transport releases client when SDK request startup throws synchronously',async()=>{
+  let destroyed=0;const chunks=[];
+  const { createProvider }=load(`${base}services/ai/ModelProvider.ets`,{
+    '@kit.NetworkKit':{http:{createHttp:()=>({on(){},destroy(){destroyed++;},requestInStream(){throw Error('SDK unavailable');}}),RequestMethod:{POST:'POST'},HttpDataType:{ARRAY_BUFFER:1}}},
+    '@kit.ArkTS':{util:{TextDecoder:{create:()=>({decodeToString:()=>''})}}}
+  });
+  const handle=await createProvider('gemini').completeStream(consentProfile({protocol:'gemini',remoteConsentProtocol:'gemini'}),{messages:[]},c=>chunks.push(c));
+  assert.equal(destroyed,1);assert.equal(chunks.length,1);assert.ok(chunks[0].error);handle.abort();assert.equal(destroyed,1);
+});
+
+const { AiModelCatalog } = load(`${base}services/ai/AiModelCatalog.ets`);
+test('cloud directory stays unavailable and editing returned rows cannot alter its templates', () => {
+  assert.equal(AiModelCatalog.CLOUD_AVAILABLE, false);
+  assert.deepEqual(plain(AiModelCatalog.FAMILIES), ['Seed','Qwen','DeepSeek','GLM']);
+  const models = AiModelCatalog.list(); assert.equal(new Set(models.map(m => m.id)).size, models.length);
+  const first = models[0]; first.apiEndpoint = 'http://untrusted';
+  assert.ok(AiModelCatalog.find(first.id).apiEndpoint.startsWith('https://'));
+  assert.equal(AiModelCatalog.list('unknown').length, 0);
+  assert.equal(AiModelCatalog.createApiDraft('unknown'), null);
+});
+
+test('catalog API drafts have unique identity, no key or consent, and require explicit user setup', () => {
+  for (const entry of AiModelCatalog.list()) {
+    const p = AiModelCatalog.createApiDraft(entry.id), other = AiModelCatalog.createApiDraft(entry.id);
+    assert.notEqual(p.id, other.id); assert.equal(p.apiKey, '');
+    assert.equal(p.credentialRef, undefined); assert.equal(p.remoteConsentVersion, undefined);
+    assert.equal(p.semanticSearch, false); assert.equal(p.protocol, 'openai-compat');
+    assert.notEqual(ModelProfilePolicy.validate(p), '');
+    assert.throws(() => RemoteAiPolicy.assertAllowed(p), /授权/);
+  }
+});
+
+for (const entry of AiModelCatalog.list()) test(`catalog ${entry.name} uses its exact compatible chat endpoint after consent`, async () => {
+  const requests = []; let destroyed = 0;
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit': { http: { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 0 }, createHttp: () => ({
+      request: async (url, options) => { requests.push({url,options}); return { responseCode: 200, result: JSON.stringify({ choices: [{message:{content:'mock reply'}}] }) }; },
+      destroy: () => destroyed++ }) } }, '@kit.ArkTS': { util: {} }
+  });
+  const draft = AiModelCatalog.createApiDraft(entry.id);
+  draft.apiKey = 'test-key'; draft.remoteConsentVersion = RemoteAiPolicy.VERSION;
+  draft.remoteConsentEndpoint = draft.baseUrl; draft.remoteConsentProtocol = draft.protocol; draft.remoteConsentedAt = Date.now();
+  assert.equal(ModelProfilePolicy.validate(draft), '');
+  assert.equal(await createProvider(draft.protocol).complete(draft, {messages:[{role:'user',content:'test'}]}), 'mock reply');
+  assert.equal(requests[0].url, entry.apiEndpoint.endsWith('/chat/completions') ? entry.apiEndpoint : `${entry.apiEndpoint}/chat/completions`);
+  assert.equal(JSON.parse(requests[0].options.extraData).model, entry.modelId);
+  assert.equal(requests[0].options.maxRedirects, 0); assert.equal(destroyed, 1);
+});
+
+test('loopback Ollama template is usable without a credential or an empty bearer header', async () => {
+  const { getPresetTemplates } = load(`${base}common/types/ModelConfig.ets`);
+  const draft = getPresetTemplates().find(p => p.profile.baseUrl.startsWith('http://127.0.0.1')).profile;
+  assert.equal(draft.apiKey, ''); assert.equal(ModelProfilePolicy.validate(draft), '');
+  draft.remoteConsentVersion = RemoteAiPolicy.VERSION; draft.remoteConsentEndpoint = draft.baseUrl;
+  draft.remoteConsentProtocol = draft.protocol; draft.remoteConsentedAt = Date.now();
+  let headers;
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit': { http: { RequestMethod: { POST:'POST' }, HttpDataType: { STRING:0 }, createHttp: () => ({
+      request: async (_, options) => { headers = options.header; return {responseCode:200,result:'{"choices":[{"message":{"content":"ok"}}]}'}; }, destroy() {} }) } },
+    '@kit.ArkTS': { util:{} }
+  });
+  await createProvider(draft.protocol).complete(draft, {messages:[]}); assert.equal(headers.Authorization, undefined);
+});
+
+test('message replacement captures input, preserves pinned metadata and never revives a deleted session', async () => {
+  const f = preferenceFixture();
+  const { ChatSessionService } = load(`${base}services/ai/ChatSessionService.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
+  });
+  const service = ChatSessionService.getInstance(); await service.init({});
+  const session = { id:'study',title:'课程',pinned:true,agentMode:'L1',createdAt:1,updatedAt:1,messages:[] };
+  await service.saveSession(session);
+  const messages = [{id:'q',role:'user',text:'原输入',createdAt:2}];
+  const running = service.replaceMessages('study', messages); messages[0].text = '后续更改';
+  const saved = await running; assert.equal(saved.messages[0].text, '原输入');
+  assert.equal(saved.title, '课程'); assert.equal(saved.pinned, true); assert.equal(saved.agentMode, 'L1');
+  await service.deleteSession('study'); await assert.rejects(service.replaceMessages('study', []), /删除/);
+  assert.equal((await service.loadSessions()).length, 0);
+});
+
+test('failed message replacement preserves the original conversation and remains retryable', async () => {
+  const f = preferenceFixture();
+  const { ChatSessionService } = load(`${base}services/ai/ChatSessionService.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
+  });
+  const service = ChatSessionService.getInstance(); await service.init({});
+  await service.saveSession({id:'study',title:'课程',createdAt:1,updatedAt:1,messages:[{id:'q',role:'user',text:'原文',createdAt:1}]});
+  f.fail(true); await assert.rejects(service.replaceMessages('study', []));
+  assert.equal((await service.loadSessions())[0].messages[0].text, '原文');
+  f.fail(false); await service.replaceMessages('study', []); assert.equal((await service.loadSessions())[0].messages.length, 0);
+});
+
+function compatibleStreamFixture() {
+  const events = new Map(), chunks = []; let resolveStatus, destroyed = 0;
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit': { http: { RequestMethod:{POST:'POST'},HttpDataType:{ARRAY_BUFFER:1},createHttp:()=>({
+      on:(event,callback)=>events.set(event,callback),destroy:()=>destroyed++,requestInStream:()=>new Promise(resolve=>{resolveStatus=resolve;}) }) } },
+    '@kit.ArkTS': { util: { TextDecoder:{create:()=>{const d=new TextDecoder();return {decodeToString:(bytes,options)=>d.decode(bytes,options)};}} } }
+  });
+  return { events,chunks,provider:createProvider('openai-compat'),status:code=>resolveStatus(code),destroyed:()=>destroyed,
+    receive:text=>events.get('dataReceive')(new TextEncoder().encode(text).buffer) };
+}
+
+test('compatible streaming preserves reasoning and tool fragments and emits one terminal result', async () => {
+  const f=compatibleStreamFixture(); await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));
+  f.status(200);await Promise.resolve();
+  for (const delta of [{reasoning_content:'推理'}, {tool_calls:[{index:0,id:'call_a',function:{name:'create_todo',arguments:'{"title":'}}]},
+    {tool_calls:[{index:0,function:{arguments:'"复习"}'}}]}]) f.receive(`data: ${JSON.stringify({choices:[{delta,finish_reason:null}]})}\n`);
+  f.receive('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\ndata: [DONE]\n');await f.events.get('dataEnd')();
+  assert.equal(f.chunks.filter(c=>c.done).length,1);assert.equal(f.chunks.at(-1).finishReason,'tool_calls');
+  assert.equal(f.chunks.find(c=>c.reasoningDelta).reasoningDelta,'推理');
+  assert.equal(f.chunks.filter(c=>c.toolCall).map(c=>c.toolCall.argumentsFragment).join(''),'{"title":"复习"}');assert.equal(f.destroyed(),1);
+});
+
+test('compatible stream buffers early data until status and never treats HTTP failure as an answer', async () => {
+  const f=compatibleStreamFixture();await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));
+  f.receive('data: {"choices":[{"delta":{"content":"private server data"},"finish_reason":null}]}\n');
+  assert.equal(f.chunks.length,0);f.status(401);await Promise.resolve();await f.events.get('dataEnd')();
+  assert.equal(f.chunks.length,1);assert.ok(f.chunks[0].error.includes('401'));
+  assert.ok(!JSON.stringify(f.chunks).includes('private server data'));assert.equal(f.destroyed(),1);
+});
+
+test('compatible stream provider errors and cancellation close exactly once without leaking payload', async () => {
+  const f=compatibleStreamFixture();await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));
+  f.status(200);await Promise.resolve();f.receive('data: {"error":{"message":"echoed secret"}}\n');await f.events.get('dataEnd')();
+  assert.equal(f.chunks.length,1);assert.ok(f.chunks[0].error);assert.ok(!f.chunks[0].error.includes('secret'));assert.equal(f.destroyed(),1);
+  const cancelled=compatibleStreamFixture();const handle=await cancelled.provider.completeStream(consentProfile(),{messages:[]},c=>cancelled.chunks.push(c));
+  handle.abort();cancelled.status(200);await cancelled.events.get('dataEnd')();
+  cancelled.receive('data: {"choices":[{"delta":{"content":"late"}}]}\n');assert.equal(cancelled.chunks.length,0);assert.equal(cancelled.destroyed(),1);
 });

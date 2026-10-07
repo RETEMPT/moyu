@@ -22,5 +22,10 @@ jobs:
         run: npm install --no-save --ignore-scripts typescript@4.9.5
       - name: Verify learning workflows, OCR, PDF, backups, persistence and AI
         run: node tools/verify-workflows.mjs
+      - name: Verify app market gates and generated public materials
+        run: |
+          node tools/verify-app-market.mjs
+          node tools/generate-market-materials.mjs --check
+          node tools/app-market-preflight.mjs --project-only
       - name: Check whitespace errors
         run: git diff --check HEAD^ HEAD

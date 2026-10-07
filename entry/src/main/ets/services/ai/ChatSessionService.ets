@@ -6,7 +6,7 @@
  */
 import { Context } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { ChatSession } from '../../common/types/ChatSession';
+import { ChatSession, StoredMessage } from '../../common/types/ChatSession';
 import { ChatSessionSanitizer } from './ChatSessionSanitizer';
 import { SerialTaskQueue } from '../storage/SerialTaskQueue';
 import { SnapshotStore } from '../storage/SnapshotStore';
@@ -82,6 +82,19 @@ export class ChatSessionService {
       }
       if (!found) { sessions.unshift(snapshot); }
       await this.writeSessions(sessions);
+    });
+  }
+
+  /** Replace one conversation without reviving a deleted session or changing its metadata. */
+  async replaceMessages(id: string, messages: StoredMessage[]): Promise<ChatSession> {
+    const snapshot = JSON.parse(JSON.stringify(messages)) as StoredMessage[];
+    return this.mutations.run<ChatSession>(async () => {
+      const sessions = await this.readSessions();
+      const session = sessions.find((item: ChatSession) => item.id === id);
+      if (!session) { throw new Error('对话已删除，不能更新消息'); }
+      session.messages = snapshot; session.updatedAt = Date.now();
+      await this.writeSessions(sessions);
+      return JSON.parse(JSON.stringify(session)) as ChatSession;
     });
   }
 

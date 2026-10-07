@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "appName": "墨语",
+  "bundleName": "com.retempt.flowmind",
+  "publisher": "",
+  "supportEmail": "",
+  "privacyUrl": "",
+  "privacyResponseWorkingDays": 15,
+  "sdkReleaseEvidence": "",
+  "qualificationEvidence": "",
+  "aiServiceReviewEvidence": "",
+  "deviceEvidence": "",
+  "screenshots": [],
+  "previousReleaseCode": 1000000,
+  "signingEvidence": ""
+}

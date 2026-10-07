@@ -1,11 +1,9 @@
 {
   "name": "entry",
-  "version": "1.0.0",
-  "description": "Please describe the basic information.",
+  "version": "1.1.0",
+  "description": "墨语：本地课程资料、笔记、阅读与复习工作台",
   "main": "",
   "author": "",
-  "license": "",
-  "dependencies": {
-    "libentry.so": "file:./src/main/cpp/types/libentry"
-  }
+  "license": "MIT",
+  "dependencies": {}
 }

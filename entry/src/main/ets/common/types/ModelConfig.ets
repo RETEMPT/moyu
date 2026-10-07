@@ -19,6 +19,13 @@ export interface ModelProfile {
   protocol: ProviderProtocol;
   baseUrl: string;
   apiKey: string;
+  /** API key exists only in runtime profiles; persisted metadata holds this opaque reference. */
+  credentialRef?: string;
+  credentialUnavailable?: boolean;
+  remoteConsentVersion?: number;
+  remoteConsentEndpoint?: string;
+  remoteConsentProtocol?: ProviderProtocol;
+  remoteConsentedAt?: number;
   modelId: string;
   /** 向量化模型 id（跨库语义检索用） */
   embeddingModelId?: string;
@@ -121,7 +128,7 @@ export function getPresetTemplates(): ModelPresetTemplate[] {
   return [
     {
       name: 'DeepSeek V4 Pro (旗舰)',
-      description: '主流 API 最新 V4 Pro 旗舰版（deepseek-v4-pro），长上下文与深逻辑研读',
+      description: '兼容服务示例；请按服务商控制台核对模型、额度与隐私规则',
       profile: {
         id: `preset_ds_v4_pro_${now}`,
         label: 'DeepSeek V4 Pro',
@@ -141,7 +148,7 @@ export function getPresetTemplates(): ModelPresetTemplate[] {
     },
     {
       name: 'DeepSeek Flash (极速)',
-      description: '主流 API 最新 Flash 极速版（deepseek-flash），高吞吐低延迟即时问答',
+      description: '兼容服务示例；模型可用性以服务商实际配置为准',
       profile: {
         id: `preset_ds_flash_${now}`,
         label: 'DeepSeek Flash',
@@ -181,13 +188,13 @@ export function getPresetTemplates(): ModelPresetTemplate[] {
     },
     {
       name: 'Ollama 本地 (DeepSeek)',
-      description: '连接已运行的 Ollama 服务；手机端请填写可达的主机地址',
+      description: '连接在本机运行的服务；跨设备接入须使用 HTTPS 端点',
       profile: {
         id: `preset_ollama_${now}`,
         label: 'Ollama 本地',
         protocol: 'openai-compat',
         baseUrl: 'http://127.0.0.1:11434/v1',
-        apiKey: 'ollama',
+        apiKey: '',
         modelId: 'deepseek-r1:latest',
         embeddingModelId: 'nomic-embed-text',
         temperature: 0.5,
