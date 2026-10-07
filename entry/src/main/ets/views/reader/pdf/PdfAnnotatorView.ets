@@ -16,6 +16,7 @@ import { curves } from '@kit.ArkUI';
 import { ColorPalette, TypographyTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { NoteItem } from '../../../common/types/NoteItem';
+import { ReaderSaveKind } from '../../../common/types/ReaderSaveKind';
 import {
   AnnotationTool,
   DocumentAnnotationData,
@@ -34,11 +35,11 @@ export struct PdfAnnotatorView {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
   @Prop @Watch('onCurrentPageChanged') currentPage: number = 1;
   @Prop @Watch('saveForExit') exitSaveToken: number = 0;
-  onCommitForExit: (note: NoteItem, content: string) => Promise<void> = async () => {};
+  onCommitForExit: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onExitSaveFinished: (ok: boolean) => void = () => {};
   @Prop barsVisible: boolean = true;
   @Prop isContinuousScroll: boolean = true;
-  onSaved: (note: NoteItem, content: string) => void = () => {};
+  onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onSaveStateChange: (state: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
@@ -61,6 +62,7 @@ export struct PdfAnnotatorView {
   // 撤销历史栈
   private undoStack: PageAnnotationStroke[] = [];
   private saveTimer: number = -1;
+  private saveRevision: number = 0;
   private loadedNoteId: string = '';
 
   onCurrentPageChanged(): void {
@@ -193,6 +195,7 @@ export struct PdfAnnotatorView {
 
   /** 计划防抖自动落盘 */
   private scheduleSave(): void {
+    this.saveRevision++;
     if (this.saveTimer !== -1) {
       clearTimeout(this.saveTimer);
     }
@@ -203,18 +206,19 @@ export struct PdfAnnotatorView {
   }
 
   /** 序列化并存入 NoteItem.pageAnnotations */
-  private flushSave(): void {
+  private async flushSave(): Promise<void> {
     this.saveTimer = -1;
+    const revision = this.saveRevision;
     const updatedNote = this.annotationSnapshot();
-    this.onSaved(updatedNote, updatedNote.contentDetail);
-    this.onSaveStateChange('已保存');
+    try { await this.onSaved(updatedNote, updatedNote.contentDetail, 'pdf'); if (revision === this.saveRevision) { this.onSaveStateChange('已保存'); } }
+    catch { if (revision === this.saveRevision) { this.onSaveStateChange('保存失败'); } }
   }
 
   private async saveForExit(): Promise<void> {
     if (this.saveTimer !== -1) { clearTimeout(this.saveTimer); this.saveTimer = -1; }
     const snapshot = this.annotationSnapshot();
     try {
-      await this.onCommitForExit(snapshot, snapshot.contentDetail);
+      await this.onCommitForExit(snapshot, snapshot.contentDetail, 'pdf');
       this.onExitSaveFinished(true);
     } catch {
       this.onSaveStateChange('保存失败');

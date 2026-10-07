@@ -1,3 +1,5 @@
+import { SseHttpClient } from '../SseHttpClient';
+import { RemoteAiPolicy } from '../RemoteAiPolicy';
 /**
  * Gemini 协议 Provider
  *
@@ -58,22 +60,26 @@ export class GeminiProvider implements ModelProvider {
   }
 
   async complete(profile: ModelProfile, request: ChatCompletionRequest): Promise<string> {
-    const url: string = `${this.cleanBase(profile.baseUrl)}/models/${profile.modelId}:generateContent`;
+    RemoteAiPolicy.assertAllowed(profile);
+    const url: string = `${this.cleanBase(profile.baseUrl)}/models/${encodeURIComponent(profile.modelId)}:generateContent`;
     const body: string = this.buildBody(profile, request);
-    const resp: http.HttpResponse = await http.createHttp().request(url, {
+    const client = http.createHttp();
+    let resp: http.HttpResponse;
+    try { resp = await client.request(url, {
       method: http.RequestMethod.POST,
       header: this.buildHeaders(profile),
       extraData: body,
       expectDataType: http.HttpDataType.STRING,
-      connectTimeout: 15000,
+      maxRedirects: 0,
+        connectTimeout: 15000,
       readTimeout: 60000
-    });
+    }); } finally { client.destroy(); }
     if (resp.responseCode !== 200) {
-      throw new Error(`HTTP ${resp.responseCode}: ${String(resp.result).slice(0, 200)}`);
+      throw new Error(`AI 服务返回 HTTP ${resp.responseCode}，请核对密钥、模型与服务额度`);
     }
     const parsed: GeminiResponse = JSON.parse(String(resp.result)) as GeminiResponse;
     if (parsed.error !== undefined) {
-      throw new Error(parsed.error.message);
+      throw new Error('AI 服务未能完成请求，请核对配置和额度');
     }
     if (parsed.candidates === undefined || parsed.candidates.length === 0) {
       return '';
@@ -82,84 +88,19 @@ export class GeminiProvider implements ModelProvider {
     return parts.map((p: GeminiPart) => p.text).join('');
   }
 
-  async completeStream(
-    profile: ModelProfile,
-    request: ChatCompletionRequest,
-    onChunk: (chunk: ChatCompletionChunk) => void
-  ): Promise<StreamHandle> {
-    const url: string = `${this.cleanBase(profile.baseUrl)}/models/${profile.modelId}:streamGenerateContent?alt=sse`;
-    const body: string = this.buildBody(profile, request);
-    const httpRequest = http.createHttp();
-    let aborted: boolean = false;
-    let buffer: string = '';
-
-    return new Promise<StreamHandle>((resolve) => {
-      httpRequest.on('dataReceive', (data: ArrayBuffer) => {
-        if (aborted) {
-          return;
-        }
-        buffer += new util.TextDecoder('utf-8').decode(new Uint8Array(data));
-        const lines: string[] = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          const trimmed: string = line.trim();
-          if (!trimmed.startsWith('data:')) {
-            continue;
-          }
-          const payload: string = trimmed.slice(5).trim();
-          try {
-            const parsed: GeminiResponse = JSON.parse(payload) as GeminiResponse;
-            if (parsed.candidates !== undefined && parsed.candidates.length > 0) {
-              const text: string = parsed.candidates[0].content.parts
-                .map((p: GeminiPart) => p.text).join('');
-              const finish: string = parsed.candidates[0].finishReason;
-              if (text.length > 0 || finish.length > 0) {
-                onChunk({ delta: text, done: finish === 'STOP', finishReason: finish });
-              }
-            }
-          } catch {
-            // skip
-          }
-        }
-      });
-
-      httpRequest.request(url, {
-        method: http.RequestMethod.POST,
-        header: this.buildHeaders(profile),
-        extraData: body,
-        expectDataType: http.HttpDataType.ARRAY_BUFFER,
-        connectTimeout: 15000,
-        readTimeout: 120000
-      }).then((resp: http.HttpResponse) => {
-        if (aborted) {
-          return;
-        }
-        if (resp.responseCode !== 200) {
-          onChunk({ delta: '', done: true, error: this.describeError(resp) });
-          return;
-        }
-        onChunk({ delta: '', done: true });
-      }).catch((err: Error) => {
-        if (!aborted) {
-          onChunk({ delta: '', done: true, error: err.message });
-        }
-      });
-
-      resolve(new StreamHandleImpl(() => { aborted = true; httpRequest.destroy(); }));
-    });
-  }
-
-  /** 非 200 响应整理成可读错误（ARRAY_BUFFER 下 result 是二进制，直接拼串会得到 [object ArrayBuffer]） */
-  private describeError(resp: http.HttpResponse): string {
-    let body: string = '';
-    if (resp.result instanceof ArrayBuffer) {
-      body = new util.TextDecoder('utf-8').decode(new Uint8Array(resp.result));
-    } else if (resp.result !== undefined) {
-      body = String(resp.result);
-    }
-    return body.length > 0
-      ? `HTTP ${resp.responseCode}: ${body.slice(0, 200)}`
-      : `HTTP ${resp.responseCode}`;
+  async completeStream(profile: ModelProfile, request: ChatCompletionRequest,
+    onChunk: (chunk: ChatCompletionChunk) => void): Promise<StreamHandle> {
+    RemoteAiPolicy.assertAllowed(profile);
+    const url = `${this.cleanBase(profile.baseUrl)}/models/${encodeURIComponent(profile.modelId)}:streamGenerateContent?alt=sse`;
+    return SseHttpClient.open(profile, url, this.buildHeaders(profile), this.buildBody(profile, request), (json: string): boolean => {
+      const parsed = JSON.parse(json) as GeminiResponse;
+      if (parsed.error) { throw new Error('provider error'); }
+      if (!parsed.candidates || !parsed.candidates.length) { return false; }
+      const candidate = parsed.candidates[0];
+      const text = candidate.content?.parts?.map((part: GeminiPart) => part.text || '').join('') || '';
+      if (text) { onChunk({ delta: text, done: false }); }
+      return !!candidate.finishReason;
+    }, (error?: string) => onChunk({ delta: '', done: true, error }));
   }
 
   private cleanBase(baseUrl: string): string {

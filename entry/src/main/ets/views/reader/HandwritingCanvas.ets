@@ -12,6 +12,7 @@ import { curves } from '@kit.ArkUI';
 import { ColorPalette, TypographyTokens, AnimationTokens, LayoutTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
+import { ReaderSaveKind } from '../../common/types/ReaderSaveKind';
 import { CanvasPoint, CanvasStroke } from '../../common/types/CanvasStroke';
 
 const PEN_COLORS: string[] = [
@@ -29,9 +30,9 @@ export struct HandwritingCanvas {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
   @Prop isScratchpad: boolean = false;
   @Prop @Watch('saveForExit') exitSaveToken: number = 0;
-  onCommitForExit: (note: NoteItem, content: string) => Promise<void> = async () => {};
+  onCommitForExit: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onExitSaveFinished: (ok: boolean) => void = () => {};
-  onSaved: (note: NoteItem, content: string) => void = () => {};
+  onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onSaveStateChange: (state: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
@@ -53,6 +54,7 @@ export struct HandwritingCanvas {
 
   private canvasScroller: Scroller = new Scroller();
   private saveTimer: number = -1;
+  private saveRevision: number = 0;
   private loadedNoteId: string = '';
   private canvasWidth: number = 1200;
   private canvasHeight: number = 2400;
@@ -88,7 +90,7 @@ export struct HandwritingCanvas {
     if (this.saveTimer !== -1) { clearTimeout(this.saveTimer); this.saveTimer = -1; }
     const snapshot = this.strokeSnapshot();
     try {
-      await this.onCommitForExit(snapshot, snapshot.contentDetail);
+      await this.onCommitForExit(snapshot, snapshot.contentDetail, this.isScratchpad ? 'scratchpad' : 'handwriting');
       this.onExitSaveFinished(true);
     } catch {
       this.onSaveStateChange('保存失败');
@@ -199,6 +201,7 @@ export struct HandwritingCanvas {
   }
 
   private scheduleSave(): void {
+    this.saveRevision++;
     if (this.saveTimer !== -1) {
       clearTimeout(this.saveTimer);
     }
@@ -208,11 +211,12 @@ export struct HandwritingCanvas {
     }, 800);
   }
 
-  private flushSave(): void {
+  private async flushSave(): Promise<void> {
     this.saveTimer = -1;
+    const revision = this.saveRevision;
     const snapshot = this.strokeSnapshot();
-    this.onSaved(snapshot, snapshot.contentDetail);
-    this.onSaveStateChange('已保存');
+    try { await this.onSaved(snapshot, snapshot.contentDetail, this.isScratchpad ? 'scratchpad' : 'handwriting'); if (revision === this.saveRevision) { this.onSaveStateChange('已保存'); } }
+    catch { if (revision === this.saveRevision) { this.onSaveStateChange('保存失败'); } }
   }
 
   // ------------------------------------------------------------------

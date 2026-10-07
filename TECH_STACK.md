@@ -1,8 +1,10 @@
 # FlowMind 墨语 · 技术栈全景与核心架构白皮书 (TECH STACK)
 
-> **定位**：FlowMind（墨语）纯血鸿蒙端侧 AI 驱动个人信息工作台与双链知识库架构深度解析。  
-> **版本**：v1.0.0 (API 11 / API 12 NEXT)  
+> **定位**：FlowMind（墨语）本地课程资料、双链笔记与可选远程 AI 工作区。端侧 OCR 和本地规则不等同于端侧大模型。
+> **工程基线**：兼容 SDK 6.1.1(24)，目标 SDK 26.0.0；v1.0.0 后的候选改进。
 > **组织仓库**：[RETEMPT/moyu](https://github.com/RETEMPT/moyu)
+
+本文保留部分早期设计和渲染思路，不作为已实现功能或性能保证。当前分层与剩余边界见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)，设备互通与发布范围见 [MULTIDEVICE_PLAN.md](docs/MULTIDEVICE_PLAN.md)，实际执行证据见 [WORKFLOW_REVIEW.md](docs/WORKFLOW_REVIEW.md)。
 
 ---
 
@@ -11,7 +13,7 @@
 FlowMind 的工程实现遵循三大不可动摇的底层原则：
 
 1. **Local-First（本地优先）**：
-   - 用户的所有笔记、考点摘录、待办规划、手写墨水与双链索引 100% 留存在端侧私有沙箱内；
+   - 默认在本机私有目录保存笔记、待办、笔迹与题卡；用户启用远程 AI、导出文件或附近传递时，相关资料会离开本机，范围见隐私说明；
    - 零强制上云、零隐蔽遥测、零第三方商业追踪 SDK，守护学术与个人隐私资产。
 2. **Deterministic UI / UX（确定性极简体验）**：
    - 摒弃玩具化彩色 Emoji，全面推行高对比度中性灰阶与精密几何拓扑排版符号（`←`、`▤`、`✎`、`⊡`、`✦`、`▦`、`⛶`）；
@@ -27,7 +29,7 @@ FlowMind 的工程实现遵循三大不可动摇的底层原则：
 
 | 维度 | 选型 / 规范 | 版本 / 标准 | 说明与核心价值 |
 | :--- | :--- | :--- | :--- |
-| **操作系统** | HarmonyOS NEXT | API 11 / API 12 | 纯血鸿蒙底层，全面迁移至 Stage 统一应用模型 |
+| **操作系统** | HarmonyOS | 兼容 6.1.1(24)，目标 26.0.0 | Stage 应用模型；独立 OpenHarmony 兼容性未验证 |
 | **主开发语言** | ArkTS | 5.0+ | 严格静态类型安全约束，零动态 `eval` 隐患，高性能 JIT/AOT |
 | **UI 声明式框架** | ArkUI | Declarative Paradigm | 组件化声明式渲染、细粒度 `@State` / `@Prop` / `@Link` 状态驱动 |
 | **构建流水线** | Hvigor + ohpm | 4.x / 5.x | 模块化构建、声明式依赖解析、秒级增量编译与 HAP/HSP 打包 |
@@ -37,7 +39,7 @@ FlowMind 的工程实现遵循三大不可动摇的底层原则：
 | **大模型流式适配** | OpenAiCompatProvider | Server-Sent Events (SSE) | 支持 DeepSeek R1/V3（含 `reasoning_effort` 思考链）、OpenAI、Qwen、Moonshot |
 | **端侧 NLP 规则引擎** | AiParser (自研启发式) | Local Heuristic Regex | 离线中文时间抽取、考点摘要归纳、任务动宾短语提炼，0ms 网络依赖 |
 | **文档与原盘引擎** | HuaweiDoc + PDF Kit | Multi-page A4 Layout | 虚拟化多页物理排版、归一化矢量笔迹落盘、随堂分屏稿纸 |
-| **持久化与存储** | 沙箱 I/O + Preferences | Hybrid Local Storage | Preferences 毫秒级首屏快照 + 沙箱 `.md` / `.json` 物理文件原子化落地 |
+| **持久化与存储** | 沙箱 I/O + Preferences | 本地文件与 JSON 快照 | 正文临时写入后替换；快照排队、读失败阻止覆盖与失败缓存恢复。文件和快照不是联合事务 |
 | **安全合规规范** | HarmonyOS Code-Linter | Security & Perf Plugin | 静态阻断弱密码算法、内存安全泄漏监控、私有沙箱权限按需申请 |
 
 ---
@@ -77,7 +79,7 @@ graph TD
     end
 
     subgraph Storage_Layer["5. 基础设施与沙箱驱动 (Infrastructure)"]
-        Preferences["@ohos.data.preferences (原子快照缓存)"]
+        Preferences["Preferences：排队 JSON 快照"]
         FileIO["@ohos.file.fs (应用沙箱安全读写)"]
         Tokens["DesignTokens & ThemeHelper (设计系统与视觉规范)"]
     end
@@ -116,7 +118,9 @@ graph TD
 
 ## 4. 关键子系统技术揭秘
 
-### 4.1 端侧 AI 智能体与混合双模引擎 (Smart Agent Engine)
+### 4.1 本地规则与可选远程 AI (Smart Agent Engine)
+
+当前模型服务由用户配置，无团队运营的云端 AI，也未内置端侧大模型或接入小艺。用户选择本地处理或同意发送；AI 写工具须遵循只读/关闭/写前确认配置。下图为早期整理思路，不能代替具体权限与功能实现。
 
 ```mermaid
 flowchart LR

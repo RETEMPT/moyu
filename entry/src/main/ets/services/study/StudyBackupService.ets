@@ -13,6 +13,24 @@ const MAX_BYTES: number = 32 * 1024 * 1024;
 
 export class StudyBackupService {
   static async exportFile(context: Context, notes: NoteItem[], cards: ReviewCard[]): Promise<boolean> {
+    const backup = await StudyBackupService.create(context, notes, cards);
+    const content = JSON.stringify(backup);
+    const options = new picker.DocumentSaveOptions();
+    options.newFileNames = [`墨语学习备份_${new Date().toISOString().slice(0, 10)}.flowmind.json`];
+    options.fileSuffixChoices = ['墨语学习备份|.json'];
+    const uris = await new picker.DocumentViewPicker(context).save(options);
+    if (!uris.length) { return false; }
+    const file = await fs.open(uris[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    try {
+      const expected = new util.TextEncoder().encodeInto(content).length;
+      if (await fs.write(file.fd, content) !== expected) { throw new Error('备份未完整写入，请重试'); }
+      await fs.fsync(file.fd);
+    } finally { await fs.close(file); }
+    return true;
+  }
+
+  /** Shared by file export and explicit nearby transfer; attachments are never silently dropped. */
+  static async create(context: Context, notes: NoteItem[], cards: ReviewCard[]): Promise<StudyBackup> {
     const assets: BackupAsset[] = [];
     let total = 0;
     for (const note of notes) {
@@ -40,18 +58,7 @@ export class StudyBackupService {
       cards: cards.filter((card: ReviewCard) => notes.some((note: NoteItem) => note.id === card.noteId)), assets: assets };
     const content = JSON.stringify(StudyBackupPolicy.validate(backup));
     if (new util.TextEncoder().encodeInto(content).length > MAX_BYTES) { throw new Error('备份超过 32 MB，请按课程分批导出'); }
-    const options = new picker.DocumentSaveOptions();
-    options.newFileNames = [`墨语学习备份_${new Date().toISOString().slice(0, 10)}.flowmind.json`];
-    options.fileSuffixChoices = ['墨语学习备份|.json'];
-    const uris = await new picker.DocumentViewPicker(context).save(options);
-    if (!uris.length) { return false; }
-    const file = await fs.open(uris[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-    try {
-      const expected = new util.TextEncoder().encodeInto(content).length;
-      if (await fs.write(file.fd, content) !== expected) { throw new Error('备份未完整写入，请重试'); }
-      await fs.fsync(file.fd);
-    } finally { await fs.close(file); }
-    return true;
+    return StudyBackupPolicy.validate(backup);
   }
   static async selectFile(context: Context): Promise<StudyBackup | null> {
     const options = new picker.DocumentSelectOptions(); options.maxSelectNumber = 1; options.fileSuffixFilters = ['.json'];

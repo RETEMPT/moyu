@@ -17,8 +17,7 @@
 
 | 附件 | 用途 |
 | --- | --- |
-| `FlowMind-1.0.0-HarmonyOS-unsigned.app` | release 模式 AppPack，供开发者检查与后续签名发布准备；不能直接当作市场发布包 |
-| `FlowMind-1.0.0-HarmonyOS-unsigned.hap` | release 模式 entry HAP，供支持相应条件的开发设备/模拟器测试，正式设备需有效签名 |
+| `FlowMind-1.0.0-HarmonyOS-unsigned.zip` | 实际下载附件，内含 release 模式 APP、与其内嵌内容一致的 entry HAP、构建信息和内部校验值；解压后使用，手机/Pad 共用；仍需有效签名 |
 | `SHA256SUMS.txt` | 附件完整性校验值，核对下载是否完整；校验值不是数字签名 |
 | `BUILD_INFO.json` | 构建对应的提交、版本、SDK 与文件大小信息 |
 

@@ -2,7 +2,7 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "FlowMind 墨语 · AI 驱动的个人信息工作台"
+      "value": "墨语 · 课程资料、笔记与复习工作台"
     },
     {
       "name": "EntryAbility_desc",
@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "墨语"
+    },
+    {
+      "name": "nearby_sync_reason",
+      "value": "用于在您主动选择的可信设备间传递学习资料"
     }
   ]
 }

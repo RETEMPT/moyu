@@ -15,6 +15,7 @@ import { curves } from '@kit.ArkUI';
 import { ColorPalette, LayoutTokens, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
+import { ReaderSaveKind } from '../../common/types/ReaderSaveKind';
 import { MarkdownOutlineItem } from '../../common/types/MarkdownOutlineItem';
 import { MarkdownReader } from './MarkdownReader';
 import { HandwritingCanvas } from './HandwritingCanvas';
@@ -33,7 +34,7 @@ export struct ReaderWorkspace {
   onToggleAnnotation: () => void = () => {};
   onToggleFavorite: (note: NoteItem) => void = () => {};
   onDeleteNote: (note: NoteItem) => void = () => {};
-  onSaved: (note: NoteItem, content: string) => void = () => {};
+  onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onChooseCover: () => void = () => {};
   onSaveStateChange: (state: string) => void = () => {};
   onOutlineUpdated: (items: MarkdownOutlineItem[]) => void = () => {};

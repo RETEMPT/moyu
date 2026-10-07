@@ -1,0 +1,155 @@
+{
+  "versionCode": 1001001,
+  "appSha256": "",
+  "sourceCommit": "",
+  "devices": [
+    {
+      "type": "phone",
+      "physical": false,
+      "model": "",
+      "systemVersion": "",
+      "tester": "",
+      "checkedAt": "",
+      "cases": {
+        "privacy_offline": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "offline_learning": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "ocr_pdf_cancel": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "reader_restart": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "upgrade_persistence": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "permission_denied": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "ai_consent_revoke": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "ai_failure_cancel": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "backup_restore": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "nearby_transfer": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "nearby_interruption_cleanup": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "keyboard_small_screen": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "font_rotation_multiwindow": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "dark_reduce_motion": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "performance": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "delete_export": {
+          "status": "TODO",
+          "evidence": ""
+        }
+      }
+    },
+    {
+      "type": "tablet",
+      "physical": false,
+      "model": "",
+      "systemVersion": "",
+      "tester": "",
+      "checkedAt": "",
+      "cases": {
+        "privacy_offline": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "offline_learning": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "ocr_pdf_cancel": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "reader_restart": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "upgrade_persistence": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "permission_denied": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "ai_consent_revoke": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "ai_failure_cancel": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "backup_restore": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "nearby_transfer": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "nearby_interruption_cleanup": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "keyboard_small_screen": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "font_rotation_multiwindow": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "dark_reduce_motion": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "performance": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "delete_export": {
+          "status": "TODO",
+          "evidence": ""
+        }
+      }
+    }
+  ]
+}

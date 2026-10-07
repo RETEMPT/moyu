@@ -6,6 +6,8 @@ import { NoteItem } from '../common/types/NoteItem';
 import { SpaceFolder } from '../common/types/SpaceFolder';
 import { DocumentTransferResult, MarkdownDocument } from '../common/types/MarkdownDocument';
 import { PdfDocumentService } from './document/PdfDocumentService';
+import { SnapshotStore } from './storage/SnapshotStore';
+import { AtomicTextFile } from './storage/AtomicTextFile';
 
 const PREFERENCES_NAME: string = 'flowmind_notes';
 const NOTES_KEY: string = 'notes';
@@ -18,40 +20,35 @@ export class NoteStorageService {
   private notesDirectory: string = '';
   /** 最近一次初始化时传入的应用上下文，用于补建 Preferences 实例 */
   private storageContext: Context | null = null;
+  private snapshots: SnapshotStore = new SnapshotStore();
+  private textFiles: AtomicTextFile = new AtomicTextFile();
 
   /**
    * 读取本地笔记快照，并用沙箱中的 .md 正文回填 contentDetail。
    * @param context 应用上下文
-   * @param fallbackNotes 快照缺失或损坏时使用的兜底笔记
+   * @param fallbackNotes 仅首次启动时使用的示例笔记；损坏快照保留并报错
    * @returns 已回填正文的笔记列表
    */
   async load(context: Context, fallbackNotes: NoteItem[]): Promise<NoteItem[]> {
-    const prefs: preferences.Preferences = await this.ensureInitialized(context);
-    const storedNotes = await prefs.get(NOTES_KEY, '');
-    if (typeof storedNotes !== 'string' || storedNotes.length === 0) {
-      // 首次启动：写入快照并把示例正文物化为真实 .md 文件
-      await this.saveSnapshot(fallbackNotes);
-      await this.reconcileFiles(fallbackNotes);
-      return fallbackNotes;
-    }
+    try { return await this.loadNotes(context, fallbackNotes); }
+    catch (error) { this.snapshots.block(NOTES_KEY); throw new Error(error instanceof Error ? error.message : '本地笔记读取失败'); }
+  }
 
-    let parsedNotes: NoteItem[];
-    try {
-      parsedNotes = JSON.parse(storedNotes) as NoteItem[];
-    } catch (error) {
-      console.error(`本地笔记快照解析失败: ${JSON.stringify(error)}`);
-      await this.saveSnapshot(fallbackNotes);
-      return fallbackNotes;
-    }
-    if (!this.isNoteItemArray(parsedNotes)) {
-      console.error('本地笔记快照格式无效，正在恢复示例数据');
+  private async loadNotes(context: Context, fallbackNotes: NoteItem[]): Promise<NoteItem[]> {
+    const prefs: preferences.Preferences = await this.ensureInitialized(context);
+    const parsedNotes = await this.snapshots.read<NoteItem[]>(prefs, NOTES_KEY, (value: NoteItem[]) => this.isNoteItemArray(value));
+    if (parsedNotes === null) {
+      // 首次启动：写入快照并把示例正文物化为真实 .md 文件
+      await this.reconcileFiles(fallbackNotes);
       await this.saveSnapshot(fallbackNotes);
       return fallbackNotes;
     }
 
     const hydratedNotes: NoteItem[] = [];
     for (const note of parsedNotes) {
-      const content: string | null = await this.tryRead(note.id);
+      let content: string | null;
+      try { content = await this.tryRead(note.id); }
+      catch { this.snapshots.block(NOTES_KEY); throw new Error('笔记正文读取失败，原文件已保留，请检查存储后重试'); }
       if (content === null) {
         await this.migrateLegacyContent(note);
         hydratedNotes.push(note);
@@ -299,8 +296,7 @@ export class NoteStorageService {
       prefs = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
       this.notePreferences = prefs;
     }
-    await prefs.put(NOTES_KEY, JSON.stringify(notes));
-    await prefs.flush();
+    await this.snapshots.write(prefs, NOTES_KEY, JSON.stringify(notes));
   }
 
   /**
@@ -309,23 +305,15 @@ export class NoteStorageService {
    * @returns 项目列表；无历史数据时为 null
    */
   async loadProjects(context: Context): Promise<SpaceFolder[] | null> {
+    try { return await this.readProjects(context); }
+    catch (error) { this.snapshots.block(PROJECTS_KEY); throw new Error(error instanceof Error ? error.message : '项目读取失败'); }
+  }
+
+  private async readProjects(context: Context): Promise<SpaceFolder[] | null> {
     const prefs: preferences.Preferences = await this.ensureInitialized(context);
     // 与 load() 里的 NOTES_KEY 读法一致：不显式标注类型，交给推断得到 ValueType
-    const stored = await prefs.get(PROJECTS_KEY, '');
-    if (typeof stored !== 'string' || stored.length === 0) {
-      return null;
-    }
-    try {
-      const parsed: SpaceFolder[] = JSON.parse(stored) as SpaceFolder[];
-      if (!Array.isArray(parsed)) {
-        console.error('项目快照格式无效，回退为默认项目');
-        return null;
-      }
-      return parsed;
-    } catch (error) {
-      console.error(`项目快照解析失败: ${JSON.stringify(error)}`);
-      return null;
-    }
+    return this.snapshots.read<SpaceFolder[]>(prefs, PROJECTS_KEY, (rows: SpaceFolder[]) => Array.isArray(rows) &&
+      rows.every((row: SpaceFolder) => row !== null && typeof row.id === 'string' && typeof row.name === 'string'));
   }
 
   /**
@@ -353,29 +341,23 @@ export class NoteStorageService {
         description: p.description
       });
     }
-    await prefs.put(PROJECTS_KEY, JSON.stringify(slim));
-    await prefs.flush();
+    await this.snapshots.write(prefs, PROJECTS_KEY, JSON.stringify(slim));
   }
 
   /**
-   * 读取回收站中的笔记（软删除快照）。从未保存过或数据损坏时返回空数组。
+   * 读取回收站中的笔记（软删除快照）。从未保存过时返回空数组，损坏时保留并报错。
    * 回收站与资料库分开存储：正文 .md 文件在软删除阶段保留，只有彻底删除才移除。
    * @param context 应用上下文
    * @returns 回收站笔记列表
    */
   async loadTrash(context: Context): Promise<NoteItem[]> {
+    try { return await this.readTrash(context); }
+    catch (error) { this.snapshots.block(TRASH_KEY); throw new Error(error instanceof Error ? error.message : '回收站读取失败'); }
+  }
+
+  private async readTrash(context: Context): Promise<NoteItem[]> {
     const prefs: preferences.Preferences = await this.ensureInitialized(context);
-    const stored = await prefs.get(TRASH_KEY, '');
-    if (typeof stored !== 'string' || stored.length === 0) {
-      return [];
-    }
-    try {
-      const parsed: NoteItem[] = JSON.parse(stored) as NoteItem[];
-      return this.isNoteItemArray(parsed) ? parsed : [];
-    } catch (error) {
-      console.error(`回收站快照解析失败: ${JSON.stringify(error)}`);
-      return [];
-    }
+    return await this.snapshots.read<NoteItem[]>(prefs, TRASH_KEY, (value: NoteItem[]) => this.isNoteItemArray(value)) || [];
   }
 
   /**
@@ -385,8 +367,7 @@ export class NoteStorageService {
    */
   async saveTrash(context: Context, trash: NoteItem[]): Promise<void> {
     const prefs: preferences.Preferences = await this.ensureInitialized(context);
-    await prefs.put(TRASH_KEY, JSON.stringify(trash));
-    await prefs.flush();
+    await this.snapshots.write(prefs, TRASH_KEY, JSON.stringify(trash));
   }
 
   /**
@@ -411,15 +392,7 @@ export class NoteStorageService {
       throw new Error('本地笔记存储尚未初始化');
     }
     await this.ensureNotesDirectory();
-    const file = await fileIo.open(
-      this.filePath(id),
-      fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC
-    );
-    try {
-      await fileIo.write(file.fd, content);
-    } finally {
-      await fileIo.close(file);
-    }
+    await this.textFiles.write(this.filePath(id), content);
   }
 
   /**
@@ -464,12 +437,9 @@ export class NoteStorageService {
   }
 
   private async tryRead(id: string): Promise<string | null> {
-    try {
-      return await fileIo.readText(this.filePath(id));
-    } catch (error) {
-      console.error(`Markdown 正文读取失败 (${id}): ${JSON.stringify(error)}`);
-      return null;
-    }
+    const path = this.filePath(id);
+    if (!await fileIo.access(path)) { return null; }
+    return fileIo.readText(path);
   }
 
   private filePath(id: string): string {

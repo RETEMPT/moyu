@@ -24,3 +24,13 @@
 *.key
 *.secret
 *.dmp
+
+# Signing material and local release verification evidence
+*.p12
+*.pfx
+*.p7b
+*.cer
+*.pem
+/release/*.local.json
+/release/reports/
+/release/evidence/

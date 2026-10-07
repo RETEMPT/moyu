@@ -199,7 +199,7 @@ export struct AppearanceSheet {
           .strokeWidth(1)
           .color(this.palette().borderSubtle)
 
-        Button('学习资料备份与恢复').height(44).width('100%').onClick(() => this.onOpenBackup())
+        Button('备份与附近传递').height(44).width('100%').onClick(() => this.onOpenBackup())
         Button('隐私与数据说明').height(44).width('100%').onClick(() => this.onOpenPrivacy())
         // ---- 数据：补入示例 ----
         Column({ space: 6 }) {

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 
 // Run ArkTS service and view snapshot logic with platform adapters mocked. HAP compilation
 // separately verifies ArkTS types and UI; these tests do not emulate ArkUI.
@@ -36,7 +37,8 @@ function load(relative, mocks = {}, cache = new Map()) {
     throw new Error(`Unmocked platform dependency: ${specifier}`);
   };
   vm.runInNewContext(output, { module, exports: module.exports, require: localRequire,
-    console, Date, Error, Promise, setTimeout, clearTimeout, AppStorage: mocks.AppStorage }, { filename });
+    console, Date, Error, Promise, setTimeout: mocks.setTimeout || setTimeout, clearTimeout: mocks.clearTimeout || clearTimeout,
+    canIUse: mocks.canIUse || (() => true), AppStorage: mocks.AppStorage }, { filename });
   return module.exports;
 }
 
@@ -219,12 +221,15 @@ test('failed or oversized cover copies clean partial file and release source', a
 });
 
 test('configuration flush failure preserves the active profile and never broadcasts success', async () => {
-  const original = profile(); const values = new Map([['profiles', JSON.stringify([original])], ['activeProfileId', original.id]]);
+  const original = profile({ apiKey: '', credentialRef: 'key_000000000000000000000001' }); const values = new Map([['profiles', JSON.stringify([original])], ['activeProfileId', original.id]]);
   const publications = []; let fail = true;
   const prefs = { get: async (key, fallback) => values.get(key) ?? fallback, put: async (key, value) => values.set(key, value),
     flush: async () => { if (fail) throw new Error('disk full'); } };
   const { ModelConfigService } = load(`${base}services/ai/ModelConfigService.ets`, {
     '@kit.ArkData': { preferences: { getPreferences: async () => prefs } },
+    [path.resolve(root, `${base}services/ai/HuksCredentialStore.ets`)]: { HuksCredentialStore: class {
+      async init() {} async read() { return 'test-key'; } async write() { return 'key_000000000000000000000002'; } async remove() {}
+    } },
     AppStorage: { setOrCreate: (key, value) => publications.push([key, value]) }
   });
   const service = ModelConfigService.getInstance(); await service.init({});
@@ -569,21 +574,24 @@ test('failed PDF copy removes partial file and closes handle, never returns temp
   assert.deepEqual(calls.slice(-2), ['partial-copy-removed', 'file-close']);
 });
 
-function importService(uri, { pdfFails = false, writeFails = false, unlinkFails = false, missing = false } = {}) {
+function importService(uri, { pdfFails = false, writeFails = false, unlinkFails = false, missing = false, initial = '', readFails = false } = {}) {
   const calls = [];
-  const prefs = { get: async () => '', put: async () => {}, flush: async () => {} };
+  let raw = initial;
+  const prefs = { get: async () => raw, put: async (key, value) => { raw = value; calls.push(['snapshot', key]); }, flush: async () => {} };
   class DocumentViewPicker { async select() { return uri ? [uri] : []; } }
   class DocumentSelectOptions {}
   const mocks = {
+    '@kit.ArkTS': { util: { TextEncoder: class { encodeInto(text) { return Buffer.from(text); } } } },
     '@kit.ArkData': { preferences: { getPreferences: async () => prefs } },
     '@kit.CoreFileKit': { picker: { DocumentViewPicker, DocumentSelectOptions },
       fileIo: { OpenMode: { WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 }, access: async () => !missing,
         mkdir: async () => {},
-        readText: async () => { calls.push('read-text'); return '# 资料\n\n全文'; },
+        readText: async () => { calls.push('read-text'); if (readFails) throw Error('I/O'); return '# 资料\n\n全文'; },
         open: async () => ({ fd: 1 }), write: async (fd, content) => {
           if (writeFails) throw Error('disk full');
           calls.push(['write', content]);
-        }, close: async () => calls.push('close'), unlink: async file => {
+          return Buffer.byteLength(content);
+        }, fsync: async () => {}, rename: async () => {}, close: async () => calls.push('close'), unlink: async file => {
           calls.push(['unlink', file]);
           if (unlinkFails) throw Error('permission denied');
         } } },
@@ -592,7 +600,7 @@ function importService(uri, { pdfFails = false, writeFails = false, unlinkFails 
         getPdfInfo: async () => { if (pdfFails) throw Error('PDF 损坏'); return { pageCount: 2 }; } }) }
     }
   };
-  return { calls, service: new (load(`${base}services/NoteStorageService.ets`, mocks).NoteStorageService)() };
+  return { calls, raw: () => raw, service: new (load(`${base}services/NoteStorageService.ets`, mocks).NoteStorageService)() };
 }
 
 test('PDF import returns durable original path and actual page count', async () => {
@@ -925,4 +933,645 @@ test('failed backup PDF or cover validation removes newly created attachments', 
     assert.equal(f.calls.filter(c => c[0] === 'close').length, 1);
     if (kind === 'cover') assert.equal(f.calls.filter(c => c[0] === 'image-release').length, 1);
   }
+});
+
+test('empty note libraries stay empty; corrupt or unreadable libraries never overwrite the snapshot', async () => {
+  const empty = importService('', { initial: '[]' });
+  assert.equal((await empty.service.load({ filesDir: '/sandbox' }, [studyNote()])).length, 0);
+  assert.equal(empty.calls.length, 0);
+  for (const initial of ['{broken', '{"not":"notes"}', JSON.stringify([studyNote()])]) {
+    const f = importService('', { initial, readFails: true });
+    await assert.rejects(f.service.load({ filesDir: '/sandbox' }, [studyNote()]));
+    await assert.rejects(f.service.save([]), /阻止覆盖/);
+    assert.equal(f.raw(), initial);
+    assert.ok(!f.calls.some(call => Array.isArray(call) && ['write', 'snapshot'].includes(call[0])));
+  }
+});
+
+function preferenceFixture(initial = {}) {
+  const values = new Map(Object.entries(initial)); const writes = []; let fail = false;
+  return { values, writes, fail: value => { fail = value; },
+    prefs: { get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
+      put: async (key, value) => { values.set(key, value); writes.push([key, value]); },
+      flush: async () => { if (fail) throw Error('disk full'); } } };
+}
+
+test('queued snapshot failures restore the cache and do not stall the next write', async () => {
+  const f = preferenceFixture({ notes: '[1]' });
+  const { SnapshotStore } = load(`${base}services/storage/SnapshotStore.ets`, { '@kit.ArkData': {} });
+  const store = new SnapshotStore(); f.fail(true);
+  await assert.rejects(store.write(f.prefs, 'notes', '[2]'), /保存未完成/);
+  assert.equal(f.values.get('notes'), '[1]');
+  f.fail(false); await store.write(f.prefs, 'notes', '[3]'); assert.equal(f.values.get('notes'), '[3]');
+});
+
+test('an unreadable preference read blocks subsequent writes to that key', async () => {
+  const { SnapshotStore } = load(`${base}services/storage/SnapshotStore.ets`, { '@kit.ArkData': {} });
+  const store = new SnapshotStore(); let writes = 0;
+  const prefs = { get: async () => { throw Error('I/O'); }, put: async () => { writes++; }, flush: async () => {} };
+  await assert.rejects(store.read(prefs, 'notes', Array.isArray));
+  await assert.rejects(store.write(prefs, 'notes', '[]'), /阻止覆盖/); assert.equal(writes, 0);
+});
+
+test('todo corruption preserves both raw data and the independent day-note key', async () => {
+  const f = preferenceFixture({ todos: '{broken', daynotes: '[]' });
+  const { TodoStorageService } = load(`${base}services/TodoStorageService.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
+  });
+  const service = new TodoStorageService(); await assert.rejects(service.loadTodos({}));
+  await assert.rejects(service.saveTodos({}, []), /阻止覆盖/); assert.equal(f.values.get('todos'), '{broken');
+  await service.saveDayNotes({}, [{ date: '2026-10-06', text: '课表' }]);
+  assert.equal((await service.loadDayNotes({}))[0].text, '课表');
+});
+
+function atomicFixture({ shortWrite = false, syncFails = false } = {}) {
+  const files = new Map([['/note.md', 'last valid']]); const calls = []; const opened = new Map(); let fd = 0;
+  const { AtomicTextFile } = load(`${base}services/storage/AtomicTextFile.ets`, {
+    '@kit.ArkTS': { util: { TextEncoder: class { encodeInto(text) { return Buffer.from(text); } } } },
+    '@kit.CoreFileKit': { fileIo: { OpenMode: { WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 },
+      open: async file => { opened.set(++fd, file); files.set(file, ''); return { fd }; },
+      write: async (descriptor, text) => { files.set(opened.get(descriptor), text); calls.push(['write', text]); return Buffer.byteLength(text) - (shortWrite ? 1 : 0); },
+      fsync: async () => { if (syncFails) throw Error('sync failed'); }, close: async () => {},
+      rename: async (from, to) => { calls.push(['rename', from, to]); files.set(to, files.get(from)); files.delete(from); },
+      access: async file => files.has(file), unlink: async file => files.delete(file) } }
+  });
+  return { files, calls, AtomicTextFile };
+}
+
+test('short writes and fsync failures preserve the previous Markdown and remove temporary files', async () => {
+  for (const options of [{ shortWrite: true }, { syncFails: true }]) {
+    const f = atomicFixture(options); await assert.rejects(new f.AtomicTextFile().write('/note.md', '新的正文 📚'));
+    assert.equal(f.files.get('/note.md'), 'last valid'); assert.equal(f.files.size, 1);
+    assert.ok(!f.calls.some(call => call[0] === 'rename'));
+  }
+});
+
+test('separate Markdown writers serialize replacement and compare UTF-8 byte counts', async () => {
+  const f = atomicFixture();
+  await Promise.all([new f.AtomicTextFile().write('/note.md', '第一版 📚'), new f.AtomicTextFile().write('/note.md', '第二版 📖')]);
+  assert.equal(f.files.get('/note.md'), '第二版 📖'); assert.equal(f.files.size, 1);
+  assert.deepEqual(f.calls.map(call => call[0]), ['write', 'rename', 'write', 'rename']);
+});
+
+test('concurrent chat upserts and deletion preserve independent sessions and capture mutable inputs', async () => {
+  const f = preferenceFixture({ sessions: '[]' });
+  const { ChatSessionService } = load(`${base}services/ai/ChatSessionService.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
+  });
+  const service = ChatSessionService.getInstance(); await service.init({});
+  const session = id => ({ id, title: id, messages: [], createdAt: 1, updatedAt: 1 });
+  const first = session('first'); const saved = service.saveSession(first); first.title = 'mutated'; first.id = 'mutated';
+  await Promise.all([saved, service.saveSession(session('second')), service.saveSession(session('third')), service.deleteSession('second')]);
+  assert.deepEqual(plain((await service.loadSessions()).map(item => item.id).sort()), ['first', 'third']);
+  assert.equal((await service.loadSessions()).find(item => item.id === 'first').title, 'first');
+});
+
+test('corrupt chat history cannot be replaced by an upsert or a clearing action', async () => {
+  const f = preferenceFixture({ sessions: '{broken' });
+  const { ChatSessionService } = load(`${base}services/ai/ChatSessionService.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
+  });
+  const service = ChatSessionService.getInstance(); await service.init({});
+  await assert.rejects(service.saveSession({ id: 'new', title: '', messages: [] }));
+  await assert.rejects(service.clearAll(), /阻止覆盖/); assert.equal(f.values.get('sessions'), '{broken');
+});
+
+test('reader commits serialize autosave and exit, preserve PDF indexing, and publish only after persistence', async () => {
+  const { ReaderCommitService } = load(`${base}services/document/ReaderCommitService.ets`);
+  const service = new ReaderCommitService(); let notes = [studyNote({ pdfTextJson: 'latest index' })]; let unblock;
+  const calls = []; let count = 0;
+  const ports = { notes: () => notes, saveDocument: async () => { calls.push('document'); },
+    saveNotes: async () => { calls.push('save'); if (++count === 1) await new Promise(resolve => { unblock = resolve; }); },
+    publish: (next, note) => { notes = next; calls.push(note.contentDetail); } };
+  const first = service.commit(studyNote({ pdfTextJson: 'stale index' }), 'autosave', ports, true);
+  const second = service.commit(studyNote(), 'exit-save', ports, true);
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(notes[0].contentDetail, studyNote().contentDetail);
+  assert.deepEqual(calls, ['document', 'save']); unblock(); await Promise.all([first, second]);
+  assert.equal(notes[0].contentDetail, 'exit-save'); assert.equal(notes[0].pdfTextJson, 'latest index');
+  assert.deepEqual(calls, ['document', 'save', 'autosave', 'document', 'save', 'exit-save']);
+  const before = notes; ports.saveNotes = async () => { throw Error('disk'); };
+  await assert.rejects(service.commit(studyNote(), 'failed', ports)); assert.equal(notes, before);
+});
+
+test('actual PDF and handwriting autosave methods wait for storage and ignore obsolete status updates', async () => {
+  for (const relative of ['views/reader/pdf/PdfAnnotatorView.ets', 'views/reader/HandwritingCanvas.ets']) {
+    const source = fs.readFileSync(path.join(root, base, relative), 'utf8');
+    const method = source.match(/private async flushSave\(\): Promise<void> \{([\s\S]*?)\n  \}/)?.[1]; assert.ok(method);
+    const output = ts.transpileModule(`module.exports = async function() {${method}}`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
+    const context = { module: { exports: {} } }; vm.runInNewContext(output, context); const flush = context.module.exports;
+    const statuses = []; let release;
+    const view = { saveRevision: 1, strokeSnapshot: studyNote, annotationSnapshot: studyNote,
+      onSaved: () => new Promise(resolve => { release = resolve; }), onSaveStateChange: value => statuses.push(value) };
+    const running = flush.call(view); await Promise.resolve(); assert.equal(statuses.length, 0);
+    view.saveRevision++; release(); await running; assert.equal(statuses.length, 0);
+    view.onSaved = async () => { throw Error('disk'); }; await flush.call(view); assert.deepEqual(statuses, ['保存失败']);
+  }
+});
+
+const { NearbyTransferPolicy } = load(`${base}services/sync/NearbyTransferPolicy.ets`);
+const transferDigest = async content => createHash('sha256').update(content).digest('hex');
+
+test('nearby packets preserve full attachments, Unicode boundaries, annotations and cards without secrets or local paths', async () => {
+  const backup = studyBackup(); backup.notes[0].contentDetail = '📚'.repeat(40000);
+  backup.notes[0].apiKey = 'private-key'; backup.notes[0].sourceUri = '/private/source';
+  backup.notes[0].pageAnnotations = '{"pages":[]}';
+  backup.assets = [{ noteId: backup.notes[0].id, kind: 'cover', data: Buffer.from('original bytes').toString('base64') }];
+  const packet = await NearbyTransferPolicy.pack(backup, transferDigest);
+  const restored = await NearbyTransferPolicy.unpack(backup.id, JSON.stringify(packet.manifest), packet.parts.reverse(), transferDigest);
+  assert.equal(restored.notes[0].contentDetail, backup.notes[0].contentDetail);
+  assert.equal(restored.notes[0].pageAnnotations, backup.notes[0].pageAnnotations);
+  assert.deepEqual(plain(restored.assets), backup.assets); assert.deepEqual(plain(restored.cards), plain(backup.cards));
+  assert.ok(!JSON.stringify(restored).includes('private-key')); assert.ok(!JSON.stringify(restored).includes('/private/source'));
+});
+
+test('nearby reception rejects missing, duplicate, corrupted, expired or unsupported packets before import', async () => {
+  const backup = studyBackup(); backup.notes[0].contentDetail = 'A'.repeat(70000);
+  const now = Date.now(); const packet = await NearbyTransferPolicy.pack(backup, transferDigest, now);
+  const manifest = JSON.stringify(packet.manifest);
+  await assert.rejects(NearbyTransferPolicy.unpack(backup.id, manifest, packet.parts.slice(1), transferDigest, now), /完整接收/);
+  await assert.rejects(NearbyTransferPolicy.unpack(backup.id, manifest, [...packet.parts, packet.parts[0]], transferDigest, now), /重复/);
+  const changed = plain(packet.parts); const original = JSON.parse(changed[0].value);
+  changed[0].value = JSON.stringify('X' + original.slice(1));
+  await assert.rejects(NearbyTransferPolicy.unpack(backup.id, manifest, changed, transferDigest, now), /完整性校验失败/);
+  await assert.rejects(NearbyTransferPolicy.unpack(backup.id, manifest, packet.parts, transferDigest, now + NearbyTransferPolicy.LIFETIME + 1), /过期/);
+  await assert.rejects(NearbyTransferPolicy.unpack(backup.id, JSON.stringify({ ...packet.manifest, version: 2 }), packet.parts, transferDigest, now), /不受支持/);
+  assert.throws(() => NearbyTransferPolicy.prefix('../other'));
+  await assert.rejects(NearbyTransferPolicy.pack({ ...backup, notes: [], cards: [], assets: [] }, transferDigest), /选择/);
+});
+
+function nearbyFixture({ denied = false, unsupported = false, deferStore = false } = {}) {
+  const data = new Map(); const calls = []; let listener = null; let timeout = null; let openStore;
+  const store = { getEntries: async prefix => [...data].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => ({ key, value: { value } })),
+    put: async (key, value) => { data.set(key, value); }, delete: async key => { data.delete(key); },
+    on: (event, callback) => { listener = callback; calls.push('on'); }, off: (event, callback) => { if (listener === callback) listener = null; calls.push('off'); },
+    sync: (ids, query, mode) => calls.push(['sync', ids, query.prefix, mode]) };
+  const { HarmonyNearbyService } = load(`${base}services/sync/HarmonyNearbyService.ets`, {
+    canIUse: () => !unsupported,
+    setTimeout: (callback, delay) => { timeout = callback; assert.equal(delay, 45000); return 1; }, clearTimeout: () => { timeout = null; },
+    '@kit.AbilityKit': { abilityAccessCtrl: { createAtManager: () => ({ requestPermissionsFromUser: async () => {
+      calls.push('permission'); return { authResults: [denied ? -1 : 0] }; } }) } },
+    '@kit.ArkData': { distributedKVStore: { createKVManager: () => ({ getKVStore: async (id, options) => {
+      calls.push(['options', options]); if (deferStore) await new Promise(resolve => { openStore = resolve; }); return store;
+    }, closeKVStore: async () => calls.push('store-close') }),
+      KVStoreType: { SINGLE_VERSION: 1 }, SecurityLevel: { S2: 2 }, SyncMode: { PUSH_ONLY: 0, PULL_ONLY: 1 },
+      Query: class { prefixKey(prefix) { this.prefix = prefix; return this; } } } },
+    '@kit.DistributedServiceKit': { distributedDeviceManager: { createDeviceManager: () => ({ getAvailableDeviceListSync: () => [
+      { networkId: 'trusted', deviceName: '我的 Pad' }, { deviceName: 'not available' }] }), releaseDeviceManager: () => calls.push('device-release') } },
+    '@kit.ArkTS': { util: { TextEncoder: class { encodeInto(text) { return Buffer.from(text); } } } },
+    '@kit.CryptoArchitectureKit': { cryptoFramework: { createMd: () => { let content; return {
+      update: async ({ data }) => { content = data; }, digest: async () => ({ data: createHash('sha256').update(content).digest() }) }; } } }
+  });
+  return { service: new HarmonyNearbyService(), data, calls, ack: (id = 'trusted', code = 0) => listener?.([[id, code]]),
+    timeout: () => timeout?.(), listening: () => !!listener, openStore: () => openStore?.() };
+}
+
+test('nearby permission is requested only on explicit connection and database uses encrypted manual scoped sync', async () => {
+  const f = nearbyFixture(); assert.equal(f.calls.length, 0);
+  const devices = await f.service.connect({}); assert.equal(devices.length, 1);
+  const options = f.calls.find(call => Array.isArray(call) && call[0] === 'options')[1];
+  assert.equal(options.encrypt, true); assert.equal(options.autoSync, false); assert.equal(options.backup, false);
+  await assert.rejects(f.service.send('unknown', studyBackup()), /离线/);
+  const denied = nearbyFixture({ denied: true }); await assert.rejects(denied.service.connect({}), /未授权/);
+  assert.ok(!denied.calls.some(call => Array.isArray(call)));
+  const unsupported = nearbyFixture({ unsupported: true }); await assert.rejects(unsupported.service.connect({}), /不支持/);
+  assert.equal(unsupported.calls.length, 0);
+  await f.service.close(); assert.ok(f.calls.includes('device-release')); assert.ok(f.calls.includes('store-close'));
+});
+
+test('nearby send waits for the selected peer acknowledgement and always removes completion listeners', async () => {
+  const f = nearbyFixture(); await f.service.connect({}); let done = false;
+  const sending = f.service.send('trusted', studyBackup()).then(code => { done = true; return code; });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(done, false); assert.equal(f.listening(), true);
+  f.ack('other'); await Promise.resolve(); assert.equal(done, false);
+  f.ack(); const code = await sending; assert.equal(code, studyBackup().id); assert.equal(f.listening(), false);
+  assert.deepEqual(plain(f.calls.find(call => Array.isArray(call) && call[0] === 'sync').slice(1)), [['trusted'], NearbyTransferPolicy.prefix(code), 0]);
+  await f.service.close(); assert.equal(f.data.size, 0);
+});
+
+test('nearby receive requires acknowledgement, checks the complete package, and never accepts partial data', async () => {
+  const f = nearbyFixture(); await f.service.connect({}); const backup = studyBackup();
+  const packet = await NearbyTransferPolicy.pack(backup, transferDigest); const prefix = NearbyTransferPolicy.prefix(backup.id);
+  for (const part of packet.parts) f.data.set(part.key, part.value);
+  f.data.set(prefix + 'manifest', JSON.stringify(packet.manifest));
+  const receiving = f.service.receive('trusted', backup.id); await new Promise(resolve => setImmediate(resolve)); f.ack();
+  assert.equal((await receiving).notes[0].id, backup.notes[0].id);
+  f.data.delete(packet.parts[0].key);
+  const partial = f.service.receive('trusted', backup.id); await new Promise(resolve => setImmediate(resolve)); f.ack();
+  await assert.rejects(partial, /完整接收/); await f.service.close();
+});
+
+test('nearby timeout, peer failure and page closure reject pending work and require a new connection', async () => {
+  for (const fail of ['timeout', 'peer', 'close']) {
+    const f = nearbyFixture(); await f.service.connect({});
+    const sending = f.service.send('trusted', studyBackup());
+    const rejected = assert.rejects(sending, /超时|未完成|关闭/);
+    await new Promise(resolve => setImmediate(resolve));
+    if (fail === 'timeout') f.timeout(); else if (fail === 'peer') f.ack('trusted', 1); else await f.service.close();
+    await rejected; assert.equal(f.listening(), false);
+    await assert.rejects(f.service.send('trusted', studyBackup()), /连接已结束/); await f.service.close();
+  }
+});
+
+test('shared study import resumes a partial batch and maps cards to stable restored IDs', async () => {
+  let notes = []; const cards = []; let fail = true; let materializations = 0;
+  const { StudyImportService } = load(`${base}services/study/StudyImportService.ets`, {
+    [path.resolve(root, `${base}services/study/StudyBackupService.ets`)]: { StudyBackupService: {
+      materialize: async (context, backup, index, title) => {
+        materializations++; return { ...backup.notes[index], id: StudyBackupPolicy.restoreId(backup, index), title };
+      } } }
+  });
+  const backup = studyBackup(); backup.notes.push(studyNote({ id: 'second' })); const progress = [];
+  const ports = { notes: () => notes, progress: message => progress.push(message), commit: async (note, items) => {
+    if (note.id.endsWith('_1') && fail) throw Error('disk full');
+    if (!notes.some(item => item.id === note.id)) notes.push(note);
+    for (const card of items) if (!cards.some(item => item.id === card.id)) cards.push(card);
+  } };
+  await assert.rejects(StudyImportService.restore({}, backup, ports), /已导入 1 份/);
+  assert.equal(notes.length, 1); fail = false;
+  const result = await StudyImportService.restore({}, backup, ports);
+  assert.deepEqual(plain(result), { imported: 1, skipped: 1 }); assert.equal(notes.length, 2);
+  assert.equal(materializations, 3); assert.ok(cards.every(card => notes.some(note => note.id === card.noteId)));
+  assert.equal(cards.length, backup.cards.length); assert.equal(progress.length, 4);
+});
+
+test('shared study import rejects unsupported packages before materializing or committing any data', async () => {
+  let calls = 0;
+  const { StudyImportService } = load(`${base}services/study/StudyImportService.ets`, {
+    [path.resolve(root, `${base}services/study/StudyBackupService.ets`)]: { StudyBackupService: { materialize: async () => { calls++; } } }
+  });
+  await assert.rejects(StudyImportService.restore({}, { ...studyBackup(), schemaVersion: 99 }, {
+    notes: () => [], commit: async () => { calls++; }, progress: () => {} })); assert.equal(calls, 0);
+});
+
+test('closing while nearby database creation is pending also closes the late database instance', async () => {
+  const f = nearbyFixture({ deferStore: true }); const connecting = f.service.connect({});
+  const rejected = assert.rejects(connecting, /无法初始化/);
+  await new Promise(resolve => setImmediate(resolve)); await f.service.close(); f.openStore(); await rejected;
+  assert.equal(f.calls.filter(call => call === 'store-close').length, 2);
+  assert.equal(f.calls.filter(call => call === 'device-release').length, 1); assert.equal(f.listening(), false);
+});
+
+test('reader field ownership preserves simultaneous text, PDF, main handwriting, scratchpad and library metadata', async () => {
+  const { ReaderCommitService } = load(`${base}services/document/ReaderCommitService.ets`);
+  const service = new ReaderCommitService(); const stale = studyNote({ favorite: false, category: 'old', coverUrl: 'cover:old',
+    pdfTextJson: 'old', pageAnnotations: 'old pdf', strokes: 'old ink', scratchpadStrokes: 'old scratch' });
+  let notes = [studyNote({ favorite: true, category: 'new', coverUrl: 'cover:mist', tags: ['current'], pdfTextJson: 'current' })];
+  const ports = { notes: () => notes, saveDocument: async () => {}, saveNotes: async () => {}, publish: next => { notes = next; } };
+  await Promise.all([
+    service.commit({ ...stale, title: '新标题' }, '新正文', ports, true, 'markdown'),
+    service.commit({ ...stale, pageAnnotations: 'new pdf' }, stale.contentDetail, ports, true, 'pdf'),
+    service.commit({ ...stale, strokes: 'new ink' }, stale.contentDetail, ports, true, 'handwriting'),
+    service.commit({ ...stale, scratchpadStrokes: 'new scratch' }, stale.contentDetail, ports, true, 'scratchpad')
+  ]);
+  assert.equal(notes[0].title, '新标题'); assert.equal(notes[0].contentDetail, '新正文');
+  assert.equal(notes[0].pageAnnotations, 'new pdf'); assert.equal(notes[0].strokes, 'new ink'); assert.equal(notes[0].scratchpadStrokes, 'new scratch');
+  assert.equal(notes[0].favorite, true); assert.equal(notes[0].category, 'new'); assert.equal(notes[0].coverUrl, 'cover:mist');
+  assert.equal(notes[0].pdfTextJson, 'current'); assert.deepEqual(plain(notes[0].tags), ['current']);
+});
+
+test('reader commits re-read the library after file persistence and do not resurrect a deleted record', async () => {
+  const { ReaderCommitService } = load(`${base}services/document/ReaderCommitService.ets`);
+  const service = new ReaderCommitService(); let notes = [studyNote()]; let writes = 0;
+  const ports = { notes: () => notes, saveDocument: async () => { notes = notes.concat(studyNote({ id: 'newly-added' })); },
+    saveNotes: async () => { writes++; }, publish: next => { notes = next; } };
+  await service.commit(studyNote(), 'new text', ports, true); assert.equal(notes.length, 2);
+  ports.saveDocument = async () => { notes = notes.filter(note => note.id !== 'course_note'); };
+  await assert.rejects(service.commit(studyNote(), 'stale', ports, true), /移除/);
+  assert.equal(notes.length, 1); assert.equal(writes, 1);
+});
+
+
+const { RemoteAiPolicy } = load(`${base}services/ai/RemoteAiPolicy.ets`);
+const consentProfile = overrides => profile({ remoteConsentVersion: RemoteAiPolicy.VERSION,
+  remoteConsentEndpoint: 'https://example.com/v1', remoteConsentProtocol: 'openai-compat', remoteConsentedAt: 1, ...overrides });
+
+test('AI consent binds version, complete endpoint and protocol; HTTP and header injection are rejected', () => {
+  assert.doesNotThrow(() => RemoteAiPolicy.assertAllowed(consentProfile()));
+  for (const change of [{ remoteConsentVersion: undefined }, { remoteConsentVersion: 0 }, { remoteConsentedAt: 0 },
+    { baseUrl: 'https://other.example/v1' }, { baseUrl: 'https://example.com/v2' }, { protocol: 'gemini' },
+    { baseUrl: 'http://example.com/v1' }, { baseUrl: 'http://localhost.evil/v1' },
+    { baseUrl: 'http://127.0.0.1:11434/v1' }, { apiKey: 'key\r\nInjected: value' }, { credentialUnavailable: true }]) {
+    assert.throws(() => RemoteAiPolicy.assertAllowed(consentProfile(change)));
+  }
+  const local = consentProfile({ baseUrl: 'http://127.0.0.1:11434/v1', apiKey: '', remoteConsentEndpoint: 'http://127.0.0.1:11434/v1' });
+  assert.doesNotThrow(() => RemoteAiPolicy.assertAllowed(local));
+});
+
+function modelFixture(initial = [profile()], changes = {}) {
+  const values = new Map([['profiles', JSON.stringify(initial)], ['activeProfileId', initial[0]?.id || '']]);
+  const secrets = new Map(); const publications = []; let counter = 0;
+  for (const p of initial) if (p.credentialRef) secrets.set(p.credentialRef, { id: p.id, key: 'original-key' });
+  const state = { failFlush: false, failEncrypt: false, ...changes };
+  const prefs = { get: async (k, fallback) => values.get(k) ?? fallback, put: async (k, v) => values.set(k, v),
+    flush: async () => { if (state.failFlush) throw Error('disk full'); } };
+  class Credentials {
+    async init() {}
+    async write(id, key) {
+      if (state.failEncrypt) throw Error('keystore unavailable');
+      const ref = `key_${(++counter + 100).toString(16).padStart(24, '0')}`;
+      secrets.set(ref, { id, key }); return ref;
+    }
+    async read(id, ref) { const value = secrets.get(ref); if (!value || value.id !== id) throw Error('missing key'); return value.key; }
+    async remove(ref) { secrets.delete(ref); }
+    async clear() { secrets.clear(); }
+  }
+  const { ModelConfigService } = load(`${base}services/ai/ModelConfigService.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => prefs } },
+    [path.resolve(root, `${base}services/ai/HuksCredentialStore.ets`)]: { HuksCredentialStore: Credentials },
+    AppStorage: { setOrCreate: (k, v) => publications.push([k, v]) }
+  });
+  return { service: ModelConfigService.getInstance(), values, secrets, publications, state };
+}
+
+test('legacy key migration encrypts before commit and no key appears in model metadata', async () => {
+  const f = modelFixture(); await f.service.init({});
+  const loaded = await f.service.loadProfiles(); assert.equal(loaded[0].apiKey, 'test-key');
+  const stored = JSON.parse(f.values.get('profiles'));
+  assert.equal(stored[0].apiKey, ''); assert.ok(stored[0].credentialRef); assert.equal(f.values.get('profiles').includes('test-key'), false);
+  assert.equal((await f.service.getActiveProfile()).apiKey, 'test-key');
+  assert.equal(f.publications.length, 0);
+});
+
+for (const failure of ['failFlush', 'failEncrypt']) test(`legacy migration preserves raw data when ${failure}`, async () => {
+  const f = modelFixture(undefined, { [failure]: true }); await f.service.init({});
+  const raw = f.values.get('profiles'); await assert.rejects(f.service.loadProfiles());
+  assert.equal(f.values.get('profiles'), raw); assert.equal(f.secrets.size, 0);
+  f.state[failure] = false; assert.equal((await f.service.loadProfiles())[0].apiKey, 'test-key');
+});
+
+test('key replacement flush failure keeps the old key and activation; successful deletion removes the reference', async () => {
+  const f = modelFixture([profile({ apiKey: '', credentialRef: 'key_000000000000000000000001' }), profile({ id: 'other', apiKey: '' })]);
+  await f.service.init({}); f.state.failFlush = true;
+  await assert.rejects(f.service.saveAndActivate(profile({ apiKey: 'replacement-key' })));
+  assert.equal((await f.service.getActiveProfile()).apiKey, 'original-key'); assert.equal(f.secrets.size, 1);
+  assert.equal(f.publications.length, 0); f.state.failFlush = false;
+  await f.service.saveAndActivate(profile({ apiKey: 'replacement-key' }));
+  assert.equal((await f.service.getActiveProfile()).apiKey, 'replacement-key'); assert.equal(f.secrets.size, 1);
+  await f.service.deleteProfile('study'); assert.equal(f.secrets.size, 0); assert.equal(await f.service.getActiveProfileId(), 'other');
+});
+
+test('unreadable device key is visible and retained when saving unrelated settings', async () => {
+  const f = modelFixture([profile({ apiKey: '', credentialRef: 'key_000000000000000000000001' })]); await f.service.init({}); f.secrets.clear();
+  const p = await f.service.getActiveProfile(); assert.equal(p.credentialUnavailable, true);
+  await f.service.saveAndActivate({ ...p, label: 'renamed' });
+  const stored = JSON.parse(f.values.get('profiles'))[0]; assert.equal(stored.credentialRef, 'key_000000000000000000000001');
+  assert.equal(stored.apiKey, ''); assert.equal(stored.credentialUnavailable, undefined);
+});
+
+test('concurrent model saves retain both profiles; corrupt metadata never becomes a default overwrite', async () => {
+  const f = modelFixture(); await f.service.init({});
+  await Promise.all([f.service.upsertProfile(profile({ id: 'a' })), f.service.upsertProfile(profile({ id: 'b' }))]);
+  assert.deepEqual(plain((await f.service.loadProfiles()).map(p => p.id)).sort(), ['a', 'b', 'study']);
+  const bad = modelFixture(); await bad.service.init({}); bad.values.set('profiles', '{broken');
+  await assert.rejects(bad.service.loadProfiles()); await assert.rejects(bad.service.upsertProfile(profile()));
+  assert.equal(bad.values.get('profiles'), '{broken');
+});
+
+function huksFixture() {
+  const values = new Map(); const sessions = new Map(); const key = randomBytes(32); let generated = false; let handle = 0;
+  const tags = { HUKS_TAG_ALGORITHM: 1, HUKS_TAG_PURPOSE: 2, HUKS_TAG_KEY_SIZE: 3, HUKS_TAG_BLOCK_MODE: 4,
+    HUKS_TAG_PADDING: 5, HUKS_TAG_NONCE: 6, HUKS_TAG_ASSOCIATED_DATA: 7, HUKS_TAG_AE_TAG: 8 };
+  const huks = { HuksTag: tags, HuksKeyAlg: { HUKS_ALG_AES: 1 }, HuksKeyPurpose: { HUKS_KEY_PURPOSE_ENCRYPT: 1, HUKS_KEY_PURPOSE_DECRYPT: 2 },
+    HuksKeySize: { HUKS_AES_KEY_SIZE_256: 256 }, HuksCipherMode: { HUKS_MODE_GCM: 32 }, HuksKeyPadding: { HUKS_PADDING_NONE: 0 },
+    isKeyItemExist: async () => generated, generateKeyItem: async () => { generated = true; },
+    initSession: async (_, options) => { const id = ++handle; sessions.set(id, options); return { handle: id }; },
+    finishSession: async (id, options) => {
+      const props = new Map(options.properties.map(p => [p.tag, p.value])); const nonce = Buffer.from(props.get(tags.HUKS_TAG_NONCE));
+      const encrypt = props.get(tags.HUKS_TAG_PURPOSE) === 1;
+      const cipher = encrypt ? createCipheriv('aes-256-gcm', key, nonce) : createDecipheriv('aes-256-gcm', key, nonce);
+      cipher.setAAD(Buffer.from(props.get(tags.HUKS_TAG_ASSOCIATED_DATA)));
+      if (!encrypt) cipher.setAuthTag(Buffer.from(props.get(tags.HUKS_TAG_AE_TAG)));
+      const data = Buffer.concat([cipher.update(Buffer.from(options.inData)), cipher.final()]);
+      sessions.delete(id); return { outData: encrypt ? Buffer.concat([data, cipher.getAuthTag()]) : data };
+    }, abortSession: async id => { sessions.delete(id); } };
+  const prefs = { get: async (k, fallback) => values.get(k) ?? fallback, put: async (k,v) => values.set(k,v), flush: async () => {} };
+  const { HuksCredentialStore } = load(`${base}services/ai/HuksCredentialStore.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => prefs } }, '@kit.UniversalKeystoreKit': { huks },
+    '@kit.CryptoArchitectureKit': { cryptoFramework: { createRandom: () => ({ generateRandom: async n => ({ data: randomBytes(n) }) }) } },
+    '@kit.ArkTS': { util: { TextEncoder: class { encodeInto(text) { return new TextEncoder().encode(text); } }, TextDecoder } }
+  });
+  return { store: new HuksCredentialStore(), values, sessions };
+}
+
+test('HUKS adapter supplies nonce, AAD and GCM tag; tampering or cross-profile use fails without plaintext fallback', async () => {
+  const f = huksFixture(); await f.store.init({});
+  const ref = await f.store.write('study', 'secret-密钥'); assert.equal(await f.store.read('study', ref), 'secret-密钥');
+  assert.ok(!f.values.get(ref).includes('secret')); await assert.rejects(f.store.read('other', ref));
+  const packet = JSON.parse(f.values.get(ref)); packet.cipher = `${packet.cipher[0] === '0' ? '1' : '0'}${packet.cipher.slice(1)}`;
+  f.values.set(ref, JSON.stringify(packet)); await assert.rejects(f.store.read('study', ref)); assert.equal(f.sessions.size, 0);
+});
+
+for (const protocol of ['openai-compat', 'gemini', 'anthropic']) test(`${protocol} rejects unapproved chat and connection tests before HTTP creation`, async () => {
+  let creations = 0;
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit': { http: { createHttp: () => { creations++; throw Error('unexpected network'); } } }, '@kit.ArkTS': { util: {} }
+  });
+  const p = profile({ protocol }); const provider = createProvider(protocol);
+  await assert.rejects(provider.complete(p, { messages: [] }));
+  await assert.rejects(provider.completeStream(p, { messages: [] }, () => {}));
+  assert.equal((await provider.testConnection(p)).ok, false); assert.equal(creations, 0);
+});
+
+for (const protocol of ['openai-compat', 'gemini']) test(`${protocol} rejects unapproved embeddings before HTTP creation`, async () => {
+  let creations = 0;
+  const { createEmbeddingProvider } = load(`${base}services/ai/EmbeddingProvider.ets`, {
+    '@kit.NetworkKit': { http: { createHttp: () => { creations++; throw Error('unexpected network'); } } }
+  });
+  await assert.rejects(createEmbeddingProvider(protocol).embed(profile({ protocol }), ['private notes'])); assert.equal(creations, 0);
+});
+
+for (const protocol of ['openai-compat', 'gemini', 'anthropic']) test(`${protocol} disables redirects and destroys non-stream HTTP resources on failure`, async () => {
+  let destroyed = 0; const requests = [];
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit': { http: { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 0 },
+      createHttp: () => ({ request: async (url, options) => { requests.push(options); return { responseCode: 401, result: 'private echoed-key' }; }, destroy: () => destroyed++ }) } },
+    '@kit.ArkTS': { util: {} }
+  });
+  const p = consentProfile({ protocol, remoteConsentProtocol: protocol });
+  await assert.rejects(createProvider(protocol).complete(p, { messages: [] }), error => !error.message.includes('echoed-key'));
+  assert.equal(requests[0].maxRedirects, 0); assert.equal(destroyed, 1);
+});
+
+
+test('removing one key preserves other profile keys; all legacy keys can be removed with HUKS unavailable', async () => {
+  const f = modelFixture([profile({apiKey:'',credentialRef:'key_000000000000000000000001'}),
+    profile({id:'other',apiKey:'',credentialRef:'key_000000000000000000000002'})]);
+  await f.service.init({}); await f.service.clearCredentials('study');
+  const profiles = await f.service.loadProfiles(); assert.equal(profiles[0].apiKey,''); assert.equal(profiles[1].apiKey,'original-key');
+  assert.equal(f.secrets.size,1); assert.equal(profiles[0].remoteConsentVersion,undefined);
+  const legacy = modelFixture([consentProfile(),consentProfile({id:'other'})],{failEncrypt:true});
+  await legacy.service.init({}); await legacy.service.clearCredentials();
+  assert.equal(legacy.values.get('profiles').includes('test-key'),false);
+  assert.ok((await legacy.service.loadProfiles()).every(p=>!p.apiKey && !p.remoteConsentVersion));
+});
+
+for (const protocol of ['openai-compat','gemini','anthropic']) test(`${protocol} streams UTF-8 across byte boundaries and closes once without callbacks after abort`, async () => {
+  const events = new Map(); let resolveStatus; let destroyed=0; const chunks=[];
+  const client = {on:(event,callback)=>events.set(event,callback),destroy:()=>destroyed++,
+    requestInStream:()=>new Promise(resolve=>{resolveStatus=resolve;})};
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit':{http:{createHttp:()=>client,RequestMethod:{POST:'POST'},HttpDataType:{ARRAY_BUFFER:1}}},
+    '@kit.ArkTS':{util:{TextDecoder:{create:()=>{const d=new TextDecoder();return {decodeToString:(bytes,options)=>d.decode(bytes,options)};}}}}
+  });
+  const p=consentProfile({protocol,remoteConsentProtocol:protocol});
+  const handle = await createProvider(protocol).completeStream(p,{messages:[]},chunk=>chunks.push(chunk));
+  const text = protocol==='openai-compat' ? 'data: {"choices":[{"delta":{"content":"中文😀"},"finish_reason":"stop"}]}' :
+    protocol==='gemini' ? 'data: {"candidates":[{"content":{"parts":[{"text":"中文😀"}]},"finishReason":"STOP"}]}' :
+    'data: {"type":"content_block_delta","delta":{"text":"中文😀"}}\ndata: {"type":"message_stop"}';
+  const bytes=new TextEncoder().encode(text); resolveStatus(200); await Promise.resolve();
+  for(const byte of bytes) events.get('dataReceive')(Uint8Array.of(byte).buffer);
+  await events.get('dataEnd')();
+  assert.equal(chunks.filter(c=>!c.done).map(c=>c.delta).join(''),'中文😀'); assert.equal(chunks.filter(c=>c.done).length,1); assert.equal(destroyed,1);
+  const count=chunks.length;handle.abort();events.get('dataReceive')(new TextEncoder().encode('data: {}\n').buffer);
+  assert.equal(chunks.length,count);assert.equal(destroyed,1);
+});
+
+test('notice rejection is recorded without authorizing remote AI, and a corrupt receipt can be replaced',async()=>{
+  const values=new Map([['notice','{broken']]);
+  const prefs={get:async(k,fallback)=>values.get(k)??fallback,put:async(k,v)=>values.set(k,v),flush:async()=>{}};
+  const { PrivacyNoticeService }=load(`${base}services/PrivacyNoticeService.ets`,{'@kit.ArkData':{preferences:{getPreferences:async()=>prefs}}});
+  const service=new PrivacyNoticeService();assert.equal(await service.shown({}),false);await service.choose({},false);
+  assert.equal(await service.shown({}),true);assert.equal(JSON.parse(values.get('notice')).agree,false);
+  assert.throws(()=>RemoteAiPolicy.assertAllowed(profile()));
+});
+
+
+test('explicit model reset recovers corrupt metadata; failed reset preserves the original snapshot', async () => {
+  const f=modelFixture();await f.service.init({});f.values.set('profiles','{broken');await assert.rejects(f.service.loadProfiles());
+  f.state.failFlush=true;await assert.rejects(f.service.resetProfiles());assert.equal(f.values.get('profiles'),'{broken');
+  f.state.failFlush=false;await f.service.resetProfiles();const profiles=await f.service.loadProfiles();
+  assert.equal(profiles.length,1);assert.equal(profiles[0].apiKey,'');assert.equal(profiles[0].remoteConsentVersion,undefined);
+  assert.equal(await f.service.getActiveProfileId(),profiles[0].id);
+});
+
+
+test('SSE transport releases client when SDK request startup throws synchronously',async()=>{
+  let destroyed=0;const chunks=[];
+  const { createProvider }=load(`${base}services/ai/ModelProvider.ets`,{
+    '@kit.NetworkKit':{http:{createHttp:()=>({on(){},destroy(){destroyed++;},requestInStream(){throw Error('SDK unavailable');}}),RequestMethod:{POST:'POST'},HttpDataType:{ARRAY_BUFFER:1}}},
+    '@kit.ArkTS':{util:{TextDecoder:{create:()=>({decodeToString:()=>''})}}}
+  });
+  const handle=await createProvider('gemini').completeStream(consentProfile({protocol:'gemini',remoteConsentProtocol:'gemini'}),{messages:[]},c=>chunks.push(c));
+  assert.equal(destroyed,1);assert.equal(chunks.length,1);assert.ok(chunks[0].error);handle.abort();assert.equal(destroyed,1);
+});
+
+const { AiModelCatalog } = load(`${base}services/ai/AiModelCatalog.ets`);
+test('cloud directory stays unavailable and editing returned rows cannot alter its templates', () => {
+  assert.equal(AiModelCatalog.CLOUD_AVAILABLE, false);
+  assert.deepEqual(plain(AiModelCatalog.FAMILIES), ['Seed','Qwen','DeepSeek','GLM']);
+  const models = AiModelCatalog.list(); assert.equal(new Set(models.map(m => m.id)).size, models.length);
+  const first = models[0]; first.apiEndpoint = 'http://untrusted';
+  assert.ok(AiModelCatalog.find(first.id).apiEndpoint.startsWith('https://'));
+  assert.equal(AiModelCatalog.list('unknown').length, 0);
+  assert.equal(AiModelCatalog.createApiDraft('unknown'), null);
+});
+
+test('catalog API drafts have unique identity, no key or consent, and require explicit user setup', () => {
+  for (const entry of AiModelCatalog.list()) {
+    const p = AiModelCatalog.createApiDraft(entry.id), other = AiModelCatalog.createApiDraft(entry.id);
+    assert.notEqual(p.id, other.id); assert.equal(p.apiKey, '');
+    assert.equal(p.credentialRef, undefined); assert.equal(p.remoteConsentVersion, undefined);
+    assert.equal(p.semanticSearch, false); assert.equal(p.protocol, 'openai-compat');
+    assert.notEqual(ModelProfilePolicy.validate(p), '');
+    assert.throws(() => RemoteAiPolicy.assertAllowed(p), /授权/);
+  }
+});
+
+for (const entry of AiModelCatalog.list()) test(`catalog ${entry.name} uses its exact compatible chat endpoint after consent`, async () => {
+  const requests = []; let destroyed = 0;
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit': { http: { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 0 }, createHttp: () => ({
+      request: async (url, options) => { requests.push({url,options}); return { responseCode: 200, result: JSON.stringify({ choices: [{message:{content:'mock reply'}}] }) }; },
+      destroy: () => destroyed++ }) } }, '@kit.ArkTS': { util: {} }
+  });
+  const draft = AiModelCatalog.createApiDraft(entry.id);
+  draft.apiKey = 'test-key'; draft.remoteConsentVersion = RemoteAiPolicy.VERSION;
+  draft.remoteConsentEndpoint = draft.baseUrl; draft.remoteConsentProtocol = draft.protocol; draft.remoteConsentedAt = Date.now();
+  assert.equal(ModelProfilePolicy.validate(draft), '');
+  assert.equal(await createProvider(draft.protocol).complete(draft, {messages:[{role:'user',content:'test'}]}), 'mock reply');
+  assert.equal(requests[0].url, entry.apiEndpoint.endsWith('/chat/completions') ? entry.apiEndpoint : `${entry.apiEndpoint}/chat/completions`);
+  assert.equal(JSON.parse(requests[0].options.extraData).model, entry.modelId);
+  assert.equal(requests[0].options.maxRedirects, 0); assert.equal(destroyed, 1);
+});
+
+test('loopback Ollama template is usable without a credential or an empty bearer header', async () => {
+  const { getPresetTemplates } = load(`${base}common/types/ModelConfig.ets`);
+  const draft = getPresetTemplates().find(p => p.profile.baseUrl.startsWith('http://127.0.0.1')).profile;
+  assert.equal(draft.apiKey, ''); assert.equal(ModelProfilePolicy.validate(draft), '');
+  draft.remoteConsentVersion = RemoteAiPolicy.VERSION; draft.remoteConsentEndpoint = draft.baseUrl;
+  draft.remoteConsentProtocol = draft.protocol; draft.remoteConsentedAt = Date.now();
+  let headers;
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit': { http: { RequestMethod: { POST:'POST' }, HttpDataType: { STRING:0 }, createHttp: () => ({
+      request: async (_, options) => { headers = options.header; return {responseCode:200,result:'{"choices":[{"message":{"content":"ok"}}]}'}; }, destroy() {} }) } },
+    '@kit.ArkTS': { util:{} }
+  });
+  await createProvider(draft.protocol).complete(draft, {messages:[]}); assert.equal(headers.Authorization, undefined);
+});
+
+test('message replacement captures input, preserves pinned metadata and never revives a deleted session', async () => {
+  const f = preferenceFixture();
+  const { ChatSessionService } = load(`${base}services/ai/ChatSessionService.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
+  });
+  const service = ChatSessionService.getInstance(); await service.init({});
+  const session = { id:'study',title:'课程',pinned:true,agentMode:'L1',createdAt:1,updatedAt:1,messages:[] };
+  await service.saveSession(session);
+  const messages = [{id:'q',role:'user',text:'原输入',createdAt:2}];
+  const running = service.replaceMessages('study', messages); messages[0].text = '后续更改';
+  const saved = await running; assert.equal(saved.messages[0].text, '原输入');
+  assert.equal(saved.title, '课程'); assert.equal(saved.pinned, true); assert.equal(saved.agentMode, 'L1');
+  await service.deleteSession('study'); await assert.rejects(service.replaceMessages('study', []), /删除/);
+  assert.equal((await service.loadSessions()).length, 0);
+});
+
+test('failed message replacement preserves the original conversation and remains retryable', async () => {
+  const f = preferenceFixture();
+  const { ChatSessionService } = load(`${base}services/ai/ChatSessionService.ets`, {
+    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
+  });
+  const service = ChatSessionService.getInstance(); await service.init({});
+  await service.saveSession({id:'study',title:'课程',createdAt:1,updatedAt:1,messages:[{id:'q',role:'user',text:'原文',createdAt:1}]});
+  f.fail(true); await assert.rejects(service.replaceMessages('study', []));
+  assert.equal((await service.loadSessions())[0].messages[0].text, '原文');
+  f.fail(false); await service.replaceMessages('study', []); assert.equal((await service.loadSessions())[0].messages.length, 0);
+});
+
+function compatibleStreamFixture() {
+  const events = new Map(), chunks = []; let resolveStatus, destroyed = 0;
+  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    '@kit.NetworkKit': { http: { RequestMethod:{POST:'POST'},HttpDataType:{ARRAY_BUFFER:1},createHttp:()=>({
+      on:(event,callback)=>events.set(event,callback),destroy:()=>destroyed++,requestInStream:()=>new Promise(resolve=>{resolveStatus=resolve;}) }) } },
+    '@kit.ArkTS': { util: { TextDecoder:{create:()=>{const d=new TextDecoder();return {decodeToString:(bytes,options)=>d.decode(bytes,options)};}} } }
+  });
+  return { events,chunks,provider:createProvider('openai-compat'),status:code=>resolveStatus(code),destroyed:()=>destroyed,
+    receive:text=>events.get('dataReceive')(new TextEncoder().encode(text).buffer) };
+}
+
+test('compatible streaming preserves reasoning and tool fragments and emits one terminal result', async () => {
+  const f=compatibleStreamFixture(); await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));
+  f.status(200);await Promise.resolve();
+  for (const delta of [{reasoning_content:'推理'}, {tool_calls:[{index:0,id:'call_a',function:{name:'create_todo',arguments:'{"title":'}}]},
+    {tool_calls:[{index:0,function:{arguments:'"复习"}'}}]}]) f.receive(`data: ${JSON.stringify({choices:[{delta,finish_reason:null}]})}\n`);
+  f.receive('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\ndata: [DONE]\n');await f.events.get('dataEnd')();
+  assert.equal(f.chunks.filter(c=>c.done).length,1);assert.equal(f.chunks.at(-1).finishReason,'tool_calls');
+  assert.equal(f.chunks.find(c=>c.reasoningDelta).reasoningDelta,'推理');
+  assert.equal(f.chunks.filter(c=>c.toolCall).map(c=>c.toolCall.argumentsFragment).join(''),'{"title":"复习"}');assert.equal(f.destroyed(),1);
+});
+
+test('compatible stream buffers early data until status and never treats HTTP failure as an answer', async () => {
+  const f=compatibleStreamFixture();await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));
+  f.receive('data: {"choices":[{"delta":{"content":"private server data"},"finish_reason":null}]}\n');
+  assert.equal(f.chunks.length,0);f.status(401);await Promise.resolve();await f.events.get('dataEnd')();
+  assert.equal(f.chunks.length,1);assert.ok(f.chunks[0].error.includes('401'));
+  assert.ok(!JSON.stringify(f.chunks).includes('private server data'));assert.equal(f.destroyed(),1);
+});
+
+test('compatible stream provider errors and cancellation close exactly once without leaking payload', async () => {
+  const f=compatibleStreamFixture();await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));
+  f.status(200);await Promise.resolve();f.receive('data: {"error":{"message":"echoed secret"}}\n');await f.events.get('dataEnd')();
+  assert.equal(f.chunks.length,1);assert.ok(f.chunks[0].error);assert.ok(!f.chunks[0].error.includes('secret'));assert.equal(f.destroyed(),1);
+  const cancelled=compatibleStreamFixture();const handle=await cancelled.provider.completeStream(consentProfile(),{messages:[]},c=>cancelled.chunks.push(c));
+  handle.abort();cancelled.status(200);await cancelled.events.get('dataEnd')();
+  cancelled.receive('data: {"choices":[{"delta":{"content":"late"}}]}\n');assert.equal(cancelled.chunks.length,0);assert.equal(cancelled.destroyed(),1);
 });

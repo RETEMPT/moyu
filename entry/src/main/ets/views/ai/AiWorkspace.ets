@@ -23,6 +23,7 @@ import {
 import { ModelProfile } from '../../common/types/ModelConfig';
 import { WorkspaceToolExecutor } from '../../services/ai/WorkspaceToolExecutor';
 import { ModelProfilePolicy } from '../../services/ai/ModelProfilePolicy';
+import { RemoteAiPolicy } from '../../services/ai/RemoteAiPolicy';
 import { NoteToolReader } from '../../services/ai/NoteToolReader';
 import { ActionProposalService, ActionProposalData, ProposedActionItem } from '../../services/ai/ActionProposalService';
 import { AgentOrchestrator, AgentLayer, AgentRunContext, CurrentDocContext } from '../../services/ai/AgentOrchestrator';
@@ -166,6 +167,7 @@ export struct AiWorkspace {
   @State streamingReasoning: string = '';
   @State currentAgentMode: AgentLayer | 'auto' = 'auto';
   @State modelLabel: string = '';
+  @State modelReady: boolean = false;
   @State isModelReasoningType: boolean = false;
   @State lastCitations: ChatCitation[] = [];
   @State runningLayer: AgentLayer = 'L3';
@@ -177,8 +179,9 @@ export struct AiWorkspace {
   @State profiles: ModelProfile[] = [];
   @State modelMenuOpen: boolean = false;
   @State plusMenuOpen: boolean = false;
+  @State showAllPrompts: boolean = false;
+  @State historyBusy: boolean = false;
   @State selectedThinkingBudget: number = 16384;
-  @State isThinkingEnabled: boolean = true;
   @State applyingProposal: string = '';
   @State proposalFeedback: string = '';
 
@@ -255,10 +258,14 @@ export struct AiWorkspace {
     try {
       this.profiles = await ModelConfigService.getInstance().loadProfiles();
       const profile = await ModelConfigService.getInstance().getActiveProfile();
-      this.modelLabel = ModelProfilePolicy.validate(profile).length > 0 ? `${profile.label} · 待配置` : `${profile.label} · 已配置`;
-      this.isModelReasoningType = profile.isReasoningModel === true && /^(o1|o3|o4)/.test(profile.modelId);
+      const invalid = ModelProfilePolicy.validate(profile).length > 0 || profile.credentialUnavailable === true;
+      this.modelReady = !invalid && RemoteAiPolicy.consented(profile);
+      this.modelLabel = `${profile.label} · ${invalid ? '待配置' : this.modelReady ? '自配 API' : '待授权'}`;
+      this.isModelReasoningType = (profile.protocol === 'openai-compat' || profile.protocol === 'custom') &&
+        profile.isReasoningModel === true && (/^(o1|o3|o4)/i.test(profile.modelId) || /codex/i.test(profile.modelId));
     } catch {
       this.modelLabel = '未配置模型';
+      this.modelReady = false;
       this.isModelReasoningType = false;
       this.profiles = [];
     }
@@ -423,7 +430,7 @@ export struct AiWorkspace {
 
   private async sendMessage(): Promise<void> {
     const query = this.inputText.trim();
-    if (!query || this.isLoading || this.applyingProposal.length > 0) { return; }
+    if (!query || this.isLoading || this.historyBusy || this.applyingProposal.length > 0) { return; }
     const request = ++this.requestId;
     const session = this.loadedSessionId;
     this.cancelled = false; this.isLoading = true; this.toolStatus = '准备上下文…';
@@ -433,8 +440,10 @@ export struct AiWorkspace {
       if (!current()) { return; }
       const error = ModelProfilePolicy.validate(configured);
       if (error) { this.toolStatus = ''; promptAction.showToast({ message: error }); return; }
+      try { RemoteAiPolicy.assertAllowed(configured); }
+      catch (e) { this.toolStatus = ''; promptAction.showToast({ message: (e as Error).message }); return; }
       const profile = ModelProfilePolicy.restore(configured)!;
-      profile.thinkingBudget = this.isThinkingEnabled ? Math.min(this.selectedThinkingBudget, Math.max(0, configured.maxTokens - 1024)) : 0;
+      if (this.isModelReasoningType) { profile.thinkingBudget = this.selectedThinkingBudget; }
       let layer: AgentLayer = this.currentAgentMode === 'auto' ? this.orchestrator.classify(query) : this.currentAgentMode;
       if (layer === 'L1' && !this.currentNote) { layer = 'L3'; }
       this.runningLayer = layer;
@@ -939,11 +948,13 @@ export struct AiWorkspace {
       this.cancelStream();
     }
     this.loadedSessionId = '';
+    this.modelMenuOpen = false; this.plusMenuOpen = false; this.inputText = '';
     this.messages = [];
     this.lastCitations = [];
     this.streamingText = '';
     this.streamingReasoning = '';
     this.pinnedNotes = [];
+    this.onPinnedNotesChange([]);
     this.emitContext();
     promptAction.showToast({ message: '已开启新对话' });
   }
@@ -1042,7 +1053,7 @@ export struct AiWorkspace {
           this.renderMarkdownText(msg.text, false)
         }
 
-        // 墨语智能协同方案卡 (Codex / Claude Code 交互式协同)
+        // 建议操作卡 (Codex / Claude Code 交互式协同)
         this.proposalCard(msg)
 
         // 引用来源芯片
@@ -1161,11 +1172,11 @@ export struct AiWorkspace {
             .fontSize(14)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().accent)
-          Text('墨语智能协同方案')
+          Text('建议操作')
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().inkPrimary)
-          Text('CLAUDE CODE 协同模式')
+          Text('确认后写入')
             .fontSize(TypographyTokens.TINY)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().accent)
@@ -1408,7 +1419,7 @@ export struct AiWorkspace {
             .fontSize(12)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().accent)
-          Text('已生成结构化协同方案，请在下方【墨语智能协同方案卡】中核对并一键应用')
+          Text('建议操作在下方，请核对后确认。')
             .fontSize(TypographyTokens.TINY)
             .fontColor(this.palette().accent)
             .layoutWeight(1)
@@ -1517,7 +1528,6 @@ export struct AiWorkspace {
     .alignItems(HorizontalAlign.Start)
     .onClick(() => {
       this.inputText = qp.query;
-      this.sendMessage();
     })
   }
 
@@ -1533,7 +1543,7 @@ export struct AiWorkspace {
         Text('✕')
           .fontSize(TypographyTokens.TINY)
           .fontColor(this.palette().inkMuted)
-          .width(20).height(20)
+          .width(44).height(44)
           .textAlign(TextAlign.Center)
           .borderRadius(4)
           .hoverEffect(HoverEffect.Highlight)
@@ -1560,7 +1570,7 @@ export struct AiWorkspace {
                     .maxLines(1)
                     .textOverflow({ overflow: TextOverflow.Ellipsis })
                   if (p.isReasoningModel) {
-                    Text('🧠')
+                    Text('推理')
                       .fontSize(TypographyTokens.TINY)
                   }
                 }
@@ -1581,6 +1591,7 @@ export struct AiWorkspace {
               }
             }
             .width('100%')
+            .constraintSize({ minHeight: 52 })
             .padding({ left: 10, right: 10, top: 6, bottom: 6 })
             .borderRadius(8)
             .backgroundColor(p.id === this.activeProfileId ? this.palette().accentSoft : Color.Transparent)
@@ -1597,15 +1608,27 @@ export struct AiWorkspace {
 
       Divider().color(this.palette().borderSubtle).margin({ top: 4, bottom: 4 })
 
+      if (this.isModelReasoningType) {
+        Text('推理强度').fontSize(12).fontColor(this.palette().inkSecondary).width('100%')
+        Row({ space: 6 }) {
+          ForEach(THINKING_BUDGETS.slice(0, 3), (item: ThinkingBudgetPreset, index: number) => {
+            Button(index === 0 ? '轻量' : index === 1 ? '均衡' : '深入').height(44).layoutWeight(1).fontSize(12)
+              .type(ButtonType.Normal).borderRadius(8)
+              .backgroundColor(this.getBudgetShortLabel(this.selectedThinkingBudget) === item.label ? this.palette().accentSoft : this.palette().surfaceSubtle)
+              .fontColor(this.palette().inkPrimary).onClick(() => { this.selectedThinkingBudget = item.val; })
+          }, (item: ThinkingBudgetPreset) => item.key)
+        }.width('100%')
+        Text('仅对已配置且支持 reasoning_effort 的兼容模型生效。').fontSize(11).fontColor(this.palette().inkSecondary).width('100%')
+      }
+
       Row({ space: 6 }) {
-        Text('⚙')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().accent)
-        Text('管理更多模型配置…')
+        Image($r('app.media.ic_sparkle')).width(18).height(18).fillColor(this.palette().inkSecondary)
+        Text('AI 设置与模型目录')
           .fontSize(TypographyTokens.TINY)
           .fontColor(this.palette().accent)
       }
       .width('100%')
+      .constraintSize({ minHeight: 44 })
       .padding({ left: 10, right: 10, top: 6, bottom: 6 })
       .borderRadius(6)
       .hoverEffect(HoverEffect.Highlight)
@@ -1614,13 +1637,13 @@ export struct AiWorkspace {
         this.onOpenModelSettings();
       })
     }
-    .width(280)
+    .width(this.isPhone ? '92%' : 300)
     .padding(10)
     .borderRadius(12)
     .backgroundColor(this.palette().surface)
     .border({ width: 1, color: this.palette().border })
     .shadow({ radius: 24, color: 'rgba(0,0,0,0.18)' })
-    .margin({ top: 54, right: 80 })
+    .margin({ top: 54, right: this.isPhone ? 12 : 20 })
   }
 
   private getBudgetShortLabel(budget: number): string {
@@ -1646,76 +1669,6 @@ export struct AiWorkspace {
     }
   }
 
-  private getBudgetPreset(budget: number): ThinkingBudgetPreset {
-    const label: string = this.getBudgetShortLabel(budget);
-    const found: ThinkingBudgetPreset | undefined = THINKING_BUDGETS.find((b: ThinkingBudgetPreset) => b.label === label);
-    return found ?? THINKING_BUDGETS[1];
-  }
-
-  private getBudgetStep(budget: number): number {
-    switch (budget) {
-      case 4096:
-        return 0;
-      case 16384:
-        return 1;
-      case 32768:
-        return 2;
-      case 65536:
-        return 3;
-      default:
-        if (budget <= 8192) {
-          return 0;
-        } else if (budget <= 24576) {
-          return 1;
-        } else if (budget <= 49152) {
-          return 2;
-        } else {
-          return 3;
-        }
-    }
-  }
-
-  private setThinkingBudgetByStep(step: number, showToast: boolean = false): void {
-    const list: number[] = [4096, 16384, 32768, 65536];
-    const clampedStep: number = Math.max(0, Math.min(3, Math.round(step)));
-    const newBudget: number = list[clampedStep];
-    if (this.selectedThinkingBudget !== newBudget) {
-      this.selectedThinkingBudget = newBudget;
-      if (showToast) {
-        const item: ThinkingBudgetPreset = this.getBudgetPreset(this.selectedThinkingBudget);
-        promptAction.showToast({ message: `思考深度: ${item.label}` });
-      }
-    }
-  }
-
-  private getKnobOffset(step: number): number {
-    switch (step) {
-      case 0:
-        return 2;
-      case 1:
-        return 21;
-      case 2:
-        return 40;
-      case 3:
-      default:
-        return 58;
-    }
-  }
-
-  private getFillWidth(step: number): number {
-    switch (step) {
-      case 0:
-        return 18;
-      case 1:
-        return 37;
-      case 2:
-        return 56;
-      case 3:
-      default:
-        return 76;
-    }
-  }
-
   private async importExternalFile(): Promise<void> {
     this.plusMenuOpen = false;
     try {
@@ -1737,11 +1690,15 @@ export struct AiWorkspace {
     }
   }
 
-  private rewindLastMessage(): void {
+  private async rewindLastMessage(): Promise<void> {
+    if (this.isLoading || this.historyBusy || this.applyingProposal || !this.servicesReady) { return; }
+    if (!this.loadedSessionId) { promptAction.showToast({ message: '正在保存对话，请稍后重试' }); return; }
     if (this.messages.length === 0) {
       promptAction.showToast({ message: '暂无消息可撤销' });
       return;
     }
+    const original = this.messages.slice();
+    const sessionId = this.loadedSessionId;
     if (this.messages[this.messages.length - 1].role === 'assistant') {
       this.messages.pop();
     }
@@ -1749,289 +1706,54 @@ export struct AiWorkspace {
       this.messages.pop();
     }
     this.messages = [...this.messages];
-    promptAction.showToast({ message: '已撤销上一轮对话' });
+    const next = this.messages;
+    this.historyBusy = true;
+    try {
+      const saved = await this.sessionService.replaceMessages(sessionId, next);
+      if (!this.alive || this.loadedSessionId !== sessionId || this.messages !== next) { return; }
+      this.onSessionSaved(saved);
+      const last = this.messages.slice().reverse().find((m: StoredMessage) => m.role === 'assistant');
+      this.lastCitations = last?.citations || []; this.emitContext();
+      promptAction.showToast({ message: '已撤回上一轮消息，已创建的笔记和待办保留' });
+    } catch {
+      if (!this.alive || this.loadedSessionId !== sessionId || this.messages !== next) { return; }
+      this.messages = original;
+      promptAction.showToast({ message: '消息撤回未能保存，原对话已保留' });
+    } finally { if (this.alive) { this.historyBusy = false; } }
   }
 
-  private cycleThinkingBudget(): void {
-    const list: number[] = [4096, 16384, 32768, 65536];
-    let currentIndex: number = list.indexOf(this.selectedThinkingBudget);
-    if (currentIndex === -1) {
-      currentIndex = 1;
-    }
-    const nextIndex: number = (currentIndex + 1) % list.length;
-    this.selectedThinkingBudget = list[nextIndex];
-    const item: ThinkingBudgetPreset = this.getBudgetPreset(this.selectedThinkingBudget);
-    promptAction.showToast({ message: `推演深度: ${item.label}` });
+  @Builder
+  attachmentAction(title: string, icon: Resource, action: () => void) {
+    Row({ space: 10 }) {
+      Image(icon).width(18).height(18).fillColor(this.palette().inkSecondary)
+      Text(title).fontSize(14).fontColor(this.palette().inkPrimary).layoutWeight(1)
+    }.width('100%').height(48).padding({ left: 12, right: 12 }).borderRadius(8)
+      .hoverEffect(HoverEffect.Highlight).onClick(action)
   }
 
-  /** 极简操作舱面板 (中文极简，区分库内与外部文件，支持思考深度胶囊滑块) */
   @Builder
   plusActionMenu() {
-    Column({ space: 2 }) {
-      // 滚动操作列表
-      Scroll() {
-        Column({ space: 2 }) {
-          // ---- 区块一：资料与识别 ----
-          Text('资料与识别')
-            .fontSize(11)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkMuted)
-            .padding({ left: 10, top: 4, bottom: 2 })
-            .width('100%')
-
-          // 1. 智能识别 (拍照/选图并进行 OCR 与多模态提取)
-          Row() {
-            Text('智能识别')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkPrimary)
-          }
-          .width('100%')
-          .height(32)
-          .padding({ left: 10, right: 10 })
-          .borderRadius(6)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.plusMenuOpen = false;
-            this.onSmartExtract();
-          })
-
-          // 2. 引用库内资料 (程序内已有笔记与文档)
-          Row() {
-            Text('引用库内资料')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkPrimary)
-            Blank()
-            if (this.pinnedNotes.length > 0) {
-              Text(`已引 ${this.pinnedNotes.length} 篇`)
-                .fontSize(TypographyTokens.TINY)
-                .fontColor(this.palette().accent)
-            }
-          }
-          .width('100%')
-          .height(32)
-          .padding({ left: 10, right: 10 })
-          .borderRadius(6)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.plusMenuOpen = false;
-            this.onToggleContextPanel();
-          })
-
-          // 3. 导入外部文件 (调起系统选择器，导入程序外的 PDF/TXT/MD 等)
-          Row() {
-            Text('导入外部文件')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkPrimary)
-          }
-          .width('100%')
-          .height(32)
-          .padding({ left: 10, right: 10 })
-          .borderRadius(6)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.importExternalFile();
-          })
-
-          // 4. 清空对话
-          Row() {
-            Text('清空对话')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkPrimary)
-          }
-          .width('100%')
-          .height(32)
-          .padding({ left: 10, right: 10 })
-          .borderRadius(6)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.messages = [];
-            this.streamingText = '';
-            this.streamingReasoning = '';
-            this.plusMenuOpen = false;
-            promptAction.showToast({ message: '已清空对话' });
-          })
-
-          // 5. 撤销上一轮
-          Row() {
-            Text('撤销上一轮')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkPrimary)
-          }
-          .width('100%')
-          .height(32)
-          .padding({ left: 10, right: 10 })
-          .borderRadius(6)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.plusMenuOpen = false;
-            this.rewindLastMessage();
-          })
-
-          // 分割线
-          Divider()
-            .color(this.palette().borderSubtle)
-            .margin({ top: 4, bottom: 4 })
-
-          // ---- 区块二：模型设置 ----
-          Text('模型设置')
-            .fontSize(11)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkMuted)
-            .padding({ left: 10, top: 4, bottom: 2 })
-            .width('100%')
-
-          // 切换模型
-          Row() {
-            Text('切换模型')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkPrimary)
-            Blank()
-            Text(this.modelLabel.length > 0 ? this.modelLabel : '默认推荐')
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(this.palette().inkMuted)
-              .maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis })
-              .constraintSize({ maxWidth: 120 })
-          }
-          .width('100%')
-          .height(32)
-          .padding({ left: 10, right: 10 })
-          .borderRadius(6)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.plusMenuOpen = false;
-            this.modelMenuOpen = true;
-          })
-
-          // 思考深度 (Low / Medium / High / Max) 胶囊滑块
-          Row() {
-            Text(`思考深度 (${this.getBudgetShortLabel(this.selectedThinkingBudget)})`)
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.isThinkingEnabled ? this.palette().inkPrimary : this.palette().inkMuted)
-
-            Blank()
-
-            // 紧凑胶囊滑块 (76vp x 18vp，底轨 + 动态蓝色填充条 + 4个刻度点 + 实体滑动圆标)
-            Stack({ alignContent: Alignment.Start }) {
-              // 底轨
-              Row()
-                .width('100%')
-                .height('100%')
-                .borderRadius(9)
-                .backgroundColor(this.isDarkMode ? '#334155' : '#E2E8F0')
-
-              // 动态蓝色填充条 (右拖长度直接反映思考深度)
-              Row()
-                .width(this.isThinkingEnabled ? this.getFillWidth(this.getBudgetStep(this.selectedThinkingBudget)) : 0)
-                .height('100%')
-                .borderRadius(9)
-                .backgroundColor(this.palette().accent)
-                .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
-
-              // 四个刻度点
-              Row() {
-                Circle({ width: 3, height: 3 })
-                  .fill(this.getBudgetStep(this.selectedThinkingBudget) >= 0 ? Color.White : '#64748B')
-                  .opacity(0.65)
-                Blank()
-                Circle({ width: 3, height: 3 })
-                  .fill(this.getBudgetStep(this.selectedThinkingBudget) >= 1 ? Color.White : '#64748B')
-                  .opacity(0.65)
-                Blank()
-                Circle({ width: 3, height: 3 })
-                  .fill(this.getBudgetStep(this.selectedThinkingBudget) >= 2 ? Color.White : '#64748B')
-                  .opacity(0.65)
-                Blank()
-                Circle({ width: 3, height: 3 })
-                  .fill(this.getBudgetStep(this.selectedThinkingBudget) >= 3 ? Color.White : '#64748B')
-                  .opacity(0.65)
-              }
-              .width('100%')
-              .height('100%')
-              .padding({ left: 8, right: 8 })
-
-              // 实体滑动圆标
-              Row()
-                .width(16)
-                .height(16)
-                .borderRadius(8)
-                .backgroundColor(this.isDarkMode ? '#E2E8F0' : '#2D3748')
-                .shadow({ radius: 4, color: 'rgba(0,0,0,0.25)', offsetY: 1 })
-                .margin({ left: this.getKnobOffset(this.getBudgetStep(this.selectedThinkingBudget)) })
-                .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
-            }
-            .width(76)
-            .height(18)
-            .onTouch((event: TouchEvent) => {
-              if (!this.isThinkingEnabled) {
-                return;
-              }
-              const touch = event.touches[0];
-              if (!touch) {
-                return;
-              }
-              const ratio: number = Math.max(0, Math.min(1, touch.x / 76));
-              const step: number = Math.min(3, Math.floor(ratio * 4));
-              animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-                this.setThinkingBudgetByStep(step, false);
-              });
-            })
-            .onClick(() => {
-              if (!this.isThinkingEnabled) {
-                return;
-              }
-              const nextStep: number = (this.getBudgetStep(this.selectedThinkingBudget) + 1) % 4;
-              animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-                this.setThinkingBudgetByStep(nextStep, false);
-              });
-            })
-          }
-          .width('100%')
-          .height(32)
-          .padding({ left: 10, right: 10 })
-
-          // 深度思考 (开关)
-          Row() {
-            Text('深度思考')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkPrimary)
-
-            Blank()
-
-            Toggle({ type: ToggleType.Switch, isOn: this.isThinkingEnabled })
-              .selectedColor(this.palette().accent)
-              .onChange((isOn: boolean) => {
-                this.isThinkingEnabled = isOn;
-                if (!isOn) {
-                  this.selectedThinkingBudget = 0;
-                } else {
-                  this.selectedThinkingBudget = 16384;
-                }
-              })
-          }
-          .width('100%')
-          .height(32)
-          .padding({ left: 10, right: 10 })
-        }
-        .width('100%')
+    Column({ space: 4 }) {
+      this.attachmentAction('图片识别与整理', $r('app.media.ic_sparkle'), () => {
+        this.plusMenuOpen = false; this.onSmartExtract();
+      })
+      this.attachmentAction('引用库内资料', $r('app.media.ic_note'), () => {
+        this.plusMenuOpen = false; this.onToggleContextPanel();
+      })
+      this.attachmentAction('导入外部文件', $r('app.media.ic_import'), () => {
+        this.plusMenuOpen = false; this.importExternalFile();
+      })
+      if (this.messages.length > 0) {
+        Divider().color(this.palette().borderSubtle)
+        this.attachmentAction('撤回上一轮消息', $r('app.media.ic_note'), () => {
+          this.plusMenuOpen = false; this.rewindLastMessage();
+        })
       }
-      .constraintSize({ maxHeight: 340 })
-      .scrollBar(BarState.Auto)
-    }
-    .width(280)
-    .padding(6)
-    .borderRadius(10)
-    .backgroundColor(this.palette().surface)
-    .border({ width: 1, color: this.palette().border })
-    .shadow({ radius: 24, color: 'rgba(0,0,0,0.18)' })
-    .alignSelf(ItemAlign.Start)
-    .margin({ bottom: 8, left: 16 })
-    .transition(
-      TransitionEffect.OPACITY
-        .combine(TransitionEffect.scale({ x: 0.92, y: 0.92, centerX: '24vp', centerY: '100%' }))
-        .combine(TransitionEffect.translate({ y: 12 }))
-        .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
-    )
+    }.width(this.isPhone ? '100%' : 280).padding(8).borderRadius(12)
+      .backgroundColor(this.palette().surface).border({ width: 1, color: this.palette().border })
+      .alignSelf(ItemAlign.Start).enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal)
+      .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 8 }))
+        .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
   }
 
   build() {
@@ -2045,14 +1767,16 @@ export struct AiWorkspace {
                 .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
               Text('▾').fontSize(12).fontColor(this.palette().inkMuted)
             }.layoutWeight(1).height(44).padding({ left: 10, right: 10 }).borderRadius(8)
-              .backgroundColor(this.palette().surfaceSubtle).enabled(!this.isLoading && !this.applyingProposal)
-              .accessibilityText('切换模型档案').onClick(() => { this.modelMenuOpen = !this.modelMenuOpen; })
+              .backgroundColor(this.palette().surfaceSubtle).enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal)
+              .accessibilityText('切换模型档案').onClick(() => { this.plusMenuOpen = false; this.modelMenuOpen = !this.modelMenuOpen; })
             Text('+').fontSize(22).fontColor(this.palette().inkPrimary).width(44).height(44).textAlign(TextAlign.Center)
               .accessibilityText('新对话').enabled(!this.applyingProposal).onClick(() => this.startNewChat())
-            Text('▤').fontSize(20).fontColor(this.palette().inkSecondary).width(44).height(44).textAlign(TextAlign.Center)
-              .accessibilityText('查看来源与上下文').onClick(() => this.onToggleContextPanel())
-            Text('⚙').fontSize(20).fontColor(this.palette().inkSecondary).width(44).height(44).textAlign(TextAlign.Center)
-              .accessibilityText('模型与工具设置').enabled(!this.isLoading && !this.applyingProposal).onClick(() => this.onOpenModelSettings())
+            if (!this.isPhone) {
+              Image($r('app.media.ic_note')).width(44).height(44).padding(12).fillColor(this.palette().inkSecondary)
+                .accessibilityText('查看来源与上下文').onClick(() => this.onToggleContextPanel())
+            }
+            Image($r('app.media.ic_menu')).width(44).height(44).padding(12).fillColor(this.palette().inkSecondary)
+              .accessibilityText('模型与工具设置').enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal).onClick(() => this.onOpenModelSettings())
           }.width('100%')
           Row({ space: 4 }) {
             ForEach(MODE_TABS, (item: AgentModeTabItem) => {
@@ -2060,7 +1784,7 @@ export struct AiWorkspace {
                 .fontColor(this.currentAgentMode === item.mode ? this.palette().inkPrimary : this.palette().inkMuted)
                 .layoutWeight(1).height(44).textAlign(TextAlign.Center).borderRadius(8)
                 .backgroundColor(this.currentAgentMode === item.mode ? this.palette().surfaceSubtle : Color.Transparent)
-                .enabled(!this.isLoading && !this.applyingProposal)
+                .enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal)
                 .onClick(() => { this.currentAgentMode = item.mode as AgentLayer | 'auto'; })
             }, (item: AgentModeTabItem) => item.mode)
           }.width('100%')
@@ -2071,16 +1795,14 @@ export struct AiWorkspace {
       if (this.messages.length === 0 && !this.isLoading) {
         Scroll() {
         Column({ space: 16 }) {
-          Text('✦')
-            .fontSize(36)
-            .fontColor(this.palette().accent)
+          Image($r('app.media.ic_sparkle')).width(32).height(32).fillColor(this.palette().accent)
 
           Column({ space: 4 }) {
-            Text('FlowMind 墨客')
+            Text('把资料变成学习收获')
               .fontSize(TypographyTokens.TITLE_SUB)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.palette().inkPrimary)
-            Text('智能文档研读与知识推演')
+            Text('提炼要点、比较观点，或准备一组自测题。')
               .fontSize(TypographyTokens.CAPTION)
               .fontColor(this.palette().inkMuted)
           }
@@ -2105,13 +1827,20 @@ export struct AiWorkspace {
             justifyContent: FlexAlign.Center,
             space: { main: { value: 12, unit: 1 }, cross: { value: 12, unit: 1 } }
           }) {
-            ForEach(QUICK_PROMPTS, (qp: QuickPrompt) => {
+            ForEach(this.showAllPrompts ? QUICK_PROMPTS : QUICK_PROMPTS.slice(0, 4), (qp: QuickPrompt) => {
               this.quickPromptCard(qp)
             }, (qp: QuickPrompt) => qp.title)
           }
           .constraintSize({ maxWidth: 560 })
           .width('100%')
           .padding({ left: 16, right: 16 })
+          Button(this.showAllPrompts ? '收起更多用法' : '更多用法').height(44).fontSize(12).type(ButtonType.Normal)
+            .backgroundColor(Color.Transparent).fontColor(this.palette().inkSecondary).onClick(() => { this.showAllPrompts = !this.showAllPrompts; })
+          Text('选择用法后，可补充问题再发送。').fontSize(12).fontColor(this.palette().inkMuted)
+          if (!this.modelReady) {
+            Button('配置 AI 或浏览模型目录').height(44).fontSize(13).type(ButtonType.Normal).borderRadius(8)
+              .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary).onClick(() => this.onOpenModelSettings())
+          }
         }
         .width('100%')
         .justifyContent(FlexAlign.Center)
@@ -2190,151 +1919,60 @@ export struct AiWorkspace {
         .scrollBar(BarState.Auto)
       }
 
-      // 3. 悬浮岛输入控制台 (Floating Cockpit - Codex 极简复刻)
-      Column({ space: 4 }) {
-        // 加号操作舱浮层
-        if (this.plusMenuOpen) {
-          this.plusActionMenu()
-        }
-
-        // 挂载工程上下文纤薄 Chip 贴附栏（有文档时才显示）
+      Column({ space: 8 }) {
+        if (this.plusMenuOpen) { this.plusActionMenu() }
         if (this.pinnedNotes.length > 0) {
-          Row({ space: 6 }) {
-            Text('▦')
-              .fontSize(TypographyTokens.TINY)
-
-            ForEach(this.pinnedNotes, (n: NoteItem) => {
-              Row({ space: 4 }) {
-                Text(n.title)
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor(this.palette().inkPrimary)
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .constraintSize({ maxWidth: 120 })
-                Text('✕')
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor(this.palette().inkMuted)
-                  .onClick(() => {
-                    this.pinnedNotes = this.pinnedNotes.filter((p: NoteItem) => p.id !== n.id);
-                    this.onPinnedNotesChange(this.pinnedNotes);
-                  })
+          Row({ space: 8 }) {
+            Scroll() {
+              Row({ space: 6 }) {
+                ForEach(this.pinnedNotes, (n: NoteItem) => {
+                  Row({ space: 4 }) {
+                    Text(n.title).fontSize(12).fontColor(this.palette().inkPrimary).maxLines(1)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: 130 })
+                    Text('×').fontSize(18).fontColor(this.palette().inkSecondary).width(44).height(44).textAlign(TextAlign.Center)
+                      .enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal).accessibilityText(`移除引用资料：${n.title}`)
+                      .onClick(() => {
+                        this.pinnedNotes = this.pinnedNotes.filter((p: NoteItem) => p.id !== n.id);
+                        this.onPinnedNotesChange(this.pinnedNotes);
+                      })
+                  }.padding({ left: 10 }).borderRadius(8).backgroundColor(this.palette().accentSoft)
+                }, (n: NoteItem) => `cockpit-pin-${n.id}`)
               }
-              .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-              .borderRadius(4)
-              .backgroundColor(this.palette().accentSoft)
-            }, (n: NoteItem) => `cockpit-pin-${n.id}`)
-
-            Blank()
-
-            Text('清空')
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(this.palette().inkMuted)
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => {
-                this.pinnedNotes = [];
-                this.onPinnedNotesChange([]);
+            }.layoutWeight(1).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+            Button('清空').height(44).fontSize(12).type(ButtonType.Normal).backgroundColor(Color.Transparent)
+              .fontColor(this.palette().inkSecondary).enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal).onClick(() => {
+                this.pinnedNotes = []; this.onPinnedNotesChange([]);
               })
-          }
-          .width('100%')
-          .padding({ left: 8, right: 8, bottom: 2 })
+          }.width('100%')
         }
-
-        // 核心输入卡片
-        Row({ space: 8 }) {
-          // Codex 风格「+」多功能操作按钮 (带弹出弹簧动画与旋转反馈)
-          Row({ space: 3 }) {
-            Text(this.plusMenuOpen ? '✕' : '+')
-              .fontSize(TypographyTokens.BODY_LARGE)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.plusMenuOpen || this.pinnedNotes.length > 0 ? this.palette().accent : this.palette().inkSecondary)
-              .rotate({ angle: this.plusMenuOpen ? 90 : 0 })
-              .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
-            if (this.pinnedNotes.length > 0) {
-              Text(`${this.pinnedNotes.length}`)
-                .fontSize(TypographyTokens.TINY)
-                .fontColor(Color.White)
-                .padding({ left: 4, right: 4, top: 1, bottom: 1 })
-                .borderRadius(6)
-                .backgroundColor(this.palette().accent)
+        Column({ space: 4 }) {
+          TextArea({ text: this.inputText, placeholder: '提问，或添加资料后让 AI 整理…' })
+            .height(this.isPhone ? 80 : 88).width('100%').fontSize(TypographyTokens.BODY_REGULAR)
+            .fontColor(this.palette().inkPrimary).placeholderColor(this.palette().inkMuted)
+            .backgroundColor(Color.Transparent).onChange((v: string) => { this.inputText = v; })
+          Row({ space: 8 }) {
+            Button(this.plusMenuOpen ? '×' : '+').width(44).height(44).fontSize(22).type(ButtonType.Normal).borderRadius(8)
+              .backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : this.palette().surfaceSubtle)
+              .fontColor(this.palette().inkSecondary).enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal)
+              .accessibilityText('添加资料与对话操作').onClick(() => {
+                this.modelMenuOpen = false;
+                animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => { this.plusMenuOpen = !this.plusMenuOpen; });
+              })
+            Text(this.pinnedNotes.length > 0 ? `已引用 ${this.pinnedNotes.length} 篇资料` : '资料可选')
+              .fontSize(12).fontColor(this.palette().inkMuted).layoutWeight(1)
+            if (this.isLoading) {
+              Button('停止').height(44).fontSize(14).type(ButtonType.Normal).borderRadius(8)
+                .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().danger).onClick(() => this.cancelStream())
+            } else {
+              Button('发送 ↑').height(44).fontSize(14).type(ButtonType.Normal).borderRadius(8).fontColor(Color.White)
+                .backgroundColor(this.palette().accent).enabled(this.inputText.trim().length > 0 && !this.historyBusy && !this.applyingProposal)
+                .onClick(() => this.sendMessage())
             }
-          }
-          .height(34)
-          .padding({ left: 10, right: 10 })
-          .justifyContent(FlexAlign.Center)
-          .borderRadius(8)
-          .backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : this.palette().surfaceSubtle)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-              this.plusMenuOpen = !this.plusMenuOpen;
-            });
-          })
-
-          TextInput({
-            text: this.inputText,
-            placeholder: '输入问题或需求…'
-          })
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().inkPrimary)
-            .placeholderColor(this.palette().inkMuted)
-            .backgroundColor(Color.Transparent)
-            .layoutWeight(1)
-            .onChange((v: string) => { this.inputText = v; })
-            .onSubmit(() => this.sendMessage())
-
-          // 紧凑推演深度微型徽标（Codex 风格，点击即展开拖拽滑块弹窗）
-          Row({ space: 4 }) {
-            Text('✦')
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(this.palette().accent)
-            Text(this.getBudgetShortLabel(this.selectedThinkingBudget))
-              .fontSize(TypographyTokens.TINY)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.palette().inkSecondary)
-          }
-          .padding({ left: 7, right: 7, top: 4, bottom: 4 })
-          .borderRadius(6)
-          .backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : this.palette().surfaceSubtle)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-              this.plusMenuOpen = !this.plusMenuOpen;
-            });
-          })
-
-          if (this.isLoading) {
-            Button('■ 停止')
-              .type(ButtonType.Normal)
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(Color.White)
-              .backgroundColor('#EF4444')
-              .borderRadius(8)
-              .height(34)
-              .onClick(() => this.cancelStream())
-          } else {
-            Button('↑')
-              .type(ButtonType.Normal)
-              .fontSize(TypographyTokens.BODY_LARGE)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(Color.White)
-              .width(36).height(36)
-              .borderRadius(18)
-              .backgroundColor(this.inputText.trim().length > 0 ? this.palette().accent : this.palette().surfaceSubtle)
-              .enabled(this.inputText.trim().length > 0)
-              .onClick(() => this.sendMessage())
-          }
-        }
-        .width('100%')
-        .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-        .borderRadius(14)
-        .backgroundColor(this.palette().surface)
-        .border({ width: 1, color: this.palette().border })
-        .shadow({ radius: 24, color: 'rgba(0,0,0,0.12)' })
-      }
-      .width('100%')
-      .constraintSize({ maxWidth: 800 })
-      .alignSelf(ItemAlign.Center)
-      .padding({ left: 16, right: 16, bottom: 16, top: 6 })
+          }.width('100%')
+        }.width('100%').padding(10).borderRadius(14).backgroundColor(this.palette().surface)
+          .border({ width: 1, color: this.palette().border })
+      }.width('100%').constraintSize({ maxWidth: 800 }).alignSelf(ItemAlign.Center)
+        .padding({ left: this.isPhone ? 12 : 20, right: this.isPhone ? 12 : 20, bottom: this.isPhone ? 12 : 16, top: 6 })
     }
     .width('100%')
     .height('100%')
@@ -2342,6 +1980,7 @@ export struct AiWorkspace {
 
     // 4. 模型快速切换下拉浮层
     if (this.modelMenuOpen) {
+      Column().width('100%').height('100%').onClick(() => { this.modelMenuOpen = false; })
       this.modelSelectMenu()
     }
   }
