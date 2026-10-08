@@ -443,6 +443,7 @@ export class AgentOrchestrator {
       prompt += `\n\n<workspace_project_context>\n【已挂载参考文档共 ${ctx.pinnedNotes.length} 篇】\n${ctx.pinnedNotes.join('\n---\n')}\n\n【研读指令】：以上为已挂载参考文档，请优先结合文档内容解答，并标明出处。\n</workspace_project_context>`;
     }
 
+    prompt += `\n\n<reading_layout>\n先给直接回答，再按需要给简短小标题、步骤与出处。简单问题无需套用完整模板，避免重复概览和宣传语。使用普通 Markdown；清单一项一行，表格最多四列，代码块标明语言，公式独立使用 $$ 块且保留原顺序。来源不足时明确说明，不虚构页码。只有用户请求可执行操作时才附 action_proposal；动作须由用户确认。\n</reading_layout>`;
     return prompt;
   }
 

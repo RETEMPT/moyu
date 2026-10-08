@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseJsonc, packageErrors, deviceEvidenceErrors, REQUIRED_CASES } from './app-market-policy.mjs';
 
-const expected = { bundleName:'com.retempt.flowmind', versionName:'1.0.2', versionCode:1001002,
+const expected = { bundleName:'com.retempt.flowmind', versionName:'1.0.3', versionCode:1001003,
   minApi:24,targetApi:26, devices:['phone','tablet'], permissions:['ohos.permission.INTERNET','ohos.permission.DISTRIBUTED_DATASYNC'],
   sourceCommit:'abcdef',appSha256:'artifact-sha' };
 const pack = () => ({ appSha256:'artifact-sha',pack:{ summary:{app:{bundleName:expected.bundleName,version:{code:expected.versionCode,name:expected.versionName}}}},

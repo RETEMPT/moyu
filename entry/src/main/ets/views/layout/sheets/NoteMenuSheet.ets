@@ -10,6 +10,8 @@ import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { NoteItem } from '../../../common/types/NoteItem';
 import { DestructiveConfirm, SheetActionRow, SheetCancelButton, SheetOverlay } from './SheetScaffold';
 import { ResourceTypeTokens } from '../../../common/constants/DesignTokens';
+import { AppIcon } from '../../common/AppIcon';
+import { documentIcon } from '../../../common/utils/DocumentPresentation';
 
 @Component
 export struct NoteMenuSheet {
@@ -60,9 +62,7 @@ export struct NoteMenuSheet {
     SheetOverlay({ onDismiss: this.onClose }) {
       Column({ space: 6 }) {
         Row({ space: 6 }) {
-          Text(this.typeIcon())
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.typeColor())
+          AppIcon({ source: documentIcon(this.note.type), tint: this.palette().accent })
           Text(this.note.title)
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontWeight(FontWeight.Bold)
@@ -76,27 +76,27 @@ export struct NoteMenuSheet {
         .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
 
         SheetActionRow({
-          label: '📖 打开研读',
+          label: '打开阅读', icon: $r('app.media.ic_read'),
           onAction: () => this.onOpenNote(this.note)
         })
 
         SheetActionRow({
-          label: '✏️ 重命名',
+          label: '重命名资料', icon: $r('app.media.ic_format'),
           onAction: () => this.onRequestRename(this.note)
         })
 
         SheetActionRow({
-          label: '⇄ 移动到项目',
+          label: '移动到项目', icon: $r('app.media.ic_folder'),
           onAction: () => this.onRequestMove(this.note)
         })
 
         SheetActionRow({
-          label: '🏷 编辑标签',
+          label: '编辑标签', icon: $r('app.media.ic_tag'),
           onAction: () => this.onRequestTags(this.note)
         })
 
         DestructiveConfirm({
-          triggerLabel: '🗑️ 删除资料',
+          triggerLabel: '移入回收站',
           question: `确定删除「${this.note.title}」？`,
           consequence: '将移入回收站，可随时恢复；也可在提示条上点「撤销」立即找回。',
           onConfirm: () => this.onDeleteNote(this.note.id)

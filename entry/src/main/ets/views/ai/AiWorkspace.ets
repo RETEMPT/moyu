@@ -41,10 +41,12 @@ import { MarkdownDocument } from '../../common/types/MarkdownDocument';
 import { RetrievalHit } from '../../common/types/RagTypes';
 import { AgentToolExecutor, AgentToolResult } from '../../common/types/AgentTypes';
 import { AGENT_TOOLS, toolDisplayName } from '../../services/ai/ToolRegistry';
-import { DocumentImportService } from '../../services/document/DocumentImportService';
 import { AssistantModeService, ASSISTANT_MODE_KEY } from '../../services/ai/AssistantModeService';
 import { LocalAssistantService } from '../../services/ai/LocalAssistantService';
 import { REMOTE_AI_ENABLED } from '../../common/constants/RuntimeCapabilities';
+import { AssistantText } from '../common/AssistantText';
+import { IconButton } from '../common/IconButton';
+import { SheetOverlay, SheetCancelButton } from '../layout/sheets/SheetScaffold';
 
 interface QuickPrompt {
   title: string;
@@ -149,6 +151,10 @@ export struct AiWorkspace {
   @Prop @Watch('onPrefilledPromptChanged') prefilledPrompt: string = '';
   @Prop toolsEnabled: boolean = true;
   @Prop contextPanelOpen: boolean = false;
+  @Prop @Watch('handleBackRequest') backRequestToken: number = 0;
+  onNavigateBack: () => void = () => {};
+  onDeleteSession: (id: string) => void = () => {};
+  onImportExternal: () => Promise<NoteItem | null> = async () => null;
 
   onSessionSaved: (session: ChatSession) => void = () => {};
   onContextChange: (citations: ChatCitation[], pinned: NoteItem[], layerLabel: string, modelLabel: string) => void =
@@ -190,6 +196,7 @@ export struct AiWorkspace {
   @State profiles: ModelProfile[] = [];
   @State modelMenuOpen: boolean = false;
   @State plusMenuOpen: boolean = false;
+  @State workspaceHeight: number = 640;
   @State showAllPrompts: boolean = false;
   @State historyBusy: boolean = false;
   @State selectedThinkingBudget: number = 16384;
@@ -1099,56 +1106,14 @@ export struct AiWorkspace {
           .margin({ top: 4 })
         }
 
-        // 操作栏（一键复制 / 重新生成 / 错误重试）
         if (msg.streaming !== true) {
           Row({ space: 8 }) {
             if (msg.text && msg.text.length > 0) {
-              Row({ space: 4 }) {
-                Text('⎘')
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor(this.palette().inkMuted)
-                Text('复制')
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor(this.palette().inkMuted)
-              }
-              .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-              .borderRadius(6)
-              .backgroundColor(this.palette().surfaceSubtle)
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.copyToClipboard(msg.text ?? ''))
+              IconButton({ icon: $r('app.media.ic_copy'), label: '复制回答', onAction: () => this.copyToClipboard(msg.text ?? '') })
             }
-
-            Row({ space: 4 }) {
-              Text('↻')
-                .fontSize(TypographyTokens.TINY)
-                .fontColor(this.palette().inkMuted)
-              Text('重新生成')
-                .fontSize(TypographyTokens.TINY)
-                .fontColor(this.palette().inkMuted)
-            }
-            .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-            .borderRadius(6)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => this.regenerateLastResponse())
-
-            if (msg.error !== undefined && msg.error !== null && msg.error.length > 0) {
-              Row({ space: 4 }) {
-                Text('⚡')
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor('#EF4444')
-                Text('重试请求')
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor('#EF4444')
-              }
-              .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-              .borderRadius(6)
-              .backgroundColor('rgba(239, 68, 68, 0.08)')
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.regenerateLastResponse())
-            }
-          }
-          .margin({ top: 4 })
+            IconButton({ icon: $r('app.media.ic_refresh'), label: msg.error ? '重试请求' : '重新生成回答',
+              available: !this.isLoading && !this.applyingProposal, onAction: () => this.regenerateLastResponse() })
+          }.margin({ top: 4 })
         }
       }
       .width('100%')
@@ -1338,169 +1303,7 @@ export struct AiWorkspace {
 
   @Builder
   renderMarkdownText(text: string, isStreamingText: boolean) {
-    Column({ space: 4 }) {
-      ForEach(this.parseBlocks(text), (block: string, idx: number) => {
-        this.renderBlock(block)
-      }, (block: string, idx: number) => `blk-${idx}-${block.length}`)
-
-      if (isStreamingText) {
-        Text(this.cursorBlink ? '▌' : ' ')
-          .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontColor(this.palette().accent)
-      }
-    }
-    .width('100%')
-    .alignItems(HorizontalAlign.Start)
-  }
-
-  private parseBlocks(text: string): string[] {
-    if (!text || typeof text !== 'string') {
-      return [];
-    }
-    const lines: string[] = text.split('\n');
-    const blocks: string[] = [];
-    let fenced: boolean = false;
-    let buffer: string[] = [];
-    for (const line of lines) {
-      if (line.trim().startsWith('```')) {
-        if (fenced) {
-          buffer.push(line);
-          blocks.push(buffer.join('\n'));
-          buffer = [];
-          fenced = false;
-        } else {
-          fenced = true;
-          buffer.push(line);
-        }
-        continue;
-      }
-      if (fenced) {
-        buffer.push(line);
-      } else {
-        blocks.push(line);
-      }
-    }
-    if (buffer.length > 0) {
-      blocks.push(buffer.join('\n'));
-    }
-    return blocks;
-  }
-
-  private isFormulaBlock(block: string): boolean {
-    const trimmed: string = block.trim();
-    return trimmed.startsWith('```math') || trimmed.startsWith('$$\n')
-      || (trimmed.startsWith('$$') && trimmed.endsWith('$$') && trimmed.length > 4);
-  }
-
-  private stripFence(block: string): string {
-    const lines: string[] = block.split('\n');
-    const inner: string[] = [];
-    for (const line of lines) {
-      const t: string = line.trim();
-      if (t.startsWith('```') || t === '$$') {
-        continue;
-      }
-      inner.push(line);
-    }
-    let joined: string = inner.join('\n').trim();
-    if (joined.startsWith('$$')) {
-      joined = joined.slice(2);
-    }
-    if (joined.endsWith('$$')) {
-      joined = joined.slice(0, -2);
-    }
-    return joined.trim();
-  }
-
-  @Builder
-  renderBlock(block: string) {
-    if (block.startsWith('```')) {
-      if (block.startsWith('```action_proposal')) {
-        // 结构化协同方案由下方的交互式卡片承载呈现，此处展示提示标签
-        Row({ space: 6 }) {
-          Text('✦')
-            .fontSize(12)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.palette().accent)
-          Text('建议操作在下方，请核对后确认。')
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().accent)
-            .layoutWeight(1)
-        }
-        .width('100%')
-        .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-        .borderRadius(8)
-        .backgroundColor(this.palette().accentSoft)
-        .border({ width: 1, color: this.palette().borderSubtle })
-        .margin({ top: 4, bottom: 4 })
-      } else if (this.isFormulaBlock(block)) {
-        Column() {
-          Text(this.stripFence(block))
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().accent)
-            .fontFamily('monospace')
-            .textAlign(TextAlign.Center)
-            .width('100%')
-        }
-        .width('100%')
-        .padding({ top: 12, bottom: 12, left: 16, right: 16 })
-        .borderRadius(10)
-        .backgroundColor(this.isDarkMode ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)')
-        .margin({ top: 4, bottom: 4 })
-      } else {
-        Column() {
-          Text(this.stripFence(block))
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkPrimary)
-            .fontFamily('monospace')
-            .width('100%')
-        }
-        .width('100%')
-        .padding(12)
-        .borderRadius(8)
-        .backgroundColor(this.isDarkMode ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)')
-        .margin({ top: 4, bottom: 4 })
-      }
-    } else if (block.startsWith('# ')) {
-      Text(block.slice(2))
-        .fontSize(TypographyTokens.TITLE_SUB)
-        .fontWeight(FontWeight.Bold)
-        .fontColor(this.palette().inkPrimary)
-        .width('100%')
-        .margin({ top: 8, bottom: 2 })
-    } else if (block.startsWith('## ')) {
-      Text(block.slice(3))
-        .fontSize(TypographyTokens.BODY_LARGE)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.palette().inkPrimary)
-        .width('100%')
-        .margin({ top: 6, bottom: 2 })
-    } else if (block.startsWith('### ')) {
-      Text(block.slice(4))
-        .fontSize(TypographyTokens.BODY_REGULAR)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.palette().inkSecondary)
-        .width('100%')
-    } else if (block.startsWith('- ') || block.startsWith('• ') || block.startsWith('* ')) {
-      Row({ space: 8 }) {
-        Text('•').fontColor(this.palette().accent).fontSize(TypographyTokens.BODY_REGULAR)
-        Text(block.slice(2))
-          .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontColor(this.palette().inkSecondary)
-          .lineHeight(22)
-          .layoutWeight(1)
-      }
-      .width('100%')
-      .alignItems(VerticalAlign.Top)
-    } else if (block.trim().length === 0) {
-      Blank().height(4)
-    } else {
-      Text(block)
-        .fontSize(TypographyTokens.BODY_REGULAR)
-        .fontColor(this.palette().inkSecondary)
-        .lineHeight(22)
-        .width('100%')
-    }
+    AssistantText({ text, streaming: isStreamingText, hideActions: true })
   }
 
   @Builder
@@ -1647,13 +1450,12 @@ export struct AiWorkspace {
         this.onOpenModelSettings();
       })
     }
-    .width(this.isPhone ? '92%' : 300)
+    .width('100%')
     .padding(10)
     .borderRadius(12)
     .backgroundColor(this.palette().surface)
     .border({ width: 1, color: this.palette().border })
     .shadow({ radius: 24, color: 'rgba(0,0,0,0.18)' })
-    .margin({ top: 54, right: this.isPhone ? 12 : 20 })
   }
 
   private getBudgetShortLabel(budget: number): string {
@@ -1681,9 +1483,10 @@ export struct AiWorkspace {
 
   private async importExternalFile(): Promise<void> {
     this.plusMenuOpen = false;
+    const sessionId = this.loadedSessionId;
     try {
-      const ctx = getContext(this) as common.UIAbilityContext;
-      const note = await DocumentImportService.getInstance().pickAndImport(ctx, 'AI外部参考');
+      const note = await this.onImportExternal();
+      if (!this.alive || sessionId !== this.loadedSessionId) { return; }
       if (note !== null) {
         if (!this.pinnedNotes.some((n: NoteItem) => n.id === note.id)) {
           this.pinnedNotes = [...this.pinnedNotes, note];
@@ -1707,8 +1510,9 @@ export struct AiWorkspace {
       promptAction.showToast({ message: '暂无消息可撤销' });
       return;
     }
-    const original = this.messages.slice();
     const sessionId = this.loadedSessionId;
+    if (!await this.confirmMessageRemoval() || !this.alive || this.loadedSessionId !== sessionId || this.isLoading || this.historyBusy) { return; }
+    const original = this.messages.slice();
     if (this.messages[this.messages.length - 1].role === 'assistant') {
       this.messages.pop();
     }
@@ -1732,6 +1536,33 @@ export struct AiWorkspace {
     } finally { if (this.alive) { this.historyBusy = false; } }
   }
 
+  private handleBackRequest(): void {
+    if (this.plusMenuOpen) { this.plusMenuOpen = false; }
+    else if (this.modelMenuOpen) { this.modelMenuOpen = false; }
+    else { this.onNavigateBack(); }
+  }
+
+  private async confirmMessageRemoval(): Promise<boolean> {
+    try {
+      const result = await promptAction.showDialog({ title: '撤回上一轮消息？', message: '删除最近一轮提问与回答，已创建的笔记和待办会保留。',
+        buttons: [{ text: '取消', color: this.palette().inkSecondary }, { text: '撤回', color: this.palette().danger }] });
+      return result.index === 1;
+    } catch { return false; }
+  }
+
+  private async clearPinnedReferences(): Promise<void> {
+    if (this.isLoading || this.historyBusy || this.applyingProposal) { return; }
+    this.plusMenuOpen = false;
+    const sessionId = this.loadedSessionId;
+    try {
+      const result = await promptAction.showDialog({ title: '移除全部引用？', message: '原文件和对话会保留。',
+        buttons: [{ text: '取消', color: this.palette().inkSecondary }, { text: '移除', color: this.palette().danger }] });
+      if (result.index === 1 && this.alive && sessionId === this.loadedSessionId && !this.isLoading && !this.historyBusy && !this.applyingProposal) {
+        this.pinnedNotes = []; this.onPinnedNotesChange([]);
+      }
+    } catch { /* 取消确认 */ }
+  }
+
   @Builder
   attachmentAction(title: string, icon: Resource, action: () => void) {
     Row({ space: 10 }) {
@@ -1743,51 +1574,45 @@ export struct AiWorkspace {
 
   @Builder
   plusActionMenu() {
-    Column({ space: 4 }) {
-      this.attachmentAction('图片识别与整理', $r('app.media.ic_sparkle'), () => {
-        this.plusMenuOpen = false; this.onSmartExtract();
-      })
-      this.attachmentAction('引用库内资料', $r('app.media.ic_note'), () => {
-        this.plusMenuOpen = false; this.onToggleContextPanel();
-      })
-      this.attachmentAction('导入外部文件', $r('app.media.ic_import'), () => {
-        this.plusMenuOpen = false; this.importExternalFile();
-      })
-      if (this.messages.length > 0) {
-        Divider().color(this.palette().borderSubtle)
-        this.attachmentAction('撤回上一轮消息', $r('app.media.ic_note'), () => {
-          this.plusMenuOpen = false; this.rewindLastMessage();
-        })
-      }
-    }.width(this.isPhone ? '100%' : 280).padding(8).borderRadius(12)
-      .backgroundColor(this.palette().surface).border({ width: 1, color: this.palette().border })
-      .alignSelf(ItemAlign.Start).enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal)
-      .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: 8 }))
-        .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
+    SheetOverlay({ onDismiss: () => { this.plusMenuOpen = false; } }) {
+      Column({ space: 10 }) {
+        Text('对话与资料').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).width('100%')
+        Scroll() {
+          Column({ space: 4 }) {
+            this.attachmentAction('新建对话', $r('app.media.ic_plus'), () => { this.startNewChat(); })
+            this.attachmentAction('引用库内资料', $r('app.media.ic_note'), () => { this.plusMenuOpen = false; this.onToggleContextPanel(); })
+            this.attachmentAction('导入外部文件', $r('app.media.ic_import'), () => { this.plusMenuOpen = false; this.importExternalFile(); })
+            if (this.pinnedNotes.length > 0) {
+              this.attachmentAction('移除全部引用', $r('app.media.ic_close'), () => { this.clearPinnedReferences(); })
+            }
+            this.attachmentAction('图片识别与整理', $r('app.media.ic_sparkle'), () => { this.plusMenuOpen = false; this.onSmartExtract(); })
+            this.attachmentAction('AI 配置', $r('app.media.ic_settings'), () => { this.plusMenuOpen = false; this.onOpenModelSettings(); })
+            if (this.profiles.length > 0) {
+              this.attachmentAction('切换本次模型', $r('app.media.ic_sparkle'), () => { this.plusMenuOpen = false; this.modelMenuOpen = true; })
+            }
+            if (this.messages.length > 0) {
+              Divider().color(this.palette().borderSubtle)
+              this.attachmentAction('撤回上一轮消息', $r('app.media.ic_undo'), () => { this.plusMenuOpen = false; this.rewindLastMessage(); })
+              if (this.loadedSessionId) {
+                this.attachmentAction('删除当前对话', $r('app.media.ic_trash'), () => { this.plusMenuOpen = false; this.onDeleteSession(this.loadedSessionId); })
+              }
+            }
+          }.width('100%')
+        }.width('100%').height(Math.min(430, Math.max(120, this.workspaceHeight - 170))).scrollBar(BarState.Auto)
+        SheetCancelButton({ label: '关闭', onCancel: () => { this.plusMenuOpen = false; } })
+      }.width('100%').enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal)
+    }
   }
 
   build() {
     Stack({ alignContent: Alignment.TopEnd }) {
       Column() {
         Column({ space: 6 }) {
-          Row({ space: 8 }) {
-            Text('墨客').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
-            Row({ space: 6 }) {
-              Text(this.modelLabel).fontSize(12).fontColor(this.palette().inkSecondary).maxLines(1)
-                .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-              Text('▾').fontSize(12).fontColor(this.palette().inkMuted)
-            }.layoutWeight(1).height(44).padding({ left: 10, right: 10 }).borderRadius(8)
-              .backgroundColor(this.palette().surfaceSubtle).enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal)
-              .accessibilityText('切换模型档案').onClick(() => { this.plusMenuOpen = false; this.modelMenuOpen = !this.modelMenuOpen; })
-            Text('+').fontSize(22).fontColor(this.palette().inkPrimary).width(44).height(44).textAlign(TextAlign.Center)
-              .accessibilityText('新对话').enabled(!this.applyingProposal).onClick(() => this.startNewChat())
-            if (!this.isPhone) {
-              Image($r('app.media.ic_note')).width(44).height(44).padding(12).fillColor(this.palette().inkSecondary)
-                .accessibilityText('查看来源与上下文').onClick(() => this.onToggleContextPanel())
-            }
-            Image($r('app.media.ic_menu')).width(44).height(44).padding(12).fillColor(this.palette().inkSecondary)
-              .accessibilityText('模型与工具设置').enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal).onClick(() => this.onOpenModelSettings())
-          }.width('100%')
+          Row({ space: 12 }) {
+            Text('墨客').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
+            Text(this.modelLabel).fontSize(12).fontColor(this.palette().inkMuted).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1).textAlign(TextAlign.End)
+          }.width('100%').height(44)
           if (REMOTE_AI_ENABLED && this.assistantMode === 'remote') {
           Row({ space: 4 }) {
             ForEach(MODE_TABS, (item: AgentModeTabItem) => {
@@ -1933,7 +1758,6 @@ export struct AiWorkspace {
       }
 
       Column({ space: 8 }) {
-        if (this.plusMenuOpen) { this.plusActionMenu() }
         if (this.pinnedNotes.length > 0) {
           Row({ space: 8 }) {
             Scroll() {
@@ -1952,10 +1776,6 @@ export struct AiWorkspace {
                 }, (n: NoteItem) => `cockpit-pin-${n.id}`)
               }
             }.layoutWeight(1).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-            Button('清空').height(44).fontSize(12).type(ButtonType.Normal).backgroundColor(Color.Transparent)
-              .fontColor(this.palette().inkSecondary).enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal).onClick(() => {
-                this.pinnedNotes = []; this.onPinnedNotesChange([]);
-              })
           }.width('100%')
         }
         Column({ space: 4 }) {
@@ -1964,22 +1784,18 @@ export struct AiWorkspace {
             .fontColor(this.palette().inkPrimary).placeholderColor(this.palette().inkMuted)
             .backgroundColor(Color.Transparent).onChange((v: string) => { this.inputText = v; })
           Row({ space: 8 }) {
-            Button(this.plusMenuOpen ? '×' : '+').width(44).height(44).fontSize(22).type(ButtonType.Normal).borderRadius(8)
-              .backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : this.palette().surfaceSubtle)
-              .fontColor(this.palette().inkSecondary).enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal)
-              .accessibilityText('添加资料与对话操作').onClick(() => {
+            IconButton({ icon: this.plusMenuOpen ? $r('app.media.ic_close') : $r('app.media.ic_plus'), label: '添加资料与对话操作',
+              selected: this.plusMenuOpen, available: !this.isLoading && !this.historyBusy && !this.applyingProposal, onAction: () => {
                 this.modelMenuOpen = false;
                 animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => { this.plusMenuOpen = !this.plusMenuOpen; });
-              })
+              } })
             Text(this.pinnedNotes.length > 0 ? `已引用 ${this.pinnedNotes.length} 篇资料` : '资料可选')
               .fontSize(12).fontColor(this.palette().inkMuted).layoutWeight(1)
             if (this.isLoading) {
-              Button('停止').height(44).fontSize(14).type(ButtonType.Normal).borderRadius(8)
-                .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().danger).onClick(() => this.cancelStream())
+              IconButton({ icon: $r('app.media.ic_stop'), label: '停止生成', destructive: true, onAction: () => this.cancelStream() })
             } else {
-              Button('发送 ↑').height(44).fontSize(14).type(ButtonType.Normal).borderRadius(8).fontColor(Color.White)
-                .backgroundColor(this.palette().accent).enabled(this.inputText.trim().length > 0 && !this.historyBusy && !this.applyingProposal)
-                .onClick(() => this.sendMessage())
+              IconButton({ icon: $r('app.media.ic_send'), label: '发送提问', selected: true,
+                available: this.inputText.trim().length > 0 && !this.historyBusy && !this.applyingProposal, onAction: () => this.sendMessage() })
             }
           }.width('100%')
         }.width('100%').padding(10).borderRadius(14).backgroundColor(this.palette().surface)
@@ -1991,14 +1807,18 @@ export struct AiWorkspace {
     .height('100%')
     .backgroundColor(this.palette().canvas)
 
-    // 4. 模型快速切换下拉浮层
+    if (this.plusMenuOpen) { this.plusActionMenu() }
+
+    // Model selection uses the same centered overlay as other secondary menus.
     if (this.modelMenuOpen) {
-      Column().width('100%').height('100%').onClick(() => { this.modelMenuOpen = false; })
-      this.modelSelectMenu()
+      SheetOverlay({ onDismiss: () => { this.modelMenuOpen = false; } }) {
+        Scroll() { this.modelSelectMenu() }.height(this.workspaceHeight * 0.7).width('100%').scrollBar(BarState.Auto)
+      }
     }
   }
   .width('100%')
   .height('100%')
+  .onAreaChange((_old: Area, area: Area) => { this.workspaceHeight = Math.max(240, Number(area.height)); })
 }
 }
 

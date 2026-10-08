@@ -27,6 +27,7 @@ import {
   NAV_FAVORITE,
   NAV_GRAPH,
   NAV_HOME,
+  NAV_SETTINGS,
   NAV_LIBRARY,
   NAV_TODO,
   NAV_TRASH,
@@ -61,8 +62,7 @@ import { ReaderWorkspace } from '../views/reader/ReaderWorkspace';
 import { HuaweiDocWorkspace } from '../views/reader/huawei/HuaweiDocWorkspace';
 import { ContextDrawer, CONTEXT_TAB_OUTLINE } from '../views/context/ContextDrawer';
 import { QuickSearchDialog } from '../views/explore/QuickSearchDialog';
-import { AppearanceSheet } from '../views/settings/AppearanceSheet';
-import { ModelSettingsSheet } from '../views/settings/ModelSettingsSheet';
+import { SettingsWorkspace } from '../views/settings/SettingsWorkspace';
 import { NewProjectSheet } from '../views/layout/sheets/NewProjectSheet';
 import { CreateNoteSheet } from '../views/layout/sheets/CreateNoteSheet';
 import { ProjectMenuSheet } from '../views/layout/sheets/ProjectMenuSheet';
@@ -118,6 +118,10 @@ const EMPTY_STATS: WorkspaceStats = { noteCount: 0, linkCount: 0, unresolvedCoun
 struct Index {
   // ---- 导航与布局 ----
   @State activeNav: string = NAV_HOME;
+  @State settingsSection: string = 'overview';
+  @State settingsBackToken: number = 0;
+  @State aiBackToken: number = 0;
+  private sessionDeleteBusy: boolean = false;
   @State activeSpaceId: string = '';
   @State activeNoteId: string = '';
   @State sidebarCollapsed: boolean = false;
@@ -167,12 +171,10 @@ struct Index {
 
   // ---- 全局浮层 ----
   @State searchVisible: boolean = false;
-  @State settingsVisible: boolean = false;
   @State smartExtractVisible: boolean = false;
   @State smartExtractCloseToken: number = 0;
   @State coverNoteId: string = '';
   @State coverCloseToken: number = 0;
-  @State modelCloseToken: number = 0;
   @State documentBackToken: number = 0;
   @State reviewCards: ReviewCard[] = [];
   @State studyVisible: boolean = false;
@@ -200,6 +202,7 @@ struct Index {
   /** 新建笔记对话框（记随笔） */
   @State createNoteOpen: boolean = false;
   @State noteCreateBusy: boolean = false;
+  private documentImportBusy: boolean = false;
   @State noteCreateError: string = '';
   /** 新建项目对话框 */
   @State createProjectOpen: boolean = false;
@@ -243,17 +246,17 @@ struct Index {
     if (this.studyVisible) { this.studyCloseToken++; return true; }
     if (this.pdfExtractNoteId) { this.pdfExtractCloseToken++; return true; }
     if (this.coverNoteId.length > 0) { this.coverCloseToken++; return true; }
-    if (this.activeSheet === 'model_settings') { this.modelCloseToken++; return true; }
     if (this.activeSheet.length > 0) { this.activeSheet = ''; return true; }
     if (this.createProjectOpen) { this.createProjectOpen = false; return true; }
     if (this.pendingCreate !== null) { if (!this.noteCreateBusy) { this.pendingCreate = null; } return true; }
     if (this.smartExtractVisible) { this.smartExtractCloseToken++; return true; }
-    if (this.settingsVisible) { this.settingsVisible = false; return true; }
     if (this.searchVisible) { this.searchVisible = false; return true; }
     if (this.fullScreenDocOpen) { this.documentBackToken++; return true; }
     if (this.singleColumn && this.contextPanelOpen) { this.contextPanelOpen = false; return true; }
     if (this.singleColumn && !this.sidebarCollapsed) { this.sidebarCollapsed = true; return true; }
     if (this.readingOpen) { this.closeReading(); return true; }
+    if (this.activeNav === NAV_SETTINGS) { this.settingsBackToken++; return true; }
+    if (this.activeNav === NAV_AI) { this.aiBackToken++; return true; }
     if (this.activeNav !== NAV_HOME) { this.activeNav = NAV_HOME; this.activeSpaceId = ''; return true; }
     return false;
   }
@@ -376,12 +379,17 @@ struct Index {
   }
 
   private async handleDeleteSession(sessionId: string): Promise<void> {
+    if (this.sessionDeleteBusy || !this.sessions.some((session: ChatSession) => session.id === sessionId)) { return; }
+    this.sessionDeleteBusy = true;
     try {
+      if (!await this.confirmDestructive('删除这段对话？消息将无法恢复，资料和已创建的待办会保留。')) { return; }
       await this.chatStorage.deleteSession(sessionId);
     } catch (error) {
       console.error(`会话删除失败: ${JSON.stringify(error)}`);
       this.notify('会话删除失败');
       return;
+    } finally {
+      this.sessionDeleteBusy = false;
     }
     this.sessions = this.sessions.filter((s: ChatSession) => s.id !== sessionId);
     if (this.activeSessionId === sessionId) {
@@ -763,11 +771,6 @@ struct Index {
         onMoveNote: (note: NoteItem, category: string) => {
           this.commitMove(note, category);
         }
-      })
-    } else if (this.activeSheet === 'model_settings') {
-      ModelSettingsSheet({
-        closeToken: this.modelCloseToken,
-        onClose: () => this.closeSheet()
       })
     }
   }
@@ -1700,10 +1703,12 @@ struct Index {
    * 通过系统文件选择器导入文档。
    * @param targetCategory 导入后归入的项目名，默认「未分类」
    */
-  private async importDocument(targetCategory: string = '未分类'): Promise<void> {
+  private async importDocument(targetCategory: string = '未分类', example: boolean = false): Promise<NoteItem | null> {
+    if (this.documentImportBusy) { return null; }
+    this.documentImportBusy = true;
     const context: common.UIAbilityContext = this.getAbilityContext();
     try {
-      const result: DocumentTransferResult = await this.storage.importDocument(context);
+      const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context) : await this.storage.importDocument(context);
       if (result.status === 'imported' && result.document !== undefined) {
         const document: MarkdownDocument = result.document;
         const now: Date = new Date();
@@ -1732,13 +1737,17 @@ struct Index {
         this.rebuildSpaces();
         this.refreshGraph();
         this.notify(`已导入 ${document.fileName}`);
+        return note;
       } else if (result.status !== 'cancelled') {
         this.notify(result.message);
       }
     } catch (error) {
       console.error(`文档导入失败: ${JSON.stringify(error)}`);
       this.notify('文档导入失败');
+    } finally {
+      this.documentImportBusy = false;
     }
+    return null;
   }
 
   private handleSaved(note: NoteItem, content: string, kind: ReaderSaveKind = 'markdown'): Promise<void> {
@@ -1763,13 +1772,28 @@ struct Index {
     return `${month}月${day}日 ${hour}:${minute}`;
   }
 
+  private openSettings(section: string = 'overview'): void {
+    if (this.saveState === SAVE_SAVING || this.saveState === SAVE_FAILED) {
+      this.notify('请先完成或重试文档保存'); return;
+    }
+    this.readingOpen = false; this.fullScreenDocOpen = false; this.contextPanelOpen = false;
+    this.activeSheet = ''; this.settingsSection = section;
+    this.activeNav = NAV_SETTINGS; if (this.singleColumn) { this.sidebarCollapsed = true; }
+  }
+
   // ==================================================================
   // 视图装配
   // ==================================================================
 
   @Builder
   workspaceContent() {
-    if (this.readingOpen) {
+    if (this.activeNav === NAV_SETTINGS) {
+      SettingsWorkspace({ initialSection: this.settingsSection, noteCount: this.notes.length, projectCount: this.spaces.length,
+        backRequestToken: this.settingsBackToken, onExit: () => { this.activeNav = NAV_HOME; },
+        onOpenLibrary: () => { this.activeNav = NAV_LIBRARY; },
+        onImportExample: () => this.importDocument('示例资料', true),
+        onOpenBackup: () => { this.backupVisible = true; }, onOpenPrivacy: () => { this.privacyVisible = true; } })
+    } else if (this.readingOpen) {
       ReaderWorkspace({
         note: this.readingNote,
         annotationPaneOpen: this.annotationPaneOpen,
@@ -1912,6 +1936,10 @@ struct Index {
         todos: this.todos,
         stats: this.stats,
         activeSessionId: this.activeSessionId,
+        onImportExternal: () => this.importDocument('外部参考'),
+        backRequestToken: this.aiBackToken,
+        onNavigateBack: () => { this.activeNav = NAV_HOME; },
+        onDeleteSession: (id: string) => { this.handleDeleteSession(id); },
         currentNote: this.activeNoteId.length > 0
           ? this.notes.find((note: NoteItem) => note.id === this.activeNoteId) ?? null
           : null,
@@ -1938,7 +1966,7 @@ struct Index {
           this.aiModelLabel = modelLabel;
         },
         onOpenModelSettings: () => {
-          this.activeSheet = 'model_settings';
+          this.openSettings('ai');
         },
         onCreateTodo: (dateKey: string, title: string) => this.handleAiCreateTodo(dateKey, title),
         onAddTagToNote: (identifier: string, tags: string) => this.handleAiAddTag(identifier, tags),
@@ -2010,7 +2038,7 @@ struct Index {
         },
         onPreviewSource: (c: ChatCitation) => this.openStudySource(c.noteId, c.pageNumber, c.startLine),
         onOpenModelSettings: () => {
-          this.activeSheet = 'model_settings';
+          this.openSettings('ai');
         },
         onClose: () => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
@@ -2172,9 +2200,6 @@ struct Index {
         onSelectSession: (session: ChatSession) => {
           this.handleSelectSession(session);
         },
-        onNewSession: () => {
-          this.handleNewSession();
-        },
         onDeleteSession: (sessionId: string) => {
           this.handleDeleteSession(sessionId);
         },
@@ -2192,9 +2217,7 @@ struct Index {
           this.applyTags(note, tags);
         },
         onOpenSettings: () => {
-          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-            this.settingsVisible = true;
-          });
+          this.openSettings('overview');
         }
       })
 
@@ -2202,6 +2225,7 @@ struct Index {
       if (this.fullScreenDocOpen) {
         HuaweiDocWorkspace({
           note: this.fullScreenDocNote,
+          onOpenModelSettings: () => this.openSettings('ai'),
           sourcePage: this.sourcePage,
           sourceJumpToken: this.sourceJumpToken,
           onExtractPdfText: (page: number) => { this.pdfExtractNoteId = this.fullScreenDocNote.id; this.pdfExtractPage = page; },
@@ -2292,21 +2316,6 @@ struct Index {
         })
       }
 
-      if (this.settingsVisible) {
-        AppearanceSheet({
-          onOpenGuide: () => { this.settingsVisible = false; this.activeSheet = 'usage_guide'; },
-          onOpenPrivacy: () => { this.settingsVisible = false; this.privacyVisible = true; },
-          onOpenBackup: () => {
-            if (this.readingOpen || this.fullScreenDocOpen) { this.notify('请先保存并退出当前阅读，再备份学习资料'); return; }
-            this.settingsVisible = false; this.backupVisible = true;
-          },
-          onClose: () => {
-            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-              this.settingsVisible = false;
-            });
-          }
-        })
-      }
 
       if (this.smartExtractVisible) {
         SmartExtractSheet({
@@ -2316,7 +2325,7 @@ struct Index {
             });
           },
           closeToken: this.smartExtractCloseToken,
-          onOpenModelSettings: () => { this.activeSheet = 'model_settings'; },
+          onOpenModelSettings: () => { this.smartExtractVisible = false; this.openSettings('ai'); },
           onCommit: (content: SmartContent, selectedTasks: SmartTask[]) => {
             return this.handleCommitSmartExtract(content, selectedTasks);
           }

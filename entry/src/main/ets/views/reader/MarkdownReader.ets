@@ -16,11 +16,12 @@ import { NoteStorageService } from '../../services/NoteStorageService';
 import { ReaderSaveKind } from '../../common/types/ReaderSaveKind';
 import { TimeFormat } from '../../common/utils/TimeFormat';
 import { SAVE_FAILED, SAVE_IDLE, SAVE_SAVING } from '../../common/constants/WorkspaceConstants';
-import { EditorToolbar } from './EditorToolbar';
 import { NoteCoverVisual } from './NoteCoverVisual';
 import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
 import { SystemShareService } from '../../services/SystemShareService';
+import { AssistantText } from '../common/AssistantText';
+import { AssistantTextParser, AssistantBlock, AssistantSpan } from '../../services/ai/AssistantTextParser';
 
 /** 输入停止后延迟落盘的毫秒数 */
 const AUTOSAVE_DELAY_MS: number = 800;
@@ -67,6 +68,7 @@ interface MarkdownBlock {
   line: number;
   /** 仅 task 块使用：勾选框是否已勾选 */
   checked?: boolean;
+  marker?: string;
 }
 
 /** 待办行解析结果 */
@@ -97,6 +99,9 @@ export struct MarkdownReader {
   @State blocks: MarkdownBlock[] = [];
   @State isEditing: boolean = false;
   @State saveState: string = SAVE_IDLE;
+  @State toolbarExpanded: boolean = true;
+  @State editorFocused: boolean = false;
+  private scrollTravel: number = 0;
   @State displayUpdateTime: string = '';
   /** 格式工具栏是否可见（键盘弹出时显示，收起时隐藏） */
   @State isFormatBarVisible: boolean = false;
@@ -204,6 +209,7 @@ export struct MarkdownReader {
     this.title = this.note.title;
     this.displayUpdateTime = this.note.updateTime;
     this.isDirty = false;
+    this.toolbarExpanded = true; this.editorFocused = false; this.scrollTravel = 0;
     try {
       const document: MarkdownDocument = await this.storage.read(context, this.note);
       this.applyContent(document.content);
@@ -212,8 +218,8 @@ export struct MarkdownReader {
       console.error(`研读正文读取失败: ${JSON.stringify(error)}`);
       this.applyContent(this.note.contentDetail);
     }
-    // Newly created blank notes open directly into editing.
-    this.isEditing = this.content.trim() === `# ${this.note.title}` || this.content.trim().length === 0;
+    // Reading is the default even for a newly created blank document.
+    this.isEditing = false;
   }
 
   /** 复制笔记元数据，用于把「正文归属」与可变的 @Prop note 彻底解耦 */
@@ -331,89 +337,16 @@ export struct MarkdownReader {
   // ------------------------------------------------------------------
 
   private parseBlocks(source: string): MarkdownBlock[] {
-    const result: MarkdownBlock[] = [];
-    const lines: string[] = source.split('\n');
-    let inCode: boolean = false;
-    let codeLines: string[] = [];
-    let codeStart: number = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line: string = lines[i];
-      const trimmed: string = line.trim();
-
-      if (trimmed.startsWith('```')) {
-        if (inCode) {
-          result.push({ kind: 'code', level: 0, text: codeLines.join('\n'), line: codeStart });
-          codeLines = [];
-          inCode = false;
-        } else {
-          inCode = true;
-          codeStart = i;
-        }
-        continue;
-      }
-      if (inCode) {
-        codeLines.push(line);
-        continue;
-      }
-      if (trimmed.length === 0) {
-        result.push({ kind: 'gap', level: 0, text: '', line: i });
-        continue;
-      }
-      if (trimmed === '---' || trimmed === '***') {
-        result.push({ kind: 'divider', level: 0, text: '', line: i });
-        continue;
-      }
-      if (trimmed.startsWith('### ')) {
-        result.push({ kind: 'heading', level: 3, text: trimmed.substring(4), line: i });
-        continue;
-      }
-      if (trimmed.startsWith('## ')) {
-        result.push({ kind: 'heading', level: 2, text: trimmed.substring(3), line: i });
-        continue;
-      }
-      if (trimmed.startsWith('# ')) {
-        result.push({ kind: 'heading', level: 1, text: trimmed.substring(2), line: i });
-        continue;
-      }
-      if (trimmed.startsWith('> ')) {
-        result.push({ kind: 'quote', level: 0, text: trimmed.substring(2), line: i });
-        continue;
-      }
-      // 待办项必须在 bullet 之前判断：`- [ ]` 也以 `- ` 开头
-      const task: TaskParse | null = this.parseTask(trimmed);
-      if (task !== null) {
-        result.push({ kind: 'task', level: 0, text: task.text, line: i, checked: task.checked });
-        continue;
-      }
-      if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-        result.push({ kind: 'bullet', level: 0, text: trimmed.substring(2), line: i });
-        continue;
-      }
-      const orderedIndex: number = this.orderedMarkerLength(trimmed);
-      if (orderedIndex > 0) {
-        result.push({ kind: 'ordered', level: 0, text: trimmed.substring(orderedIndex), line: i });
-        continue;
-      }
-      result.push({ kind: 'paragraph', level: 0, text: trimmed, line: i });
-    }
-
-    if (inCode && codeLines.length > 0) {
-      result.push({ kind: 'code', level: 0, text: codeLines.join('\n'), line: codeStart });
-    }
-    return result;
-  }
-
-  /** 返回 "1. " 这类有序列表标记的长度，非有序列表返回 0 */
-  private orderedMarkerLength(line: string): number {
-    let index: number = 0;
-    while (index < line.length && line.charAt(index) >= '0' && line.charAt(index) <= '9') {
-      index++;
-    }
-    if (index > 0 && index + 1 < line.length && line.charAt(index) === '.' && line.charAt(index + 1) === ' ') {
-      return index + 2;
-    }
-    return 0;
+    const lines = source.replace(/\r\n/g, '\n').split('\n');
+    return AssistantTextParser.parse(source).map((block: AssistantBlock): MarkdownBlock => {
+      const task = block.kind === 'list' ? this.parseTask(lines[block.line].trim()) : null;
+      let kind = block.kind;
+      if (kind === 'list') { kind = task ? 'task' : /^\d/.test(block.marker) ? 'ordered' : 'bullet'; }
+      const rich = kind === 'table' || kind === 'math' || kind === 'code';
+      return { kind: kind, level: block.level, line: block.line, marker: block.marker,
+        text: task ? task.text : rich ? lines.slice(block.line, block.endLine + 1).join('\n') : block.text,
+        checked: task ? task.checked : undefined };
+    });
   }
 
   /**
@@ -441,41 +374,6 @@ export struct MarkdownReader {
     const text: string = rest.substring(3).replace(/^\s+/, '');
     const result: TaskParse = { checked: checked, text: text };
     return result;
-  }
-
-  /** 阅读模式下点击待办：翻转对应行的勾选标记，重解析并触发落盘 */
-  private toggleTask(block: MarkdownBlock): void {
-    if (block.line < 0) {
-      return;
-    }
-    const lines: string[] = this.content.split('\n');
-    if (block.line >= lines.length) {
-      return;
-    }
-    const original: string = lines[block.line];
-    const flipped: string = this.flipCheckbox(original);
-    if (flipped === original) {
-      return;
-    }
-    lines[block.line] = flipped;
-    this.content = lines.join('\n');
-    this.blocks = this.parseBlocks(this.content);
-    this.onOutlineUpdated(this.collectOutline(this.blocks));
-    this.scheduleSave();
-  }
-
-  /** 翻转一行里首个勾选标记：`[ ]`→`[x]`，`[x]`/`[X]`→`[ ]`；无标记则原样返回 */
-  private flipCheckbox(line: string): string {
-    if (line.includes('[ ]')) {
-      return line.replace('[ ]', '[x]');
-    }
-    if (line.includes('[x]')) {
-      return line.replace('[x]', '[ ]');
-    }
-    if (line.includes('[X]')) {
-      return line.replace('[X]', '[ ]');
-    }
-    return line;
   }
 
   // ------------------------------------------------------------------
@@ -734,6 +632,7 @@ export struct MarkdownReader {
 
   /** 进入编辑模式并弹出键盘 */
   private enterEdit(): void {
+    this.toolbarExpanded = true;
     animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
       this.isEditing = true;
     });
@@ -741,11 +640,22 @@ export struct MarkdownReader {
 
   /** 退出编辑模式：收起格式栏 + 落盘 */
   private exitEdit(): void {
+    this.editorFocused = false;
     animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
       this.isEditing = false;
       this.isFormatBarVisible = false;
     });
     this.flushSave();
+  }
+
+  private handleReadingScroll(offset: number): void {
+    if (this.isEditing || this.editorFocused) { return; }
+    this.scrollTravel = offset > 0 ? this.scrollTravel + offset : 0;
+    if (this.scrollTravel >= 24) { this.toolbarExpanded = false; this.scrollTravel = 0; }
+  }
+
+  private handleBlankTap(): void {
+    if (!this.editorFocused) { this.toolbarExpanded = true; }
   }
 
   // ------------------------------------------------------------------
@@ -756,7 +666,14 @@ export struct MarkdownReader {
   richLine(text: string, fontSize: number, weight: FontWeight, color: string) {
     Flex({ wrap: FlexWrap.Wrap }) {
       ForEach(this.splitSegments(text), (segment: TextSegment) => {
-        Text(segment.text)
+        Text() {
+          ForEach(AssistantTextParser.spans(segment.text), (span: AssistantSpan) => {
+            Span(span.text).fontWeight(span.style === 'bold' ? FontWeight.Bold : weight)
+              .fontStyle(span.style === 'italic' ? FontStyle.Italic : FontStyle.Normal)
+              .fontFamily(span.style === 'code' ? 'monospace' : 'sans-serif')
+              .decoration({ type: span.style === 'strike' ? TextDecorationType.LineThrough : TextDecorationType.None })
+          })
+        }
           .fontSize(fontSize)
           .fontWeight(weight)
           .fontColor(segment.kind === 'link' ? this.palette().link
@@ -764,7 +681,7 @@ export struct MarkdownReader {
           .decoration(segment.kind === 'link'
             ? { type: TextDecorationType.Underline, color: this.palette().link, style: TextDecorationStyle.DOTTED }
             : { type: TextDecorationType.None })
-          .hoverEffect(segment.kind === 'link' ? HoverEffect.Highlight : HoverEffect.None)
+          .copyOption(CopyOptions.LocalDevice).hoverEffect(segment.kind === 'link' ? HoverEffect.Highlight : HoverEffect.None)
           .onClick(() => {
             if (segment.kind === 'link') {
               const cleaned = segment.text.replace(/^\[\[/, '').replace(/\]\]$/, '');
@@ -805,14 +722,11 @@ export struct MarkdownReader {
         Text(block.checked === true ? '☑' : '☐')
           .fontSize(TypographyTokens.BODY_LARGE)
           .fontColor(block.checked === true ? this.palette().accent : this.palette().inkMuted)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => this.toggleTask(block))
         Column() {
           this.richLine(block.text, TypographyTokens.BODY_LARGE, FontWeight.Normal,
             block.checked === true ? this.palette().inkMuted : this.palette().inkPrimary)
         }
         .layoutWeight(1)
-        .onClick(() => this.toggleTask(block))
       }
       .width('100%')
       .alignItems(VerticalAlign.Top)
@@ -834,7 +748,7 @@ export struct MarkdownReader {
       .margin({ top: 2, bottom: 2 })
     } else if (block.kind === 'ordered') {
       Row({ space: 8 }) {
-        Text('·')
+        Text(block.marker || '1.')
           .fontSize(TypographyTokens.BODY_REGULAR)
           .fontColor(this.palette().inkMuted)
         Column() {
@@ -846,15 +760,8 @@ export struct MarkdownReader {
       .alignItems(VerticalAlign.Top)
       .padding({ left: 6 })
       .margin({ top: 2, bottom: 2 })
-    } else if (block.kind === 'code') {
-      Text(block.text)
-        .fontSize(TypographyTokens.CAPTION)
-        .fontColor(this.palette().inkSecondary)
-        .width('100%')
-        .padding(10)
-        .borderRadius(6)
-        .backgroundColor(this.palette().surfaceSubtle)
-        .margin({ top: 6, bottom: 6 })
+    } else if (block.kind === 'table' || block.kind === 'math' || block.kind === 'code') {
+      AssistantText({ text: block.text })
     } else if (block.kind === 'divider') {
       Divider()
         .strokeWidth(1)
@@ -927,8 +834,11 @@ export struct MarkdownReader {
   @Builder
   formatBarButton(item: FormatAction) {
     Button({ type: ButtonType.Normal }) {
+      Column({ space: 3 }) {
       AppIcon({ source: this.formatIcon(item.action), tint: this.palette().inkSecondary })
-    }.width(44).height(44).padding(0).borderRadius(10).backgroundColor(Color.Transparent)
+      Text(item.tip).fontSize(10).fontColor(this.palette().inkSecondary).maxLines(1)
+      }
+    }.width(56).height(56).padding(0).borderRadius(10).backgroundColor(Color.Transparent)
       .accessibilityText(item.tip).bindTips(item.tip).onClick(() => this.handleFormatAction(item.action))
   }
 
@@ -946,7 +856,7 @@ export struct MarkdownReader {
     .scrollable(ScrollDirection.Horizontal)
     .scrollBar(BarState.Off)
     .width('100%')
-    .height(52)
+    .height(64)
     .backgroundColor(this.palette().surface)
     .border({ width: { top: 1 }, color: { top: this.palette().borderSubtle } })
     .expandSafeArea([SafeAreaType.KEYBOARD])
@@ -964,16 +874,16 @@ export struct MarkdownReader {
   editorToolbar() {
     Row({ space: 8 }) {
       IconButton({ icon: this.isEditing ? $r('app.media.ic_check') : $r('app.media.ic_pen'),
-        label: this.isEditing ? '完成编辑' : '编辑笔记', selected: this.isEditing,
+        label: this.isEditing ? '完成编辑' : '编辑笔记', caption: this.isEditing ? '完成' : '编辑', selected: this.isEditing,
         onAction: () => { if (this.isEditing) { this.exitEdit(); } else { this.enterEdit(); } } })
       if (this.isEditing) {
-        IconButton({ icon: $r('app.media.ic_link'), label: '插入双向链接', onAction: () => this.handleFormatAction('link') })
-        IconButton({ icon: $r('app.media.ic_check'), label: '插入待办', onAction: () => this.handleFormatAction('task') })
+        IconButton({ icon: $r('app.media.ic_link'), label: '插入双向链接', caption: '双链', onAction: () => this.handleFormatAction('link') })
+        IconButton({ icon: $r('app.media.ic_check'), label: '插入待办', caption: '待办', onAction: () => this.handleFormatAction('task') })
       } else {
-        IconButton({ icon: $r('app.media.ic_cover'), label: '更换或移除封面', onAction: () => this.onChooseCover() })
+        IconButton({ icon: $r('app.media.ic_cover'), label: '更换或移除封面', caption: '封面', onAction: () => this.onChooseCover() })
       }
       Blank()
-      IconButton({ icon: $r('app.media.ic_export'), label: '通过系统面板分享当前文字', available: !this.shareBusy,
+      IconButton({ icon: $r('app.media.ic_export'), label: '通过系统面板分享当前文字', caption: '分享', available: !this.shareBusy,
         onAction: () => this.shareText() })
       Text(this.saveState).fontSize(10).fontColor(this.saveState === SAVE_FAILED ? this.palette().danger : this.palette().inkMuted)
     }.width('100%').margin({ bottom: 8 }).onClick(() => {})
@@ -984,9 +894,18 @@ export struct MarkdownReader {
     Column() {
       // ---- 固定头部：工具栏 + 大标题 + 元数据 ----
       Column() {
-        this.editorToolbar()
+        if (this.toolbarExpanded) { this.editorToolbar() }
+        else {
+          Button({ type: ButtonType.Normal }) {
+            Row({ space: 8 }) {
+              AppIcon({ source: $r('app.media.ic_chevron_down'), iconSize: 14, tint: this.palette().inkSecondary })
+              Text(this.title || '无标题').fontSize(12).maxLines(1).fontColor(this.palette().inkSecondary)
+            }
+          }.height(28).padding(0).backgroundColor(Color.Transparent).enabled(!this.editorFocused)
+            .accessibilityText('展开文档工具栏').onClick(() => this.handleBlankTap())
+        }
 
-        if (!this.isEditing && this.note.coverUrl && this.note.coverUrl.length > 0) {
+        if (this.toolbarExpanded && !this.isEditing && this.note.coverUrl && this.note.coverUrl.length > 0) {
           NoteCoverVisual({ source: this.note.coverUrl }).width('100%').height(this.isPhone ? 104 : 140)
             .borderRadius(12).clip(true).margin({ bottom: 16 }).onClick(() => {})
         }
@@ -1005,7 +924,8 @@ export struct MarkdownReader {
               this.title = value;
               this.scheduleSave();
             })
-        } else {
+            .onFocus(() => { this.editorFocused = true; }).onBlur(() => { this.editorFocused = false; })
+        } else if (this.toolbarExpanded) {
           Text(this.title.length === 0 ? '无标题' : this.title)
             .fontSize(TypographyTokens.TITLE_HERO)
             .fontWeight(FontWeight.Bold)
@@ -1015,12 +935,12 @@ export struct MarkdownReader {
             .onClick(() => this.enterEdit())
         }
 
-        this.metaRow()
+        if (this.toolbarExpanded) { this.metaRow() }
       }
       .width('100%')
       .constraintSize({ maxWidth: LayoutTokens.CONTENT_MAX_WIDTH })
       .alignItems(HorizontalAlign.Start)
-      .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 20 })
+      .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: this.toolbarExpanded ? 20 : 2 })
       .onClick(() => {
         // 头部区域点击消费，防止触发根节点退出编辑
       })
@@ -1047,8 +967,10 @@ export struct MarkdownReader {
               this.selEnd = end;
             })
             .onFocus(() => {
+              this.editorFocused = true;
               this.isFormatBarVisible = true;
             })
+            .onBlur(() => { this.editorFocused = false; })
             // 消费输入框点击，避免冒泡触发根节点退出编辑
             .onClick(() => {})
         }
@@ -1079,6 +1001,7 @@ export struct MarkdownReader {
         .layoutWeight(1)
         .width('100%')
         .scrollBar(BarState.Auto)
+        .onScroll((offset: number) => this.handleReadingScroll(offset))
         .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
       }
       }
@@ -1087,8 +1010,9 @@ export struct MarkdownReader {
       .alignItems(HorizontalAlign.Center)
       .backgroundColor(this.palette().canvas)
       .onClick(() => {
+        this.handleBlankTap();
         // 点击空白处退出编辑模式（TextArea/按钮等交互元素会消费自身点击，不会冒泡至此）
-        if (this.isEditing) {
+        if (this.isEditing && !this.editorFocused) {
           this.exitEdit();
         }
       })

@@ -10,6 +10,7 @@ export struct IconButton {
   @Prop selected: boolean = false;
   @Prop destructive: boolean = false;
   @Prop available: boolean = true;
+  @Prop caption: string = '';
   onAction: () => void = () => {};
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
 
@@ -17,11 +18,14 @@ export struct IconButton {
 
   build() {
     Button({ type: ButtonType.Normal }) {
+      Column({ space: 3 }) {
       AppIcon({ source: this.icon, tint: this.destructive ? this.palette().danger :
         (this.selected ? this.palette().accent : this.palette().inkSecondary) })
+      if (this.caption) { Text(this.caption).fontSize(10).maxLines(1).fontColor(this.palette().inkSecondary) }
+      }
     }
-    .width(LayoutTokens.MIN_TOUCH_TARGET)
-    .height(LayoutTokens.MIN_TOUCH_TARGET)
+    .width(this.caption ? 56 : LayoutTokens.MIN_TOUCH_TARGET)
+    .height(this.caption ? 56 : LayoutTokens.MIN_TOUCH_TARGET)
     .padding(0)
     .borderRadius(12)
     .backgroundColor(this.selected ? this.palette().accentSoft : Color.Transparent)

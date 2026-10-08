@@ -29,26 +29,24 @@ export struct SheetOverlay {
       Column({ space: 8 }) {
         this.body()
       }
-      .width('94%')
-      .padding(10)
-      .margin({ bottom: this.isPhone ? 24 : 10 })
-      .borderRadius(12)
+      .width('92%')
+      .constraintSize({ maxWidth: 440, maxHeight: '90%' })
+      .padding(18)
+      .borderRadius(20)
       .backgroundColor(ThemeHelper.paletteOfDark(this.isDarkMode).surface)
       .shadow({ radius: 16, color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.14)', offsetY: 4 })
       .border({
         width: 1,
         color: this.isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
       })
-      .onClick(() => {
-        // 消费卡片内的点击，避免冒泡到遮罩导致弹层关闭
-      })
-      .transition(TransitionEffect.move(TransitionEdge.BOTTOM)
-        .combine(TransitionEffect.OPACITY)
+        .onClick(() => {})
+      .transition(TransitionEffect.OPACITY
         .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }))
     }
     .width('100%')
     .height('100%')
-    .justifyContent(FlexAlign.End)
+    .justifyContent(FlexAlign.Center)
+    .alignItems(HorizontalAlign.Center)
     .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.32)' : 'rgba(0,0,0,0.12)')
     .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }))
     .onClick(() => this.onDismiss())
@@ -121,6 +119,7 @@ export struct SheetCancelButton {
 @Component
 export struct DestructiveConfirm {
   @Prop triggerLabel: string = '';
+  @Prop icon: Resource = $r('app.media.ic_trash');
   @Prop question: string = '';
   @Prop consequence: string = '';
   onConfirm: () => void = () => {};
@@ -185,6 +184,7 @@ export struct DestructiveConfirm {
       } else {
         SheetActionRow({
           label: this.triggerLabel,
+          icon: this.icon,
           isDestructive: true,
           onAction: () => {
             this.isArmed = true;

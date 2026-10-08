@@ -47,7 +47,7 @@ export class PdfDocumentService {
     }
 
     const sanitizedName = targetName.replace(/[\\/:*?"<>|]/g, '_');
-    const destPath: string = `${docDir}/${Date.now()}_${sanitizedName}`;
+    const destPath: string = `${docDir}/${Date.now()}_${Math.floor(Math.random() * 1000000)}_${sanitizedName}`;
 
     const srcFile = fs.openSync(srcUri, fs.OpenMode.READ_ONLY);
     try {
@@ -62,8 +62,24 @@ export class PdfDocumentService {
   }
 
   /**
-   * 解析 PDF 真实页数与基本元信息
+   * 显式导入内置阅读测试文件，不在首次启动时创建笔记
    */
+  async saveBundledExample(context: Context): Promise<string> {
+    const data = await context.resourceManager.getRawFileContent('example-course.pdf');
+    if (data.length < 5 || data[0] !== 37 || data[1] !== 80 || data[2] !== 68 || data[3] !== 70) { throw new Error('测试 PDF 资源不可读'); }
+    const directory = `${context.filesDir}/documents`;
+    if (!fs.accessSync(directory)) { fs.mkdirSync(directory); }
+    const path = `${directory}/${Date.now()}_${Math.floor(Math.random() * 1000000)}_example-course.pdf`;
+    const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    try {
+      const written = fs.writeSync(file.fd, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+      if (written !== data.byteLength) { throw new Error('PDF 写入不完整'); }
+    }
+    catch { try { fs.unlinkSync(path); } catch {} throw new Error('测试 PDF 保存失败，请检查存储空间'); }
+    finally { fs.closeSync(file); }
+    return path;
+  }
+
   async getPdfInfo(filePath: string): Promise<PdfDocumentInfo> {
     let size = 0;
     try {

@@ -160,31 +160,8 @@ export class NoteStorageService {
       }
 
       if (/\.pdf$/i.test(fileName)) {
-        const pdf = PdfDocumentService.getInstance();
-        const savedPath = await pdf.savePdfToSandbox(context, uri, fileName);
-        let count: number = 0;
-        try {
-          count = (await pdf.getPdfInfo(savedPath)).pageCount;
-        } catch (error) {
-          try { await fileIo.unlink(savedPath); } catch { /* 不残留失败导入文件 */ }
-          return { status: 'failed', message: error instanceof Error ? error.message : 'PDF 读取失败' };
-        }
-        const note: NoteItem = {
-          id: id, title: fileName.replace(/\.pdf$/i, ''), category: '未分类', type: 'PDF',
-          previewText: 'PDF · ' + count + ' 页', tag: 'PDF', tagColor: '#E11D48', updateTime: '刚刚',
-          contentDetail: '# ' + fileName + '\n\n来源：导入的 PDF，共 ' + count + ' 页。',
-          sourceUri: savedPath, sourceType: 'pdf', pageCount: count
-        };
-        try {
-          await this.ensureInitialized(context);
-          await this.writeMarkdown(note.id, note.contentDetail);
-        } catch (error) {
-          try { await fileIo.unlink(savedPath); } catch { /* 无引用的导入副本清理 */ }
-          throw new Error('PDF 笔记保存失败，请检查存储空间或重试');
-        }
-        return { status: 'imported', document: this.documentFor(context, note, note.contentDetail),
-          fileName: fileName, noteType: 'PDF', sourceUri: savedPath, pageCount: count,
-          message: '已导入 PDF「' + fileName + '」' };
+        const savedPath = await PdfDocumentService.getInstance().savePdfToSandbox(context, uri, fileName);
+        return await this.importPdfCopy(context, savedPath, fileName, id);
       }
       if (/\.(docx|doc)$/i.test(fileName)) {
         return { status: 'unsupported', fileName: fileName,
@@ -201,6 +178,43 @@ export class NoteStorageService {
       return { status: 'failed', message: '文件导入失败，请检查文件权限或重试' };
     }
   }
+
+  /** Imports a real bundled PDF only after an explicit user action. */
+  async importExamplePdf(context: Context): Promise<DocumentTransferResult> {
+    try {
+      const path = await PdfDocumentService.getInstance().saveBundledExample(context);
+      return await this.importPdfCopy(context, path, '墨语阅读测试.pdf', `example_${Date.now()}_${Math.floor(Math.random() * 1000000)}`);
+    } catch (error) {
+      return { status: 'failed', message: error instanceof Error ? error.message : '测试 PDF 导入失败' };
+    }
+  }
+
+  private async importPdfCopy(context: Context, savedPath: string, fileName: string, id: string): Promise<DocumentTransferResult> {
+    let count: number = 0;
+    try {
+      count = (await PdfDocumentService.getInstance().getPdfInfo(savedPath)).pageCount;
+    } catch (error) {
+      try { await fileIo.unlink(savedPath); } catch { /* 不残留失败导入文件 */ }
+      return { status: 'failed', message: error instanceof Error ? error.message : 'PDF 读取失败' };
+    }
+    const note: NoteItem = {
+      id: id, title: fileName.replace(/\.pdf$/i, ''), category: '未分类', type: 'PDF',
+      previewText: 'PDF · ' + count + ' 页', tag: 'PDF', tagColor: '#E11D48', updateTime: '刚刚',
+      contentDetail: '# ' + fileName + '\n\n来源：导入的 PDF，共 ' + count + ' 页。',
+      sourceUri: savedPath, sourceType: 'pdf', pageCount: count
+    };
+    try {
+      await this.ensureInitialized(context);
+      await this.writeMarkdown(note.id, note.contentDetail);
+    } catch (error) {
+      try { await fileIo.unlink(savedPath); } catch { /* 无引用的导入副本清理 */ }
+      throw new Error('PDF 笔记保存失败，请检查存储空间或重试');
+    }
+    return { status: 'imported', document: this.documentFor(context, note, note.contentDetail),
+      fileName: fileName, noteType: 'PDF', sourceUri: savedPath, pageCount: count,
+      message: '已导入 PDF「' + fileName + '」' };
+  }
+
 
   /**
    * 将 Markdown/TXT 导出到用户选择的位置。调用方可将结果直接显示给用户。

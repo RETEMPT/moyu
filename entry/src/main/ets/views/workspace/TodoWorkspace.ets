@@ -12,7 +12,9 @@ import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { CalendarCell, DayNote, TodoItem } from '../../common/types/TodoItem';
 import { CalendarUtil, WEEK_LABELS } from '../../common/utils/CalendarUtil';
+import { CalendarInfo } from '../../common/utils/CalendarInfo';
 import { TimeFormat } from '../../common/utils/TimeFormat';
+import { IconButton } from '../common/IconButton';
 import { TodoEditDialog } from './TodoEditDialog';
 
 /** 备忘输入停止后延迟回写的毫秒数 */
@@ -251,7 +253,14 @@ export struct TodoWorkspace {
           .fontSize(TypographyTokens.BODY_REGULAR)
           .fontWeight(cell.isToday ? FontWeight.Bold : FontWeight.Normal)
           .fontColor(cell.isToday ? this.palette().accent : this.palette().inkPrimary)
+        Text(CalendarInfo.forDate(cell.dateKey).festival || CalendarInfo.forDate(cell.dateKey).lunar)
+          .fontSize(10).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontColor(CalendarInfo.forDate(cell.dateKey).festival ? this.palette().accent : this.palette().inkMuted)
         Row({ space: 3 }) {
+          if (CalendarInfo.forDate(cell.dateKey).schedule) {
+            Text(CalendarInfo.forDate(cell.dateKey).schedule).fontSize(9)
+              .fontColor(CalendarInfo.forDate(cell.dateKey).schedule === '休' ? this.palette().danger : this.palette().success)
+          }
           if (this.pendingCount(cell.dateKey) > 0) {
             Text('●').fontSize(8).fontColor(this.palette().danger)
           }
@@ -259,10 +268,10 @@ export struct TodoWorkspace {
             Text('●').fontSize(8).fontColor(this.palette().success)
           }
         }
-        .height(8)
+        .height(12)
       }
       .width('100%')
-      .height(50)
+      .height(this.isPhone ? 60 : 68)
       .justifyContent(FlexAlign.Center)
       .borderRadius(8)
       .backgroundColor(cell.dateKey === this.selectedDate ? this.palette().activeBg : Color.Transparent)
@@ -271,9 +280,10 @@ export struct TodoWorkspace {
         color: cell.dateKey === this.selectedDate ? this.palette().accent : Color.Transparent
       })
       .hoverEffect(HoverEffect.Highlight)
+      .accessibilityText(`${cell.dateKey} ${CalendarInfo.forDate(cell.dateKey).lunarLong} ${CalendarInfo.forDate(cell.dateKey).festival} ${CalendarInfo.forDate(cell.dateKey).schedule === '休' ? '放假' : CalendarInfo.forDate(cell.dateKey).schedule === '班' ? '调休上班' : ''}`)
       .onClick(() => this.selectDate(cell.dateKey))
     } else {
-      Column().width('100%').height(50)
+      Column().width('100%').height(this.isPhone ? 60 : 68)
     }
   }
 
@@ -290,7 +300,7 @@ export struct TodoWorkspace {
     .rowsGap(4)
     .columnsGap(4)
     .width('100%')
-    .height(this.gridRows() * 54)
+    .height(this.gridRows() * (this.isPhone ? 64 : 72))
   }
 
   @Builder
@@ -372,6 +382,9 @@ export struct TodoWorkspace {
       }
       .width('100%')
 
+      Text(`${CalendarInfo.forDate(this.selectedDate).lunarLong} ${CalendarInfo.forDate(this.selectedDate).festival} ${CalendarInfo.forDate(this.selectedDate).schedule === '休' ? '放假' : CalendarInfo.forDate(this.selectedDate).schedule === '班' ? '调休上班' : ''}`.trim())
+        .fontSize(12).fontColor(this.palette().inkSecondary).width('100%')
+
       // ---- 本日备忘（可编辑文本 / 最后编辑文本）----
       Column({ space: 6 }) {
         Row() {
@@ -441,6 +454,7 @@ export struct TodoWorkspace {
 
   build() {
     Stack() {
+      Scroll() {
       Column() {
         // ---- 标题 ----
         Row({ space: 8 }) {
@@ -457,61 +471,36 @@ export struct TodoWorkspace {
 
         // ---- 月份切换 ----
         Row({ space: 10 }) {
-          Text('‹')
-            .fontSize(TypographyTokens.TITLE_SUB)
-            .fontColor(this.palette().inkSecondary)
-            .padding({ left: 12, right: 12, top: 4, bottom: 4 })
-            .borderRadius(6)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => this.changeMonth(-1))
+          IconButton({ icon: $r('app.media.ic_chevron_left'), label: '上个月', onAction: () => this.changeMonth(-1) })
           Text(CalendarUtil.monthTitle(this.year, this.month))
             .fontSize(TypographyTokens.TITLE_SUB)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.palette().inkPrimary)
             .layoutWeight(1)
             .textAlign(TextAlign.Center)
-          Text('今天')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().accent)
-            .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-            .borderRadius(6)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => this.goToday())
-          Text('›')
-            .fontSize(TypographyTokens.TITLE_SUB)
-            .fontColor(this.palette().inkSecondary)
-            .padding({ left: 12, right: 12, top: 4, bottom: 4 })
-            .borderRadius(6)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => this.changeMonth(1))
+          IconButton({ icon: $r('app.media.ic_calendar'), label: '回到今天', onAction: () => this.goToday() })
+          IconButton({ icon: $r('app.media.ic_chevron_right'), label: '下个月', onAction: () => this.changeMonth(1) })
         }
         .width('100%')
         .margin({ bottom: 10 })
 
         this.weekdayHeader()
         this.calendarGrid()
+        Text(this.year === 2026 ? '休：放假　班：调休上班 · 2026 年国务院安排' : '农历与节日 · 该年份调休安排尚未收录')
+          .fontSize(10).fontColor(this.palette().inkMuted).width('100%').padding({ top: 6 })
 
         Divider()
           .strokeWidth(1)
           .color(this.palette().borderSubtle)
           .margin({ top: 10, bottom: 4 })
 
-        Scroll() {
-          this.dayPanel()
-        }
-        .layoutWeight(1)
-        .width('100%')
-        .scrollBar(BarState.Auto)
-        .align(Alignment.Top)
+        this.dayPanel()
       }
       .width('100%')
-      .height('100%')
       .constraintSize({ maxWidth: LayoutTokens.CONTENT_MAX_WIDTH + 160 })
       .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 24, bottom: 20 })
       .backgroundColor(this.palette().canvas)
+      }.width('100%').height('100%').scrollBar(BarState.Auto).align(Alignment.Top)
 
       if (this.dialogVisible) {
         TodoEditDialog({

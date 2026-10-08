@@ -5,6 +5,7 @@
 
 /** 主导航键（同时作为 activeNav 的取值） */
 export const NAV_HOME: string = '首页';
+export const NAV_SETTINGS: string = '设置';
 export const NAV_LIBRARY: string = '资料库';
 export const NAV_GRAPH: string = '图谱';
 /** 自由画布与助手工作台 */

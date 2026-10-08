@@ -23,10 +23,12 @@ import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
 import { ChatSession, StoredMessage } from '../../common/types/ChatSession';
-import { NAV_AI, NAV_CANVAS, NAV_FAVORITE, NAV_GRAPH, NAV_HOME, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
+import { NAV_AI, NAV_CANVAS, NAV_FAVORITE, NAV_GRAPH, NAV_HOME, NAV_SETTINGS, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
+import { AppIcon } from '../common/AppIcon';
+import { IconButton } from '../common/IconButton';
+import { documentIcon } from '../../common/utils/DocumentPresentation';
 import { noteRenderKey, spaceRenderKey } from '../../common/utils/ForEachKeys';
 import { BrandMark } from '../brand/BrandMark';
-import { AppIcon } from '../common/AppIcon';
 import { ProjectMenuSheet } from './sheets/ProjectMenuSheet';
 import { NewProjectSheet } from './sheets/NewProjectSheet';
 import { NewContentSheet } from './sheets/NewContentSheet';
@@ -89,7 +91,6 @@ export struct Sidebar {
   /** 切换中段模式（资料树 ↔ 对话记录） */
   onSidebarModeChange: (mode: string) => void = () => {};
   onSelectSession: (session: ChatSession) => void = () => {};
-  onNewSession: () => void = () => {};
   onDeleteSession: (sessionId: string) => void = () => {};
   onTogglePinSession: (session: ChatSession) => void = () => {};
 
@@ -308,11 +309,7 @@ export struct Sidebar {
   fileRow(note: NoteItem, projectName: string) {
     Row({ space: 6 }) {
       // 文件类型专属图标（彩色）
-      Text(this.getFileTypeIcon(note.type))
-        .fontSize(TypographyTokens.CAPTION)
-        .fontColor(this.getFileTypeColor(note.type))
-        .width(16)
-        .textAlign(TextAlign.Center)
+      AppIcon({ source: documentIcon(note.type), iconSize: 18, tint: this.palette().accent })
 
       // 文件标题
       Text(note.title)
@@ -489,17 +486,10 @@ export struct Sidebar {
           .layoutWeight(1)
 
         if (session.id === this.activeSessionId) {
-          Text('✕')
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkMuted)
-            .width(18).height(18)
-            .textAlign(TextAlign.Center)
-            .borderRadius(4)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => {
+          IconButton({ icon: $r('app.media.ic_trash'), label: '删除这段对话', onAction: () => {
               this.suppressRowClick = true;
               this.onDeleteSession(session.id);
-            })
+            } })
         }
       }
       .width('100%')
@@ -585,19 +575,6 @@ export struct Sidebar {
 
       Blank()
 
-      Row({ space: 2 }) {
-        Text('＋')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.palette().accent)
-        Text('新对话')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().accent)
-      }
-      .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-      .borderRadius(6)
-      .backgroundColor(this.palette().accentSoft)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => this.onNewSession())
 
       this.modeToggle()
     }
@@ -748,7 +725,7 @@ export struct Sidebar {
                   Text('✦')
                     .fontSize(TypographyTokens.TINY)
                     .fontColor(this.palette().inkMuted)
-                  Text('还没有对话，点「新对话」开始')
+                  Text('在墨客点 ＋ → 新建对话')
                     .fontSize(TypographyTokens.CAPTION)
                     .fontColor(this.palette().inkMuted)
                 }
@@ -784,7 +761,7 @@ export struct Sidebar {
         // ---- 底部设置入口 ----
         Row({ space: 8 }) {
           AppIcon({ source: $r('app.media.ic_settings'), tint: this.palette().inkSecondary })
-          Text('外观与数据')
+          Text('设置')
             .fontSize(TypographyTokens.CAPTION)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.palette().inkSecondary)
@@ -794,7 +771,7 @@ export struct Sidebar {
         .height(48)
         .padding({ left: 10, right: 10 })
         .borderRadius(8)
-        .backgroundColor(this.palette().surfaceSubtle)
+        .backgroundColor(this.activeNav === NAV_SETTINGS ? this.palette().activeBg : this.palette().surfaceSubtle)
         .hoverEffect(HoverEffect.Highlight)
         .onClick(() => this.onOpenSettings())
         .margin({ top: 4, bottom: 6 })

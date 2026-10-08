@@ -64,7 +64,6 @@ export struct AppShell {
   onOpenCreateProject: () => void = () => {};
   onSidebarModeChange: (mode: string) => void = () => {};
   onSelectSession: (session: ChatSession) => void = () => {};
-  onNewSession: () => void = () => {};
   onDeleteSession: (sessionId: string) => void = () => {};
   onTogglePinSession: (session: ChatSession) => void = () => {};
 
@@ -160,7 +159,6 @@ export struct AppShell {
       activeSessionId: this.activeSessionId,
       onSidebarModeChange: this.onSidebarModeChange,
       onSelectSession: this.onSelectSession,
-      onNewSession: this.onNewSession,
       onDeleteSession: this.onDeleteSession,
       onTogglePinSession: this.onTogglePinSession
     })

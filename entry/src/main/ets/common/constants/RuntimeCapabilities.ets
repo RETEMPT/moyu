@@ -1,4 +1,4 @@
-import { DEBUG } from 'BuildProfile';
-
-/** Public release builds expose only the offline assistant until an auditable AI service is available. */
-export const REMOTE_AI_ENABLED: boolean = DEBUG;
+/** Optional BYOK is available after explicit configuration and endpoint consent. */
+export const REMOTE_AI_ENABLED: boolean = true;
+/** The team cloud service has no endpoint or billing integration yet. */
+export const CLOUD_AI_ENABLED: boolean = false;

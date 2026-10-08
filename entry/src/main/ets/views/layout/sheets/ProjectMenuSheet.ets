@@ -10,6 +10,7 @@ import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { ColorPalette } from '../../../common/constants/DesignTokens';
 import { SpaceFolder } from '../../../common/types/SpaceFolder';
 import { DestructiveConfirm, SheetActionRow, SheetCancelButton, SheetOverlay } from './SheetScaffold';
+import { AppIcon } from '../../common/AppIcon';
 
 @Component
 export struct ProjectMenuSheet {
@@ -32,8 +33,7 @@ export struct ProjectMenuSheet {
     SheetOverlay({ onDismiss: this.onClose }) {
       Column({ space: 6 }) {
         Row({ space: 6 }) {
-          Text(this.project.icon || '📁')
-            .fontSize(TypographyTokens.BODY_REGULAR)
+          AppIcon({ source: $r('app.media.ic_folder'), tint: this.palette().accent })
           Text(this.project.name)
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontWeight(FontWeight.Bold)
@@ -50,24 +50,24 @@ export struct ProjectMenuSheet {
         .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
 
         SheetActionRow({
-          label: '📝 新建 Markdown 笔记',
+          label: '新建文字笔记', icon: $r('app.media.ic_note'),
           onAction: () => this.onCreateNoteInProject('未命名笔记', this.project.name, 'Markdown')
         })
         SheetActionRow({
-          label: '⬡ 新建白板导图',
+          label: '新建手写白板', icon: $r('app.media.ic_pen'),
           onAction: () => this.onCreateNoteInProject('未命名导图', this.project.name, 'Canvas')
         })
         SheetActionRow({
-          label: '🗎 新建参考资料',
+          label: '新建参考资料', icon: $r('app.media.ic_pdf'),
           onAction: () => this.onCreateNoteInProject('未命名参考资料', this.project.name, 'Doc')
         })
         SheetActionRow({
-          label: '✏️ 重命名项目',
+          label: '重命名项目', icon: $r('app.media.ic_format'),
           onAction: () => this.onRequestRename(this.project)
         })
 
         DestructiveConfirm({
-          triggerLabel: '🗑️ 删除项目',
+          triggerLabel: '删除项目',
           question: `确定删除「${this.project.name}」？`,
           consequence: '下辖资料将自动归入「未分类」，不会丢失。',
           onConfirm: () => this.onDeleteProject(this.project.name)

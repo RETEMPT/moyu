@@ -8,6 +8,7 @@ import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/const
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { NoteCoverVisual } from '../reader/NoteCoverVisual';
+import { DocumentCover } from '../common/DocumentCover';
 import { FILTER_ALL, NOTE_FILTERS } from '../../common/constants/WorkspaceConstants';
 import { noteRenderKey } from '../../common/utils/ForEachKeys';
 
@@ -174,6 +175,8 @@ export struct LibraryWorkspace {
     Row({ space: 12 }) {
       if (note.coverUrl && note.coverUrl.length > 0) {
         NoteCoverVisual({ source: note.coverUrl }).width(56).height(64).borderRadius(8).clip(true)
+      } else {
+        DocumentCover({ type: note.type, compact: true }).width(56).height(64).borderRadius(8).clip(true)
       }
       Column({ space: 4 }) {
         Row({ space: 8 }) {

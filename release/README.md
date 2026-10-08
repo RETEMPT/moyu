@@ -1,6 +1,6 @@
 # 应用市场提交材料与验收
 
-候选 1.0.2（1001002），包名 `com.retempt.flowmind`，最低系统配置 6.1.1(API 24)、目标 API 26。手机与 Pad 共用一个版本；GitHub 未签名开发发行不表示已上架。
+候选 1.0.3（1001003），包名 `com.retempt.flowmind`，最低系统配置 6.1.1(API 24)、目标 API 26。手机与 Pad 共用一个版本；GitHub 未签名开发发行不表示已上架。
 
 ## 填入真实发布资料
 
@@ -53,8 +53,8 @@ node tools/app-market-preflight.mjs --app "<正式签名APP路径>" --studio "<�
 | reader_restart | Markdown/PDF/手写/草稿保存、快速编辑、退出重开、正文与元数据不丢失 |
 | upgrade_persistence | 同签名旧版本升级，内容、附件、封面、索引、题卡保留；Key 迁移与重新填写 |
 | permission_denied | 拒绝附近设备权限，正常离线和文件备份；无反复强迫授权 |
-| ai_consent_revoke | release 不展示远程入口、旧配置也不激活且无模型网络请求；debug 另测发送授权、地址/协议重授、移除 Key |
-| ai_failure_cancel | release 本地处理中停止/返回/换文档无晚到结果；debug 另测错误 Key、429/500、断网、超时与三协议取消 |
+| ai_consent_revoke | 默认本地不请求模型；可选 API 检查发送授权、地址/协议重授、移除 Key；云 AI 不可激活 |
+| ai_failure_cancel | 本地停止/返回/换文档无晚到结果；API 另测错误 Key、429/500、断网、超时与三协议取消；删除不复活 |
 | backup_restore | PDF、封面、笔迹与题卡真实恢复；取消、重复导入、局部失败重试、空间不足 |
 | nearby_transfer | 手机与 Pad 同签名可信组网，双向传递并确认导入数量；缺少能力时回退文件备份 |
 | nearby_interruption_cleanup | 断线/超时/过期码/错误码、关闭与异常退出再打开，临时数据清理 |

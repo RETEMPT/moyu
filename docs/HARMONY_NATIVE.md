@@ -1,6 +1,6 @@
 # 鸿蒙原生适配与验收
 
-v1.0.2 使用 ArkUI、Penkit、PDFKit、Share Kit、系统文件选择器、HUKS 和应用沙箱。release 使用本地助手，不依赖团队云服务或用户 API Key。
+v1.0.3 使用 ArkUI、Penkit、PDFKit、Share Kit、系统文件选择器、HUKS 和应用沙箱。默认本地助手不依赖 API；设置可授权自配 API，团队云服务/云 AI/云备份尚未开放。
 
 | 场景 | 当前实现 | 设备验收重点 |
 | --- | --- | --- |
@@ -18,7 +18,7 @@ v1.0.2 使用 ArkUI、Penkit、PDFKit、Share Kit、系统文件选择器、HUKS
 
 首次空库 → 首页文字或手写图标新建 → 写入并等待保存 → “墨客”引用真实资料 → 本地搜索、摘录与待办候选。无需登录、Key 或联网。PDF 要先提取并校对文字；扫描页需 OCR。待办候选由用户确认，本地助手不提供大模型生成式问答。
 
-release 隐藏远程设置、生成式排版和模型题卡入口；网络策略也拒绝模型请求。旧的自配配置不会在 release 被激活。debug 仍可选用经过授权的自配服务，失败或停止不会自动改写连接配置。
+独立设置页提供资料库、指引、主题、AI、云服务和协议。文档默认只读，工具有短标签；阅读下滑收缩顶栏、空白点击展开，编辑/批注期间保持。白板采用固定视口与世界坐标，不随左右浏览扩建巨大 Canvas。debug/release 均可主动选择授权自配服务，默认本地；失败或停止不会改写模型配置。
 
 ## 笔控验收
 
@@ -30,4 +30,4 @@ release 隐藏远程设置、生成式排版和模型题卡入口；网络策略
 
 代码和服务回归已覆盖事件生命周期、输入分流与历史恢复，SDK 已验证接口类型；当前没有连接真机。尚不能声称与华为笔记具有相同延迟或笔迹引擎。应用不自行管理星闪链路，也没有接入小艺、应用接续或自动云同步。
 
-接口依据：[Penkit 笔身交互](https://developer.huawei.com/consumer/cn/doc/doccenter-references/api/pen-stylusinteraction)、[Share Kit 文字分享](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/share-utd-text)。版本、签名与下载见 [v1.0.2](RELEASE_1.0.2.md)。
+接口依据：[Penkit 笔身交互](https://developer.huawei.com/consumer/cn/doc/doccenter-references/api/pen-stylusinteraction)、[Share Kit 文字分享](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/share-utd-text)。版本、签名与下载见 [v1.0.3](RELEASE_1.0.3.md)。

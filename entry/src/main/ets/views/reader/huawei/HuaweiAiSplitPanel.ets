@@ -10,9 +10,9 @@
  * 会话按文档 id 记忆在模块级缓存里，切换文档再回来可续上；不写入全局会话列表，
  * 避免把「读这篇文档时的追问」混进 AI 墨客的主对话历史。
  */
-import { curves } from '@kit.ArkUI';
+import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
-import { ColorPalette, TypographyTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { NoteItem } from '../../../common/types/NoteItem';
 import { StudySourceService } from '../../../services/study/StudySourceService';
@@ -21,18 +21,17 @@ import { CurrentDocContext, AgentRunContext } from '../../../services/ai/AgentOr
 import { AgentOrchestrator } from '../../../services/ai/AgentOrchestrator';
 import { ModelConfigService, ACTIVE_STORAGE_KEY } from '../../../services/ai/ModelConfigService';
 import { StreamHandle } from '../../../services/ai/ModelProvider';
-import { ModelSettingsSheet } from '../../settings/ModelSettingsSheet';
 import { AssistantModeService, ASSISTANT_MODE_KEY } from '../../../services/ai/AssistantModeService';
 import { LocalAssistantService } from '../../../services/ai/LocalAssistantService';
 import { REMOTE_AI_ENABLED } from '../../../common/constants/RuntimeCapabilities';
+import { AssistantText } from '../../common/AssistantText';
+import { AppIcon } from '../../common/AppIcon';
+import { IconButton } from '../../common/IconButton';
 
 interface AiMessage {
   id: string;
   sender: 'user' | 'assistant';
-  title: string;
   text: string;
-  formula: string;
-  bullets: string[];
   error: string;
   streaming: boolean;
 }
@@ -59,10 +58,7 @@ function emptyCard(id: string, sender: 'user' | 'assistant'): AiMessage {
   return {
     id,
     sender,
-    title: '',
     text: '',
-    formula: '',
-    bullets: [],
     error: '',
     streaming: false
   };
@@ -72,6 +68,7 @@ function emptyCard(id: string, sender: 'user' | 'assistant'): AiMessage {
 export struct HuaweiAiSplitPanel {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
   onClose: () => void = () => {};
+  onOpenModelSettings: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp(ACTIVE_STORAGE_KEY) @Watch('refreshModelLabel') activeProfileId: string = '';
@@ -83,7 +80,7 @@ export struct HuaweiAiSplitPanel {
   @State messages: AiMessage[] = [];
   @State streamingCard: AiMessage | null = null;
   @State isLoading: boolean = false;
-  @State settingsOpen: boolean = false;
+  @State clearConfirmBusy: boolean = false;
 
   private orchestrator: AgentOrchestrator = new AgentOrchestrator();
   private streamHandle: StreamHandle | null = null;
@@ -151,6 +148,17 @@ export struct HuaweiAiSplitPanel {
     this.messages = [];
     this.streamingCard = null;
     COMPANION_CACHE.delete(this.note.id);
+  }
+
+  private async requestClearThread(): Promise<void> {
+    if (this.isLoading || this.clearConfirmBusy || this.messages.length === 0) { return; }
+    const noteId = this.loadedNoteId; this.clearConfirmBusy = true;
+    try {
+      const result = await promptAction.showDialog({ title: '清空伴读对话？', message: '只删除这份资料的伴读消息，删除后无法恢复。',
+        buttons: [{ text: '取消', color: this.palette().inkSecondary }, { text: '清空', color: this.palette().danger }] });
+      if (result.index === 1 && this.alive && this.loadedNoteId === noteId && !this.isLoading) { this.clearThread(); }
+    } catch { /* Dismissal or unavailable dialog leaves messages intact. */ }
+    finally { this.clearConfirmBusy = false; }
   }
 
   private sendQuestion(): void {
@@ -248,198 +256,17 @@ export struct HuaweiAiSplitPanel {
     this.accumulated = '';
   }
 
-  /**
-   * 把模型返回的 Markdown 解析成卡片结构。
-   * 标题取首个 H1/H2，公式取 $$ 或 ```math 围栏，分条取列表项，其余作为正文。
-   */
+  /** 保留完整源文，由共用排版器按原顺序显示。 */
   private parseCard(text: string): AiMessage {
-    const card: AiMessage = emptyCard('', 'assistant');
-    const lines: string[] = text.split('\n');
-    const body: string[] = [];
-    const formula: string[] = [];
-    let inFence: boolean = false;
-    let fenceMath: boolean = false;
-    let inDollarMath: boolean = false;
-
-    const flushBody = (): void => {
-      const joined: string = body.join('\n').trim();
-      if (joined.length > 0) {
-        card.text = card.text.length > 0 ? `${card.text}\n\n${joined}` : joined;
-      }
-      body.length = 0;
-    };
-
-    for (const raw of lines) {
-      const line: string = raw.trim();
-
-      // $$ 公式块
-      if (line.startsWith('$$')) {
-        if (inDollarMath) {
-          inDollarMath = false;
-          const expr: string = formula.join(' ').trim();
-          if (expr.length > 0 && card.formula.length === 0) {
-            card.formula = expr;
-          }
-          formula.length = 0;
-        } else {
-          flushBody();
-          inDollarMath = true;
-        }
-        const rest: string = line.slice(2).replace(/\$\$$/, '').trim();
-        if (rest.length > 0) {
-          formula.push(rest);
-        }
-        continue;
-      }
-      if (inDollarMath) {
-        formula.push(line);
-        continue;
-      }
-
-      // ``` 围栏
-      if (line.startsWith('```')) {
-        if (inFence) {
-          inFence = false;
-          if (fenceMath) {
-            const expr: string = formula.join('\n').trim();
-            if (expr.length > 0 && card.formula.length === 0) {
-              card.formula = expr;
-            }
-            formula.length = 0;
-          }
-        } else {
-          flushBody();
-          inFence = true;
-          fenceMath = line.toLowerCase().includes('math');
-        }
-        continue;
-      }
-      if (inFence) {
-        if (fenceMath) {
-          formula.push(line);
-        } else {
-          body.push(raw);
-        }
-        continue;
-      }
-
-      // 标题
-      if (line.startsWith('# ') || line.startsWith('## ')) {
-        const headingText: string = line.replace(/^#+\s*/, '').trim();
-        if (card.title.length === 0) {
-          card.title = headingText;
-          continue;
-        }
-        flushBody();
-        body.push(headingText);
-        continue;
-      }
-
-      // 列表项
-      if (line.startsWith('- ') || line.startsWith('• ') || line.startsWith('* ')) {
-        flushBody();
-        card.bullets = [...card.bullets, line.slice(2).trim()];
-        continue;
-      }
-      const ordered: RegExpMatchArray | null = line.match(/^\d+\.\s+(.*)$/);
-      if (ordered !== null) {
-        flushBody();
-        card.bullets = [...card.bullets, ordered[1]];
-        continue;
-      }
-
-      body.push(raw);
-    }
-
-    // 收尾：未闭合的围栏也把内容吐出来，避免流式中途整段消失
-    if (inDollarMath || (inFence && fenceMath)) {
-      const expr: string = formula.join('\n').trim();
-      if (expr.length > 0 && card.formula.length === 0) {
-        card.formula = expr;
-      }
-    } else {
-      flushBody();
-    }
-    if (inFence && !fenceMath) {
-      flushBody();
-    }
-    return card;
+    const card = emptyCard('', 'assistant'); card.text = text; return card;
   }
-
-  // ------------------------------------------------------------------
-  // 渲染
-  // ------------------------------------------------------------------
 
   @Builder
   cardBody(msg: AiMessage) {
     Column({ space: 8 }) {
-      if (msg.title.length > 0) {
-        Text(msg.title)
-          .fontSize(TypographyTokens.BODY_LARGE)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.palette().inkPrimary)
-      }
-
-      if (msg.error.length > 0) {
-        Text(`⚠ ${msg.error}`)
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor('#EF4444')
-          .width('100%')
-      }
-
-      if (msg.text.length > 0) {
-        Text(msg.text)
-          .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontColor(this.palette().inkPrimary)
-          .lineHeight(22)
-      }
-
-      // 独立公式块
-      if (msg.formula.length > 0) {
-        Column() {
-          Text(msg.formula)
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().accent)
-            .fontFamily('monospace')
-            .textAlign(TextAlign.Center)
-            .width('100%')
-        }
-        .width('100%')
-        .padding({ top: 10, bottom: 10, left: 12, right: 12 })
-        .borderRadius(8)
-        .backgroundColor(this.isDarkMode ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)')
-        .margin({ top: 4, bottom: 4 })
-      }
-
-      // 列表条目
-      if (msg.bullets.length > 0) {
-        Column({ space: 6 }) {
-          ForEach(msg.bullets, (b: string, idx: number) => {
-            Row({ space: 6 }) {
-              Text('○')
-                .fontSize(TypographyTokens.TINY)
-                .fontColor(this.palette().inkMuted)
-                .margin({ top: 3 })
-              Text(b)
-                .fontSize(TypographyTokens.BODY_REGULAR)
-                .fontColor(this.palette().inkSecondary)
-                .lineHeight(20)
-                .layoutWeight(1)
-            }
-            .alignItems(VerticalAlign.Top)
-            .width('100%')
-          }, (b: string, idx: number) => `b-${idx}-${b.length}`)
-        }
-        .margin({ top: 4 })
-      }
-
-      if (msg.streaming) {
-        Text('生成中…')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-      }
-    }
-    .width('100%')
+      if (msg.error.length > 0) { Text(msg.error).fontSize(13).lineHeight(20).fontColor(this.palette().danger).width('100%') }
+      AssistantText({ text: msg.text, streaming: msg.streaming })
+    }.width('100%')
   }
 
   @Builder
@@ -523,55 +350,33 @@ export struct HuaweiAiSplitPanel {
 
           // 模型选择器：显示当前激活档案，点按进入模型设置
           Row({ space: 4 }) {
-            Text('＝')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().accent)
+            AppIcon({ source: $r('app.media.ic_sparkle'), iconSize: 18, tint: this.palette().accent })
             Text(this.currentModel)
               .fontSize(TypographyTokens.CAPTION)
               .fontWeight(FontWeight.Medium)
               .fontColor(this.palette().inkPrimary)
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text('▾')
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(this.palette().inkMuted)
+            AppIcon({ source: $r('app.media.ic_chevron_down'), iconSize: 14, tint: this.palette().inkMuted })
           }
           .constraintSize({ maxWidth: 180 })
           .padding({ left: 8, right: 8, top: 4, bottom: 4 })
           .borderRadius(6)
           .backgroundColor(this.palette().surfaceSubtle)
           .onClick(() => {
-            this.settingsOpen = true;
+            this.onOpenModelSettings();
           })
 
           Blank()
 
           // 右侧小工具：清空、关闭
           Row({ space: 6 }) {
-            Text('⌫')
-              .fontSize(TypographyTokens.BODY_REGULAR)
-              .fontColor(this.palette().inkSecondary)
-              .width(26)
-              .height(26)
-              .textAlign(TextAlign.Center)
-              .borderRadius(4)
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.clearThread())
-
-            Button('✕')
-              .type(ButtonType.Normal)
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkMuted)
-              .width(44)
-              .height(44)
-              .padding(0)
-              .borderRadius(22)
-              .backgroundColor(this.palette().surfaceSubtle)
-              .onClick(() => this.onClose())
+            IconButton({ icon: $r('app.media.ic_trash'), label: '清空伴读对话', available: !this.isLoading && !this.clearConfirmBusy && this.messages.length > 0, onAction: () => this.requestClearThread() })
+            IconButton({ icon: $r('app.media.ic_close'), label: '关闭伴读', onAction: this.onClose })
           }
         }
         .width('100%')
-        .height(42)
+        .height(52)
         .padding({ left: 12, right: 12 })
         .backgroundColor(this.palette().surface)
         .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
@@ -607,9 +412,7 @@ export struct HuaweiAiSplitPanel {
         // ---- 底部追问输入框 ----
         Row({ space: 8 }) {
           Row({ space: 6 }) {
-            Text('＋')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkMuted)
+            AppIcon({ source: $r('app.media.ic_note'), iconSize: 18, tint: this.palette().inkMuted })
 
             TextInput({ text: this.inputQuestion, placeholder: `问《${this.note.title}》` })
               .fontSize(TypographyTokens.BODY_REGULAR)
@@ -633,26 +436,10 @@ export struct HuaweiAiSplitPanel {
           .border({ width: 1, color: this.palette().borderSubtle })
 
           if (this.isLoading) {
-            Text('停止')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(Color.White)
-              .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-              .borderRadius(18)
-              .backgroundColor('#EF4444')
-              .onClick(() => this.cancelStream())
+            IconButton({ icon: $r('app.media.ic_stop'), label: '停止生成', destructive: true, onAction: () => this.cancelStream() })
           } else {
-            Text('➤')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(Color.White)
-              .width(36)
-              .height(36)
-              .textAlign(TextAlign.Center)
-              .borderRadius(18)
-              .backgroundColor(this.palette().accent)
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => {
-                this.sendQuestion();
-              })
+            IconButton({ icon: $r('app.media.ic_send'), label: '发送提问', selected: true, available: this.inputQuestion.trim().length > 0 && this.ready,
+              onAction: () => this.sendQuestion() })
           }
         }
         .width('100%')
@@ -665,17 +452,6 @@ export struct HuaweiAiSplitPanel {
       .height('100%')
       .backgroundColor(this.palette().canvas)
 
-      // 模型设置浮层（点顶栏模型名进入）
-      if (this.settingsOpen) {
-        ModelSettingsSheet({
-          onClose: () => {
-            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-              this.settingsOpen = false;
-            });
-            this.refreshModelLabel();
-          }
-        })
-      }
     }
     .width('100%')
     .height('100%')

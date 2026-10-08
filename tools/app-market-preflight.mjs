@@ -20,7 +20,7 @@ const devices = module.deviceTypes;
 const expected = { bundleName: app.bundleName, versionName: app.versionName, versionCode: app.versionCode,
   devices, permissions, minApi: Number(/\((\d+)\)/.exec(product.compatibleSdkVersion)?.[1]), targetApi: Number(product.targetSdkVersion.split('.')[0]) };
 record('identity', 'project', app.bundleName === config.bundleName && /^([A-Za-z][\w]*\.)+[A-Za-z][\w]*$/.test(app.bundleName), '统一应用身份与市场登记配置');
-record('upgrade_version', 'project', Number.isInteger(app.versionCode) && app.versionCode > config.previousReleaseCode && /^\d+\.\d+\.\d+$/.test(app.versionName), '候选版本高于现有 v1.0.0');
+record('upgrade_version', 'project', Number.isInteger(app.versionCode) && app.versionCode > config.previousReleaseCode && /^\d+\.\d+\.\d+$/.test(app.versionName), '候选版本高于登记的升级基线');
 record('devices', 'project', JSON.stringify([...devices].sort()) === JSON.stringify(['phone', 'tablet']), '首发统一手机与 Pad 应用包');
 record('permissions', 'project', JSON.stringify([...permissions].sort()) === JSON.stringify(['ohos.permission.DISTRIBUTED_DATASYNC','ohos.permission.INTERNET']), '仅联网与主动附近传递权限');
 const distributed = module.requestPermissions.find(p => p.name === 'ohos.permission.DISTRIBUTED_DATASYNC');
@@ -40,10 +40,11 @@ for (const file of ['providers/OpenAiCompatProvider.ets', 'providers/GeminiProvi
 }
 record('stream_transport', 'project', read('entry/src/main/ets/services/ai/SseHttpClient.ets').includes('maxRedirects: 0'), '原生流式接收不跟随重定向');
 record('first_launch_empty', 'project', read('entry/src/main/ets/pages/Index.ets').includes('this.storage.load(context, [])') &&
-  !fs.existsSync(path.join(root,'entry/src/main/ets/common/seed/SeedContent.ets')), '首次启动为空，示例仅在开发测试目录');
-record('offline_assistant_release', 'project', config.assistantMode === 'local-only' &&
-  read('entry/src/main/ets/common/constants/RuntimeCapabilities.ets').includes('REMOTE_AI_ENABLED: boolean = DEBUG') &&
-  read('entry/src/main/ets/services/ai/RemoteAiPolicy.ets').includes('if (!REMOTE_AI_ENABLED)'), '发布模式仅提供本地助手，远程模型入口由编译模式与网络策略共同关闭');
+  !fs.existsSync(path.join(root,'entry/src/main/ets/common/seed/SeedContent.ets')), '首次启动为空，阅读测试 PDF 仅由用户手动导入');
+record('offline_default_optional_api', 'project', config.assistantMode === 'local-default-byok' &&
+  read('entry/src/main/ets/common/constants/RuntimeCapabilities.ets').includes('CLOUD_AI_ENABLED: boolean = false') &&
+  read('entry/src/main/ets/services/ai/AssistantModeService.ets').includes("prefs.get('mode', 'local')") &&
+  read('entry/src/main/ets/services/ai/RemoteAiPolicy.ets').includes('if (!RemoteAiPolicy.consented(p))'), '默认离线；自配 API 需要服务授权；团队云 AI 未接通');
 record('public_identity', 'submission', typeof config.publisher === 'string' && config.publisher.trim().length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(config.supportEmail || '') &&
   Number.isInteger(config.privacyResponseWorkingDays) && config.privacyResponseWorkingDays > 0 && config.privacyResponseWorkingDays <= 15, '填写与 AGC 一致的真实发布者、有效客服邮箱及隐私回复期限');
 record('public_privacy', 'submission', /^https:\/\/[^\s@]+$/i.test(config.privacyUrl || '') && !/example\.(com|org)|localhost|待填写/.test(config.privacyUrl), '填写已托管且可公开访问的 HTTPS 隐私政策网址，提交前人工核对全文');
@@ -63,7 +64,7 @@ function currentReview(file, kind, extra = () => true) {
 }
 record('sdk_eligibility', 'submission', currentReview(config.sdkReleaseEvidence, 'sdk', e => e.targetSdkVersion === product.targetSdkVersion && e.compatibleSdkVersion === product.compatibleSdkVersion), '核对当前 AGC 接受的 SDK 与系统版本；包内 Release 字段不能替代此证据');
 record('qualification', 'submission', currentReview(config.qualificationEvidence, 'qualification', e => e.publisher === config.publisher && e.bundleName === app.bundleName), '发布帐号、类别资质/备案与素材授权按实际发布地区完成核对');
-record('ai_service_review', 'submission', currentReview(config.aiServiceReviewEvidence, 'ai-service'), '按本地助手的实际发布范围核对地区与类别要求；本次发布不包含远程生成式模型入口');
+record('ai_service_review', 'submission', currentReview(config.aiServiceReviewEvidence, 'ai-service'), '按默认本地与可选授权 API 的实际功能核对地区、类别及数据发送要求');
 
 const status = spawnSync('git', ['status','--porcelain','--untracked-files=all'], { cwd: root, encoding:'utf8' });
 const dirty = (status.stdout || '').trim().split(/\r?\n/).filter(line => line && !line.endsWith(' pack.info'));

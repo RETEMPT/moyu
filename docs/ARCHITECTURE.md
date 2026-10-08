@@ -2,7 +2,7 @@
 
 更新：2026-10-07。当前采用渐进迁移，保留现有服务路径和 JSON 格式；不把一次目录改名当作完成全部架构重构。
 
-2026-10-08：新增独立于模型密钥库的 `AssistantModeService`、不访问网络的 `LocalAssistantService` 与统一的笔输入/绘制/笔身事件服务。`RuntimeCapabilities` 由 BuildProfile.DEBUG 区分开发与发布，release 所有模型 HTTP 入口强制关闭。样例移出生产目录，用户模板保留；创建必须等待正文与目录保存后才发布状态。范围与验收见 [审核整改](REVIEW_FIXES_2026-10-08.md)。
+2026-10-08（1.0.3）：`AssistantModeService` 默认本地且独立于模型密钥库；`LocalAssistantService` 不访问网络。`RuntimeCapabilities` 允许可选自配 API、禁用团队云 AI，`RemoteAiPolicy` 核对 HTTPS 和地址/协议授权。`AssistantTextParser` 为本地/模型回答及阅读提供源文顺序与行号。`SettingsWorkspace` 统一设置入口；文档默认只读，保存与导入写入成功后再发布状态。真实示例 PDF 仅手动导入。笔输入/增量绘制/笔身事件统一服务，`CanvasViewport` 提供固定视口世界坐标。范围见 [审核整改](REVIEW_FIXES_2026-10-08.md)。
 
 ```mermaid
 flowchart TD

@@ -17,6 +17,9 @@
 /.workflow-tests.log
 /.design-qa/
 /.codegenie/
+# Local task attachments and generated package metadata are not release sources
+/.codex-remote-attachments/
+/pack.info
 # 本地敏感凭据与测试备忘
 /moyu_text.txt
 *.local

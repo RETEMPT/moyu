@@ -10,6 +10,7 @@ import { AGENT_TOOLS, toolDisplayName } from '../../services/ai/ToolRegistry';
 import { AgentToolSpec } from '../../common/types/AgentTypes';
 import { AssistantModeService, ASSISTANT_MODE_KEY } from '../../services/ai/AssistantModeService';
 import { REMOTE_AI_ENABLED } from '../../common/constants/RuntimeCapabilities';
+import { IconButton } from '../common/IconButton';
 
 interface ProtocolOption { label: string; value: ProviderProtocol; }
 const PROTOCOLS: ProtocolOption[] = [
@@ -22,6 +23,7 @@ const ACCESS_OPTIONS: AccessOption[] = [
 
 @Component
 export struct ModelSettingsSheet {
+  @Prop embedded: boolean = false;
   onClose: () => void = () => {};
   @Prop @Watch('requestClose') closeToken: number = 0;
   @StorageProp('flowmindDarkMode') dark: boolean = false;
@@ -392,10 +394,10 @@ export struct ModelSettingsSheet {
       Column({ space: 12 }) {
         Row() {
           Text('助手设置').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
-          Button('✕').height(44).width(44).enabled(!this.busy).accessibilityText('关闭模型设置').onClick(() => this.requestClose())
+          IconButton({ icon: $r('app.media.ic_back'), label: '返回设置', available: !this.busy, onAction: () => this.requestClose() })
         }.width('100%')
         Row({ space: 8 }) {
-          ForEach(REMOTE_AI_ENABLED ? ['本地助手', '自配模型'] : ['本地助手'], (name: string, index: number) => {
+          ForEach(['本地助手', '自配 API', '云 AI'], (name: string, index: number) => {
             Button(name).height(44).layoutWeight(1).fontSize(14)
               .type(ButtonType.Normal).borderRadius(8)
               .backgroundColor(this.sourceTab === index ? this.palette().accentSoft : this.palette().surfaceSubtle)
@@ -429,6 +431,9 @@ export struct ModelSettingsSheet {
               Button('使用指引').height(44).width('100%').onClick(() => {
                 this.report('先新建或导入资料，在墨客引用笔记后选择用法。PDF 需先提取并校对文字。');
               })
+            } else if (this.sourceTab === 2) {
+              Text('云 AI 暂未开放').fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+              this.hint('当前没有团队云服务。你可以离线使用本地助手，或配置自己的模型 API。')
             } else if (this.tab === 0) { this.connection() } else { this.advanced() }
           }.width('100%').alignItems(HorizontalAlign.Start).enabled(!this.busy)
         }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
@@ -450,6 +455,8 @@ export struct ModelSettingsSheet {
         } else if (this.sourceTab === 0) {
           Button(this.assistantMode === 'local' ? '本地助手已启用' : '使用本地助手').height(48).width('100%').enabled(!this.busy)
             .type(ButtonType.Normal).borderRadius(10).backgroundColor(this.palette().accent).fontColor(Color.White).onClick(() => this.useLocal())
+        } else if (this.sourceTab === 2) {
+          Button('暂未开放').height(48).width('100%').enabled(false).backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkMuted)
         } else {
           Row({ space: 8 }) {
             Button(this.busy ? '处理中…' : '测试连接').height(48).layoutWeight(1).enabled(!this.busy).onClick(() => this.test())
@@ -457,10 +464,10 @@ export struct ModelSettingsSheet {
             Button('保存并启用').height(48).layoutWeight(1).enabled(!this.busy).onClick(() => this.save())
           }.width('100%')
         }
-      }.width(this.phone ? '100%' : '92%').constraintSize({ maxWidth: 700 }).height(this.phone ? '100%' : '90%')
-        .padding(this.phone ? 16 : 24).borderRadius(this.phone ? 0 : 16).backgroundColor(this.palette().surface).onClick(() => {})
+      }.width(this.embedded ? '100%' : '92%').constraintSize({ maxWidth: 760 }).height(this.embedded ? '100%' : '90%')
+        .padding(this.phone ? 16 : 24).borderRadius(20).backgroundColor(this.palette().surface).onClick(() => {})
     }.width('100%').height('100%').alignItems(HorizontalAlign.Center).justifyContent(FlexAlign.Center)
-      .backgroundColor('rgba(0,0,0,0.36)')
+      .backgroundColor(this.embedded ? Color.Transparent : 'rgba(0,0,0,0.36)')
       .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
       .onClick(() => this.requestClose())
   }

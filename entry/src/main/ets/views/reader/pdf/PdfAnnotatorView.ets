@@ -45,6 +45,9 @@ export struct PdfAnnotatorView {
   @Prop isContinuousScroll: boolean = true;
   onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onSaveStateChange: (state: string) => void = () => {};
+  onDirtyChange: (dirty: boolean) => void = () => {};
+  onReadingScroll: (offset: number) => void = () => {};
+  onBlankTap: () => void = () => {};
   onPageChanged: (page: number) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
@@ -80,6 +83,7 @@ export struct PdfAnnotatorView {
   private zoomStart: number = 1;
   private saveTimer: number = -1;
   private saveRevision: number = 0;
+  private savedRevision: number = 0;
   private loadedNoteId: string = '';
   private editingNote: NoteItem | null = null;
 
@@ -137,6 +141,7 @@ export struct PdfAnnotatorView {
 
   /** 从笔记中加载归一化矢量批注 */
   private loadAnnotations(): void {
+    this.saveRevision = 0; this.savedRevision = 0; this.onDirtyChange(false);
     const raw = this.note.pageAnnotations;
     if (raw && raw.length > 0) {
       try {
@@ -215,6 +220,7 @@ export struct PdfAnnotatorView {
   /** 计划防抖自动落盘 */
   private scheduleSave(): void {
     this.saveRevision++;
+    this.onDirtyChange(true);
     if (this.saveTimer !== -1) {
       clearTimeout(this.saveTimer);
     }
@@ -229,7 +235,7 @@ export struct PdfAnnotatorView {
     this.saveTimer = -1;
     const revision = this.saveRevision;
     const updatedNote = this.annotationSnapshot();
-    try { await this.onSaved(updatedNote, updatedNote.contentDetail, 'pdf'); if (revision === this.saveRevision && updatedNote.id === this.loadedNoteId) { this.onSaveStateChange('已保存'); } }
+    try { await this.onSaved(updatedNote, updatedNote.contentDetail, 'pdf'); if (revision === this.saveRevision && updatedNote.id === this.loadedNoteId) { this.savedRevision = revision; this.onDirtyChange(false); this.onSaveStateChange('已保存'); } }
     catch { if (revision === this.saveRevision && updatedNote.id === this.loadedNoteId) { this.onSaveStateChange('保存失败'); } }
   }
 
@@ -284,7 +290,7 @@ export struct PdfAnnotatorView {
                 onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
                 fingerDrawing: this.fingerDrawing,
                 onPenActive: () => this.shortcuts.claim(),
-                onInkContactChange: (active: boolean) => { this.inkContact = active; },
+                onInkContactChange: (active: boolean) => { this.inkContact = active; this.onDirtyChange(active || this.saveRevision !== this.savedRevision); },
                 onEraseStarted: () => this.beginErase(pm.pageIndex),
                 onEraseFinished: (commit: boolean) => this.finishErase(commit),
                 onEraseAtPoint: (u: number, v: number, width: number, height: number) => this.handleEraseAtPoint(pm.pageIndex, u, v, width, height)
@@ -297,11 +303,13 @@ export struct PdfAnnotatorView {
         .padding({ left: 32, right: 32, top: 24, bottom: 96 })
         .height('100%')
         .scrollBar(BarState.Auto)
+        .onScroll((offset: number) => { if (!this.inkContact && !this.isAnnotateMode) { this.onReadingScroll(offset); } })
         .onScrollIndex((start: number) => {
           this.currentPageIdx = Math.max(0, start); this.onPageChanged(this.currentPageIdx + 1);
         })
         .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
         .backgroundColor(this.palette().canvas)
+        .onClick(() => { if (!this.inkContact && !this.isAnnotateMode) { this.onBlankTap(); } })
         .transition(
           TransitionEffect.OPACITY
             .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
@@ -327,7 +335,7 @@ export struct PdfAnnotatorView {
               onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
               fingerDrawing: this.fingerDrawing,
               onPenActive: () => this.shortcuts.claim(),
-              onInkContactChange: (active: boolean) => { this.inkContact = active; },
+              onInkContactChange: (active: boolean) => { this.inkContact = active; this.onDirtyChange(active || this.saveRevision !== this.savedRevision); },
               onEraseStarted: () => this.beginErase(this.currentPageIdx),
               onEraseFinished: (commit: boolean) => this.finishErase(commit),
               onEraseAtPoint: (u: number, v: number, width: number, height: number) => this.handleEraseAtPoint(this.currentPageIdx, u, v, width, height)
@@ -351,6 +359,8 @@ export struct PdfAnnotatorView {
         )
         }
         .width('100%').height('100%').scrollable(ScrollDirection.Free).scrollBar(BarState.Auto)
+        .onScroll((_x: number, y: number) => { if (!this.inkContact && !this.isAnnotateMode) { this.onReadingScroll(y); } })
+        .onClick(() => { if (!this.inkContact && !this.isAnnotateMode) { this.onBlankTap(); } })
         .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
       }
     }

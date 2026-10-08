@@ -601,7 +601,7 @@ function importService(uri, { pdfFails = false, writeFails = false, unlinkFails 
           if (unlinkFails) throw Error('permission denied');
         } } },
     [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: {
-      PdfDocumentService: { getInstance: () => ({ savePdfToSandbox: async () => '/sandbox/copy.pdf',
+      PdfDocumentService: { getInstance: () => ({ savePdfToSandbox: async () => '/sandbox/copy.pdf', saveBundledExample: async () => '/sandbox/copy.pdf',
         getPdfInfo: async () => { if (pdfFails) throw Error('PDF 损坏'); return { pageCount: 2 }; } }) }
     }
   };
@@ -1038,7 +1038,7 @@ test('corrupt chat history cannot be replaced by an upsert or a clearing action'
   });
   const service = ChatSessionService.getInstance(); await service.init({});
   await assert.rejects(service.saveSession({ id: 'new', title: '', messages: [] }));
-  await assert.rejects(service.clearAll(), /阻止覆盖/); assert.equal(f.values.get('sessions'), '{broken');
+  await assert.rejects(service.clearAll(), /原数据已保留|阻止覆盖/); assert.equal(f.values.get('sessions'), '{broken');
 });
 
 test('reader commits serialize autosave and exit, preserve PDF indexing, and publish only after persistence', async () => {
@@ -1744,26 +1744,27 @@ test('actual note creation preserves the requested type, awaits both writes and 
   assert.equal(view.notes,before);assert.equal(view.noteCreateBusy,false);assert.match(view.noteCreateError,/创建失败/);
 });
 
-test('release mode overrides old remote preferences without losing the saved developer choice', async () => {
-  const values=new Map([['mode','remote']]);const app=new Map();
+test('assistant defaults to offline and persists only the mode explicitly selected by the user', async () => {
+  const values=new Map();const app=new Map();
   const {AssistantModeService,ASSISTANT_MODE_KEY}=load(`${base}services/ai/AssistantModeService.ets`,{
     BuildProfile:{DEBUG:false},AppStorage:{setOrCreate:(key,value)=>app.set(key,value)},
     '@kit.ArkData':{preferences:{getPreferences:async()=>({get:async(k,d)=>values.get(k)??d,put:async(k,v)=>values.set(k,v),flush:async()=>{}})}}
   });
   const service=AssistantModeService.getInstance();await service.init({});assert.equal(app.get(ASSISTANT_MODE_KEY),'local');
-  await assert.rejects(service.setMode('remote'),/本地/);assert.equal(app.get(ASSISTANT_MODE_KEY),'local');assert.equal(values.get('mode'),'remote');
+  await service.setMode('remote');assert.equal(app.get(ASSISTANT_MODE_KEY),'remote');assert.equal(values.get('mode'),'remote');
+  await service.setMode('local');assert.equal(app.get(ASSISTANT_MODE_KEY),'local');assert.equal(values.get('mode'),'local');
 });
 
-test('release blocks all chat, connection tests and embeddings even with previously valid consent', async () => {
+test('unconfigured release blocks chat, connection tests and embeddings before any network client is created', async () => {
   let creations=0;const mocks={BuildProfile:{DEBUG:false},'@kit.NetworkKit':{http:{createHttp:()=>{creations++;throw Error('network');}}},'@kit.ArkTS':{util:{}}};
   const {createProvider}=load(`${base}services/ai/ModelProvider.ets`,mocks);
   const {createEmbeddingProvider}=load(`${base}services/ai/EmbeddingProvider.ets`,mocks);
   for(const protocol of ['openai-compat','gemini','anthropic']) {
-    const p=consentProfile({protocol,remoteConsentProtocol:protocol});const provider=createProvider(protocol);
-    await assert.rejects(provider.complete(p,{messages:[]}),/本地/);
-    await assert.rejects(provider.completeStream(p,{messages:[]},()=>{}),/本地/);
+    const p=consentProfile({protocol,remoteConsentProtocol:protocol,remoteConsentVersion:undefined});const provider=createProvider(protocol);
+    await assert.rejects(provider.complete(p,{messages:[]}),/授权/);
+    await assert.rejects(provider.completeStream(p,{messages:[]},()=>{}),/授权/);
     assert.equal((await provider.testConnection(p)).ok,false);
-    if(protocol!=='anthropic')await assert.rejects(createEmbeddingProvider(protocol).embed(p,['正文']),/本地/);
+    if(protocol!=='anthropic')await assert.rejects(createEmbeddingProvider(protocol).embed(p,['正文']),/授权/);
   }
   assert.equal(creations,0);
 });
@@ -1911,4 +1912,225 @@ test('native chooser unavailability or failure propagates without reporting deli
   const failed = shareHarness({ failure: new Error('native chooser failed') });
   await assert.rejects(failed.service.shareText(failed.context, '资料', '正文'), /native chooser failed/);
   assert.equal(unavailable.panels.length, 0); assert.equal(failed.panels.length, 0);
+});
+
+const { AssistantTextParser } = load(`${base}services/ai/AssistantTextParser.ets`);
+test('assistant output preserves interleaved text, multiple formulas, lists, code and citations', () => {
+  const text = '# 回答\n先说明。\n$$a+b$$\n1. 第一步\n$$\nc=d\n$$\n```js\nconst x = 1;\n```\n> 来源：资料第 2 页\n最后说明。';
+  const blocks = plain(AssistantTextParser.parse(text));
+  assert.deepEqual(blocks.map(b => b.kind), ['heading','paragraph','math','list','math','code','quote','paragraph']);
+  assert.equal(blocks[2].text,'a+b'); assert.equal(blocks[4].text,'c=d');
+  assert.equal(blocks[5].language,'js'); assert.equal(blocks[5].text,'const x = 1;');
+  assert.match(blocks[6].text,/第 2 页/); assert.equal(blocks[7].text,'最后说明。');
+});
+test('partial assistant streams retain unfinished code and formulas without losing their body', () => {
+  assert.deepEqual(plain(AssistantTextParser.parse('说明\n```python\nprint(1)')).map(b=>b.text),['说明','print(1)']);
+  assert.equal(AssistantTextParser.parse('$$\nx+y')[0].text,'x+y');
+  assert.equal(AssistantTextParser.parse('$$x+y\n下一行')[0].text,'x+y\n下一行');
+});
+test('assistant tables preserve escaped pipes and surrounding paragraphs', () => {
+  const blocks=plain(AssistantTextParser.parse('前文\n| 项目 | 结果 |\n| --- | --- |\n| A \\| B | 通过 |\n后文'));
+  assert.deepEqual(blocks.map(b=>b.kind),['paragraph','table','paragraph']);
+  assert.deepEqual(blocks[1].rows,[['项目','结果'],['A | B','通过']]);
+  assert.equal(blocks[2].text,'后文');
+});
+test('assistant inline formatting preserves plain text and literal markup that is still streaming', () => {
+  const spans=plain(AssistantTextParser.spans('原文 **重点** `code` ~~删除~~ *斜体* 未完 **'));
+  assert.deepEqual(spans.filter(s=>s.style!=='plain').map(s=>[s.text,s.style]),[['重点','bold'],['code','code'],['删除','strike'],['斜体','italic']]);
+  assert.ok(spans.at(-1).text.endsWith('**'));
+});
+
+const { CanvasViewport } = load(`${base}services/ink/CanvasViewport.ets`);
+test('canvas screen and world coordinates round trip across pan, zoom and negative horizontal expansion', () => {
+  for(const zoom of [.08,.3,1,8]) for(const [x,y,panX,panY] of [[0,0,320,-200],[420,780,-2000,1500]]) {
+    const world=CanvasViewport.world(x,y,zoom,panX,panY);
+    assert.ok(Math.abs(world.x*zoom+panX-x)<1e-9); assert.ok(Math.abs(world.y*zoom+panY-y)<1e-9);
+  }
+  assert.equal(CanvasViewport.world(0,0,.5,500,0).x,-1000);
+});
+test('legacy canvas reference widths scale without changing stored strokes; culling includes edge ink', () => {
+  const stroke={points:[{x:10,y:20},{x:20,y:30}],referenceWidth:600,width:3,color:'#000'};
+  const before=JSON.stringify(stroke); const bounds=CanvasViewport.bounds(stroke);
+  assert.deepEqual(plain(bounds),{left:14,top:34,right:46,bottom:66});
+  assert.equal(CanvasViewport.visible(bounds,100,100,1,0,0),true);
+  assert.equal(CanvasViewport.visible(bounds,100,100,1,-47,0),false);
+  assert.equal(CanvasViewport.visible(bounds,100,100,1,-46,0),true);
+  assert.equal(JSON.stringify(stroke),before);
+});
+test('canvas redraw scheduling coalesces moves without resizing the viewport', () => {
+  const queue=[];const redraw=viewMethod('views/reader/HandwritingCanvas.ets','requestRedraw',{setTimeout:(fn,ms)=>{queue.push([fn,ms]);return 7;}});
+  let draws=0;const v={drawTimer:-1,canvasWidth:360,canvasHeight:700,redrawAll:()=>draws++};
+  for(let i=0;i<50;i++)redraw.call(v);
+  assert.equal(queue.length,1);assert.equal(queue[0][1],16);assert.equal(draws,0);
+  queue[0][0]();assert.equal(draws,1);assert.equal(v.drawTimer,-1);assert.equal(v.canvasWidth,360);assert.equal(v.canvasHeight,700);
+});
+test('cancelled handwriting contacts discard live ink and preserve outstanding save state', () => {
+  const handle=viewMethod('views/reader/HandwritingCanvas.ets','handleTouch',{CanvasViewport});
+  for(const pending of [false,true]) {
+    const dirties=[];let clears=0,redraws=0;
+    const v={navigateTouch:()=>false,readOnly:false,input:{read:()=>({phase:'cancel'})},saveRevision:pending?2:1,savedRevision:1,
+      inkContact:true,currentStroke:{points:[{x:1,y:2}]},onDirtyChange:d=>dirties.push(d),
+      liveContext:{clearRect:()=>clears++},redrawAll:()=>redraws++,strokes:[]};
+    handle.call(v,{stopPropagation(){}});assert.deepEqual(dirties,[pending]);assert.equal(v.currentStroke,null);assert.equal(v.inkContact,false);
+    assert.equal(clears,1);assert.equal(redraws,1);assert.equal(v.strokes.length,0);
+  }
+});
+
+function calendarHarness(formatter=Intl.DateTimeFormat) {
+  return load(`${base}common/utils/CalendarInfo.ets`,{'@kit.LocalizationKit':{intl:{DateTimeFormat:formatter}}}).CalendarInfo;
+}
+test('native lunar calendar finds known lunar festivals and preserves leap month identity', () => {
+  const calendar=calendarHarness();
+  for(const [date,lunar,festival] of [['2026-02-17','正月初一','春节'],['2026-03-03','正月十五','元宵'],
+    ['2026-06-19','五月初五','端午'],['2026-09-25','八月十五','中秋']]) {
+    const info=calendar.forDate(date);assert.equal(info.lunarLong,lunar);assert.equal(info.festival,festival);
+  }
+  const leap=calendar.forDate('2025-07-25');assert.equal(leap.lunarLong,'闰六月初一');assert.equal(leap.festival,'');assert.equal(leap.schedule,'');
+});
+test('verified 2026 holidays and shifted workdays never leak into another year', () => {
+  const calendar=calendarHarness();
+  for(const date of ['2026-01-01','2026-01-03','2026-02-15','2026-02-23','2026-04-06','2026-05-05','2026-06-21','2026-09-27','2026-10-07']) assert.equal(calendar.forDate(date).schedule,'休',date);
+  for(const date of ['2026-01-04','2026-02-14','2026-02-28','2026-05-09','2026-09-20','2026-10-10']) assert.equal(calendar.forDate(date).schedule,'班',date);
+  for(const date of ['2026-10-08','2027-10-01','2025-10-10']) assert.equal(calendar.forDate(date).schedule,'',date);
+});
+test('calendar rejects invalid dates and retains official holidays when ICU is unavailable', () => {
+  const calendar=calendarHarness();
+  for(const date of ['2026-02-29','2026-04-31','bad','2026-2-17','2026-13-01']) assert.deepEqual(plain(calendar.forDate(date)),{lunar:'',lunarLong:'',festival:'',schedule:''});
+  const unavailable=calendarHarness(class {constructor(){throw Error('no ICU');}});
+  assert.equal(unavailable.forDate('2026-10-01').schedule,'休');assert.equal(unavailable.forDate('2026-10-01').festival,'国庆');
+  assert.equal(unavailable.forDate('2026-10-01').lunar,'');assert.equal(unavailable.forDate('2026-10-10').schedule,'班');
+});
+
+test('read-only documents exit directly; only pending main or scratchpad changes prompt saving', () => {
+  const back=viewMethod('views/reader/huawei/HuaweiDocWorkspace.ets','handleBackRequest');
+  for(const [main,scratch,expected] of [[false,false,false],[true,false,true],[false,true,true]]) {
+    let closed=0;const v={penOptionsOpen:false,jumpDialogOpen:false,activeModal:'',isPhone:false,splitMode:'none',exitDialogOpen:false,
+      documentDirty:main,scratchpadDirty:scratch,onClose:()=>closed++};
+    back.call(v);assert.equal(v.exitDialogOpen,expected);assert.equal(closed,expected?0:1);
+  }
+});
+test('exit waits for both main and scratchpad writes and keeps the reader open on failure', () => {
+  const relative='views/reader/huawei/HuaweiDocWorkspace.ets';
+  for(const success of [true,false]) {
+    let closed=0;const notices=[];const v={exitSaving:false,splitMode:'scratchpad',exitSaveToken:0,onClose:()=>closed++,showToast:m=>notices.push(m)};
+    viewMethod(relative,'saveAndExit').call(v);assert.equal(v.exitPending,2);assert.equal(v.exitSaveToken,1);
+    viewMethod(relative,'exitSaveFinished').call(v,true);assert.equal(closed,0);assert.equal(v.exitSaving,true);
+    viewMethod(relative,'exitSaveFinished').call(v,success);assert.equal(closed,success?1:0);assert.equal(v.exitSaving,false);assert.equal(notices.length,success?0:1);
+  }
+});
+test('only the latest successful ink snapshot clears dirty state; failures remain recoverable', async () => {
+  for(const relative of ['views/reader/pdf/PdfAnnotatorView.ets','views/reader/HandwritingCanvas.ets']) {
+    const flush=viewMethod(relative,'flushSave');const dirty=[];let release;
+    const v={saveRevision:2,savedRevision:0,loadedNoteId:'n',strokeSnapshot:()=>({id:'n',contentDetail:''}),annotationSnapshot:()=>({id:'n',contentDetail:''}),
+      onDirtyChange:d=>dirty.push(d),onSaveStateChange:()=>{},onSaved:()=>new Promise(r=>release=r)};
+    const pending=flush.call(v);v.saveRevision++;release();await pending;assert.deepEqual(dirty,[]);assert.equal(v.savedRevision,0);
+    v.onSaved=async()=>{};await flush.call(v);assert.deepEqual(dirty,[false]);assert.equal(v.savedRevision,3);
+    v.saveRevision++;v.onSaved=async()=>{throw Error('disk');};await flush.call(v);assert.equal(v.savedRevision,3);assert.deepEqual(dirty,[false]);
+  }
+});
+
+test('chat deletion requires confirmation, ignores duplicate taps and waits for actual storage', async () => {
+  const remove=viewMethod('pages/Index.ets','handleDeleteSession');let confirm,write;
+  const calls=[];const v={sessions:[{id:'a'},{id:'b'}],activeSessionId:'a',sessionDeleteBusy:false,
+    confirmDestructive:()=>new Promise(r=>confirm=r),chatStorage:{deleteSession:id=>{calls.push(id);return new Promise(r=>write=r);}},notify:()=>{}};
+  const pending=remove.call(v,'a');await remove.call(v,'a');assert.deepEqual(calls,[]);assert.equal(v.sessionDeleteBusy,true);
+  confirm(true);await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(calls,['a']);assert.equal(v.sessions.length,2);
+  write();await pending;assert.deepEqual(v.sessions.map(s=>s.id),['b']);assert.equal(v.activeSessionId,'');assert.equal(v.sessionDeleteBusy,false);
+});
+test('cancelled or failed chat deletion leaves the original history and selection intact', async () => {
+  const remove=viewMethod('pages/Index.ets','handleDeleteSession');
+  for(const confirmed of [false,true]) {
+    let writes=0;const sessions=[{id:'a'}];const v={sessions,activeSessionId:'a',sessionDeleteBusy:false,confirmDestructive:async()=>confirmed,
+      chatStorage:{deleteSession:async()=>{writes++;throw Error('disk');}},notify:()=>{}};
+    await remove.call(v,'a');assert.equal(writes,confirmed?1:0);assert.equal(v.sessions,sessions);assert.equal(v.activeSessionId,'a');assert.equal(v.sessionDeleteBusy,false);
+  }
+});
+test('companion clearing requires confirmation and cannot clear a different document after navigation', async () => {
+  const relative='views/reader/huawei/HuaweiAiSplitPanel.ets';
+  for(const [index,moved,expected] of [[0,false,0],[1,false,1],[1,true,0]]) {
+    let resolve,clears=0;const clear=viewMethod(relative,'requestClearThread',{promptAction:{showDialog:()=>new Promise(r=>resolve=r)}});
+    const v={isLoading:false,clearConfirmBusy:false,messages:[{text:'keep'}],loadedNoteId:'a',alive:true,palette:()=>({}),clearThread:()=>clears++};
+    const pending=clear.call(v);if(moved)v.loadedNoteId='b';resolve({index});await pending;assert.equal(clears,expected);assert.equal(v.clearConfirmBusy,false);
+  }
+});
+test('AI back navigation first closes the centered action or model panel', () => {
+  const back=viewMethod('views/ai/AiWorkspace.ets','handleBackRequest');let exits=0;
+  const v={plusMenuOpen:true,modelMenuOpen:false,onNavigateBack:()=>exits++};back.call(v);assert.equal(v.plusMenuOpen,false);assert.equal(exits,0);
+  v.modelMenuOpen=true;back.call(v);assert.equal(v.modelMenuOpen,false);assert.equal(exits,0);back.call(v);assert.equal(exits,1);
+});
+
+test('deleted conversations reject late streamed answers and stale bulk snapshots', async () => {
+  const f=preferenceFixture({sessions:'[]'});
+  const {ChatSessionService}=load(`${base}services/ai/ChatSessionService.ets`,{'@kit.ArkData':{preferences:{getPreferences:async()=>f.prefs}}});
+  const service=new ChatSessionService();await service.init({});
+  const row={id:'late',title:'原回答',messages:[],createdAt:1,updatedAt:1};
+  await service.saveSession(row);await service.deleteSession(row.id);
+  await assert.rejects(service.saveSession(row),/删除/);await service.saveSessions([row]);
+  assert.equal((await service.loadSessions()).length,0);
+  await service.saveSession({...row,id:'new'});await service.clearAll();
+  await assert.rejects(service.saveSession({...row,id:'new'}),/删除/);
+});
+test('reader parsing preserves Unicode, source line indices, numbered lists and rich block bodies', () => {
+  const relative='views/reader/MarkdownReader.ets';
+  const parse=viewMethod(relative,'parseBlocks',{AssistantTextParser});
+  const source='#### 中文 English αβ\n\n2. 次序\n- [ ] 未完成\n```js\nconst x = "中文";\n```\n$$x²+y²$$\n| 项目 | 值 |\n| --- | --- |\n| α | 1 |';
+  const v={parseTask:viewMethod(relative,'parseTask')};const blocks=plain(parse.call(v,source));
+  assert.deepEqual(blocks.map(b=>[b.kind,b.line]),[['heading',0],['ordered',2],['task',3],['code',4],['math',7],['table',8]]);
+  assert.equal(blocks[0].level,4);assert.equal(blocks[1].marker,'2.');assert.equal(blocks[2].checked,false);
+  assert.equal(blocks[3].text,'```js\nconst x = "中文";\n```');assert.equal(blocks[4].text,'$$x²+y²$$');
+  assert.match(blocks[5].text,/\| α \| 1 \|/);
+});
+test('reading toolbar collapses after downward travel, and typing keeps it expanded', () => {
+  const relative='views/reader/MarkdownReader.ets';const scroll=viewMethod(relative,'handleReadingScroll');
+  const v={isEditing:false,editorFocused:false,scrollTravel:0,toolbarExpanded:true};
+  scroll.call(v,12);assert.equal(v.toolbarExpanded,true);scroll.call(v,12);assert.equal(v.toolbarExpanded,false);
+  viewMethod(relative,'handleBlankTap').call(v);assert.equal(v.toolbarExpanded,true);
+  v.editorFocused=true;scroll.call(v,100);assert.equal(v.toolbarExpanded,true);
+  v.toolbarExpanded=false;viewMethod(relative,'handleBlankTap').call(v);assert.equal(v.toolbarExpanded,false);
+  v.editorFocused=false;v.isEditing=true;v.toolbarExpanded=true;scroll.call(v,100);assert.equal(v.toolbarExpanded,true);
+});
+test('PDF toolbar does not collapse while annotating or while a save is outstanding', () => {
+  const scroll=viewMethod('views/reader/huawei/HuaweiDocWorkspace.ets','handleReadingScroll');
+  for(const flags of [[false,false,false],[true,false,false],[false,true,false],[false,false,true]]) {
+    let collapsed=0;const v={isAnnotateMode:flags[0],documentDirty:flags[1],scratchpadDirty:flags[2],scrollTravel:0,toggleBars:visible=>{if(!visible)collapsed++;}};
+    scroll.call(v,25);assert.equal(collapsed,flags.some(Boolean)?0:1);
+  }
+});
+test('external PDF import persists library metadata before exposing the reference and ignores duplicate import taps', async () => {
+  const method=viewMethod('pages/Index.ets','importDocument');let write;const calls=[];
+  const transfer={status:'imported',noteType:'PDF',sourceUri:'/sandbox/copy.pdf',pageCount:2,document:{id:'pdf',title:'测试',fileName:'测试.pdf',content:'# 测试'}};
+  const v={documentImportBusy:false,notes:[],getAbilityContext:()=>({}),storage:{importDocument:async()=>transfer,save:()=>new Promise(r=>write=r)},
+    formatTime:()=>'',rebuildSpaces:()=>calls.push('library'),refreshGraph:()=>{},notify:()=>{}};
+  const pending=method.call(v,'外部参考');await new Promise(r=>setTimeout(r,0));assert.equal(v.notes.length,0);
+  assert.equal(await method.call(v),null);write();const imported=await pending;assert.equal(v.notes[0],imported);assert.equal(imported.sourceUri,transfer.sourceUri);
+  assert.equal(imported.category,'外部参考');assert.equal(v.documentImportBusy,false);assert.deepEqual(calls,['library']);
+  v.storage.save=async()=>{throw Error('disk');};const original=v.notes;assert.equal(await method.call(v),null);assert.equal(v.notes,original);assert.equal(v.documentImportBusy,false);
+});
+test('AI external import waits for persistence and never pins into a different or closed conversation', async () => {
+  const method=viewMethod('views/ai/AiWorkspace.ets','importExternalFile',{promptAction:{showToast:()=>{}}});
+  for(const moved of [false,true]) {
+    let resolve;const v={alive:true,loadedSessionId:'a',pinnedNotes:[],onImportExternal:()=>new Promise(r=>resolve=r),emitContext:()=>{},onPinnedNotesChange:()=>{}};
+    const pending=method.call(v);assert.equal(v.pinnedNotes.length,0);if(moved)v.loadedSessionId='b';resolve({id:'pdf',title:'PDF'});await pending;
+    assert.equal(v.pinnedNotes.length,moved?0:1);
+  }
+});
+test('bundled example PDF is explicitly imported with durable source and rejects a broken native document', async () => {
+  const fixture=importService('');const result=await fixture.service.importExamplePdf({filesDir:'/sandbox'});
+  assert.equal(result.status,'imported');assert.equal(result.noteType,'PDF');assert.equal(result.sourceUri,'/sandbox/copy.pdf');assert.equal(result.pageCount,2);
+  const failed=importService('',{pdfFails:true});assert.equal((await failed.service.importExamplePdf({filesDir:'/sandbox'})).status,'failed');
+  assert.deepEqual(failed.calls,[['unlink','/sandbox/copy.pdf']]);
+  assert.ok(fs.readFileSync(path.join(root,'entry/src/main/resources/rawfile/example-course.pdf')).subarray(0,5).equals(Buffer.from('%PDF-')));
+});
+test('bundled PDF short writes and invalid resource bytes cannot leave a phantom source', async () => {
+  for(const mode of ['ok','short','invalid']) {
+    const calls=[];const bytes=Buffer.from(mode==='invalid'?'wrong':'%PDF-real-test');
+    const {PdfDocumentService}=load(`${base}services/document/PdfDocumentService.ets`,{'@kit.PDFKit':{pdfService:{}},
+      '@kit.CoreFileKit':{fileIo:{OpenMode:{CREATE:1,WRITE_ONLY:2,TRUNC:4},accessSync:()=>true,openSync:()=>({fd:1}),
+        writeSync:(_,buffer)=>{calls.push('write');assert.equal(Buffer.from(buffer).toString(),bytes.toString());return mode==='short'?1:buffer.byteLength;},
+        unlinkSync:()=>calls.push('remove'),closeSync:()=>calls.push('close')}},
+      [path.resolve(root,`${base}services/ocr/OcrService.ets`)]:{OcrService:{}}});
+    const pending=new PdfDocumentService().saveBundledExample({filesDir:'/sandbox',resourceManager:{getRawFileContent:async()=>bytes}});
+    if(mode==='ok'){assert.match(await pending,/^\/sandbox\/documents\/.*example-course\.pdf$/);assert.deepEqual(calls,['write','close']);}
+    else {await assert.rejects(pending);assert.deepEqual(calls,mode==='short'?['write','remove','close']:[]);}
+  }
 });

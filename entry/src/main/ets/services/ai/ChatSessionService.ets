@@ -20,6 +20,7 @@ export class ChatSessionService {
   private prefs: preferences.Preferences | null = null;
   private mutations: SerialTaskQueue = new SerialTaskQueue();
   private snapshots: SnapshotStore = new SnapshotStore();
+  private deletedIds: Set<string> = new Set();
 
   static getInstance(): ChatSessionService {
     if (ChatSessionService.instance === null) {
@@ -56,7 +57,8 @@ export class ChatSessionService {
   private async writeSessions(sessions: ChatSession[]): Promise<void> {
     const prefs: preferences.Preferences = await this.ensureInit();
     // 限制数量，优先保留置顶
-    let trimmed: ChatSession[] = ChatSessionSanitizer.normalize(sessions);
+    let trimmed: ChatSession[] = ChatSessionSanitizer.normalize(sessions)
+      .filter((session: ChatSession) => !this.deletedIds.has(session.id));
     if (trimmed.length > MAX_SESSIONS) {
       const pinned: ChatSession[] = trimmed.filter((s: ChatSession) => s.pinned);
       const unpinned: ChatSession[] = trimmed.filter((s: ChatSession) => !s.pinned)
@@ -71,6 +73,7 @@ export class ChatSessionService {
   async saveSession(session: ChatSession): Promise<void> {
     const snapshot = JSON.parse(JSON.stringify(session)) as ChatSession;
     await this.mutations.run<void>(async () => {
+      if (this.deletedIds.has(snapshot.id)) { throw new Error('对话已删除，不能保存迟到的回答'); }
       const sessions: ChatSession[] = await this.readSessions();
       let found: boolean = false;
       for (let i = 0; i < sessions.length; i++) {
@@ -104,12 +107,17 @@ export class ChatSessionService {
       const sessions: ChatSession[] = await this.readSessions();
       const filtered: ChatSession[] = sessions.filter((s: ChatSession) => s.id !== id);
       await this.writeSessions(filtered);
+      this.deletedIds.add(id);
     });
   }
 
   /** 清空全部 */
   async clearAll(): Promise<void> {
-    await this.saveSessions([]);
+    await this.mutations.run<void>(async () => {
+      const sessions = await this.readSessions();
+      await this.writeSessions([]);
+      sessions.forEach((session: ChatSession) => this.deletedIds.add(session.id));
+    });
   }
 
   /** 按关键词搜索会话标题和消息内容 */

@@ -29,6 +29,10 @@ const icons = {
   more: '<circle cx="5" cy="12" r="1.4" fill="#000"/><circle cx="12" cy="12" r="1.4" fill="#000"/><circle cx="19" cy="12" r="1.4" fill="#000"/>',
   back: '<path d="M20 12H4m7-7-7 7 7 7"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
+  copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
+  send: '<path d="m3 3 18 9-18 9 4-9ZM7 12h14"/>',
+  stop: '<rect x="5" y="5" width="14" height="14" rx="3"/>',
+  refresh: '<path d="M20 9a8 8 0 0 0-14-3L3 9m0-6v6h6M4 15a8 8 0 0 0 14 3l3-3m0 6v-6h-6"/>',
   chevron_left: '<path d="m15 5-7 7 7 7"/>',
   chevron_right: '<path d="m9 5 7 7-7 7"/>',
   chevron_down: '<path d="m5 9 7 7 7-7"/>',
@@ -49,6 +53,7 @@ const icons = {
   folder: '<path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   pdf: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9ZM14 3v6h6M8 13h8M8 17h8"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4M17 3v4M3 10h18M8 14h2M14 14h2M8 18h2"/>',
+  cloud: '<path d="M6 19h12a4 4 0 0 0 1-7.9A7 7 0 0 0 5.4 9 5 5 0 0 0 6 19Z"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 1 1 5 2c-2 1-2 1-2 3M12 17v.1"/>',
   clear: '<path d="M5 4v16M9 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H9M9 12h8m-3-3 3 3-3 3"/>',
   page: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 11h6M9 15h4"/>',
@@ -96,8 +101,8 @@ const brandPanels = ['light', 'dark'].map((theme, i) => {
   return `${svg}<text x="${144 + i * 224}" y="290" text-anchor="middle" font-size="14" fill="#575267">${theme}</text>`;
 }).join('\n');
 const tiles = Object.entries(icons).map(([name, body], i) => {
-  const x = 48 + i % 7 * 132, y = 328 + Math.floor(i / 7) * 80;
-  return `<g transform="translate(${x} ${y})"><rect width="120" height="68" rx="12" fill="#FFFFFF"/><svg x="48" y="10" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#575267" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${body.replaceAll('#000', '#575267')}</svg><text x="60" y="54" text-anchor="middle" font-size="11" fill="#716A80">${name}</text></g>`;
+  const x = 48 + i % 8 * 116, y = 328 + Math.floor(i / 8) * 80;
+  return `<g transform="translate(${x} ${y})"><rect width="108" height="68" rx="12" fill="#FFFFFF"/><svg x="42" y="10" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#575267" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${body.replaceAll('#000', '#575267')}</svg><text x="54" y="54" text-anchor="middle" font-size="11" fill="#716A80">${name}</text></g>`;
 }).join('\n');
 outputs.set('design/icon-preview.svg', `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><rect width="1024" height="1024" fill="#F8F7FB"/><g font-family="Arial,sans-serif"><text x="48" y="48" font-size="26" fill="#242033">FlowMind / Purple ink</text>${brandPanels}<rect x="520" y="92" width="452" height="164" rx="24" fill="#221E2D"/><text x="550" y="130" font-size="16" fill="#F8FAFC">Theme-aware vector assets</text><text x="550" y="166" font-size="14" fill="#BBA4FF">24-unit grid / 1.8-unit strokes</text><text x="550" y="202" font-size="14" fill="#B8B0C7">44vp native button targets</text><text x="550" y="232" font-size="12" fill="#A49AB6">Asset review, not a device screenshot</text>${tiles}</g></svg>\n`);
 

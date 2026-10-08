@@ -19,6 +19,7 @@ import { WorkspaceStats } from '../../common/types/WorkspaceStats';
 import { CourseSummary } from '../../common/types/StudyTypes';
 import { BrandMark } from '../brand/BrandMark';
 import { AppIcon } from '../common/AppIcon';
+import { DocumentCover } from '../common/DocumentCover';
 import { noteRenderKey } from '../../common/utils/ForEachKeys';
 import { NAV_LIBRARY, NAV_GRAPH } from '../../common/constants/WorkspaceConstants';
 
@@ -121,15 +122,8 @@ export struct HomeWorkspace {
             NoteCoverVisual({ source: note.coverUrl })
               .width('100%')
               .height('100%')
-          } else if (this.isPdfNote(note)) {
-            // PDF 专属典雅排版
-            this.pdfVisualCover(note)
-          } else if (this.isHandwritingNote(note)) {
-            // 稿纸手写专属温暖排版
-            this.handwritingVisualCover(note)
           } else {
-            // Markdown 随笔 Notion 极简排版
-            this.markdownVisualCover(note)
+            DocumentCover({ type: note.type, pageCount: note.pageCount || 0 })
           }
 
           if (!this.isPdfNote(note) && !this.isHandwritingNote(note)) {
@@ -236,132 +230,6 @@ export struct HomeWorkspace {
 
   /** PDF 视觉封面 */
   @Builder
-  pdfVisualCover(note: NoteItem) {
-    Column() {
-      Row() {
-        Text('PDF')
-          .fontSize(TypographyTokens.TINY)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(Color.White)
-          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-          .borderRadius(4)
-          .backgroundColor('#DC2626')
-        Blank()
-        Text(note.pageInfo && note.pageInfo.length > 0 ? note.pageInfo : '真题试卷')
-          .fontSize(TypographyTokens.TINY)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.isDarkMode ? '#FCA5A5' : '#DC2626')
-          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-          .borderRadius(4)
-          .backgroundColor(this.isDarkMode ? '#3A2022' : '#FEE2E2')
-      }
-      .width('100%')
-      .padding({ left: 10, right: 10, top: 10 })
-
-      Column({ space: 4 }) {
-        Text('🗎')
-          .fontSize(28)
-          .fontColor('#DC2626')
-        Text(note.title)
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.palette().inkPrimary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .textAlign(TextAlign.Center)
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .justifyContent(FlexAlign.Center)
-      .padding({ left: 8, right: 8 })
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(this.isDarkMode ? '#241D1E' : '#FFF1F2')
-    .border({ width: { bottom: 1 }, color: { bottom: this.isDarkMode ? '#362829' : '#FFE4E6' } })
-  }
-
-  /** 稿纸手写视觉封面 */
-  @Builder
-  handwritingVisualCover(note: NoteItem) {
-    Column() {
-      Row() {
-        Text('稿纸演算')
-          .fontSize(TypographyTokens.TINY)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#D97706')
-          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-          .borderRadius(4)
-          .backgroundColor(this.isDarkMode ? '#382B1C' : '#FEF3C7')
-        Blank()
-        Text('手写')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-      }
-      .width('100%')
-      .padding({ left: 10, right: 10, top: 10 })
-
-      Column({ space: 4 }) {
-        AppIcon({ source: $r('app.media.ic_pen'), iconSize: 28, tint: '#D97706' })
-        Text(note.title)
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.palette().inkPrimary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .textAlign(TextAlign.Center)
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .justifyContent(FlexAlign.Center)
-      .padding({ left: 8, right: 8 })
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(this.isDarkMode ? '#26221D' : '#FFFBEB')
-    .border({ width: { bottom: 1 }, color: { bottom: this.isDarkMode ? '#3D3425' : '#FEF3C7' } })
-  }
-
-  /** Markdown 随笔极简排版封面 */
-  @Builder
-  markdownVisualCover(note: NoteItem) {
-    Column() {
-      Row() {
-        Text('Markdown')
-          .fontSize(TypographyTokens.TINY)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.palette().accent)
-          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-          .borderRadius(4)
-          .backgroundColor(this.palette().accentSoft)
-        Blank()
-        AppIcon({ source: $r('app.media.ic_note'), iconSize: 16, tint: this.palette().inkMuted })
-      }
-      .width('100%')
-      .padding({ left: 10, right: 10, top: 10 })
-
-      Column({ space: 4 }) {
-        Text(note.previewText.length > 0 ? note.previewText : note.title)
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkSecondary)
-          .lineHeight(16)
-          .maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .justifyContent(FlexAlign.Center)
-      .padding({ left: 12, right: 12 })
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(this.palette().surfaceSubtle)
-    .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
-  }
-
-  /** 右键/长按菜单 */
-  @Builder
   cardContextMenu(note: NoteItem) {
     Menu() {
       MenuItem({
@@ -455,8 +323,11 @@ export struct HomeWorkspace {
   @Builder
   homeAction(icon: Resource, label: string, primary: boolean, action: () => void) {
     Button({ type: ButtonType.Normal }) {
+      Column({ space: 6 }) {
       AppIcon({ source: icon, iconSize: 24, tint: primary ? this.palette().onAccent : this.palette().accent })
-    }.width(52).height(52).padding(0).borderRadius(16)
+      Text(label).fontSize(11).fontColor(primary ? this.palette().onAccent : this.palette().inkSecondary).maxLines(1)
+      }.justifyContent(FlexAlign.Center)
+    }.constraintSize({ minWidth: 58, minHeight: 68 }).layoutWeight(1).padding(6).borderRadius(16)
       .backgroundColor(primary ? this.palette().accent : this.palette().surface)
       .border({ width: primary ? 0 : 1, color: this.palette().borderSubtle })
       .accessibilityText(label).bindTips(label).onClick(action)
@@ -473,10 +344,10 @@ export struct HomeWorkspace {
               Text('墨语').fontSize(24).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
             }.width('100%').alignItems(VerticalAlign.Center)
             Row({ space: 12 }) {
-              this.homeAction($r('app.media.ic_note'), '新建文字笔记', true, () => this.onCreateNote())
-              this.homeAction($r('app.media.ic_pen'), '新建手写笔记', false, () => this.onCreateHandwriting())
+              this.homeAction($r('app.media.ic_note'), '文字笔记', true, () => this.onCreateNote())
+              this.homeAction($r('app.media.ic_pen'), '手写笔记', false, () => this.onCreateHandwriting())
               this.homeAction($r('app.media.ic_import'), '导入文档', false, () => this.onImportDocument())
-              this.homeAction($r('app.media.ic_sparkle'), '提取图片或文字', false, () => this.onSmartExtract())
+              this.homeAction($r('app.media.ic_sparkle'), '提取内容', false, () => this.onSmartExtract())
             }.width('100%')
           }.width('100%').margin({ bottom: 20 })
 

@@ -8,6 +8,9 @@ import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/const
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { noteRenderKey } from '../../common/utils/ForEachKeys';
+import { DocumentCover } from '../common/DocumentCover';
+import { NoteCoverVisual } from '../reader/NoteCoverVisual';
+import { AppIcon } from '../common/AppIcon';
 
 @Component
 export struct FavoriteWorkspace {
@@ -25,9 +28,11 @@ export struct FavoriteWorkspace {
   @Builder
   favCard(note: NoteItem) {
     Row({ space: 10 }) {
-      Text('⭐')
-        .fontSize(TypographyTokens.CAPTION)
-        .fontColor(this.palette().warning)
+      if (note.coverUrl && note.coverUrl.length > 0) {
+        NoteCoverVisual({ source: note.coverUrl }).width(56).height(64).borderRadius(8).clip(true)
+      } else {
+        DocumentCover({ type: note.type, compact: true }).width(56).height(64).borderRadius(8).clip(true)
+      }
       Column({ space: 3 }) {
         Text(note.title.length === 0 ? '未命名笔记' : note.title)
           .fontSize(TypographyTokens.BODY_LARGE)
@@ -68,13 +73,11 @@ export struct FavoriteWorkspace {
 
       if (this.favorites.length === 0) {
         Column({ space: 8 }) {
-          Text('⭐')
-            .fontSize(40)
-            .fontColor(this.palette().inkMuted)
+          AppIcon({ source: $r('app.media.ic_star'), iconSize: 40, tint: this.palette().inkMuted })
           Text('还没有收藏的笔记')
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().inkSecondary)
-          Text('打开一篇笔记，点顶部工具条的「☆ 收藏」即可收藏到这里。')
+          Text('打开笔记，点击工具条上的星形图标收藏。')
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().inkMuted)
             .textAlign(TextAlign.Center)
