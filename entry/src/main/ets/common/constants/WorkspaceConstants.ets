@@ -7,9 +7,9 @@
 export const NAV_HOME: string = '首页';
 export const NAV_LIBRARY: string = '资料库';
 export const NAV_GRAPH: string = '图谱';
-/** 这两个页面尚未实现，Index 会落到 PendingWorkspace 并如实标注，而不是静默失败 */
+/** 自由画布与助手工作台 */
 export const NAV_CANVAS: string = '白板';
-export const NAV_AI: string = 'AI墨客';
+export const NAV_AI: string = '墨客';
 /** 待办日历与回收站导航键 */
 export const NAV_TODO: string = '待办';
 export const NAV_TRASH: string = '回收站';

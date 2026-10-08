@@ -126,91 +126,22 @@ export interface ModelPresetTemplate {
 export function getPresetTemplates(): ModelPresetTemplate[] {
   const now = Date.now();
   return [
-    {
-      name: 'DeepSeek V4 Pro (旗舰)',
-      description: '兼容服务示例；请按服务商控制台核对模型、额度与隐私规则',
-      profile: {
-        id: `preset_ds_v4_pro_${now}`,
-        label: 'DeepSeek V4 Pro',
-        protocol: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com/v1',
-        apiKey: '',
-        modelId: 'deepseek-v4-pro',
-        embeddingModelId: '',
-        temperature: 0.7,
-        maxTokens: 8192,
-        stream: true,
-        isReasoningModel: false,
-        systemPrompt: '',
-        createdAt: now,
-        updatedAt: now
-      }
-    },
-    {
-      name: 'DeepSeek Flash (极速)',
-      description: '兼容服务示例；模型可用性以服务商实际配置为准',
-      profile: {
-        id: `preset_ds_flash_${now}`,
-        label: 'DeepSeek Flash',
-        protocol: 'openai-compat',
-        baseUrl: 'https://api.deepseek.com/v1',
-        apiKey: '',
-        modelId: 'deepseek-flash',
-        embeddingModelId: '',
-        temperature: 0.7,
-        maxTokens: 8192,
-        stream: true,
-        isReasoningModel: false,
-        systemPrompt: '',
-        createdAt: now,
-        updatedAt: now
-      }
-    },
-    {
-      name: '硅基流动 (SiliconFlow 专线)',
-      description: '兼容服务示例，请按服务商控制台核对模型 ID',
-      profile: {
-        id: `preset_sf_${now}`,
-        label: 'SiliconFlow 专线',
-        protocol: 'openai-compat',
-        baseUrl: 'https://api.siliconflow.cn/v1',
-        apiKey: '',
-        modelId: 'deepseek-ai/DeepSeek-V3',
-        embeddingModelId: 'BAAI/bge-m3',
-        temperature: 0.7,
-        maxTokens: 8192,
-        stream: true,
-        isReasoningModel: false,
-        systemPrompt: '',
-        createdAt: now,
-        updatedAt: now
-      }
-    },
-    {
-      name: 'Ollama 本地 (DeepSeek)',
-      description: '连接在本机运行的服务；跨设备接入须使用 HTTPS 端点',
-      profile: {
-        id: `preset_ollama_${now}`,
-        label: 'Ollama 本地',
-        protocol: 'openai-compat',
-        baseUrl: 'http://127.0.0.1:11434/v1',
-        apiKey: '',
-        modelId: 'deepseek-r1:latest',
-        embeddingModelId: 'nomic-embed-text',
-        temperature: 0.5,
-        maxTokens: 8192,
-        stream: true,
-        isReasoningModel: true,
-        systemPrompt: '',
-        createdAt: now,
-        updatedAt: now
-      }
-    }
+    { name: '兼容 API', description: '填写服务地址与实际模型 ID', profile: {
+      id: 'preset-compat', label: '自配模型', protocol: 'openai-compat', baseUrl: '', apiKey: '', modelId: '',
+      temperature: 0.7, maxTokens: 4096, stream: true, systemPrompt: '', createdAt: now, updatedAt: now
+    } },
+    { name: '本机兼容服务', description: '服务必须运行在当前设备；电脑服务请使用实际 HTTPS 地址', profile: {
+      id: 'preset-local', label: '本机模型', protocol: 'openai-compat', baseUrl: 'http://127.0.0.1:11434/v1', apiKey: '', modelId: '',
+      temperature: 0.7, maxTokens: 4096, stream: true, systemPrompt: '', createdAt: now, updatedAt: now
+    } }
   ];
 }
 
-/** 生成一个默认模型档案（默认采用主流 V4 Pro 旗舰版） */
+/** Empty, stable configuration draft. No model or paid service is selected on a fresh install. */
 export function createDefaultProfile(): ModelProfile {
-  return getPresetTemplates()[0].profile;
+  const now = Date.now();
+  return { id: 'profile-default', label: '自配模型', protocol: 'openai-compat', baseUrl: '', apiKey: '', modelId: '',
+    temperature: 0.7, maxTokens: 4096, stream: true, semanticSearch: false, systemPrompt: '',
+    createdAt: now, updatedAt: now };
 }
 

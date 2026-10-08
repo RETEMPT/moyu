@@ -284,6 +284,7 @@ export struct AppShell {
     .width('100%')
     .height('100%')
     .onAreaChange((before: Area, after: Area) => this.updateLayout(Number(after.width)))
+    .keyboardShortcut('f', [ModifierKey.CTRL], () => this.onOpenSearch())
     .backgroundColor(this.palette().canvas)
   }
 }

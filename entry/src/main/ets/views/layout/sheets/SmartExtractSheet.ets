@@ -7,6 +7,7 @@ import { SmartTask } from '../../../common/types/SmartTask';
 import { SmartExtractService, SmartLayoutStyle, SMART_INPUT_LIMIT } from '../../../services/smart/SmartExtractService';
 import { SmartNoteBuilder } from '../../../services/smart/SmartNoteBuilder';
 import { OcrService } from '../../../services/ocr/OcrService';
+import { REMOTE_AI_ENABLED } from '../../../common/constants/RuntimeCapabilities';
 
 interface SmartExtractDraft {
   input: string;
@@ -259,6 +260,7 @@ export struct SmartExtractSheet {
           .backgroundColor(this.layoutStyle === 'study' ? this.palette().accentSoft : this.palette().surfaceSubtle)
           .onClick(() => { this.layoutStyle = 'study'; })
       }.width('100%')
+      if (REMOTE_AI_ENABLED) {
       Row({ space: 8 }) {
         Text('使用 AI 排版').layoutWeight(1).fontColor(this.palette().inkPrimary)
         Toggle({ type: ToggleType.Switch, isOn: this.useAi }).onChange((value: boolean) => { this.useAi = value; })
@@ -269,6 +271,7 @@ export struct SmartExtractSheet {
           this.requestClose();
           this.onOpenModelSettings();
         })
+      } else { this.hint('本地整理保留原文，不联网。') }
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 

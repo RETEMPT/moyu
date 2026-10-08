@@ -2,6 +2,8 @@
 
 更新：2026-10-07。当前采用渐进迁移，保留现有服务路径和 JSON 格式；不把一次目录改名当作完成全部架构重构。
 
+2026-10-08：新增独立于模型密钥库的 `AssistantModeService`、不访问网络的 `LocalAssistantService` 与统一的笔输入/绘制/笔身事件服务。`RuntimeCapabilities` 由 BuildProfile.DEBUG 区分开发与发布，release 所有模型 HTTP 入口强制关闭。样例移出生产目录，用户模板保留；创建必须等待正文与目录保存后才发布状态。范围与验收见 [审核整改](REVIEW_FIXES_2026-10-08.md)。
+
 ```mermaid
 flowchart TD
   Page["Index：导航、状态与装配"] --> View["views：布局、输入与状态显示"]

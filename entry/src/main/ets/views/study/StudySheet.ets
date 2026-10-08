@@ -7,6 +7,7 @@ import { StudySourceService } from '../../services/study/StudySourceService';
 import { ModelConfigService } from '../../services/ai/ModelConfigService';
 import { ModelProfilePolicy } from '../../services/ai/ModelProfilePolicy';
 import { createProvider, StreamHandle } from '../../services/ai/ModelProvider';
+import { REMOTE_AI_ENABLED } from '../../common/constants/RuntimeCapabilities';
 
 @Component
 export struct StudySheet {
@@ -178,11 +179,13 @@ export struct StudySheet {
     TextArea({ text: this.answer, placeholder: '参考答案' }).height(100).maxLength(12000).enabled(!this.busy).onChange((value: string) => { this.answer = value; })
     TextArea({ text: this.sourceText, placeholder: '引用原文（手动卡片可选）' }).height(70).maxLength(20000).enabled(!this.busy).onChange((value: string) => { this.sourceText = value; })
     Button('保存手动题卡').height(44).width('100%').enabled(!this.busy).onClick(() => this.manual())
+    if (REMOTE_AI_ENABLED) {
     Row({ space: 10 }) {
       Text('同意将所选资料文字发送至已配置的模型，以生成题卡。').fontSize(12).fontColor(this.palette().inkSecondary).layoutWeight(1)
       Toggle({ type: ToggleType.Switch, isOn: this.consent }).enabled(!this.busy).onChange((value: boolean) => { this.consent = value; })
     }.width('100%')
     Button('AI 生成题卡预览').height(44).width('100%').enabled(!this.busy && this.consent && this.noteId.length > 0).onClick(() => this.generate())
+    }
     ForEach(this.drafts, (draft: ReviewDraft, index: number) => {
       Column({ space: 6 }) {
         Text(draft.question).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).width('100%')

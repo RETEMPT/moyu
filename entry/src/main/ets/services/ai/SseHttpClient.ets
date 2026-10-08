@@ -14,11 +14,15 @@ export class SseHttpClient {
     let closed = false;
     let buffer = '';
     let code = 0;
+    let idleTimer: number = -1;
+    let totalTimer: number = -1;
     let settle: (status: number) => void = () => {};
     const status = new Promise<number>((resolve) => { settle = resolve; });
     const close = (error?: string, notify: boolean = true): void => {
       if (closed) { return; }
       closed = true;
+      if (idleTimer !== -1) { clearTimeout(idleTimer); }
+      if (totalTimer !== -1) { clearTimeout(totalTimer); }
       client.destroy();
       if (notify) { finish(error); }
     };
@@ -31,7 +35,13 @@ export class SseHttpClient {
         if (!trimmed.startsWith('data:')) { continue; }
         const json = trimmed.slice(5).trim();
         if (json === '[DONE]') { close(); break; }
-        try { if (payload(json)) { close(); } }
+        try {
+          if (payload(json)) { close(); }
+          else if (!closed) {
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => close('模型响应中断，请重试或切换本地助手'), 30000);
+          }
+        }
         catch (error) {
           // A malformed line is ignored; an explicit provider error ends the request.
           if (!(error instanceof SyntaxError)) { close('AI 服务未能完成流式回答，请重试'); }
@@ -53,6 +63,8 @@ export class SseHttpClient {
       consume();
       close(code === 200 ? undefined : `AI 服务返回 HTTP ${code}，请核对配置和额度`);
     });
+    idleTimer = setTimeout(() => close('模型暂未响应，请重试或切换本地助手'), 45000);
+    totalTimer = setTimeout(() => close('本次生成已超时，请缩小资料范围后重试'), 180000);
     try { client.requestInStream(url, { method: http.RequestMethod.POST, header: headers, extraData: body,
       expectDataType: http.HttpDataType.ARRAY_BUFFER, maxRedirects: 0, connectTimeout: 15000, readTimeout: 120000
     }).then((statusCode: number) => {

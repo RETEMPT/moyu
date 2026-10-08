@@ -26,7 +26,7 @@ export class NoteStorageService {
   /**
    * 读取本地笔记快照，并用沙箱中的 .md 正文回填 contentDetail。
    * @param context 应用上下文
-   * @param fallbackNotes 仅首次启动时使用的示例笔记；损坏快照保留并报错
+   * @param fallbackNotes 首次启动为空；损坏快照保留并报错
    * @returns 已回填正文的笔记列表
    */
   async load(context: Context, fallbackNotes: NoteItem[]): Promise<NoteItem[]> {
@@ -38,7 +38,7 @@ export class NoteStorageService {
     const prefs: preferences.Preferences = await this.ensureInitialized(context);
     const parsedNotes = await this.snapshots.read<NoteItem[]>(prefs, NOTES_KEY, (value: NoteItem[]) => this.isNoteItemArray(value));
     if (parsedNotes === null) {
-      // 首次启动：写入快照并把示例正文物化为真实 .md 文件
+      // 首次启动为空工作区。测试资料只存在于开发测试夹具中。
       await this.reconcileFiles(fallbackNotes);
       await this.saveSnapshot(fallbackNotes);
       return fallbackNotes;

@@ -9,10 +9,10 @@
  * 示例数据，load() 只在快照完全缺失时才灌种子，因此需要一个显式补入的路径
  * （见 Index.loadSeedData）。
  */
-import { NoteItem } from '../types/NoteItem';
-import { SpaceFolder } from '../types/SpaceFolder';
-import { CanvasStroke } from '../types/CanvasStroke';
-import { DocumentAnnotationData } from '../types/PdfAnnotationTypes';
+import { NoteItem } from '../../entry/src/main/ets/common/types/NoteItem';
+import { SpaceFolder } from '../../entry/src/main/ets/common/types/SpaceFolder';
+import { CanvasStroke } from '../../entry/src/main/ets/common/types/CanvasStroke';
+import { DocumentAnnotationData } from '../../entry/src/main/ets/common/types/PdfAnnotationTypes';
 
 /**
  * 示例手写笔迹。

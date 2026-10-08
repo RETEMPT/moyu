@@ -42,7 +42,10 @@ import { TodoStorageService } from '../services/TodoStorageService';
 import { ChatSessionService } from '../services/ai/ChatSessionService';
 import { ModelConfigService } from '../services/ai/ModelConfigService';
 import { buildSpaces } from '../services/WorkspaceBuilder';
-import { defaultProjects, seedNotes, templateBody } from '../common/seed/SeedContent';
+import { templateBody } from '../common/templates/NoteTemplates';
+import { AssistantModeService } from '../services/ai/AssistantModeService';
+import { UsageGuideSheet } from '../views/settings/UsageGuideSheet';
+import { REMOTE_AI_ENABLED } from '../common/constants/RuntimeCapabilities';
 import { AppShell } from '../views/layout/AppShell';
 import { SIDEBAR_MODE_SESSIONS, SIDEBAR_MODE_TREE } from '../views/layout/Sidebar';
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
@@ -64,6 +67,7 @@ import { NewProjectSheet } from '../views/layout/sheets/NewProjectSheet';
 import { CreateNoteSheet } from '../views/layout/sheets/CreateNoteSheet';
 import { ProjectMenuSheet } from '../views/layout/sheets/ProjectMenuSheet';
 import { NewContentSheet } from '../views/layout/sheets/NewContentSheet';
+import { TemplateSheet } from '../views/layout/sheets/TemplateSheet';
 import { RenameProjectSheet } from '../views/layout/sheets/RenameProjectSheet';
 import { NoteMenuSheet } from '../views/layout/sheets/NoteMenuSheet';
 import { RenameNoteSheet } from '../views/layout/sheets/RenameNoteSheet';
@@ -125,7 +129,7 @@ struct Index {
   @State activeFilter: string = FILTER_ALL;
 
   // ---- 本地数据 ----
-  @State customProjects: SpaceFolder[] = defaultProjects();
+  @State customProjects: SpaceFolder[] = [];
   @State spaces: SpaceFolder[] = [];
   @State notes: NoteItem[] = [];
   @State trash: NoteItem[] = [];
@@ -195,6 +199,8 @@ struct Index {
   @State undoVisible: boolean = false;
   /** 新建笔记对话框（记随笔） */
   @State createNoteOpen: boolean = false;
+  @State noteCreateBusy: boolean = false;
+  @State noteCreateError: string = '';
   /** 新建项目对话框 */
   @State createProjectOpen: boolean = false;
   /** 底部弹层类型：'project_menu' | 'new_content' | 'rename_project' | 'note_menu' | 'rename_note' | 'move_note' */
@@ -240,7 +246,7 @@ struct Index {
     if (this.activeSheet === 'model_settings') { this.modelCloseToken++; return true; }
     if (this.activeSheet.length > 0) { this.activeSheet = ''; return true; }
     if (this.createProjectOpen) { this.createProjectOpen = false; return true; }
-    if (this.pendingCreate !== null) { this.pendingCreate = null; return true; }
+    if (this.pendingCreate !== null) { if (!this.noteCreateBusy) { this.pendingCreate = null; } return true; }
     if (this.smartExtractVisible) { this.smartExtractCloseToken++; return true; }
     if (this.settingsVisible) { this.settingsVisible = false; return true; }
     if (this.searchVisible) { this.searchVisible = false; return true; }
@@ -278,7 +284,7 @@ struct Index {
     try { this.privacyWelcome = !await this.privacyNotice.shown(context); }
     catch { this.privacyWelcome = true; }
     try {
-      const loaded: NoteItem[] = await this.storage.load(context, seedNotes());
+      const loaded: NoteItem[] = await this.storage.load(context, []);
       this.notes = loaded;
     } catch (error) {
       console.error(`本地笔记加载失败: ${JSON.stringify(error)}`);
@@ -289,10 +295,10 @@ struct Index {
     // 表现为「建完项目再打开就没了」。首次运行没有快照时回退到默认项目。
     try {
       const savedProjects: SpaceFolder[] | null = await this.storage.loadProjects(context);
-      this.customProjects = savedProjects !== null ? savedProjects : defaultProjects();
+      this.customProjects = savedProjects !== null ? savedProjects : [];
     } catch (error) {
       console.error(`项目列表加载失败: ${JSON.stringify(error)}`);
-      this.customProjects = defaultProjects();
+      this.customProjects = [];
     }
     this.backfillNoteMeta();
     this.rebuildSpaces();
@@ -307,7 +313,8 @@ struct Index {
     // 模型配置也在这里初始化：AI 视图自行取 Context 有竞态，
     // 由持有 Context 的 Index 统一初始化，视图侧只读单例。
     try {
-      await ModelConfigService.getInstance().init(context);
+      await AssistantModeService.getInstance().init(context);
+      if (REMOTE_AI_ENABLED) { await ModelConfigService.getInstance().init(context); }
     } catch (error) {
       console.error(`模型配置初始化失败: ${JSON.stringify(error)}`);
     }
@@ -511,44 +518,6 @@ struct Index {
   }
 
   /**
-   * 补入本机还没有的示例数据，已存在的笔记一律不动。
-   *
-   * 存在的意义：示例里包含 PDF 与 Doc 类型的笔记，是进入「原盘批注」PDF 阅读器的
-   * 唯一入口（导入 PDF 要走系统文件选择器）。老设备的笔记快照往往早于这些示例，
-   * 而 load() 只在快照缺失时才灌种子，所以它们永远补不进来。这里给一个显式入口。
-   */
-  private async loadSeedData(): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const seeds: NoteItem[] = seedNotes();
-    const existing: Set<string> = new Set();
-    for (let i = 0; i < this.notes.length; i++) {
-      existing.add(this.notes[i].id);
-    }
-    const missing: NoteItem[] = [];
-    for (let i = 0; i < seeds.length; i++) {
-      if (!existing.has(seeds[i].id)) {
-        missing.push(seeds[i]);
-      }
-    }
-    if (missing.length === 0) {
-      this.notify('示例数据已全部存在');
-      return;
-    }
-    this.notes = this.notes.concat(missing);
-    await this.persistSnapshot();
-    // 新补入的笔记需要把正文真正落到沙箱，否则只有元数据没有 .md
-    try {
-      await this.storage.reconcileFiles(this.notes);
-    } catch (error) {
-      console.error(`示例数据落盘失败: ${JSON.stringify(error)}`);
-    }
-    this.rebuildSpaces();
-    this.refreshGraph();
-    this.notify(`已补入 ${missing.length} 篇示例数据`);
-  }
-
-
-  /**
    * 重建侧边栏项目树。
    * 任何改动「笔记归类」或「项目列表」的操作都必须走这里，
    * 否则侧边栏会停留在上一帧的树，表现为新建的资料不出现。
@@ -606,7 +575,10 @@ struct Index {
     const result: NoteItem[] = [];
     for (let i = 0; i < this.notes.length; i++) {
       const note: NoteItem = this.notes[i];
-      if (this.activeFilter !== FILTER_ALL && note.type !== this.activeFilter) {
+      const type = note.type.toLowerCase();
+      const filterType = type === 'handwriting' || type === 'canvas' || type === '白板' || type === '白纸笔记' || type === '稿纸'
+        ? '手写' : type === 'doc' || type === 'docx' || type === 'word' ? 'Word' : type === 'pdf' ? 'PDF' : type === 'markdown' ? 'Markdown' : note.type;
+      if (this.activeFilter !== FILTER_ALL && filterType !== this.activeFilter) {
         continue;
       }
       if (spaceName.length > 0 && note.category !== spaceName) {
@@ -704,13 +676,15 @@ struct Index {
 
   @Builder
   activeSheetContent() {
-    if (this.activeSheet === 'project_menu' && this.sheetProject !== null) {
+    if (this.activeSheet === 'usage_guide') {
+      UsageGuideSheet({ onClose: () => this.closeSheet() })
+    } else if (this.activeSheet === 'project_menu' && this.sheetProject !== null) {
       ProjectMenuSheet({
         project: this.sheetProject,
         onClose: () => this.closeSheet(),
-        onCreateNoteInProject: (title: string, projectName: string, type: string) => {
+          onCreateNoteInProject: (title: string, projectName: string, type: string) => {
           this.closeSheet();
-          this.createNoteInProject(title, projectName, type);
+          this.requestCreateNote(projectName, type, title);
         },
         onRequestRename: (project: SpaceFolder) => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
@@ -729,13 +703,17 @@ struct Index {
         onClose: () => this.closeSheet(),
         onCreateNoteInProject: (title: string, projectName: string, type: string) => {
           this.closeSheet();
-          this.createNoteInProject(title, projectName, type);
+          this.requestCreateNote(projectName, type, title);
         },
         onImportIntoProject: (projectName: string) => {
           this.closeSheet();
           this.importDocument(projectName);
-        }
+        },
+        onRequestTemplate: () => { this.activeSheet = 'template'; }
       })
+    } else if (this.activeSheet === 'template' && this.sheetProject !== null) {
+      TemplateSheet({ projectName: this.sheetProject.name, onClose: () => this.closeSheet(),
+        onPickTemplate: (name: string, project: string) => { this.createNoteFromTemplate(name, project); } })
     } else if (this.activeSheet === 'rename_project' && this.sheetProject !== null) {
       RenameProjectSheet({
         project: this.sheetProject,
@@ -964,6 +942,8 @@ struct Index {
 
   /** 新建笔记前先弹命名层：记录意图并展示 NameNoteSheet，确认后再真正落地。 */
   private requestCreateNote(projectName: string, type: string, defaultName: string): void {
+    if (this.noteCreateBusy) { return; }
+    this.noteCreateError = '';
     const pending: PendingNoteCreate = {
       projectName: projectName,
       type: type,
@@ -975,17 +955,14 @@ struct Index {
   }
 
   /** 命名层确认：按意图分发到全局新建或项目内新建。 */
-  private commitPendingCreate(name: string): void {
+  private async commitPendingCreate(name: string): Promise<void> {
+    if (this.noteCreateBusy) { return; }
     const pending: PendingNoteCreate | null = this.pendingCreate;
-    this.pendingCreate = null;
     if (pending === null) {
       return;
     }
-    if (pending.projectName.length === 0) {
-      this.createNote(name);
-    } else {
-      this.createNoteInProject(name, pending.projectName, pending.type);
-    }
+    const ok = await this.createNote(name, pending.type, pending.projectName || this.activeSpaceName());
+    if (ok) { this.pendingCreate = null; }
   }
 
   /** 命名层默认标题（取自待创建意图）。 */
@@ -994,37 +971,48 @@ struct Index {
     return pending !== null ? pending.defaultName : '未命名笔记';
   }
 
-  private async createNote(title: string): Promise<void> {
+  private async createNote(title: string, type: string = 'Markdown', projectName: string = this.activeSpaceName(), body: string = ''): Promise<boolean> {
+    if (this.noteCreateBusy) { return false; }
+    this.noteCreateBusy = true;
+    this.noteCreateError = '';
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const now: Date = new Date();
-    const category: string = this.activeSpaceName();
+    const category: string = projectName.trim();
+    const cleanTitle = title.trim() || '未命名笔记';
+    const handwriting = type.toLowerCase() === 'canvas' || type.toLowerCase() === 'handwriting';
     const note: NoteItem = {
-      id: `note-${now.getTime()}`,
-      title: title,
+      id: `note-${now.getTime()}-${Math.floor(Math.random() * 1000000)}`,
+      title: cleanTitle,
       category: category.length === 0 ? '未分类' : category,
-      type: 'Markdown',
+      type: handwriting ? 'Handwriting' : 'Markdown',
       previewText: '空白笔记',
-      tag: '新笔记',
+      tag: '',
       tagColor: '',
       updateTime: this.formatTime(now),
-      contentDetail: `# ${title}\n\n`,
-      tags: ['新笔记'],
+      contentDetail: body || `# ${cleanTitle}\n\n`,
+      strokes: handwriting ? '[]' : undefined,
+      tags: [],
       createdAt: now.getTime(),
       updatedAt: now.getTime()
     };
-    const next = [note].concat(this.notes);
     try {
       await this.storage.create(context, note);
+      const next = [note].concat(this.notes);
       await this.storage.save(next);
+      this.notes = next;
     } catch (error) {
       console.error(`Markdown 正文创建失败: ${JSON.stringify(error)}`);
-      this.notify('新笔记保存未完成，请检查存储后重试');
-      return;
+      this.noteCreateError = '创建失败，请检查存储后重试';
+      this.notify(this.noteCreateError);
+      return false;
+    } finally {
+      this.noteCreateBusy = false;
     }
-    this.notes = next;
     this.rebuildSpaces();
+    this.refreshGraph();
     this.openNote(note);
     this.notify('已创建新笔记');
+    return true;
   }
 
   private createProject(name: string, color: string, icon: string): void {
@@ -1131,71 +1119,12 @@ struct Index {
     this.notify(`已恢复项目「${projectName}」`);
   }
 
-  private async createNoteInProject(title: string, projectName: string, type: string): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const now: Date = new Date();
-    const tag = type === 'Canvas' ? '白板' : (type === 'Doc' ? '资料' : (type === 'Task' ? '待办' : '重点'));
-    const note: NoteItem = {
-      id: `note-${now.getTime()}`,
-      title: title,
-      category: projectName,
-      type: type,
-      previewText: `新创建的${type}资料`,
-      tag: tag,
-      tagColor: '',
-      updateTime: this.formatTime(now),
-      contentDetail: `# ${title}\n\n`,
-      tags: [tag],
-      createdAt: now.getTime(),
-      updatedAt: now.getTime()
-    };
-    this.notes = [note].concat(this.notes);
-    try {
-      await this.storage.create(context, note);
-    } catch (error) {
-      console.error(`资料正文创建失败: ${JSON.stringify(error)}`);
-    }
-    await this.persistSnapshot();
-    this.rebuildSpaces();
-    this.refreshGraph();
-    this.openNote(note);
-    this.notify(`已在「${projectName}」创建${type}`);
+  private async createNoteInProject(title: string, projectName: string, type: string): Promise<boolean> {
+    return this.createNote(title, type, projectName);
   }
 
-  /**
-   * 按模板新建（功能10）。
-   * 模板正文预填结构，标题取模板名；空白模板等价于普通新建。
-   */
-  private async createNoteFromTemplate(templateName: string, projectName: string): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const now: Date = new Date();
-    const category: string = projectName.length === 0 ? '未分类' : projectName;
-    const body: string = templateBody(templateName, now);
-    const note: NoteItem = {
-      id: `note-${now.getTime()}`,
-      title: templateName,
-      category: category,
-      type: 'Markdown',
-      previewText: templateName,
-      tag: templateName,
-      tagColor: '',
-      updateTime: this.formatTime(now),
-      contentDetail: body,
-      tags: [templateName],
-      createdAt: now.getTime(),
-      updatedAt: now.getTime()
-    };
-    this.notes = [note].concat(this.notes);
-    try {
-      await this.storage.create(context, note);
-    } catch (error) {
-      console.error(`模板正文创建失败: ${JSON.stringify(error)}`);
-    }
-    await this.persistSnapshot();
-    this.rebuildSpaces();
-    this.refreshGraph();
-    this.openNote(note);
-    this.notify(`已用「${templateName}」模板新建`);
+  private async createNoteFromTemplate(templateName: string, projectName: string): Promise<boolean> {
+    return this.createNote(templateName, 'Markdown', projectName, templateBody(templateName, new Date()));
   }
 
   private async deleteNote(noteId: string): Promise<void> {
@@ -1880,6 +1809,7 @@ struct Index {
         onOpenStudy: (course: string) => { this.studyCourse = course; this.studyVisible = true; },
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
+        onCreateHandwriting: () => this.requestCreateNote('', 'Handwriting', '未命名手写笔记'),
         onImportDocument: () => this.importDocument(),
         onOpenGraph: () => {
           this.activeNav = NAV_GRAPH;
@@ -1965,6 +1895,7 @@ struct Index {
       HandwritingCanvas({
         note: this.getOrCreateCanvasNote(),
         isScratchpad: false,
+        persistOnDisappear: true,
         onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => this.handleSaved(note, content, kind),
         onSaveStateChange: (state: string) => {
           this.saveState = state;
@@ -2198,7 +2129,7 @@ struct Index {
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onCreateNoteInProject: (title: string, projectName: string, type: string) => {
           // title 在这里作为命名层的默认标题（未命名笔记 / 未命名导图 / 未命名参考资料）
-          this.requestCreateNote(projectName, type, title);
+            this.requestCreateNote(projectName, type, title);
         },
         onCreateFromTemplate: (templateName: string, projectName: string) => {
           this.createNoteFromTemplate(templateName, projectName);
@@ -2363,6 +2294,7 @@ struct Index {
 
       if (this.settingsVisible) {
         AppearanceSheet({
+          onOpenGuide: () => { this.settingsVisible = false; this.activeSheet = 'usage_guide'; },
           onOpenPrivacy: () => { this.settingsVisible = false; this.privacyVisible = true; },
           onOpenBackup: () => {
             if (this.readingOpen || this.fullScreenDocOpen) { this.notify('请先保存并退出当前阅读，再备份学习资料'); return; }
@@ -2372,9 +2304,6 @@ struct Index {
             animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.settingsVisible = false;
             });
-          },
-          onLoadSeedData: () => {
-            this.loadSeedData();
           }
         })
       }
@@ -2397,15 +2326,23 @@ struct Index {
       if (this.pendingCreate !== null) {
         NameNoteSheet({
           defaultName: this.pendingDefaultName(),
+          noteType: this.pendingCreate?.type || 'Markdown',
+          busy: this.noteCreateBusy,
+          errorMessage: this.noteCreateError,
+          onTypeChange: (type: string) => {
+            const pending = this.pendingCreate;
+            if (pending && !this.noteCreateBusy) {
+              this.pendingCreate = { projectName: pending.projectName, type, defaultName: pending.defaultName };
+            }
+          },
           onClose: () => {
+            if (this.noteCreateBusy) { return; }
             animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.pendingCreate = null;
             });
           },
           onConfirm: (name: string) => {
-            animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-              this.commitPendingCreate(name);
-            });
+            this.commitPendingCreate(name);
           }
         })
       }

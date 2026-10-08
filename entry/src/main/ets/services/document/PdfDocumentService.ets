@@ -5,7 +5,7 @@
  *   1. 原始 PDF 文件在沙箱内的持久化复制与管理 (files/documents/)
  *   2. 读取 PDF 元数据、页数与页面尺寸
  *   3. 页面模型动态加载：与 HarmonyOS PDF Kit 架构对接
- *   4. 原文失败时报告错误；示例页面仅用于明确标注的演示资料
+ *   4. 原文失败时报告错误，不展示替代的模拟页面
  */
 import { Context } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
@@ -163,25 +163,7 @@ export class PdfDocumentService {
       pages.push({
         pageIndex: i,
         pageNumberText: `第 ${i + 1} 页 · 共 ${count} 页`,
-        sections: [
-          {
-            type: 'header',
-            title: i === 0 ? `《${title}》· 核心研读` : `第 ${i + 1} 部分 · 要点深研`,
-            text: i === 0
-              ? '请在下方文档正文中进行划线、荧光高亮或使用手写笔直接演算。'
-              : '本页包含推导公式、关键结论与对应习题，可在答题留白区直接作答。'
-          },
-          {
-            type: 'question',
-            tag: i % 2 === 0 ? '重点考点 · 原理分析' : '推导计算 · 核心考查',
-            score: `${(i + 1) * 5}分`,
-            text: `[第 ${i + 1} 页核心内容]\n1. 重点研读定理及推导公式；\n2. 结合左侧文档结构与右侧 AI 伴读展开精读分析。`
-          },
-          {
-            type: 'blank',
-            text: '【手写演算与批注专区】请在此处落笔书写解题思路与要点草稿...'
-          }
-        ]
+        sections: []
       });
     }
     return pages;

@@ -7,6 +7,7 @@
  */
 import { ColorPalette, TypographyTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
+import { AppIcon } from '../../common/AppIcon';
 
 /** 遮罩 + 底部卡片。body 由调用方通过尾随闭包注入。 */
 @Component
@@ -58,6 +59,7 @@ export struct SheetOverlay {
 @Component
 export struct SheetActionRow {
   @Prop label: string = '';
+  @Prop icon: Resource | undefined = undefined;
   @Prop isDestructive: boolean = false;
   onAction: () => void = () => {};
 
@@ -69,17 +71,23 @@ export struct SheetActionRow {
   }
 
   build() {
-    Row() {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 10 }) {
+      if (this.icon !== undefined) {
+        AppIcon({ source: this.icon, tint: this.isDestructive ? this.palette().danger : this.palette().accent })
+      }
       Text(this.label)
         .fontSize(TypographyTokens.CAPTION)
         .fontColor(this.isDestructive ? this.palette().danger : this.palette().inkPrimary)
         .layoutWeight(1)
+      }.width('100%')
     }
     .width('100%')
-    .height(this.isPhone ? 44 : 32)
+    .height(48)
     .padding({ left: 8, right: 8 })
     .borderRadius(6)
     .backgroundColor(this.palette().surfaceSubtle)
+    .accessibilityText(this.label)
     .onClick(() => this.onAction())
   }
 }
@@ -88,14 +96,15 @@ export struct SheetActionRow {
 @Component
 export struct SheetCancelButton {
   onCancel: () => void = () => {};
+  @Prop label: string = '取消';
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   build() {
-    Button('取消')
+    Button(this.label)
       .width('100%')
-      .height(this.isPhone ? 44 : 28)
+      .height(44)
       .fontSize(TypographyTokens.CAPTION)
       .fontColor(ThemeHelper.paletteOfDark(this.isDarkMode).inkSecondary)
       .backgroundColor(ThemeHelper.paletteOfDark(this.isDarkMode).surfaceSubtle)
@@ -147,7 +156,7 @@ export struct DestructiveConfirm {
           Row({ space: 6 }) {
             Button('取消')
               .layoutWeight(1)
-              .height(26)
+              .height(44)
               .fontSize(TypographyTokens.TINY)
               .fontColor(this.palette().inkSecondary)
               .backgroundColor(this.palette().surface)
@@ -157,7 +166,7 @@ export struct DestructiveConfirm {
               })
             Button('确认删除')
               .layoutWeight(1)
-              .height(26)
+              .height(44)
               .fontSize(TypographyTokens.TINY)
               .fontColor(Color.White)
               .backgroundColor(this.palette().danger)

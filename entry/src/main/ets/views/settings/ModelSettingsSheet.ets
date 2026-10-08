@@ -8,8 +8,8 @@ import { RemoteAiPolicy } from '../../services/ai/RemoteAiPolicy';
 import { createProvider } from '../../services/ai/ModelProvider';
 import { AGENT_TOOLS, toolDisplayName } from '../../services/ai/ToolRegistry';
 import { AgentToolSpec } from '../../common/types/AgentTypes';
-import { AiModelCatalog } from '../../services/ai/AiModelCatalog';
-import { CloudModelCatalog } from './CloudModelCatalog';
+import { AssistantModeService, ASSISTANT_MODE_KEY } from '../../services/ai/AssistantModeService';
+import { REMOTE_AI_ENABLED } from '../../common/constants/RuntimeCapabilities';
 
 interface ProtocolOption { label: string; value: ProviderProtocol; }
 const PROTOCOLS: ProtocolOption[] = [
@@ -26,12 +26,12 @@ export struct ModelSettingsSheet {
   @Prop @Watch('requestClose') closeToken: number = 0;
   @StorageProp('flowmindDarkMode') dark: boolean = false;
   @StorageProp('flowmindIsPhone') phone: boolean = false;
+  @StorageProp(ASSISTANT_MODE_KEY) assistantMode: string = 'local';
   @State profiles: ModelProfile[] = [];
   @State currentId: string = '';
   @State activeId: string = '';
   @State tab: number = 0;
   @State sourceTab: number = 0;
-  @State catalogId: string = 'seed-pro';
   @State advancedSection: number = -1;
   @State showConsentDetails: boolean = false;
   @State showToolList: boolean = false;
@@ -74,6 +74,9 @@ export struct ModelSettingsSheet {
     this.busy = true;
     try {
       const service = ModelConfigService.getInstance();
+      await AssistantModeService.getInstance().init(getContext(this) as common.UIAbilityContext);
+      this.sourceTab = this.assistantMode === 'remote' ? 1 : 0;
+      if (!REMOTE_AI_ENABLED) { this.sourceTab = 0; return; }
       await service.init(getContext(this) as common.UIAbilityContext);
       const profiles = await service.loadProfiles();
       const active = await service.getActiveProfile();
@@ -154,18 +157,16 @@ export struct ModelSettingsSheet {
     });
   }
 
-  private useCatalogApi(): void {
-    if (this.busy || !this.currentId) { return; }
-    const draft = AiModelCatalog.createApiDraft(this.catalogId);
-    if (!draft) { return; }
-    this.drafts.set(this.currentId, this.form());
-    this.profiles = [...this.profiles, draft]; this.newProfiles.add(draft.id);
-    this.drafts.set(draft.id, draft); this.fill(draft); this.sourceTab = 0; this.tab = 0;
-    this.report('已新建自配 API 草稿。核对地址和模型 ID，填写密钥并确认发送授权后测试；原档案保留。');
+  private async useLocal(): Promise<void> {
+    this.busy = true;
+    try { await AssistantModeService.getInstance().setMode('local'); this.report('已启用本地助手'); }
+    catch { this.report('助手设置保存失败，请重试', true); }
+    finally { this.busy = false; }
   }
 
   private requestClose(): void {
     if (this.busy) { return; }
+    if (!this.currentId) { this.onClose(); return; }
     this.drafts.set(this.currentId, this.form());
     let dirty = this.newProfiles.size > 0;
     this.drafts.forEach((draft: ModelProfile, id: string) => {
@@ -183,10 +184,11 @@ export struct ModelSettingsSheet {
     try {
       p.updatedAt = Date.now();
       const saved = await ModelConfigService.getInstance().saveAndActivate(p);
+      await AssistantModeService.getInstance().setMode(RemoteAiPolicy.consented(p) ? 'remote' : 'local');
       if (!this.alive) { return; }
       const pending = this.profiles.filter((item: ModelProfile) => this.newProfiles.has(item.id) && item.id !== p.id);
       this.profiles = saved.concat(pending); this.activeId = p.id; this.drafts.delete(p.id); this.newProfiles.delete(p.id); this.fill(saved.find((item: ModelProfile) => item.id === p.id) || p);
-      this.report('档案已保存并启用。连接状态请单独测试。');
+      this.report(RemoteAiPolicy.consented(p) ? '模型已保存并启用' : '配置已保存，当前使用本地助手。授权后可启用模型。');
     } catch { this.report('保存失败，输入已保留，请重试', true); }
     finally { this.busy = false; }
   }
@@ -240,6 +242,7 @@ export struct ModelSettingsSheet {
     this.busy = true;
     try {
       await ModelConfigService.getInstance().resetProfiles();
+      await AssistantModeService.getInstance().setMode('local');
       this.drafts.clear(); this.newProfiles.clear(); this.profiles = await ModelConfigService.getInstance().loadProfiles();
       this.activeId = this.profiles[0].id; this.fill(this.profiles[0]); this.resetWarning = false;
       this.report('模型档案已重置，填写服务后可重新授权。');
@@ -260,9 +263,7 @@ export struct ModelSettingsSheet {
 
   @Builder
   connection() {
-    this.hint('配置保存在本机，AI 请求发送至你填写的服务。也可在模型目录中选择接入模版。')
-    Button('从模型目录新建').height(44).width('100%').type(ButtonType.Normal).borderRadius(8)
-      .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary).onClick(() => { this.sourceTab = 1; })
+    this.hint('可选。授权后将资料发往你配置的服务。')
     this.field('档案名称', () => this.label, '例如：学习助手', (v: string) => { this.label = v; })
     this.field('服务地址', () => this.baseUrl, 'https://…', (v: string) => {
       if (v.split('/')[2] !== this.baseUrl.split('/')[2]) { this.apiKey = ''; }
@@ -390,11 +391,11 @@ export struct ModelSettingsSheet {
     Column() {
       Column({ space: 12 }) {
         Row() {
-          Text('AI 设置').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
+          Text('助手设置').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
           Button('✕').height(44).width(44).enabled(!this.busy).accessibilityText('关闭模型设置').onClick(() => this.requestClose())
         }.width('100%')
         Row({ space: 8 }) {
-          ForEach(['自配 API', '云端 AI'], (name: string, index: number) => {
+          ForEach(REMOTE_AI_ENABLED ? ['本地助手', '自配模型'] : ['本地助手'], (name: string, index: number) => {
             Button(name).height(44).layoutWeight(1).fontSize(14)
               .type(ButtonType.Normal).borderRadius(8)
               .backgroundColor(this.sourceTab === index ? this.palette().accentSoft : this.palette().surfaceSubtle)
@@ -402,7 +403,7 @@ export struct ModelSettingsSheet {
               .enabled(!this.busy).onClick(() => { this.sourceTab = index; })
           }, (name: string) => name)
         }.width('100%')
-        if (this.sourceTab === 0) {
+        if (this.sourceTab === 1) {
           Row({ space: 8 }) {
             Select(this.profileOptions()).selected(Math.max(0, this.profiles.findIndex((p: ModelProfile) => p.id === this.currentId)))
               .value(this.label || '模型档案').layoutWeight(1).height(48).font({ size: 14 }).fontColor(this.palette().inkPrimary)
@@ -421,15 +422,20 @@ export struct ModelSettingsSheet {
         }
         Scroll() {
           Column({ space: 14 }) {
-            if (this.sourceTab === 1) {
-              CloudModelCatalog({ selectedId: this.catalogId, onSelect: (id: string) => { this.catalogId = id; } })
+            if (this.sourceTab === 0) {
+              Text('离线可用').fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+              this.hint('原文检索、要点摘录、待办整理与资料概览，无需账号或密钥。')
+              this.hint('按原文与规则整理，结果可回到来源核对。')
+              Button('使用指引').height(44).width('100%').onClick(() => {
+                this.report('先新建或导入资料，在墨客引用笔记后选择用法。PDF 需先提取并校对文字。');
+              })
             } else if (this.tab === 0) { this.connection() } else { this.advanced() }
           }.width('100%').alignItems(HorizontalAlign.Start).enabled(!this.busy)
         }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
         if (this.feedback.length > 0) {
           Text(this.feedback).fontSize(12).lineHeight(18).width('100%').fontColor(this.feedbackError ? this.palette().danger : this.palette().inkSecondary)
         }
-        if (this.deleteWarning && this.sourceTab === 0) {
+        if (this.deleteWarning && this.sourceTab === 1) {
           Row({ space: 8 }) {
             Button('确认删除档案').height(44).layoutWeight(1).enabled(!this.busy).onClick(() => this.remove())
             Button('取消').height(44).layoutWeight(1).onClick(() => { this.deleteWarning = false; })
@@ -438,15 +444,12 @@ export struct ModelSettingsSheet {
         if (this.closeWarning) {
           this.hint('还有未保存的配置。可以切回对应档案保存，或放弃本次修改后关闭。')
           Row({ space: 8 }) {
-            Button('继续编辑').height(44).layoutWeight(1).onClick(() => { this.closeWarning = false; this.sourceTab = 0; })
+            Button('继续编辑').height(44).layoutWeight(1).onClick(() => { this.closeWarning = false; this.sourceTab = 1; })
             Button('放弃修改并关闭').height(44).layoutWeight(1).onClick(() => this.onClose())
           }.width('100%')
-        } else if (this.sourceTab === 1) {
-          Text(AiModelCatalog.find(this.catalogId)?.name || '请选择模型').fontSize(14).fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkPrimary).width('100%')
-          this.hint(AiModelCatalog.find(this.catalogId)?.setupHint || '')
-          Button('用自己的 API 接入').height(48).width('100%').enabled(!this.busy && this.currentId.length > 0)
-            .type(ButtonType.Normal).borderRadius(10).backgroundColor(this.palette().accent).fontColor(Color.White).onClick(() => this.useCatalogApi())
+        } else if (this.sourceTab === 0) {
+          Button(this.assistantMode === 'local' ? '本地助手已启用' : '使用本地助手').height(48).width('100%').enabled(!this.busy)
+            .type(ButtonType.Normal).borderRadius(10).backgroundColor(this.palette().accent).fontColor(Color.White).onClick(() => this.useLocal())
         } else {
           Row({ space: 8 }) {
             Button(this.busy ? '处理中…' : '测试连接').height(48).layoutWeight(1).enabled(!this.busy).onClick(() => this.test())

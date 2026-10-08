@@ -1,4 +1,5 @@
 import { ModelProfile } from '../../common/types/ModelConfig';
+import { REMOTE_AI_ENABLED } from '../../common/constants/RuntimeCapabilities';
 
 /** One mandatory policy at every HTTP entry, including connection tests and embeddings. */
 export class RemoteAiPolicy {
@@ -22,6 +23,7 @@ export class RemoteAiPolicy {
       p.remoteConsentProtocol === p.protocol && Number.isFinite(p.remoteConsentedAt) && p.remoteConsentedAt! > 0;
   }
   static assertAllowed(p: ModelProfile): void {
+    if (!REMOTE_AI_ENABLED) { throw new Error('此版本使用本地助手，不提供远程模型接入'); }
     const error = RemoteAiPolicy.transportError(p);
     if (error) { throw new Error(error); }
     if (!RemoteAiPolicy.consented(p)) { throw new Error('请在模型设置中确认此服务的数据发送授权；离线功能仍可使用'); }

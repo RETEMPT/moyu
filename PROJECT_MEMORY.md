@@ -1,10 +1,12 @@
 # FlowMind（墨语）项目全景记忆与技术备忘录 (Project Memory)
 
-> **项目定位**：鸿蒙本地课程资料、双链笔记与可选远程 AI 研读系统
+> **项目定位**：鸿蒙本地课程资料、双链笔记与离线助手；远程模型只留在 debug 开发模式
 > **文档维护状态**：历史设计备忘；当前实现以源码及下列验收文档为准
 > **面向对象**：核心开发团队、开源贡献者
 
 2026-10-06：当前架构、数据持久化边界与迁移规则见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)。附近互通为待双真机验收的手动副本传递，范围见 [MULTIDEVICE_PLAN.md](docs/MULTIDEVICE_PLAN.md)；不是全库自动同步。原有 GPU/设备性能推断不得当作实际测量结果，验收以 [WORKFLOW_REVIEW.md](docs/WORKFLOW_REVIEW.md) 的执行记录为准。
+
+2026-10-08：v1.0.2 按审核反馈，release 仅提供离线助手，所有远程模型 HTTP 入口由 `RuntimeCapabilities` 与 `RemoteAiPolicy` 阻断。首次不注入样例，模板和示例分离，生产模块中无云端目录。笔输入使用 `SourceTool.Pen`，公开笔身事件使用 Penkit 的 `doubleTap` / `squeeze`；真实硬件体验尚待验证。201 项工作流和 11 项发布规则测试通过。常用工具用统一 SVG 图标、44vp 原生按钮、提示和无障碍名称；文档菜单使用 ArkUI `bindMenu`，主动分享通过 Share Kit 选择接收方。当前约束与复测步骤见 [整改方案](docs/REVIEW_FIXES_2026-10-08.md) 与 [鸿蒙适配](docs/HARMONY_NATIVE.md)，下方历史性能推断不代表已验证结果。
 
 ---
 
@@ -15,7 +17,7 @@
 * **核心业务形态**：
   1. **Markdown 沉浸式双链阅读与写作**：支持纯文本随笔、目录大纲、反向链接直达、LaTeX 数学公式。
   2. **原生试卷与 PDF 多页 A4 矢量批注工作台**：对标考研刷题、公考复习场景，支持多页 A4 原盘排版、矢量手写墨水、二次贝塞尔平滑与缩略图快速导航。
-  3. **AI 伴读与边读边写分屏**：Pad 右侧伴读与草稿区，模型使用用户配置的远程服务；未内置端侧大模型或接入小艺。
+  3. **本地伴读与边读边写分屏**：Pad 右侧伴读与草稿区，release 使用原文检索和摘录；debug 可选择用户配置的远程服务。未内置端侧大模型或接入小艺。
 * **数据主权与存储模型**：
   * 坚持 **Local-First** 纯本地优先架构；
   * 双轨持久化：`Preferences` 维护 JSON 状态快照，沙箱 `filesDir/notes/` 保存 `.md` 正文。候选版本新增排队写入与正文替换保护；二者不是联合事务，性能尚需实际测量；
@@ -35,8 +37,8 @@
 ├── hvigorfile.ts                          # Hvigor 工程入口
 ├── entry/src/main/ets/
 │   ├── common/                            # 公共基础设施（零业务逻辑、零上层依赖）
-│   │   ├── constants/DesignTokens.ets     # UI/UX Pro Max 规范 Token、Obsidian 极简中性调色板
-│   │   ├── seed/SeedContent.ets           # 初始示例数据工厂
+│   │   ├── constants/DesignTokens.ets     # 紫墨浅/深色调色板与触控尺寸
+│   │   ├── templates/NoteTemplates.ets    # 用户主动选择的空白模板；样例在 tools/fixtures
 │   │   ├── theme/                         # ThemeMode、ThemeManager、ThemeHelper
 │   │   ├── types/                         # NoteItem、CanvasStroke、PdfAnnotationTypes、TodoItem
 │   │   └── utils/                         # TimeFormat、CalendarUtil、ForEachKeys
@@ -59,19 +61,12 @@
 
 ---
 
-## 三、 Obsidian × Notion 极简商务设计规范
+## 三、 图标与操作规范
 
-1. **绝对剔除 Emoji 玩具化图标**：
-   * 严禁在界面工具栏、底栏、顶栏及弹窗中使用彩色 Emoji。
-   * 全线采用 Obsidian 风格的高精度单色几何拓扑字符与排版符号：
-     * `←`（返回）、`▤`（大纲）、`✎`（批注/画笔）、`⊡`（双链）、`✦`（AI伴读）、`▦`（画板/全景）、`⛶`（全屏）、`⋯`（更多）
-     * `▰`（荧光笔）、`⌫`（橡皮擦）、`✥`（漫游手势）、`↶`（撤销笔迹）、`—`（单页）、`‹` / `›`（翻页）、`☰`（目录/侧栏）、`▯`（双页）
-     * `⭳`（导出）、`↗`（全屏/弹窗）、`⇄`（切换）、`⧉`（分屏）、`⎙`（打印）、`⌕`（检索）、`⎚`（清空）
-2. **中性灰阶与高对比度层次**：
-   * 严格依托 `entry/src/main/ets/common/constants/DesignTokens.ets`；
-   * 背景色采用深邃中性黑 `#121212` 与纯白 `#FFFFFF`，表面卡片采用 `#1E1E1E` / `#F5F5F7`；
-   * 边框采用超细微半透明描边（`1vp rgba(255,255,255,0.08)` / `rgba(0,0,0,0.06)`）；
-   * 按钮与触控区域严格保证 44vp 最小触控热区。
+1. 常用操作优先用 `AppIcon` / `IconButton`，图标由 `tools/generate-ui-icons.mjs` 生成；不再增加字体符号或 Emoji 工具按钮。24 单位网格、1.8 单位圆角描边，主题色由调色板填充。
+2. 图标按钮至少 44vp，提供明确的 `accessibilityText` 和原生 `bindTips`。选中、禁用与危险操作保持可辨识状态；文档更多操作使用原生菜单。
+3. 保留导航名称、菜单含义、保存状态和不可逆操作的确认文字。首页与阅读器不重复解释常用工具，详细说明进入“使用指引”。
+4. 配色统一依托 `DesignTokens.ets` 的紫墨浅/深色方案，品牌笔尖与工具笔尖对应；新增资产、再生成方法与视觉预览见 [图标规范](design/ICON_SYSTEM.md)。
 
 ---
 
@@ -81,7 +76,7 @@
    * **阅读模式（Reading Mode）**：关闭手写图层手势响应，全屏触控归属页面滚动、翻页与双指缩放。
    * **批注模式（Annotation Mode）**：激活手写图层，拦截笔触输入并实时绘制墨水。
 2. **硬件级 SourceTool 分流与防误触（Palm Rejection）**：
-   * 识别手写笔硬件输入（`Pencil`）与手指触摸（`Finger`）；
+   * 识别手写笔硬件输入（`SourceTool.Pen`）与手指触摸（`SourceTool.Finger`）；
    * 笔尖接触屏幕产生高精度 `CanvasStroke` 坐标点，采用 **二次贝塞尔曲线（Quadratic Bézier）** 进行插值平滑，彻底消除折线感；
    * 手掌或多指触碰时，手写图层主动过滤，仅允许双指捏合缩放（Pinch-to-Zoom）与抓手漫游（Hand Pan），提供媲美原生纸质试卷的书写体验。
 

@@ -20,7 +20,7 @@ import {
   createMessage
 } from '../../common/types/ChatSession';
 import { AgentToolSpec, AgentToolExecutor, AgentToolResult } from '../../common/types/AgentTypes';
-import { ModelProvider, StreamHandle, createProvider } from './ModelProvider';
+import { ModelProvider, StreamHandle, StreamHandleImpl, createProvider } from './ModelProvider';
 import { ModelConfigService } from './ModelConfigService';
 import { buildOpenAiToolsJson, findTool } from './ToolRegistry';
 import { ModelProfilePolicy } from './ModelProfilePolicy';
@@ -227,9 +227,9 @@ export class AgentOrchestrator {
     }
     if (assistantMsg.text.trim().length === 0) {
       if (assistantMsg.reasoningContent !== undefined && assistantMsg.reasoningContent.trim().length > 0) {
-        assistantMsg.text = '（已完成深度思考推演。可在上方展开查看完整推理过程；若需提炼特定文档，请在右侧栏确认伴读文档或 @ 关联笔记）';
+        assistantMsg.text = '模型只返回了思考过程，未返回答案。可重试或切换本地助手。';
       } else {
-        assistantMsg.text = '未能从当前知识库切片或模型获取到有效内容，建议在右侧栏绑定伴读文档或使用「+ 附加笔记」补充上下文。';
+        assistantMsg.text = '模型未返回答案。可重试或切换本地助手。';
       }
     }
     onDelta(assistantMsg.text, true, assistantMsg.reasoningContent);
@@ -247,7 +247,20 @@ export class AgentOrchestrator {
     onRoundReasoning: (reasoning: string) => void
   ): Promise<AgentRound> {
     if (!profile.stream) {
-      const text = await provider.complete(profile, { messages, temperature: profile.temperature, maxTokens: profile.maxTokens, stream: false });
+      const text = await new Promise<string>((resolve, reject) => {
+        let settled = false;
+        let transport: StreamHandle | null = null;
+        const finish = (value: string, error?: string): void => {
+          if (settled) { return; } settled = true; clearTimeout(timer);
+          if (error) { transport?.abort(); reject(new Error(error)); } else { resolve(value); }
+        };
+        const timer = setTimeout(() => finish('', '模型暂未响应，请重试或切换本地助手'), 60000);
+        if (onHandle) { onHandle(new StreamHandleImpl(() => finish('', '已停止生成'))); }
+        if (settled) { return; }
+        provider.complete(profile, { messages, temperature: profile.temperature, maxTokens: profile.maxTokens, stream: false },
+          (handle: StreamHandle) => { transport = handle; if (settled) { handle.abort(); } })
+          .then((value: string) => finish(value)).catch((error: Error) => finish('', error.message));
+      });
       return { text, reasoningText: '', toolCalls: [] };
     }
     let text: string = '';
@@ -279,6 +292,13 @@ export class AgentOrchestrator {
         resolve({ text, reasoningText, toolCalls: calls });
       };
 
+      let underlying: StreamHandle | null = null;
+      const guarded = new StreamHandleImpl(() => {
+        if (!settled) { settled = true; reject(new Error('已停止生成')); }
+        underlying?.abort();
+      });
+      if (onHandle) { onHandle(guarded); }
+      if (settled) { return; }
       provider.completeStream(
         profile,
         {
@@ -289,6 +309,7 @@ export class AgentOrchestrator {
           toolsJson: toolsJson.length > 0 ? toolsJson : undefined
         },
         (chunk: ChatCompletionChunk) => {
+          if (settled) { return; }
           if (chunk.error !== undefined && chunk.error.length > 0) {
             if (!settled) {
               settled = true;
@@ -323,9 +344,8 @@ export class AgentOrchestrator {
           }
         }
       ).then((handle: StreamHandle) => {
-        if (onHandle !== undefined) {
-          onHandle(handle);
-        }
+        underlying = handle;
+        if (settled) { handle.abort(); }
       }).catch((err: Error) => {
         if (!settled) {
           settled = true;

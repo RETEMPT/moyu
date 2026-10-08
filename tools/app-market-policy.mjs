@@ -2,7 +2,8 @@ export const REQUIRED_CASES = [
   'privacy_offline', 'offline_learning', 'ocr_pdf_cancel', 'reader_restart', 'upgrade_persistence',
   'permission_denied', 'ai_consent_revoke', 'ai_failure_cancel', 'backup_restore', 'nearby_transfer',
   'nearby_interruption_cleanup', 'keyboard_small_screen', 'font_rotation_multiwindow',
-  'dark_reduce_motion', 'performance', 'delete_export'
+  'dark_reduce_motion', 'performance', 'delete_export',
+  'first_launch_empty', 'local_assistant', 'create_note', 'stylus_handwriting'
 ];
 
 /** Parse JSON with comments/trailing commas without executing configuration as JavaScript. */

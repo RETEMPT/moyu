@@ -22,6 +22,9 @@ import { AgentOrchestrator } from '../../../services/ai/AgentOrchestrator';
 import { ModelConfigService, ACTIVE_STORAGE_KEY } from '../../../services/ai/ModelConfigService';
 import { StreamHandle } from '../../../services/ai/ModelProvider';
 import { ModelSettingsSheet } from '../../settings/ModelSettingsSheet';
+import { AssistantModeService, ASSISTANT_MODE_KEY } from '../../../services/ai/AssistantModeService';
+import { LocalAssistantService } from '../../../services/ai/LocalAssistantService';
+import { REMOTE_AI_ENABLED } from '../../../common/constants/RuntimeCapabilities';
 
 interface AiMessage {
   id: string;
@@ -44,6 +47,10 @@ const COMPANION_PROMPTS: CompanionPrompt[] = [
   { label: '✦ 提取知识卡', query: '请从当前内容中抽取核心概念、关键定理与关联知识，整理为结构化知识卡片。' },
   { label: '✦ 生成待办与行动', query: '请分析当前文档，梳理需要用户落实的复习待办、实践任务与关键时间节点。' }
 ];
+const LOCAL_COMPANION_PROMPTS: CompanionPrompt[] = [
+  { label: '提取要点', query: '提取要点' },
+  { label: '整理待办', query: '整理待办' }
+];
 
 /** 按文档 id 记忆的伴读会话（模块级，跨组件实例存活） */
 const COMPANION_CACHE: Map<string, AiMessage[]> = new Map();
@@ -63,13 +70,15 @@ function emptyCard(id: string, sender: 'user' | 'assistant'): AiMessage {
 
 @Component
 export struct HuaweiAiSplitPanel {
-  @Require @Prop note: NoteItem;
+  @Require @Prop @Watch('onNoteChanged') note: NoteItem;
   onClose: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp(ACTIVE_STORAGE_KEY) activeProfileId: string = '';
+  @StorageProp(ACTIVE_STORAGE_KEY) @Watch('refreshModelLabel') activeProfileId: string = '';
+  @StorageProp(ASSISTANT_MODE_KEY) @Watch('refreshModelLabel') assistantMode: string = 'local';
+  @StorageProp('flowmindModelRevision') @Watch('refreshModelLabel') modelRevision: number = 0;
 
-  @State currentModel: string = '未配置模型';
+  @State currentModel: string = '本地助手 · 离线';
   @State inputQuestion: string = '';
   @State messages: AiMessage[] = [];
   @State streamingCard: AiMessage | null = null;
@@ -80,18 +89,32 @@ export struct HuaweiAiSplitPanel {
   private streamHandle: StreamHandle | null = null;
   private accumulated: string = '';
   private scroller: Scroller = new Scroller();
-  private ready: boolean = false;
+  @State ready: boolean = false;
+  private alive: boolean = true;
+  private requestId: number = 0;
+  private loadedNoteId: string = '';
 
   aboutToAppear(): void {
+    this.alive = true;
+    this.loadedNoteId = this.note.id;
     this.messages = COMPANION_CACHE.get(this.note.id) ?? [];
     this.initModel();
+  }
+
+  aboutToDisappear(): void { this.alive = false; this.cancelStream(); }
+
+  onNoteChanged(): void {
+    this.cancelStream(); this.accumulated = '';
+    this.loadedNoteId = this.note.id;
+    this.messages = COMPANION_CACHE.get(this.note.id) ?? [];
   }
 
   /** 子组件自行取 Context；Index 已用同一单例完成初始化，取不到也不影响使用 */
   private async initModel(): Promise<void> {
     try {
       const ctx = getContext(this) as common.UIAbilityContext;
-      await ModelConfigService.getInstance().init(ctx);
+      await AssistantModeService.getInstance().init(ctx);
+      if (REMOTE_AI_ENABLED) { await ModelConfigService.getInstance().init(ctx); }
     } catch (error) {
       console.error(`伴读模型自初始化跳过: ${JSON.stringify(error)}`);
     }
@@ -100,9 +123,10 @@ export struct HuaweiAiSplitPanel {
   }
 
   private async refreshModelLabel(): Promise<void> {
+    if (this.assistantMode === 'local' || !REMOTE_AI_ENABLED) { this.currentModel = '本地助手 · 离线'; return; }
     try {
       const profile: ModelProfile = await ModelConfigService.getInstance().getActiveProfile();
-      this.currentModel = profile.apiKey.length === 0 ? `${profile.label}（未填密钥）` : profile.label;
+      this.currentModel = profile.apiKey.length === 0 ? '自配模型 · 待配置' : profile.label;
     } catch {
       this.currentModel = '未配置模型';
     }
@@ -119,7 +143,7 @@ export struct HuaweiAiSplitPanel {
   }
 
   private persist(): void {
-    COMPANION_CACHE.set(this.note.id, this.messages);
+    COMPANION_CACHE.set(this.loadedNoteId, this.messages);
   }
 
   private clearThread(): void {
@@ -151,6 +175,9 @@ export struct HuaweiAiSplitPanel {
   }
 
   private async runL1(query: string): Promise<void> {
+    const request = ++this.requestId;
+    const noteId = this.note.id;
+    const current = (): boolean => this.alive && request === this.requestId && noteId === this.note.id;
     const doc: CurrentDocContext = {
       title: this.note.title,
       content: StudySourceService.context(this.note),
@@ -159,11 +186,22 @@ export struct HuaweiAiSplitPanel {
     const ctx: AgentRunContext = {
       query,
       currentDoc: doc,
-      history: []
+      history: [],
+      isCancelled: () => !current()
     };
 
     try {
+      if (this.assistantMode === 'local' || !REMOTE_AI_ENABLED) {
+        await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+        if (!current()) { return; }
+        const result = await new LocalAssistantService().answer(query, { notes: [this.note], pinned: [this.note] }, () => !current());
+        if (!current()) { return; }
+        const card = this.parseCard(result.text); card.id = `a-${Date.now()}`;
+        this.messages = [...this.messages, card]; this.streamingCard = null;
+        this.persist(); this.scrollToBottom(); return;
+      }
       await this.orchestrator.run('L1', ctx, (text: string, done: boolean) => {
+        if (!current()) { return; }
         this.accumulated = text;
         const card: AiMessage = this.parseCard(text);
         card.id = this.streamingCard !== null ? this.streamingCard.id : `a-${Date.now()}`;
@@ -177,19 +215,22 @@ export struct HuaweiAiSplitPanel {
           this.scrollToBottom();
         }
       }, (handle: StreamHandle) => {
-        this.streamHandle = handle;
+        if (current()) { this.streamHandle = handle; } else { handle.abort(); }
       });
     } catch (err) {
+      if (!current()) { return; }
       this.isLoading = false;
-      const failed: AiMessage = emptyCard(`a-${Date.now()}`, 'assistant');
+      const failed: AiMessage = this.parseCard(this.accumulated);
+      failed.id = `a-${Date.now()}`;
       failed.error = err instanceof Error ? err.message : '请求失败';
       this.streamingCard = null;
       this.messages = [...this.messages, failed];
       this.persist();
-    }
+    } finally { if (current()) { this.isLoading = false; this.streamHandle = null; } }
   }
 
   private cancelStream(): void {
+    this.requestId++;
     if (this.streamHandle !== null) {
       this.streamHandle.abort();
       this.streamHandle = null;
@@ -204,6 +245,7 @@ export struct HuaweiAiSplitPanel {
     }
     this.isLoading = false;
     this.streamingCard = null;
+    this.accumulated = '';
   }
 
   /**
@@ -435,13 +477,13 @@ export struct HuaweiAiSplitPanel {
         .fontSize(TypographyTokens.TITLE_SUB)
         .fontWeight(FontWeight.Bold)
         .fontColor(this.palette().inkPrimary)
-      Text(`已绑定当前文档《${this.note.title}》，只依据这篇文档作答。`)
+      Text(`资料：《${this.note.title}》`)
         .fontSize(TypographyTokens.CAPTION)
         .fontColor(this.palette().inkMuted)
         .textAlign(TextAlign.Center)
 
       Column({ space: 8 }) {
-        ForEach(COMPANION_PROMPTS, (p: CompanionPrompt) => {
+        ForEach(this.assistantMode === 'local' || !REMOTE_AI_ENABLED ? LOCAL_COMPANION_PROMPTS : COMPANION_PROMPTS, (p: CompanionPrompt) => {
           Text(p.label)
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().accent)

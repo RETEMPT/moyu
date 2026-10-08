@@ -19,6 +19,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -45,8 +46,13 @@ function findBrowser() {
  * 用 --default-background-color=00000000 保证透明区域真的是透明，
  * 否则 Chromium 会给截图填上白底，前景层就会带上白色方块。
  */
-function renderSvg(browser, svgPath, outPath, size) {
+async function renderSvg(browser, svgPath, outPath, size) {
   const svg = readFileSync(svgPath, 'utf8');
+  if (sharpRenderer !== undefined) {
+    mkdirSync(dirname(outPath), { recursive: true });
+    await sharpRenderer(Buffer.from(svg)).resize(size, size).png().toFile(outPath);
+    return statSync(outPath).size;
+  }
   const htmlPath = join(TMP, `${outPath.split(/[\\/]/).pop()}.html`);
   writeFileSync(htmlPath, `<!doctype html><html><head><meta charset="utf-8"><style>
 html,body{margin:0;padding:0;background:transparent;width:${size}px;height:${size}px;overflow:hidden}
@@ -85,7 +91,10 @@ function appAndModuleMedia(fileName) {
   ];
 }
 
-const browser = findBrowser();
+// Optional local rasterizer avoids launching a browser in build environments.
+const sharpFlag = process.argv.indexOf('--sharp-module');
+const sharpRenderer = sharpFlag >= 0 ? createRequire(import.meta.url)(process.argv[sharpFlag + 1]) : undefined;
+const browser = sharpRenderer === undefined ? findBrowser() : '';
 rmSync(TMP, { recursive: true, force: true });
 mkdirSync(TMP, { recursive: true });
 
@@ -124,6 +133,8 @@ for (const theme of ['light', 'dark']) {
   ]);
 }
 
+jobs.push(['图标资源总览', join(DESIGN, 'icon-preview.svg'), [join(DESIGN, 'icon-preview.png')], 1024]);
+
 // 4) 分层图标的描述文件：默认图标 + 备用图标
 const layerDescriptors = [
   ['layered_image.json', '$media:icon_background', '$media:icon_foreground', '默认图标（浅色）'],
@@ -149,7 +160,7 @@ let total = 0;
 for (const [label, svgPath, targets, size] of jobs) {
   let bytes = 0;
   for (const target of targets) {
-    bytes = renderSvg(browser, svgPath, target, size);
+    bytes = await renderSvg(browser, svgPath, target, size);
     total += bytes;
   }
   const short = targets.map((t) => t.replace(ROOT + '\\', '').replace(/\\/g, '/'));

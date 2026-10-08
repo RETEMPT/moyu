@@ -14,7 +14,7 @@
  * 主题选择存在 Preferences 的 'flowmind_theme' / 'themeMode' 下，
  * 在 EntryAbility.onCreate 里于首帧渲染之前 restore()，避免浅色闪一下再变深色。
  *
- * 能力边界（已在真机/模拟器上实测）：
+ * 能力边界（SDK 接口与版本保护，当前发布仍需真机验收）：
  *   setAlternateIcon 自 API 26 起提供。本项目 compatibleSdkVersion 为 24，
  *   因此低版本设备上这一步会被 deviceInfo.sdkApiVersion 拦下并静默跳过 —— 图标
  *   不会跟着变，但应用内配色照常切换，不会崩。

@@ -25,6 +25,10 @@ import {
 } from '../../../common/types/PdfAnnotationTypes';
 import { PdfPageCanvas } from './PdfPageCanvas';
 import { PdfDocumentService } from '../../../services/document/PdfDocumentService';
+import { InkRenderer } from '../../../services/ink/InkRenderer';
+import { StylusShortcutService } from '../../../services/ink/StylusShortcutService';
+
+interface InkHistoryFrame { pageIndex: number; before: PageAnnotationStroke[]; after: PageAnnotationStroke[]; }
 
 const PEN_COLORS: string[] = ['#DC2626', '#2563EB', '#1C1917', '#059669'];
 const HIGHLIGHTER_COLORS: string[] = ['#FACC15', '#4ADE80'];
@@ -41,6 +45,7 @@ export struct PdfAnnotatorView {
   @Prop isContinuousScroll: boolean = true;
   onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onSaveStateChange: (state: string) => void = () => {};
+  onPageChanged: (page: number) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
 
@@ -50,23 +55,37 @@ export struct PdfAnnotatorView {
   @Prop selectedColor: string = '#DC2626';
   @Prop selectedWidth: number = 3;
   @Prop @Watch('onUndoTriggered') undoTrigger: number = 0;
+  @Prop @Watch('onRedoTriggered') redoTrigger: number = 0;
+  @Prop fingerDrawing: boolean = false;
+  onToggleEraser: () => void = () => {};
+  onShowPenTools: () => void = () => {};
+  @State inkContact: boolean = false;
   @Prop @Watch('onClearTriggered') clearTrigger: number = 0;
   @State zoomScale: number = 1.0;
   @State currentPageIdx: number = 0;
+  @State viewportWidth: number = 360;
 
   // 滚动控制器
   private scroller: Scroller = new Scroller();
+  private panScroller: Scroller = new Scroller();
 
   // 批注数据集（按页）
   @State pageStrokes: Record<number, PageAnnotationStroke[]> = {};
   // 撤销历史栈
-  private undoStack: PageAnnotationStroke[] = [];
+  private undoStack: InkHistoryFrame[] = [];
+  private redoStack: InkHistoryFrame[] = [];
+  private eraseBefore: PageAnnotationStroke[] | null = null;
+  private erasePage: number = -1;
+  private shortcuts: StylusShortcutService = new StylusShortcutService();
+  private zoomStart: number = 1;
   private saveTimer: number = -1;
   private saveRevision: number = 0;
   private loadedNoteId: string = '';
+  private editingNote: NoteItem | null = null;
 
   onCurrentPageChanged(): void {
     const idx = Math.max(0, Math.min(this.pages.length - 1, this.currentPage - 1));
+    if (idx === this.currentPageIdx) { return; }
     this.currentPageIdx = idx;
     try {
       this.scroller.scrollToIndex(idx, true, ScrollAlign.START);
@@ -82,12 +101,15 @@ export struct PdfAnnotatorView {
   }
 
   aboutToAppear(): void {
+    this.shortcuts.start(() => this.isAnnotateMode && !this.inkContact, this.onToggleEraser, this.onShowPenTools);
     this.loadedNoteId = this.note.id;
+    this.editingNote = JSON.parse(JSON.stringify(this.note)) as NoteItem;
     this.initPages();
     this.loadAnnotations();
   }
 
   aboutToDisappear(): void {
+    this.shortcuts.stop();
     if (this.saveTimer !== -1) {
       clearTimeout(this.saveTimer);
       this.saveTimer = -1;
@@ -96,16 +118,20 @@ export struct PdfAnnotatorView {
 
   onNoteChanged(): void {
     if (this.loadedNoteId === this.note.id) { return; }
+    this.finishErase(false);
+    if (this.saveTimer !== -1) { clearTimeout(this.saveTimer); this.flushSave(); }
     this.loadedNoteId = this.note.id;
+    this.editingNote = JSON.parse(JSON.stringify(this.note)) as NoteItem;
     this.undoStack = [];
+    this.redoStack = []; this.eraseBefore = null; this.inkContact = false;
+    this.zoomScale = 1; this.currentPageIdx = 0;
     this.initPages();
     this.loadAnnotations();
   }
 
   /** 根据文档真实页数与标题动态生成排版页面 */
   private initPages(): void {
-    const total = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount :
-      (this.note.id.startsWith('note-seed-') ? 9 : 1);
+    const total = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount : 1;
     this.pages = PdfDocumentService.getInstance().generatePageModels(total, this.note.title);
   }
 
@@ -126,71 +152,64 @@ export struct PdfAnnotatorView {
     this.pageStrokes = { 0: [], 1: [] };
   }
 
-  /** 收到单笔新增时追加并触发防抖持久化 */
-  private handleStrokeAdded(stroke: PageAnnotationStroke): void {
-    const pIdx = stroke.pageIndex;
-    const current = this.pageStrokes[pIdx] ? [...this.pageStrokes[pIdx]] : [];
-    current.push(stroke);
-    this.pageStrokes[pIdx] = current;
-    this.undoStack.push(stroke);
-    this.scheduleSave();
+  private remember(pageIndex: number, before: PageAnnotationStroke[], after: PageAnnotationStroke[]): void {
+    this.undoStack.push({ pageIndex, before: before.slice(), after: after.slice() });
+    if (this.undoStack.length > 50) { this.undoStack.shift(); }
+    this.redoStack = [];
   }
 
-  /** 橡皮擦点位命中擦除 */
-  private handleEraseAtPoint(pageIndex: number, u: number, v: number): void {
+  private handleStrokeAdded(stroke: PageAnnotationStroke): void {
+    const before = this.pageStrokes[stroke.pageIndex] || [];
+    const after = [...before, stroke];
+    this.remember(stroke.pageIndex, before, after);
+    this.pageStrokes[stroke.pageIndex] = after; this.scheduleSave();
+  }
+
+  private beginErase(pageIndex: number): void {
+    this.erasePage = pageIndex; this.eraseBefore = (this.pageStrokes[pageIndex] || []).slice();
+  }
+
+  private finishErase(commit: boolean): void {
+    if (!this.eraseBefore) { return; }
+    const before = this.eraseBefore; const page = this.erasePage;
+    this.eraseBefore = null; this.erasePage = -1;
+    const after = this.pageStrokes[page] || [];
+    if (!commit) { this.pageStrokes[page] = before; return; }
+    if (before.length !== after.length) { this.remember(page, before, after); this.scheduleSave(); }
+  }
+
+  private handleEraseAtPoint(pageIndex: number, u: number, v: number, width: number, height: number): void {
     const current = this.pageStrokes[pageIndex];
-    if (!current || current.length === 0) {
-      return;
-    }
-    // 阈值：归一化距离 0.04 内的笔画予以清除
-    const remaining = current.filter((stroke) => {
+    if (!current || !this.eraseBefore) { return; }
+    const x = u * width; const y = v * height;
+    const remaining = current.filter((stroke: PageAnnotationStroke) => {
+      const radius = 10 + stroke.width * width / 1440;
       for (let i = 0; i < stroke.points.length; i++) {
-        const pt = stroke.points[i];
-        const distSq = (pt.u - u) * (pt.u - u) + (pt.v - v) * (pt.v - v);
-        if (distSq < 0.0016) {
-          return false;
-        }
+        const a = stroke.points[Math.max(0, i - 1)]; const b = stroke.points[i];
+        if (InkRenderer.nearSegment(x, y, a.u * width, a.v * height, b.u * width, b.v * height, radius)) { return false; }
       }
       return true;
     });
-
-    if (remaining.length !== current.length) {
-      this.pageStrokes[pageIndex] = remaining;
-      this.scheduleSave();
-    }
+    if (remaining.length !== current.length) { this.pageStrokes[pageIndex] = remaining; }
   }
 
-  /** 撤销上一笔 */
   private handleUndo(): void {
-    if (this.undoStack.length === 0) {
-      return;
-    }
-    const lastStroke = this.undoStack.pop();
-    if (!lastStroke) {
-      return;
-    }
-    const pIdx = lastStroke.pageIndex;
-    const current = this.pageStrokes[pIdx];
-    if (current && current.length > 0) {
-      this.pageStrokes[pIdx] = current.filter((s) => s.id !== lastStroke.id);
-      this.scheduleSave();
-    }
+    const frame = this.undoStack.pop();
+    if (!frame) { return; }
+    this.pageStrokes[frame.pageIndex] = frame.before.slice(); this.redoStack.push(frame); this.scheduleSave();
   }
 
-  onUndoTriggered(): void {
-    this.handleUndo();
+  onRedoTriggered(): void {
+    const frame = this.redoStack.pop();
+    if (!frame) { return; }
+    this.pageStrokes[frame.pageIndex] = frame.after.slice(); this.undoStack.push(frame); this.scheduleSave();
   }
 
+  onUndoTriggered(): void { this.handleUndo(); }
   onClearTriggered(): void {
-    this.handleClearCurrentPage();
-  }
-
-  /** 清空当前页全部批注 */
-  private handleClearCurrentPage(): void {
-    const pIdx = this.currentPageIdx;
-    this.pageStrokes[pIdx] = [];
-    this.undoStack = this.undoStack.filter((s) => s.pageIndex !== pIdx);
-    this.scheduleSave();
+    const page = this.currentPageIdx; const before = this.pageStrokes[page] || [];
+    if (!before.length) { return; }
+    this.remember(page, before, []); this.pageStrokes[page] = []; this.scheduleSave();
   }
 
   /** 计划防抖自动落盘 */
@@ -210,8 +229,8 @@ export struct PdfAnnotatorView {
     this.saveTimer = -1;
     const revision = this.saveRevision;
     const updatedNote = this.annotationSnapshot();
-    try { await this.onSaved(updatedNote, updatedNote.contentDetail, 'pdf'); if (revision === this.saveRevision) { this.onSaveStateChange('已保存'); } }
-    catch { if (revision === this.saveRevision) { this.onSaveStateChange('保存失败'); } }
+    try { await this.onSaved(updatedNote, updatedNote.contentDetail, 'pdf'); if (revision === this.saveRevision && updatedNote.id === this.loadedNoteId) { this.onSaveStateChange('已保存'); } }
+    catch { if (revision === this.saveRevision && updatedNote.id === this.loadedNoteId) { this.onSaveStateChange('保存失败'); } }
   }
 
   private async saveForExit(): Promise<void> {
@@ -233,41 +252,29 @@ export struct PdfAnnotatorView {
       pages: this.pageStrokes
     };
     const serialized = JSON.stringify(data);
-    const updatedNote: NoteItem = {
-      id: this.note.id,
-      title: this.note.title,
-      category: this.note.category,
-      type: this.note.type,
-      previewText: this.note.previewText,
-      tag: this.note.tag,
-      tagColor: this.note.tagColor,
-      updateTime: this.note.updateTime,
-      contentDetail: this.note.contentDetail,
-      pageInfo: this.note.pageInfo,
-      extraInfo: this.note.extraInfo,
-      coverUrl: this.note.coverUrl,
-      strokes: this.note.strokes,
-      scratchpadStrokes: this.note.scratchpadStrokes,
-      pageAnnotations: serialized,
-      favorite: this.note.favorite, tags: this.note.tags, createdAt: this.note.createdAt, updatedAt: this.note.updatedAt,
-      isPinned: this.note.isPinned, sourceUri: this.note.sourceUri, sourceType: this.note.sourceType,
-      pageCount: this.note.pageCount, pdfTextJson: this.note.pdfTextJson,
-      documentMeta: this.note.documentMeta, aiSummary: this.note.aiSummary, aiTags: this.note.aiTags
-    };
+    const updatedNote = JSON.parse(JSON.stringify(this.editingNote || this.note)) as NoteItem;
+    updatedNote.pageAnnotations = serialized;
     return updatedNote;
+  }
+
+  private judgeNavigation(event: BaseGestureEvent): GestureJudgeResult {
+    return event.sourceTool === SourceTool.Pen || this.inkContact ||
+      (this.isAnnotateMode && this.fingerDrawing && this.currentTool !== 'pan' && event.fingerList.length === 1)
+      ? GestureJudgeResult.REJECT : GestureJudgeResult.CONTINUE;
   }
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       if (this.isContinuousScroll) {
         // 连续列表按实际页面高度定位，位图由可见页管理。
+        Scroll(this.panScroller) {
         List({ space: 24, scroller: this.scroller }) {
           ForEach(this.pages, (pm: PdfPageModel) => {
             ListItem() {
               PdfPageCanvas({
                 pageModel: pm,
                 sourceUri: this.note.sourceUri || '',
-                useRealPdf: !this.note.id.startsWith('note-seed-'),
+                useRealPdf: true,
                 strokes: this.pageStrokes[pm.pageIndex] || [],
                 isAnnotateMode: this.isAnnotateMode,
                 tool: this.currentTool,
@@ -275,28 +282,42 @@ export struct PdfAnnotatorView {
                 selectedWidth: this.selectedWidth,
                 isDarkMode: this.isDarkMode,
                 onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
-                onEraseAtPoint: (u: number, v: number) => this.handleEraseAtPoint(pm.pageIndex, u, v)
+                fingerDrawing: this.fingerDrawing,
+                onPenActive: () => this.shortcuts.claim(),
+                onInkContactChange: (active: boolean) => { this.inkContact = active; },
+                onEraseStarted: () => this.beginErase(pm.pageIndex),
+                onEraseFinished: (commit: boolean) => this.finishErase(commit),
+                onEraseAtPoint: (u: number, v: number, width: number, height: number) => this.handleEraseAtPoint(pm.pageIndex, u, v, width, height)
               })
+              .width('100%')
             }
           }, (pm: PdfPageModel) => `page_${pm.pageIndex}`)
         }
-        .width('100%')
+        .width(this.viewportWidth * this.zoomScale)
         .padding({ left: 32, right: 32, top: 24, bottom: 96 })
         .height('100%')
         .scrollBar(BarState.Auto)
+        .onScrollIndex((start: number) => {
+          this.currentPageIdx = Math.max(0, start); this.onPageChanged(this.currentPageIdx + 1);
+        })
+        .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
         .backgroundColor(this.palette().canvas)
         .transition(
           TransitionEffect.OPACITY
             .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
         )
+        }
+        .width('100%').height('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto)
+        .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
       } else {
         // ---- 单页排版视口 (单页居中、翻页聚焦) ----
+        Scroll(this.panScroller) {
         Column() {
           if (this.pages[this.currentPageIdx]) {
             PdfPageCanvas({
               pageModel: this.pages[this.currentPageIdx],
               sourceUri: this.note.sourceUri || '',
-              useRealPdf: !this.note.id.startsWith('note-seed-'),
+              useRealPdf: true,
               strokes: this.pageStrokes[this.currentPageIdx] || [],
               isAnnotateMode: this.isAnnotateMode,
               tool: this.currentTool,
@@ -304,8 +325,14 @@ export struct PdfAnnotatorView {
               selectedWidth: this.selectedWidth,
               isDarkMode: this.isDarkMode,
               onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
-              onEraseAtPoint: (u: number, v: number) => this.handleEraseAtPoint(this.currentPageIdx, u, v)
+              fingerDrawing: this.fingerDrawing,
+              onPenActive: () => this.shortcuts.claim(),
+              onInkContactChange: (active: boolean) => { this.inkContact = active; },
+              onEraseStarted: () => this.beginErase(this.currentPageIdx),
+              onEraseFinished: (commit: boolean) => this.finishErase(commit),
+              onEraseAtPoint: (u: number, v: number, width: number, height: number) => this.handleEraseAtPoint(this.currentPageIdx, u, v, width, height)
             })
+            .width('100%')
             .transition(
               TransitionEffect.OPACITY
                 .combine(TransitionEffect.scale({ x: 0.98, y: 0.98 }))
@@ -313,8 +340,7 @@ export struct PdfAnnotatorView {
             )
           }
         }
-        .width('100%')
-        .height('100%')
+        .width(this.viewportWidth * this.zoomScale)
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
         .padding({ top: 16, bottom: 80 })
@@ -323,9 +349,17 @@ export struct PdfAnnotatorView {
           TransitionEffect.OPACITY
             .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
         )
+        }
+        .width('100%').height('100%').scrollable(ScrollDirection.Free).scrollBar(BarState.Auto)
+        .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
       }
     }
     .width('100%')
     .height('100%')
+    .onAreaChange((_oldArea, area) => { this.viewportWidth = Math.max(1, Number(area.width)); })
+    .parallelGesture(PinchGesture({ fingers: 2 }).onActionStart(() => { this.zoomStart = this.zoomScale; })
+      .onActionUpdate((event: GestureEvent) => {
+        if (!this.inkContact && event.sourceTool !== SourceTool.Pen) { this.zoomScale = Math.max(1, Math.min(2.5, this.zoomStart * event.scale)); }
+      }))
   }
 }

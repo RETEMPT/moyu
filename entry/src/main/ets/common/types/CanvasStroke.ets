@@ -7,12 +7,15 @@
 export interface CanvasPoint {
   x: number;
   y: number;
+  pressure?: number;
 }
 
 export interface CanvasStroke {
   points: CanvasPoint[];
   color: string;
   width: number;
+  /** Canvas width when captured; older strokes keep their original coordinates. */
+  referenceWidth?: number;
   /** 荧光笔：以低透明度宽笔头绘制，用于圈画题干 */
   isHighlighter: boolean;
   isEraser: boolean;

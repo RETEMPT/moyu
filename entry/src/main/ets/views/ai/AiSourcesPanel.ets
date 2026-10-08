@@ -22,6 +22,8 @@ import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { ChatCitation } from '../../common/types/ChatSession';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
+import { REMOTE_AI_ENABLED } from '../../common/constants/RuntimeCapabilities';
+import { ASSISTANT_MODE_KEY } from '../../services/ai/AssistantModeService';
 
 const PRESET_PROJECT_COLORS: string[] = [
   '#4F46E5', // 经典靛蓝
@@ -61,6 +63,7 @@ export struct AiSourcesPanel {
   onStartChatWithContext: (prefilledPrompt: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp(ASSISTANT_MODE_KEY) assistantMode: string = 'local';
 
   @State activeTab: string = 'explorer'; // 'explorer' | 'tools'
   @State selectedProjectFilter: string = ''; // '' 代表全部工程
@@ -80,6 +83,8 @@ export struct AiSourcesPanel {
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
   }
+
+  private usesModel(): boolean { return REMOTE_AI_ENABLED && this.assistantMode === 'remote'; }
 
   /** 判断文件夹是否展开 */
   private isFolderExpanded(space: SpaceFolder): boolean {
@@ -274,7 +279,7 @@ export struct AiSourcesPanel {
         Text('⚙')
           .fontSize(TypographyTokens.TINY)
           .fontColor(this.activeTab === 'tools' ? this.palette().accent : this.palette().inkMuted)
-        Text('工具')
+        Text(this.usesModel() ? '工具' : '来源')
           .fontSize(TypographyTokens.TINY)
           .fontWeight(this.activeTab === 'tools' ? FontWeight.Medium : FontWeight.Normal)
           .fontColor(this.activeTab === 'tools' ? this.palette().accent : this.palette().inkMuted)
@@ -516,7 +521,7 @@ export struct AiSourcesPanel {
         Row({ space: 6 }) {
           Text('📌')
             .fontSize(TypographyTokens.TINY)
-          Text('已挂载')
+          Text('已引用')
             .fontSize(TypographyTokens.TINY)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().inkPrimary)
@@ -533,7 +538,7 @@ export struct AiSourcesPanel {
             .hoverEffect(HoverEffect.Highlight)
             .onClick(() => {
               this.onClearPinnedNotes();
-              promptAction.showToast({ message: '已清空挂载' });
+              promptAction.showToast({ message: '已移除引用' });
             })
         }
         .width('100%')
@@ -660,7 +665,7 @@ export struct AiSourcesPanel {
 
         // 目录级批量挂载按键 (Antigravity 标志性功能)
         Row({ space: 2 }) {
-          Text(this.isFolderFullyPinned(space) ? '✓ 已挂载' : '+ 挂载')
+          Text(this.isFolderFullyPinned(space) ? '✓ 已引用' : '+ 引用')
             .fontSize(TypographyTokens.TINY)
             .fontColor(this.isFolderFullyPinned(space) ? this.palette().accent : this.palette().inkMuted)
         }
@@ -931,7 +936,7 @@ export struct AiSourcesPanel {
           Text('▤')
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().accent)
-          Text('工程上下文')
+          Text('资料与来源')
             .fontSize(TypographyTokens.CAPTION)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().inkPrimary)
@@ -991,9 +996,11 @@ export struct AiSourcesPanel {
 
             // Antigravity 目录树与文件列表
             this.directoryTreeSection()
-          } else {
+          } else if (this.usesModel()) {
             // 智能体工具箱与溯源切片
             this.toolsTabContent()
+          } else {
+            this.citationsSection()
           }
         }
         .width('100%')
@@ -1010,7 +1017,7 @@ export struct AiSourcesPanel {
       Row({ space: 6 }) {
         Circle({ width: 6, height: 6 })
           .fill(this.modelLabel.includes('未配') ? '#F59E0B' : '#22C55E')
-        Text(this.modelLabel.length > 0 ? this.modelLabel : '未配置模型')
+        Text(this.modelLabel.length > 0 ? this.modelLabel : '本地助手 · 离线')
           .fontSize(TypographyTokens.TINY)
           .fontColor(this.palette().inkMuted)
           .maxLines(1)

@@ -18,6 +18,7 @@ import { UnresolvedLink } from '../../common/types/LinkGraph';
 import { WorkspaceStats } from '../../common/types/WorkspaceStats';
 import { CourseSummary } from '../../common/types/StudyTypes';
 import { BrandMark } from '../brand/BrandMark';
+import { AppIcon } from '../common/AppIcon';
 import { noteRenderKey } from '../../common/utils/ForEachKeys';
 import { NAV_LIBRARY, NAV_GRAPH } from '../../common/constants/WorkspaceConstants';
 
@@ -30,10 +31,10 @@ interface FilterOption {
 
 const SHELF_FILTERS: FilterOption[] = [
   { key: 'all', label: '全部' },
-  { key: 'pinned', label: '▣ 置顶' },
-  { key: 'pdf', label: '🗎 PDF真题' },
-  { key: 'handwriting', label: '✎ 随堂稿纸' },
-  { key: 'favorite', label: '☆ 重点收藏' }
+  { key: 'pinned', label: '置顶' },
+  { key: 'pdf', label: 'PDF' },
+  { key: 'handwriting', label: '手写' },
+  { key: 'favorite', label: '收藏' }
 ];
 
 @Component
@@ -46,6 +47,7 @@ export struct HomeWorkspace {
 
   onSelectNote: (note: NoteItem) => void = () => {};
   onCreateNote: () => void = () => {};
+  onCreateHandwriting: () => void = () => {};
   onImportDocument: () => void = () => {};
   onOpenGraph: () => void = () => {};
   onChooseCover: (noteId: string) => void = () => {};
@@ -292,7 +294,7 @@ export struct HomeWorkspace {
           .borderRadius(4)
           .backgroundColor(this.isDarkMode ? '#382B1C' : '#FEF3C7')
         Blank()
-        Text('✎ 矢量墨水')
+        Text('手写')
           .fontSize(TypographyTokens.TINY)
           .fontColor(this.palette().inkMuted)
       }
@@ -300,9 +302,7 @@ export struct HomeWorkspace {
       .padding({ left: 10, right: 10, top: 10 })
 
       Column({ space: 4 }) {
-        Text('✎')
-          .fontSize(28)
-          .fontColor('#D97706')
+        AppIcon({ source: $r('app.media.ic_pen'), iconSize: 28, tint: '#D97706' })
         Text(note.title)
           .fontSize(TypographyTokens.CAPTION)
           .fontWeight(FontWeight.Medium)
@@ -335,9 +335,7 @@ export struct HomeWorkspace {
           .borderRadius(4)
           .backgroundColor(this.palette().accentSoft)
         Blank()
-        Text('▤')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.palette().inkMuted)
+        AppIcon({ source: $r('app.media.ic_note'), iconSize: 16, tint: this.palette().inkMuted })
       }
       .width('100%')
       .padding({ left: 10, right: 10, top: 10 })
@@ -406,6 +404,7 @@ export struct HomeWorkspace {
             .width(18)
             .height(18)
             .objectFit(ImageFit.Contain)
+            .fillColor(this.palette().accent)
         }
         .width(32)
         .height(32)
@@ -453,150 +452,33 @@ export struct HomeWorkspace {
     })
   }
 
+  @Builder
+  homeAction(icon: Resource, label: string, primary: boolean, action: () => void) {
+    Button({ type: ButtonType.Normal }) {
+      AppIcon({ source: icon, iconSize: 24, tint: primary ? this.palette().onAccent : this.palette().accent })
+    }.width(52).height(52).padding(0).borderRadius(16)
+      .backgroundColor(primary ? this.palette().accent : this.palette().surface)
+      .border({ width: primary ? 0 : 1, color: this.palette().borderSubtle })
+      .accessibilityText(label).bindTips(label).onClick(action)
+  }
+
   build() {
     Scroll() {
       Column() {
         Column() {
-          // ---- 1. 顶层品牌与快捷操作岛 ----
-          Column({ space: 14 }) {
-            Row({ space: 14 }) {
+          // Brand and direct actions; native tips explain the icon-only buttons.
+          Column({ space: 16 }) {
+            Row({ space: 12 }) {
               BrandMark({ markSize: 46 })
-              Column({ space: 4 }) {
-                Row({ space: 8 }) {
-                  Text('墨语')
-                    .fontSize(TypographyTokens.TITLE_HERO)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor(this.palette().inkPrimary)
-                  Text('课程研读')
-                    .fontSize(TypographyTokens.CAPTION)
-                    .fontWeight(FontWeight.Medium)
-                    .fontColor(this.palette().accent)
-                    .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-                    .borderRadius(999)
-                    .backgroundColor(this.palette().accentSoft)
-                }
-                .alignItems(VerticalAlign.Bottom)
-
-                Text('整理课程资料，回到原文核对，让每次复习都有据可循。')
-                  .fontSize(TypographyTokens.BODY_REGULAR)
-                  .fontColor(this.palette().inkSecondary)
-              }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
-            }
-            .width('100%')
-            .alignItems(VerticalAlign.Center)
-
-            // 手机两列换行，避免第四项被裁剪；图标使用同一套 24px 线框。
-            Flex({ wrap: FlexWrap.Wrap, space: { main: { value: 8, unit: 1 }, cross: { value: 8, unit: 1 } } }) {
-              // 主要行动：记随笔
-              Row({ space: 5 }) {
-                Image($r('app.media.ic_note_white'))
-                  .width(18)
-                  .height(18)
-                Text('记随笔')
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(Color.White)
-              }
-              .width(this.isPhone ? '48%' : 112)
-              .height(44)
-              .justifyContent(FlexAlign.Center)
-              .padding({ left: 14, right: 14 })
-              .borderRadius(18)
-              .backgroundColor(this.palette().accent)
-              .shadow({ radius: 6, color: 'rgba(37,99,235,0.22)', offsetY: 2 })
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.onCreateNote())
-
-              // 智能提取
-              Row({ space: 5 }) {
-                Image($r('app.media.ic_sparkle'))
-                  .width(18)
-                  .height(18)
-                Text('智能提取')
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(this.palette().accent)
-              }
-              .width(this.isPhone ? '48%' : 112)
-              .height(44)
-              .justifyContent(FlexAlign.Center)
-              .padding({ left: 14, right: 14 })
-              .borderRadius(18)
-              .backgroundColor(this.palette().accentSoft)
-              .border({ width: 1, color: this.palette().borderSubtle })
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.onSmartExtract())
-
-              // 导入文档
-              Row({ space: 5 }) {
-                Image($r('app.media.ic_import'))
-                  .width(18)
-                  .height(18)
-                Text('导入文档')
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(this.palette().inkPrimary)
-              }
-              .width(this.isPhone ? '48%' : 112)
-              .height(44)
-              .justifyContent(FlexAlign.Center)
-              .padding({ left: 14, right: 14 })
-              .borderRadius(18)
-              .backgroundColor(this.palette().surface)
-              .border({ width: 1, color: this.palette().borderSubtle })
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.onImportDocument())
-
-              // 星系图谱
-              Row({ space: 5 }) {
-                Image($r('app.media.ic_graph'))
-                  .width(18)
-                  .height(18)
-                Text('星系图谱')
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(this.palette().accent)
-              }
-              .width(this.isPhone ? '48%' : 112)
-              .height(44)
-              .justifyContent(FlexAlign.Center)
-              .padding({ left: 14, right: 14 })
-              .borderRadius(18)
-              .backgroundColor(this.palette().surface)
-              .border({ width: 1, color: this.palette().borderSubtle })
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.onOpenGraph())
-            }
-            .width('100%')
-          }
-          .width('100%')
-          .alignItems(HorizontalAlign.Start)
-          .margin({ bottom: 20 })
-
-          Column({ space: 8 }) {
-            Row() {
-              Text('课程学习与复习').fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
-              Button('全部题卡').height(44).onClick(() => this.onOpenStudy(''))
+              Text('墨语').fontSize(24).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+            }.width('100%').alignItems(VerticalAlign.Center)
+            Row({ space: 12 }) {
+              this.homeAction($r('app.media.ic_note'), '新建文字笔记', true, () => this.onCreateNote())
+              this.homeAction($r('app.media.ic_pen'), '新建手写笔记', false, () => this.onCreateHandwriting())
+              this.homeAction($r('app.media.ic_import'), '导入文档', false, () => this.onImportDocument())
+              this.homeAction($r('app.media.ic_sparkle'), '提取图片或文字', false, () => this.onSmartExtract())
             }.width('100%')
-            Text('按资料分类组织课程；在侧栏新建项目即可建立课程资料区。').fontSize(12).fontColor(this.palette().inkSecondary).width('100%')
-            GridRow({ columns: this.isPhone ? 1 : 2, gutter: 8 }) {
-              ForEach(this.courses.slice(0, 4), (course: CourseSummary) => {
-                GridCol() {
-                  Row({ space: 10 }) {
-                    Image($r('app.media.ic_note')).width(22).height(22)
-                    Column({ space: 4 }) {
-                      Text(course.name).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).maxLines(1)
-                      Text(`${course.noteCount} 份资料 · ${course.cardCount} 道题卡 · ${course.todoCount} 项关联待办`).fontSize(12).fontColor(this.palette().inkSecondary).maxLines(2)
-                    }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                    Text(course.dueCount ? `${course.dueCount} 道待复习` : '创建题卡').fontSize(12).fontColor(this.palette().accent)
-                  }.width('100%').padding(12).constraintSize({ minHeight: 72 }).borderRadius(12).backgroundColor(this.palette().surfaceSubtle)
-                    .accessibilityText(`${course.name}，${course.dueCount} 道待复习题卡`).onClick(() => this.onOpenStudy(course.name))
-                }
-              }, (course: CourseSummary) => course.name)
-            }.width('100%')
-          }.width('100%').margin({ bottom: 18 })
+          }.width('100%').margin({ bottom: 20 })
 
           // ---- 2. Bento 资产矩阵看板 ----
           GridRow({ columns: this.isPhone ? 2 : 4, gutter: this.isPhone ? 10 : 12 }) {
@@ -628,10 +510,11 @@ export struct HomeWorkspace {
               Row({ space: 4 }) {
                 ForEach(SHELF_FILTERS, (item: FilterOption) => {
                   Text(item.label)
-                    .fontSize(TypographyTokens.TINY)
+                    .fontSize(TypographyTokens.CAPTION)
                     .fontWeight(this.activeShelfFilter === item.key ? FontWeight.Bold : FontWeight.Normal)
                     .fontColor(this.activeShelfFilter === item.key ? this.palette().accent : this.palette().inkSecondary)
                     .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+                    .height(44)
                     .borderRadius(8)
                     .backgroundColor(this.activeShelfFilter === item.key ? this.palette().accentSoft : this.palette().surfaceSubtle)
                     .hoverEffect(HoverEffect.Highlight)
@@ -657,7 +540,7 @@ export struct HomeWorkspace {
                 .fontSize(TypographyTokens.BODY_REGULAR)
                 .fontWeight(FontWeight.Medium)
                 .fontColor(this.palette().inkPrimary)
-              Text('新建或导入一篇文档，立刻开启知识沉淀。')
+              Text('新建笔记或导入资料')
                 .fontSize(TypographyTokens.CAPTION)
                 .fontColor(this.palette().inkMuted)
             }

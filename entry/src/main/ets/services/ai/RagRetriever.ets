@@ -3,6 +3,7 @@ import { EmbeddingIndexService } from './EmbeddingIndexService';
 import { MarkdownDocument } from '../../common/types/MarkdownDocument';
 import { ModelProfile } from '../../common/types/ModelConfig';
 import { RetrievalHit, Citation, Chunk } from '../../common/types/RagTypes';
+import { searchTerms } from '../../common/utils/SearchTerms';
 
 /** 余弦相似度低于该值的片段视为不相关，丢掉以免污染上下文 */
 const VECTOR_MIN_SCORE: number = 0.28;
@@ -13,7 +14,7 @@ export class RagRetriever {
 
   /** 关键词检索：无网络依赖，永远可用，作为向量检索的兜底 */
   search(documents: MarkdownDocument[], query: string, limit: number = 6): RetrievalHit[] {
-    const terms: string[] = query.toLocaleLowerCase().split(/\s+/).filter((item: string) => item.length > 0);
+    const terms: string[] = searchTerms(query);
     const hits: RetrievalHit[] = [];
     for (const document of documents) {
       for (const chunk of this.indexer.build(document)) {
@@ -51,6 +52,18 @@ export class RagRetriever {
     limit: number = 6,
     cancelled?: () => boolean
   ): Promise<RetrievalHit[]> {
+    let expired = false;
+    let timer: number = -1;
+    const fallback = new Promise<RetrievalHit[]>((resolve) => {
+      timer = setTimeout(() => { expired = true; resolve(this.search(documents, query, limit)); }, 12000);
+    });
+    try {
+      return await Promise.race([fallback, this.searchHybridUnbounded(documents, query, profile, limit, () => expired || cancelled?.() === true)]);
+    } finally { clearTimeout(timer); expired = true; }
+  }
+
+  private async searchHybridUnbounded(documents: MarkdownDocument[], query: string, profile: ModelProfile,
+    limit: number, cancelled: () => boolean): Promise<RetrievalHit[]> {
     const keywordHits: RetrievalHit[] = this.search(documents, query, limit * 2);
     if (!EmbeddingIndexService.canEmbed(profile)) {
       return keywordHits.slice(0, limit);

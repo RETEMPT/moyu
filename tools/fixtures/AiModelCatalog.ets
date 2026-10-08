@@ -1,4 +1,4 @@
-import { ModelProfile } from '../../common/types/ModelConfig';
+import { ModelProfile } from '../../entry/src/main/ets/common/types/ModelConfig';
 
 export interface AiCatalogModel {
   id: string;

@@ -31,6 +31,7 @@ function load(relative, mocks = {}, cache = new Map()) {
   }).outputText;
   const localRequire = specifier => {
     if (mocks[specifier]) return mocks[specifier];
+    if (specifier === 'BuildProfile') return { DEBUG: true };
     if (specifier.startsWith('.')) {
       return load(path.resolve(path.dirname(filename), `${specifier}.ets`), mocks, cache);
     }
@@ -38,7 +39,8 @@ function load(relative, mocks = {}, cache = new Map()) {
   };
   vm.runInNewContext(output, { module, exports: module.exports, require: localRequire,
     console, Date, Error, Promise, setTimeout: mocks.setTimeout || setTimeout, clearTimeout: mocks.clearTimeout || clearTimeout,
-    canIUse: mocks.canIUse || (() => true), AppStorage: mocks.AppStorage }, { filename });
+    canIUse: mocks.canIUse || (() => true), AppStorage: mocks.AppStorage,
+    SourceTool: mocks.SourceTool, TouchType: mocks.TouchType }, { filename });
   return module.exports;
 }
 
@@ -148,7 +150,7 @@ test('manual proposals use the same validated, awaited tools and propagate incom
   assert.equal((await ActionProposalService.execute({ id: '1', type: 'delete-all', title: '任务', desc: '' }, executor)).ok, false);
 });
 
-function orchestratorFixture(changes = {}, tools = []) {
+function orchestratorFixture(changes = {}, tools = [], providerChanges = {}, mocks = {}) {
   const configured = profile(changes); const requests = []; let streamCalls = 0; let completeCalls = 0;
   const provider = { complete: async (_, request) => { completeCalls++; requests.push(request); return '完整答案'; },
     completeStream: async (_, request, onChunk) => {
@@ -158,8 +160,11 @@ function orchestratorFixture(changes = {}, tools = []) {
       }
       onChunk({ delta: tools.length ? '' : '答案', done: true }); return { abort() {} };
     } };
+  Object.assign(provider, providerChanges);
   const { AgentOrchestrator } = load(`${base}services/ai/AgentOrchestrator.ets`, {
-    [path.resolve(root, `${base}services/ai/ModelProvider.ets`)]: { createProvider: () => provider },
+    ...mocks,
+    [path.resolve(root, `${base}services/ai/ModelProvider.ets`)]: { createProvider: () => provider,
+      StreamHandleImpl: class { constructor(abort) { this.abort = abort; } } },
     [path.resolve(root, `${base}services/ai/ModelConfigService.ets`)]: { ModelConfigService: { getInstance: () => ({ getActiveProfile: async () => configured }) } }
   });
   return { orchestrator: new AgentOrchestrator(), configured, requests, counts: () => ({ streamCalls, completeCalls }) };
@@ -898,7 +903,7 @@ test('local backup exports actual PDF and cover bytes without credentials and se
   assert.equal(f.calls.filter(c => c[0] === 'close').length, 4);
 });
 test('bundled sample backups remain labeled examples and do not block an initial full backup', async () => {
-  const { seedNotes } = load(`${base}common/seed/SeedContent.ets`); const f = backupFileFixture();
+  const { seedNotes } = load('tools/fixtures/SeedContent.ets'); const f = backupFileFixture();
   assert.equal(await f.service.exportFile({ filesDir: '/sandbox' }, seedNotes(), []), true);
   const backup = JSON.parse(f.files.get('/picked/backup.json').toString());
   const index = backup.notes.findIndex(note => note.id === 'note-seed-pdf'); assert.ok(index >= 0);
@@ -1060,11 +1065,13 @@ test('actual PDF and handwriting autosave methods wait for storage and ignore ob
     const output = ts.transpileModule(`module.exports = async function() {${method}}`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
     const context = { module: { exports: {} } }; vm.runInNewContext(output, context); const flush = context.module.exports;
     const statuses = []; let release;
-    const view = { saveRevision: 1, strokeSnapshot: studyNote, annotationSnapshot: studyNote,
+    const view = { saveRevision: 1, loadedNoteId: studyNote().id, strokeSnapshot: studyNote, annotationSnapshot: studyNote,
       onSaved: () => new Promise(resolve => { release = resolve; }), onSaveStateChange: value => statuses.push(value) };
     const running = flush.call(view); await Promise.resolve(); assert.equal(statuses.length, 0);
     view.saveRevision++; release(); await running; assert.equal(statuses.length, 0);
     view.onSaved = async () => { throw Error('disk'); }; await flush.call(view); assert.deepEqual(statuses, ['保存失败']);
+    view.loadedNoteId = 'other-document'; view.onSaved = async () => {}; await flush.call(view);
+    assert.deepEqual(statuses, ['保存失败']);
   }
 });
 
@@ -1455,7 +1462,7 @@ test('SSE transport releases client when SDK request startup throws synchronousl
   assert.equal(destroyed,1);assert.equal(chunks.length,1);assert.ok(chunks[0].error);handle.abort();assert.equal(destroyed,1);
 });
 
-const { AiModelCatalog } = load(`${base}services/ai/AiModelCatalog.ets`);
+const { AiModelCatalog } = load('tools/fixtures/AiModelCatalog.ets');
 test('cloud directory stays unavailable and editing returned rows cannot alter its templates', () => {
   assert.equal(AiModelCatalog.CLOUD_AVAILABLE, false);
   assert.deepEqual(plain(AiModelCatalog.FAMILIES), ['Seed','Qwen','DeepSeek','GLM']);
@@ -1494,10 +1501,11 @@ for (const entry of AiModelCatalog.list()) test(`catalog ${entry.name} uses its 
   assert.equal(requests[0].options.maxRedirects, 0); assert.equal(destroyed, 1);
 });
 
-test('loopback Ollama template is usable without a credential or an empty bearer header', async () => {
+test('loopback template requires an installed model ID and never sends an empty bearer header', async () => {
   const { getPresetTemplates } = load(`${base}common/types/ModelConfig.ets`);
   const draft = getPresetTemplates().find(p => p.profile.baseUrl.startsWith('http://127.0.0.1')).profile;
-  assert.equal(draft.apiKey, ''); assert.equal(ModelProfilePolicy.validate(draft), '');
+  assert.equal(draft.apiKey, ''); assert.equal(draft.modelId, ''); assert.notEqual(ModelProfilePolicy.validate(draft), '');
+  draft.modelId = 'installed-test-model'; assert.equal(ModelProfilePolicy.validate(draft), '');
   draft.remoteConsentVersion = RemoteAiPolicy.VERSION; draft.remoteConsentEndpoint = draft.baseUrl;
   draft.remoteConsentProtocol = draft.protocol; draft.remoteConsentedAt = Date.now();
   let headers;
@@ -1537,9 +1545,10 @@ test('failed message replacement preserves the original conversation and remains
   f.fail(false); await service.replaceMessages('study', []); assert.equal((await service.loadSessions())[0].messages.length, 0);
 });
 
-function compatibleStreamFixture() {
+function compatibleStreamFixture(timers = {}) {
   const events = new Map(), chunks = []; let resolveStatus, destroyed = 0;
   const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
+    ...timers,
     '@kit.NetworkKit': { http: { RequestMethod:{POST:'POST'},HttpDataType:{ARRAY_BUFFER:1},createHttp:()=>({
       on:(event,callback)=>events.set(event,callback),destroy:()=>destroyed++,requestInStream:()=>new Promise(resolve=>{resolveStatus=resolve;}) }) } },
     '@kit.ArkTS': { util: { TextDecoder:{create:()=>{const d=new TextDecoder();return {decodeToString:(bytes,options)=>d.decode(bytes,options)};}} } }
@@ -1574,4 +1583,332 @@ test('compatible stream provider errors and cancellation close exactly once with
   const cancelled=compatibleStreamFixture();const handle=await cancelled.provider.completeStream(consentProfile(),{messages:[]},c=>cancelled.chunks.push(c));
   handle.abort();cancelled.status(200);await cancelled.events.get('dataEnd')();
   cancelled.receive('data: {"choices":[{"delta":{"content":"late"}}]}\n');assert.equal(cancelled.chunks.length,0);assert.equal(cancelled.destroyed(),1);
+});
+
+const { LocalAssistantService } = load(`${base}services/ai/LocalAssistantService.ets`);
+const localContext = (notes = [], pinned = []) => ({ notes, pinned, todos: [] });
+test('offline assistant works with an empty workspace without any platform or network dependency', async () => {
+  const result = await new LocalAssistantService().answer('提取要点', localContext());
+  assert.match(result.text, /新建笔记|导入资料/); assert.equal(result.citations.length, 0);
+});
+test('Chinese natural questions find exact original text and source lines without whitespace', async () => {
+  const notes = [studyNote({ id:'os',title:'操作系统',contentDetail:'# 课程\n\n## 死锁条件\n\n死锁需要互斥、占有等待、不可剥夺和循环等待。' }),
+    studyNote({ id:'math',title:'数学',contentDetail:'# 数学\n\n三角函数周期为 2π。' })];
+  const before = JSON.stringify(notes);
+  const result = await new LocalAssistantService().answer('请问死锁有哪些条件？', localContext(notes));
+  assert.match(result.text, /不可剥夺/); assert.equal(result.citations[0].noteId, 'os');
+  assert.equal(result.citations[0].startLine, 5); assert.equal(JSON.stringify(notes), before);
+  assert.ok(!result.text.includes('三角函数'));
+});
+test('local attachments constrain extraction and unmatched questions give a usable next step', async () => {
+  const os = studyNote({id:'os',title:'操作系统',contentDetail:'# 课程\n\n死锁需要互斥。'});
+  const math = studyNote({id:'math',title:'数学',contentDetail:'# 数学\n\n圆周率约为 3.14。'});
+  const assistant = new LocalAssistantService();
+  const result = await assistant.answer('提取要点', localContext([os, math], [math]));
+  assert.match(result.text, /3\.14/); assert.ok(result.citations.every(c=>c.noteId==='math'));
+  assert.match((await assistant.answer('死锁', localContext([os,math],[math]))).text, /未找到/);
+});
+test('offline PDF retrieval cites the actual extracted page and does not treat file metadata as content', async () => {
+  const note = studyNote({ id:'pdf',type:'PDF',sourceType:'pdf',pageCount:4,
+    contentDetail:'# PDF\n\n已导入文件',pdfTextJson:JSON.stringify([{pageNumber:3,text:'银行家算法通过安全序列判断分配。',method:'text',extractedAt:1}]) });
+  const assistant = new LocalAssistantService();
+  const result = await assistant.answer('银行家算法',localContext([note]));
+  assert.equal(result.citations[0].pageNumber,3); assert.match(result.text,/安全序列/);
+  note.pdfTextJson='[]'; assert.match((await assistant.answer('提取要点',localContext([note]))).text,/提取并校对/);
+});
+test('offline task extraction preserves explicit tasks without creating or guessing deadlines', async () => {
+  const notes = [studyNote({contentDetail:'# 通知\n\n- [ ] 2026年10月12日前提交报告\n- [x] 已完成报名'})];
+  const result = await new LocalAssistantService().answer('整理待办',localContext(notes));
+  assert.match(result.text,/提交报告/); assert.ok(!result.text.includes('已完成报名')); assert.match(result.text,/未自动创建/);
+});
+test('local scanning yields for cancellation and never returns a late answer', async () => {
+  const result = await new LocalAssistantService().answer('提取要点',localContext([studyNote()]),()=>true);
+  assert.equal(result.text,''); assert.equal(result.citations.length,0);
+});
+test('local mode is the persisted default and a failed switch never enables remote use', async () => {
+  const values = new Map(); const app = new Map(); let fail=false;
+  const { AssistantModeService, ASSISTANT_MODE_KEY } = load(`${base}services/ai/AssistantModeService.ets`, {
+    '@kit.ArkData':{preferences:{getPreferences:async()=>({get:async(k,d)=>values.get(k)??d,put:async(k,v)=>values.set(k,v),flush:async()=>{if(fail)throw Error('disk');}})}},
+    AppStorage:{setOrCreate:(k,v)=>app.set(k,v)}
+  });
+  const service=AssistantModeService.getInstance(); await service.init({}); assert.equal(app.get(ASSISTANT_MODE_KEY),'local');
+  fail=true;await assert.rejects(service.setMode('remote'));assert.equal(app.get(ASSISTANT_MODE_KEY),'local');assert.equal(values.get('mode'),'local');
+  fail=false;await service.setMode('remote');assert.equal(app.get(ASSISTANT_MODE_KEY),'remote');
+  await service.setMode('local');assert.equal(values.get('mode'),'local');
+});
+
+const penEnums = { SourceTool:{Unknown:0,Finger:1,Pen:2},TouchType:{Down:0,Up:1,Move:2,Cancel:3} };
+const { InkInputService } = load(`${base}services/ink/InkInputService.ets`,penEnums);
+function touchEvent(type, id=7, sourceTool=2, overrides={}) {
+  const point={id,x:10,y:20,pressure:32768};
+  return {type,sourceTool,pressure:0.5,changedTouches:[point],touches:type===1?[]:[point],getHistoricalPoints:()=>[],...overrides};
+}
+test('stylus tracks its own pointer through palms and uses the final changedTouches sample', () => {
+  const input=new InkInputService();
+  assert.equal(input.read(touchEvent(0,1,1),false).phase,'ignore');
+  assert.equal(input.read(touchEvent(0),false).phase,'begin');
+  assert.equal(input.read(touchEvent(0,1,1),true).phase,'ignore');
+  assert.equal(input.read(touchEvent(1,1,1),true).phase,'ignore');
+  const moved=input.read(touchEvent(2,7,2,{changedTouches:[{id:1,x:1,y:1},{id:7,x:30,y:40}],
+    getHistoricalPoints:()=>[{touchObject:{id:7,x:15,y:25},force:16384},{touchObject:{id:1,x:99,y:99},force:65535}]}),false);
+  assert.equal(moved.phase,'move');assert.equal(moved.samples.length,2);assert.equal(moved.samples[0].x,15);
+  assert.ok(Math.abs(moved.samples[0].pressure-0.25)<0.001);
+  assert.equal(input.read(touchEvent(1),false).phase,'end');
+  assert.equal(input.read(touchEvent(0,1,1),true).phase,'ignore');
+});
+test('multitouch cancels finger ink instead of drawing a pinch gesture; orphaned moves are ignored', () => {
+  const input=new InkInputService();assert.equal(input.read(touchEvent(0,1,1),true).phase,'begin');
+  assert.equal(input.read(touchEvent(2,1,1,{touches:[{id:1,x:1,y:1},{id:2,x:2,y:2}]}),true).phase,'cancel');
+  assert.equal(input.read(touchEvent(2,1,1),true).phase,'ignore');
+  assert.equal(input.read(touchEvent(0,7,2),false).phase,'begin');
+  assert.equal(input.read(touchEvent(3,7,2,{changedTouches:[],touches:[]}),false).phase,'cancel');
+});
+test('ink pressure has a bounded fallback and rejects invalid coordinates', () => {
+  assert.equal(InkInputService.pressure(undefined),0.5);assert.equal(InkInputService.pressure(NaN),0.5);
+  assert.equal(InkInputService.pressure(-1),0);assert.equal(InkInputService.pressure(65535,true),1);assert.equal(InkInputService.pressure(1.2),1);
+  assert.equal(new InkInputService().read(touchEvent(0,7,2,{changedTouches:[{id:7,x:NaN,y:20}]}),false).phase,'ignore');
+});
+const { InkRenderer } = load(`${base}services/ink/InkRenderer.ets`);
+function inkRecorder() {
+  const calls=[];const stack=[];
+  const ctx={save(){stack.push({width:this.lineWidth,alpha:this.globalAlpha,mode:this.globalCompositeOperation});},restore(){Object.assign(this,stack.pop());},
+    beginPath(){calls.push(['begin']);},moveTo(...args){calls.push(['move',...args]);},lineTo(...args){calls.push(['line',...args]);},
+    quadraticCurveTo(...args){calls.push(['curve',...args]);},arc(...args){calls.push(['arc',...args]);},
+    fill(){calls.push(['fill',this.lineWidth,this.globalAlpha,this.globalCompositeOperation]);},stroke(){calls.push(['stroke',this.lineWidth,this.globalAlpha,this.globalCompositeOperation]);}};
+  return {ctx,calls};
+}
+test('incremental ink rendering stays constant per sample, varies with pressure and ends at the final point', () => {
+  const points=Array.from({length:10000},(_,i)=>({x:i,y:i*2,pressure:0.2}));const f=inkRecorder();
+  const style={color:'#111',width:4,highlighter:false,eraser:false};
+  InkRenderer.segment(f.ctx,points,points.length-1,style);assert.ok(f.calls.length<10);
+  const thin=f.calls.find(c=>c[0]==='stroke')[1];points.at(-1).pressure=1;f.calls.length=0;
+  InkRenderer.segment(f.ctx,points,points.length-1,style);assert.ok(f.calls.find(c=>c[0]==='stroke')[1]>thin);
+  InkRenderer.tail(f.ctx,points,style);assert.deepEqual(f.calls.filter(c=>c[0]==='line').at(-1),['line',9999,19998]);
+});
+test('eraser reveals the underlying page and highlighter replay is one translucent path', () => {
+  const points=[{x:1,y:2},{x:20,y:30},{x:40,y:50}];const f=inkRecorder();
+  InkRenderer.stroke(f.ctx,points,{color:'#111',width:4,highlighter:false,eraser:true});
+  assert.ok(f.calls.filter(c=>['stroke','fill'].includes(c[0])).every(c=>c[3]==='destination-out'));
+  f.calls.length=0;InkRenderer.stroke(f.ctx,points,{color:'#ff0',width:14,highlighter:true,eraser:false});
+  assert.equal(f.calls.filter(c=>c[0]==='stroke').length,1);assert.equal(f.calls.find(c=>c[0]==='stroke')[2],0.35);
+  assert.equal(InkRenderer.nearSegment(50,3,0,0,100,0,5),true);assert.equal(InkRenderer.nearSegment(50,20,0,0,100,0,5),false);
+});
+test('pen shortcuts subscribe once, follow the focused canvas and unregister exact callbacks', () => {
+  const subscriptions=new Map();const removed=[];let left=0,right=0;
+  const {StylusShortcutService}=load(`${base}services/ink/StylusShortcutService.ets`,{
+    '@kit.Penkit':{stylusInteraction:{on:(event,cb)=>{const rows=subscriptions.get(event)||[];rows.push(cb);subscriptions.set(event,rows);},
+      off:(event,cb)=>removed.push([event,cb])}}
+  });
+  const a=new StylusShortcutService(),b=new StylusShortcutService();
+  a.start(()=>true,()=>left++,()=>left++);b.start(()=>true,()=>right++,()=>right++);
+  for(const cb of subscriptions.get('doubleTap'))cb({timestamp:1});assert.equal(left,1);assert.equal(right,0);
+  b.claim();for(const cb of subscriptions.get('squeeze'))cb({timestamp:2});assert.equal(left,1);assert.equal(right,1);
+  a.stop();b.stop();assert.equal(removed.length,4);
+  assert.ok(removed.every(([event,cb])=>subscriptions.get(event).includes(cb)));
+});
+function fakeTimers() {
+  const jobs=new Map();let id=0;
+  return {jobs,setTimeout:(fn,delay)=>{jobs.set(++id,{fn,delay});return id;},clearTimeout:key=>jobs.delete(key),
+    fire:delay=>{const entry=[...jobs].find(([,value])=>value.delay===delay);assert.ok(entry,`timer ${delay}`);jobs.delete(entry[0]);entry[1].fn();}};
+}
+test('silent streams and interrupted streams end with actionable errors and clear all timers', async () => {
+  for(const timeout of [45000,30000,180000]) {
+    const timers=fakeTimers(),f=compatibleStreamFixture(timers);
+    await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));f.status(200);await Promise.resolve();
+    if(timeout===30000)f.receive('data: {"choices":[{"delta":{"content":"部分答案"},"finish_reason":null}]}\n');
+    timers.fire(timeout);assert.equal(f.destroyed(),1);assert.ok(f.chunks.at(-1).done);assert.ok(f.chunks.at(-1).error);
+    assert.equal(timers.jobs.size,0);f.receive('data: {"choices":[{"delta":{"content":"late"}}]}\n');
+    assert.equal(f.chunks.filter(c=>c.done).length,1);
+  }
+});
+
+function viewMethod(relative,name,globals={}) {
+  const source=fs.readFileSync(path.join(root,base,relative),'utf8').replaceAll('\r\n','\n');
+  const marker=[`private async ${name}(`,`private ${name}(`,`async ${name}(`,`${name}(`].find(value=>source.includes(`  ${value}`));
+  const start=source.indexOf(marker);assert.ok(start>=0,name);const end=source.indexOf('\n  }',start)+4;
+  const method=source.slice(start,end).replace('private ','');
+  const output=ts.transpileModule(`class Subject {${method}}; module.exports=Subject.prototype.${name};`,{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText;
+  const context={module:{exports:{}},console,getContext:()=>({}),clearTimeout,setTimeout,...globals};vm.runInNewContext(output,context);return context.module.exports;
+}
+test('actual note creation preserves the requested type, awaits both writes and keeps failures reviewable', async () => {
+  const create=viewMethod('pages/Index.ets','createNote');let release;const calls=[];
+  const original=studyNote({id:'original'});
+  const view={notes:[original],noteCreateBusy:false,noteCreateError:'',activeSpaceName:()=>'',formatTime:()=>'',
+    storage:{create:async(_,note)=>calls.push(note.type),save:()=>new Promise(resolve=>{release=resolve;})},
+    rebuildSpaces(){},refreshGraph(){},openNote(note){calls.push(note);},notify(){}};
+  const running=create.call(view,'手写日记','Handwriting','我的课程');await Promise.resolve();await Promise.resolve();
+  assert.equal(view.noteCreateBusy,true);assert.equal(view.notes.length,1);assert.equal(calls.length,1);
+  assert.equal(await create.call(view,'重复','Markdown'),false);release();assert.equal(await running,true);
+  assert.equal(view.notes[0].type,'Handwriting');assert.equal(view.notes[0].strokes,'[]');assert.equal(view.notes[0].category,'我的课程');
+  const before=view.notes;view.storage.create=async()=>{throw Error('disk');};assert.equal(await create.call(view,'失败'),false);
+  assert.equal(view.notes,before);assert.equal(view.noteCreateBusy,false);assert.match(view.noteCreateError,/创建失败/);
+});
+
+test('release mode overrides old remote preferences without losing the saved developer choice', async () => {
+  const values=new Map([['mode','remote']]);const app=new Map();
+  const {AssistantModeService,ASSISTANT_MODE_KEY}=load(`${base}services/ai/AssistantModeService.ets`,{
+    BuildProfile:{DEBUG:false},AppStorage:{setOrCreate:(key,value)=>app.set(key,value)},
+    '@kit.ArkData':{preferences:{getPreferences:async()=>({get:async(k,d)=>values.get(k)??d,put:async(k,v)=>values.set(k,v),flush:async()=>{}})}}
+  });
+  const service=AssistantModeService.getInstance();await service.init({});assert.equal(app.get(ASSISTANT_MODE_KEY),'local');
+  await assert.rejects(service.setMode('remote'),/本地/);assert.equal(app.get(ASSISTANT_MODE_KEY),'local');assert.equal(values.get('mode'),'remote');
+});
+
+test('release blocks all chat, connection tests and embeddings even with previously valid consent', async () => {
+  let creations=0;const mocks={BuildProfile:{DEBUG:false},'@kit.NetworkKit':{http:{createHttp:()=>{creations++;throw Error('network');}}},'@kit.ArkTS':{util:{}}};
+  const {createProvider}=load(`${base}services/ai/ModelProvider.ets`,mocks);
+  const {createEmbeddingProvider}=load(`${base}services/ai/EmbeddingProvider.ets`,mocks);
+  for(const protocol of ['openai-compat','gemini','anthropic']) {
+    const p=consentProfile({protocol,remoteConsentProtocol:protocol});const provider=createProvider(protocol);
+    await assert.rejects(provider.complete(p,{messages:[]}),/本地/);
+    await assert.rejects(provider.completeStream(p,{messages:[]},()=>{}),/本地/);
+    assert.equal((await provider.testConnection(p)).ok,false);
+    if(protocol!=='anthropic')await assert.rejects(createEmbeddingProvider(protocol).embed(p,['正文']),/本地/);
+  }
+  assert.equal(creations,0);
+});
+
+test('stream cancellation settles immediately and aborts a handle that arrives after stopping', async () => {
+  let callback,releaseHandle,control,aborts=0;const deltas=[];
+  const f=orchestratorFixture({},[],{completeStream:(_,request,onChunk)=>{callback=onChunk;return new Promise(resolve=>{releaseHandle=resolve;});}});
+  const running=f.orchestrator.run('L3',{query:'总结',history:[],profile:f.configured},text=>deltas.push(text),handle=>{control=handle;});
+  const stopped=assert.rejects(running,/停止/);control.abort();await stopped;
+  callback({delta:'晚到内容',done:true});releaseHandle({abort:()=>aborts++});await Promise.resolve();await Promise.resolve();
+  assert.equal(deltas.length,0);assert.equal(aborts,1);
+});
+
+test('nonstream cancellation and deadlines abort the transport and ignore late answers', async () => {
+  for(const timeout of [false,true]) {
+    const timers=fakeTimers();let resolveAnswer,control,aborts=0;const deltas=[];
+    const f=orchestratorFixture({stream:false},[],{complete:(_,request,onHandle)=>{
+      onHandle({abort:()=>aborts++});return new Promise(resolve=>{resolveAnswer=resolve;});
+    }},timers);
+    const running=f.orchestrator.run('L3',{query:'总结',history:[],profile:f.configured},text=>deltas.push(text),handle=>{control=handle;});
+    const ended=assert.rejects(running,timeout?/响应/:/停止/);if(timeout)timers.fire(60000);else control.abort();await ended;
+    resolveAnswer('晚到内容');await Promise.resolve();await Promise.resolve();
+    assert.equal(aborts,1);assert.equal(deltas.length,0);assert.equal(timers.jobs.size,0);
+  }
+});
+
+test('each nonstream adapter exposes cancellation before sending and destroys the client once', async () => {
+  for(const protocol of ['openai-compat','gemini','anthropic']) {
+    let requests=0,destroyed=0;const {createProvider}=load(`${base}services/ai/ModelProvider.ets`,{
+      '@kit.NetworkKit':{http:{createHttp:()=>({request:async()=>{requests++;},destroy:()=>destroyed++})}},'@kit.ArkTS':{util:{}}
+    });
+    const p=consentProfile({protocol,remoteConsentProtocol:protocol});
+    await assert.rejects(createProvider(protocol).complete(p,{messages:[]},handle=>handle.abort()),/取消|停止/);
+    assert.equal(requests,0);assert.equal(destroyed,1);
+  }
+});
+
+function pdfHistoryView() {
+  const relative='views/reader/pdf/PdfAnnotatorView.ets';let saved=0;
+  const view={pageStrokes:{0:[]},undoStack:[],redoStack:[],eraseBefore:null,erasePage:-1,currentPageIdx:0,scheduleSave:()=>saved++};
+  for(const method of ['remember','handleStrokeAdded','beginErase','finishErase','handleEraseAtPoint','handleUndo','onRedoTriggered','onClearTriggered'])
+    view[method]=viewMethod(relative,method,{InkRenderer});
+  return {view,saved:()=>saved};
+}
+test('PDF erasing uses line segments and groups a gesture into one reversible operation', () => {
+  const f=pdfHistoryView(),v=f.view;const a={id:'a',pageIndex:0,width:3,points:[{u:0,v:0.5},{u:1,v:0.5}]};
+  const b={id:'b',pageIndex:0,width:3,points:[{u:0,v:0.8},{u:1,v:0.8}]};
+  v.handleStrokeAdded(a);v.handleStrokeAdded(b);v.beginErase(0);v.handleEraseAtPoint(0,0.5,0.5,720,1000);v.finishErase(true);
+  assert.equal(v.undoStack.length,3);assert.equal(v.pageStrokes[0].length,1);assert.equal(v.pageStrokes[0][0].id,'b');
+  v.handleUndo();assert.equal(v.pageStrokes[0].length,2);v.onRedoTriggered();assert.equal(v.pageStrokes[0].length,1);
+  v.onClearTriggered();assert.equal(v.pageStrokes[0].length,0);v.handleUndo();assert.equal(v.pageStrokes[0].length,1);
+  v.handleStrokeAdded({...a,id:'new'});assert.equal(v.redoStack.length,0);
+});
+
+test('cancelled PDF erasing restores strokes without adding history or scheduling a write', () => {
+  const f=pdfHistoryView(),v=f.view;v.handleStrokeAdded({id:'a',pageIndex:0,width:3,points:[{u:0,v:0.5},{u:1,v:0.5}]});
+  const saved=f.saved();v.beginErase(0);v.handleEraseAtPoint(0,0.5,0.5,720,1000);v.finishErase(false);
+  assert.equal(v.pageStrokes[0].length,1);assert.equal(v.undoStack.length,1);assert.equal(f.saved(),saved);
+});
+
+test('note filters include normalized handwriting and Word types after creation or restoration', () => {
+  const filtered=viewMethod('pages/Index.ets','filteredNotes',{FILTER_ALL:'全部'});
+  const view={searchText:'',activeSpaceName:()=>'',notes:[studyNote({id:'pen',type:'Handwriting'}),studyNote({id:'old',type:'Canvas'}),studyNote({id:'word',type:'docx'}),studyNote({id:'pdf',type:'PDF'})]};
+  view.activeFilter='手写';assert.deepEqual(plain(filtered.call(view)).map(n=>n.id),['pen','old']);
+  view.activeFilter='Word';assert.deepEqual(plain(filtered.call(view)).map(n=>n.id),['word']);
+});
+
+test('a failed note snapshot write leaves the creation form and original library intact', async () => {
+  const create=viewMethod('pages/Index.ets','createNote');const original=studyNote();let opened=0;
+  const view={notes:[original],noteCreateBusy:false,noteCreateError:'',activeSpaceName:()=>'',formatTime:()=>'',
+    storage:{create:async()=>{},save:async()=>{throw Error('disk');}},rebuildSpaces(){},refreshGraph(){},openNote:()=>opened++,notify(){}};
+  assert.equal(await create.call(view,'日记'),false);assert.equal(view.notes.length,1);assert.equal(view.notes[0],original);
+  assert.equal(opened,0);assert.ok(view.noteCreateError);assert.equal(view.noteCreateBusy,false);
+});
+
+test('leaving a scratchpad or global canvas commits its last stroke and pending save', () => {
+  const disappear=viewMethod('views/reader/HandwritingCanvas.ets','aboutToDisappear',{clearTimeout:()=>{}});
+  for(const [isScratchpad,persistOnDisappear] of [[true,false],[false,true],[false,false]]) {
+    const calls=[];const view={isScratchpad,persistOnDisappear,saveTimer:1,
+      finishStroke:()=>calls.push('stroke'),flushSave:()=>calls.push('save'),shortcuts:{stop(){}},input:{reset(){}}};
+    disappear.call(view);assert.deepEqual(calls,isScratchpad||persistOnDisappear?['stroke','save']:[]);assert.equal(view.saveTimer,-1);
+  }
+});
+
+test('switching companion documents saves the partial reply under the original document only', () => {
+  const cache=new Map([['b',[{text:'文档B的对话'}]]]);const globals={COMPANION_CACHE:cache};const relative='views/reader/huawei/HuaweiAiSplitPanel.ets';
+  const view={note:{id:'b'},loadedNoteId:'a',messages:[{text:'文档A的问题'}],isLoading:true,accumulated:'文档A的部分答案',
+    streamingCard:{id:'answer-a'},streamHandle:{abort(){}},requestId:1,parseCard:text=>({text})};
+  for(const method of ['persist','cancelStream','onNoteChanged'])view[method]=viewMethod(relative,method,globals);
+  view.onNoteChanged();assert.equal(cache.get('a').at(-1).text,'文档A的部分答案');assert.equal(cache.get('b').length,1);
+  assert.equal(view.messages[0].text,'文档B的对话');assert.equal(view.loadedNoteId,'b');assert.equal(view.isLoading,false);
+});
+
+function shareHarness({ supported = true, exists = true, failure = null } = {}) {
+  const panels = []; const uris = [];
+  class SharedData { constructor(record) { this.record = record; } }
+  class ShareController {
+    constructor(data) { this.data = data; }
+    async show(context, options) { if (failure) throw failure; panels.push({ context, options, record: this.data.record }); }
+  }
+  const { SystemShareService } = load(`${base}services/SystemShareService.ets`, {
+    '@kit.AbilityKit': {},
+    '@kit.ShareKit': { systemShare: { SharedData, ShareController, SelectionMode: { SINGLE: 0 }, SharePreviewMode: { DETAIL: 0 } } },
+    '@kit.ArkData': { uniformTypeDescriptor: { UniformDataType: { PLAIN_TEXT: 'general.plain-text', PDF: 'com.adobe.pdf' } } },
+    '@kit.CoreFileKit': { fileIo: { access: async () => exists }, fileUri: { getUriFromPath: p => { uris.push(p); return `file://app${p}`; } } },
+    canIUse: () => supported
+  });
+  return { service: SystemShareService, panels, uris, context: { filesDir: '/data/app/files' } };
+}
+
+test('system sharing hands only the selected literal text to the native chooser', async () => {
+  const h = shareHarness(); const text = '# 课程\n用户未保存的文字\n';
+  await h.service.shareText(h.context, '课程', text);
+  assert.equal(h.panels.length, 1); assert.deepEqual(plain(h.panels[0].record), { utd: 'general.plain-text', content: text, title: '课程' });
+  assert.deepEqual(plain(h.panels[0].options), { selectionMode: 0, previewMode: 0 }); assert.equal(h.uris.length, 0);
+});
+
+test('system sharing rejects empty and oversized text without silently truncating it', async () => {
+  const h = shareHarness();
+  await assert.rejects(h.service.shareText(h.context, '空白', ' \n'), /先写入/);
+  await assert.rejects(h.service.shareText(h.context, '长资料', '课'.repeat(48 * 1024 + 1)), /导出文件/);
+  assert.equal(h.panels.length, 0);
+});
+
+test('PDF sharing uses the owned original file and explicitly excludes ink', async () => {
+  const h = shareHarness(); await h.service.sharePdf(h.context, '讲义', '/data/app/files/documents/lesson.pdf');
+  assert.deepEqual(h.uris, ['/data/app/files/documents/lesson.pdf']);
+  assert.deepEqual(plain(h.panels[0].record), { utd: 'com.adobe.pdf', uri: 'file://app/data/app/files/documents/lesson.pdf',
+    title: '讲义', description: '原 PDF，不包含应用内笔迹' });
+});
+
+test('PDF sharing rejects other sandboxes, traversal, URLs and missing originals', async () => {
+  const h = shareHarness();
+  for (const p of ['/data/app/files-other/a.pdf', '/data/other/a.pdf', '/data/app/files/../a.pdf',
+    '/data/app/files/./a.pdf', 'https://example.com/a.pdf', '/data/app/files/a.txt']) {
+    await assert.rejects(h.service.sharePdf(h.context, '资料', p), /原 PDF 不可用/);
+  }
+  const missing = shareHarness({ exists: false }); await assert.rejects(missing.service.sharePdf(missing.context, '资料', '/data/app/files/a.pdf'));
+  assert.equal(h.panels.length, 0); assert.equal(h.uris.length, 0); assert.equal(missing.panels.length, 0);
+});
+
+test('native chooser unavailability or failure propagates without reporting delivery', async () => {
+  const unavailable = shareHarness({ supported: false });
+  await assert.rejects(unavailable.service.shareText(unavailable.context, '资料', '正文'), /不支持系统分享/);
+  const failed = shareHarness({ failure: new Error('native chooser failed') });
+  await assert.rejects(failed.service.shareText(failed.context, '资料', '正文'), /native chooser failed/);
+  assert.equal(unavailable.panels.length, 0); assert.equal(failed.panels.length, 0);
 });

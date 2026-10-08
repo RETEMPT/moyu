@@ -19,10 +19,9 @@ import { promptAction } from '@kit.ArkUI';
 @Component
 export struct AppearanceSheet {
   onClose: () => void = () => {};
-  /** 补入本机缺失的示例数据（含 PDF / 试卷，是进入原盘批注阅读器的入口） */
-  onLoadSeedData: () => void = () => {};
   onOpenBackup: () => void = () => {};
   onOpenPrivacy: () => void = () => {};
+  onOpenGuide: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindReduceMotion') reduceMotion: boolean = false;
@@ -201,32 +200,7 @@ export struct AppearanceSheet {
 
         Button('备份与附近传递').height(44).width('100%').onClick(() => this.onOpenBackup())
         Button('隐私与数据说明').height(44).width('100%').onClick(() => this.onOpenPrivacy())
-        // ---- 数据：补入示例 ----
-        Column({ space: 6 }) {
-          Text('示例数据')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkSecondary)
-            .fontWeight(FontWeight.Medium)
-            .width('100%')
-          Text('补入本机还没有的示例笔记。其中包含 PDF 与试卷类型，是进入「原盘批注」PDF 阅读器的入口。已存在的笔记一律不动。')
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkMuted)
-            .width('100%')
-          Text('载入示例数据')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().accent)
-            .padding({ left: 12, right: 12, top: 7, bottom: 7 })
-            .borderRadius(7)
-            .backgroundColor(this.palette().accentSoft)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => {
-              this.onLoadSeedData();
-              this.onClose();
-            })
-        }
-        .width('100%')
-        .padding({ left: 14, right: 14, top: 10, bottom: 14 })
-        .alignItems(HorizontalAlign.Start)
+        Button('使用指引').height(44).width('100%').onClick(() => this.onOpenGuide())
       }
       .width('100%')
       .constraintSize({ maxWidth: 460 })

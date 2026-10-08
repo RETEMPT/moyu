@@ -42,6 +42,9 @@ import { RetrievalHit } from '../../common/types/RagTypes';
 import { AgentToolExecutor, AgentToolResult } from '../../common/types/AgentTypes';
 import { AGENT_TOOLS, toolDisplayName } from '../../services/ai/ToolRegistry';
 import { DocumentImportService } from '../../services/document/DocumentImportService';
+import { AssistantModeService, ASSISTANT_MODE_KEY } from '../../services/ai/AssistantModeService';
+import { LocalAssistantService } from '../../services/ai/LocalAssistantService';
+import { REMOTE_AI_ENABLED } from '../../common/constants/RuntimeCapabilities';
 
 interface QuickPrompt {
   title: string;
@@ -126,6 +129,13 @@ const QUICK_PROMPTS: QuickPrompt[] = [
   { title: '知识全景', badge: '全景', desc: '宏观汇总知识资产分布', query: '调用知识库概览工具，帮我统计知识库结构与重点分类。' }
 ];
 
+const LOCAL_PROMPTS: QuickPrompt[] = [
+  { title: '提取要点', badge: '摘录', desc: '查看资料的原文要点', query: '提取要点' },
+  { title: '整理待办', badge: '待办', desc: '提取原文明示的任务', query: '整理待办' },
+  { title: '搜索原文', badge: '检索', desc: '输入课程名或关键词', query: '' },
+  { title: '资料概览', badge: '概览', desc: '查看分类与待办数量', query: '资料概览' }
+];
+
 @Component
 export struct AiWorkspace {
   currentNote: NoteItem | null = null;
@@ -159,6 +169,7 @@ export struct AiWorkspace {
   @StorageProp(ACTIVE_STORAGE_KEY) @Watch('onActiveProfileChanged') activeProfileId: string = '';
   @StorageProp('flowmindModelRevision') @Watch('onActiveProfileChanged') modelRevision: number = 0;
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
+  @StorageProp(ASSISTANT_MODE_KEY) @Watch('onActiveProfileChanged') assistantMode: string = 'local';
 
   @State messages: StoredMessage[] = [];
   @State inputText: string = '';
@@ -232,8 +243,9 @@ export struct AiWorkspace {
   private async initServices(): Promise<void> {
     try {
       const ctx = getContext(this) as common.UIAbilityContext;
+      await AssistantModeService.getInstance().init(ctx);
       await this.sessionService.init(ctx);
-      await ModelConfigService.getInstance().init(ctx);
+      if (REMOTE_AI_ENABLED) { await ModelConfigService.getInstance().init(ctx); }
     } catch (error) {
       console.error(`AI 服务自初始化跳过: ${JSON.stringify(error)}`);
     }
@@ -255,6 +267,10 @@ export struct AiWorkspace {
   }
 
   private async loadModelLabel(): Promise<void> {
+    if (!REMOTE_AI_ENABLED) {
+      this.modelLabel = '本地助手 · 离线'; this.modelReady = true;
+      this.isModelReasoningType = false; this.profiles = []; this.emitContext(); return;
+    }
     try {
       this.profiles = await ModelConfigService.getInstance().loadProfiles();
       const profile = await ModelConfigService.getInstance().getActiveProfile();
@@ -269,6 +285,11 @@ export struct AiWorkspace {
       this.isModelReasoningType = false;
       this.profiles = [];
     }
+    if (this.assistantMode === 'local') {
+      this.modelLabel = '本地助手 · 离线';
+      this.modelReady = true;
+      this.isModelReasoningType = false;
+    }
     this.emitContext();
   }
 
@@ -277,6 +298,13 @@ export struct AiWorkspace {
     this.modelMenuOpen = false;
     try {
       await ModelConfigService.getInstance().setActiveProfileId(profileId);
+      const profile = await ModelConfigService.getInstance().getActiveProfile();
+      if (ModelProfilePolicy.validate(profile) || !RemoteAiPolicy.consented(profile)) {
+        promptAction.showToast({ message: '请先配置模型并确认发送授权' });
+        this.onOpenModelSettings();
+        return;
+      }
+      await AssistantModeService.getInstance().setMode('remote');
       await this.loadModelLabel();
       promptAction.showToast({ message: `已切换至 ${this.modelLabel}` });
     } catch {
@@ -359,6 +387,7 @@ export struct AiWorkspace {
   }
 
   private layerTitle(layer: AgentLayer | undefined): string {
+    if (this.assistantMode === 'local' || !REMOTE_AI_ENABLED) { return '本地整理'; }
     if (layer === 'L1') {
       return '伴读模式';
     }
@@ -436,6 +465,20 @@ export struct AiWorkspace {
     this.cancelled = false; this.isLoading = true; this.toolStatus = '准备上下文…';
     const current = (): boolean => this.alive && !this.cancelled && request === this.requestId && session === this.loadedSessionId;
     try {
+      if (this.assistantMode === 'local' || !REMOTE_AI_ENABLED) {
+        this.messages = [...this.messages, createMessage('user', query)]; this.inputText = '';
+        // Yield once so the sending state is visible before scanning local documents.
+        await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+        if (!current()) { return; }
+        const result = await new LocalAssistantService().answer(query, { notes: this.allNotes,
+          pinned: this.pinnedNotes, currentNote: this.currentNote || undefined, todos: this.todos }, () => !current());
+        if (!current()) { return; }
+        const response = createMessage('assistant', result.text);
+        response.modelProfileId = 'local-assistant'; response.citations = result.citations;
+        this.messages = [...this.messages, response]; this.lastCitations = result.citations;
+        this.toolStatus = ''; this.emitContext(); this.scrollToBottom(); await this.persistSession();
+        return;
+      }
       const configured = await ModelConfigService.getInstance().getActiveProfile();
       if (!current()) { return; }
       const error = ModelProfilePolicy.validate(configured);
@@ -477,8 +520,9 @@ export struct AiWorkspace {
         }, (handle: StreamHandle) => { if (current()) { this.streamHandle = handle; } else { handle.abort(); } });
     } catch (error) {
       if (current()) {
+        const partial = this.streamingText; const reasoning = this.streamingReasoning;
         this.streamingText = ''; this.streamingReasoning = ''; this.toolStatus = '';
-        this.appendError(error instanceof Error ? error.message : '智能体请求失败'); this.persistSession();
+        this.appendError(error instanceof Error ? error.message : '请求失败，请重试', partial, reasoning); this.persistSession();
       }
     } finally { if (request === this.requestId && this.alive) { this.isLoading = false; this.streamHandle = null; } }
   }
@@ -757,8 +801,9 @@ export struct AiWorkspace {
     promptAction.showToast({ message: '已忽略此协同建议' });
   }
 
-  private appendError(message: string): void {
-    const errMsg: StoredMessage = createMessage('assistant', '');
+  private appendError(message: string, partial: string = '', reasoning: string = ''): void {
+    const errMsg: StoredMessage = createMessage('assistant', partial);
+    if (reasoning) { errMsg.reasoningContent = reasoning; errMsg.reasoningFolded = true; }
     errMsg.error = message;
     errMsg.agentLayer = this.runningLayer;
     this.messages = [...this.messages, errMsg];
@@ -823,6 +868,7 @@ export struct AiWorkspace {
     } catch (error) {
       console.error(`会话保存失败: ${JSON.stringify(error)}`);
       if (strict) { throw new Error('变更已完成，但执行记录未能保存，请勿重复创建'); }
+      if (this.alive) { promptAction.showToast({ message: '对话未能保存，请检查存储后重试' }); }
     }
   }
 
@@ -900,17 +946,6 @@ export struct AiWorkspace {
     if (this.isLoading) {
       return;
     }
-    try {
-      const active = await ModelConfigService.getInstance().getActiveProfile();
-      if (active.modelId === 'deepseek-v4') {
-        active.modelId = 'deepseek-v4-pro';
-        await ModelConfigService.getInstance().upsertProfile(active);
-        await this.loadModelLabel();
-      }
-    } catch {
-      // ignore
-    }
-
     let lastUserQuery: string = '';
     for (let i = this.messages.length - 1; i >= 0; i--) {
       if (this.messages[i].role === 'user') {
@@ -924,22 +959,6 @@ export struct AiWorkspace {
     } else {
       promptAction.showToast({ message: '暂无可重新生成的提问' });
     }
-  }
-
-  private async switchModelAndRetry(targetModelId: string): Promise<void> {
-    if (this.isLoading) {
-      return;
-    }
-    try {
-      const active = await ModelConfigService.getInstance().getActiveProfile();
-      active.modelId = targetModelId;
-      await ModelConfigService.getInstance().upsertProfile(active);
-      await this.loadModelLabel();
-      promptAction.showToast({ message: `已自动切换为 ${targetModelId} 并发起请求` });
-    } catch {
-      // ignore
-    }
-    this.regenerateLastResponse();
   }
 
   private startNewChat(): void {
@@ -1114,22 +1133,6 @@ export struct AiWorkspace {
             .onClick(() => this.regenerateLastResponse())
 
             if (msg.error !== undefined && msg.error !== null && msg.error.length > 0) {
-              if (msg.error.includes('deepseek-v4-pro') || msg.error.includes('deepseek-flash') || msg.error.includes('deepseek-v4')) {
-                Row({ space: 4 }) {
-                  Text('⚡')
-                    .fontSize(TypographyTokens.TINY)
-                    .fontColor(this.palette().accent)
-                  Text('切换为 deepseek-v4-pro 重试')
-                    .fontSize(TypographyTokens.TINY)
-                    .fontColor(this.palette().accent)
-                }
-                .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-                .borderRadius(6)
-                .backgroundColor(this.palette().accentSoft)
-                .hoverEffect(HoverEffect.Highlight)
-                .onClick(() => this.switchModelAndRetry('deepseek-v4-pro'))
-              }
-
               Row({ space: 4 }) {
                 Text('⚡')
                   .fontSize(TypographyTokens.TINY)
@@ -1534,8 +1537,13 @@ export struct AiWorkspace {
   @Builder
   modelSelectMenu() {
     Column({ space: 6 }) {
+      Button('本地助手 · 离线可用').height(44).width('100%').fontSize(13)
+        .onClick(async () => {
+          try { await AssistantModeService.getInstance().setMode('local'); this.modelMenuOpen = false; }
+          catch { promptAction.showToast({ message: '助手设置保存失败，请重试' }); }
+        })
       Row({ space: 6 }) {
-        Text('已配置模型')
+        Text(REMOTE_AI_ENABLED ? '已配置模型' : '助手')
           .fontSize(TypographyTokens.TINY)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.palette().inkMuted)
@@ -1554,6 +1562,7 @@ export struct AiWorkspace {
       .width('100%')
       .padding({ bottom: 4 })
 
+      if (REMOTE_AI_ENABLED) {
       Scroll() {
         Column({ space: 4 }) {
           ForEach(this.profiles, (p: ModelProfile) => {
@@ -1605,10 +1614,11 @@ export struct AiWorkspace {
       }
       .constraintSize({ maxHeight: 240 })
       .scrollBar(BarState.Auto)
+      }
 
       Divider().color(this.palette().borderSubtle).margin({ top: 4, bottom: 4 })
 
-      if (this.isModelReasoningType) {
+      if (REMOTE_AI_ENABLED && this.isModelReasoningType) {
         Text('推理强度').fontSize(12).fontColor(this.palette().inkSecondary).width('100%')
         Row({ space: 6 }) {
           ForEach(THINKING_BUDGETS.slice(0, 3), (item: ThinkingBudgetPreset, index: number) => {
@@ -1623,7 +1633,7 @@ export struct AiWorkspace {
 
       Row({ space: 6 }) {
         Image($r('app.media.ic_sparkle')).width(18).height(18).fillColor(this.palette().inkSecondary)
-        Text('AI 设置与模型目录')
+        Text('助手设置')
           .fontSize(TypographyTokens.TINY)
           .fontColor(this.palette().accent)
       }
@@ -1761,7 +1771,7 @@ export struct AiWorkspace {
       Column() {
         Column({ space: 6 }) {
           Row({ space: 8 }) {
-            Text('AI 墨客').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
+            Text('墨客').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
             Row({ space: 6 }) {
               Text(this.modelLabel).fontSize(12).fontColor(this.palette().inkSecondary).maxLines(1)
                 .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
@@ -1778,6 +1788,7 @@ export struct AiWorkspace {
             Image($r('app.media.ic_menu')).width(44).height(44).padding(12).fillColor(this.palette().inkSecondary)
               .accessibilityText('模型与工具设置').enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal).onClick(() => this.onOpenModelSettings())
           }.width('100%')
+          if (REMOTE_AI_ENABLED && this.assistantMode === 'remote') {
           Row({ space: 4 }) {
             ForEach(MODE_TABS, (item: AgentModeTabItem) => {
               Text(item.title).fontSize(13).fontWeight(this.currentAgentMode === item.mode ? FontWeight.Medium : FontWeight.Normal)
@@ -1788,6 +1799,7 @@ export struct AiWorkspace {
                 .onClick(() => { this.currentAgentMode = item.mode as AgentLayer | 'auto'; })
             }, (item: AgentModeTabItem) => item.mode)
           }.width('100%')
+          }
         }.width('100%').padding({ left: this.isPhone ? 12 : 20, right: this.isPhone ? 12 : 20, top: 6, bottom: 6 })
           .backgroundColor(this.palette().surface)
           .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
@@ -1798,11 +1810,11 @@ export struct AiWorkspace {
           Image($r('app.media.ic_sparkle')).width(32).height(32).fillColor(this.palette().accent)
 
           Column({ space: 4 }) {
-            Text('把资料变成学习收获')
+            Text(this.assistantMode === 'local' || !REMOTE_AI_ENABLED ? '从资料原文开始' : '研读你的资料')
               .fontSize(TypographyTokens.TITLE_SUB)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.palette().inkPrimary)
-            Text('提炼要点、比较观点，或准备一组自测题。')
+            Text(this.assistantMode === 'local' || !REMOTE_AI_ENABLED ? '离线检索、摘录要点、整理待办。' : '提炼要点、比较观点或准备自测题。')
               .fontSize(TypographyTokens.CAPTION)
               .fontColor(this.palette().inkMuted)
           }
@@ -1827,18 +1839,19 @@ export struct AiWorkspace {
             justifyContent: FlexAlign.Center,
             space: { main: { value: 12, unit: 1 }, cross: { value: 12, unit: 1 } }
           }) {
-            ForEach(this.showAllPrompts ? QUICK_PROMPTS : QUICK_PROMPTS.slice(0, 4), (qp: QuickPrompt) => {
+            ForEach(this.assistantMode === 'local' || !REMOTE_AI_ENABLED ? LOCAL_PROMPTS : this.showAllPrompts ? QUICK_PROMPTS : QUICK_PROMPTS.slice(0, 4), (qp: QuickPrompt) => {
               this.quickPromptCard(qp)
             }, (qp: QuickPrompt) => qp.title)
           }
           .constraintSize({ maxWidth: 560 })
           .width('100%')
           .padding({ left: 16, right: 16 })
+          if (REMOTE_AI_ENABLED && this.assistantMode === 'remote') {
           Button(this.showAllPrompts ? '收起更多用法' : '更多用法').height(44).fontSize(12).type(ButtonType.Normal)
             .backgroundColor(Color.Transparent).fontColor(this.palette().inkSecondary).onClick(() => { this.showAllPrompts = !this.showAllPrompts; })
-          Text('选择用法后，可补充问题再发送。').fontSize(12).fontColor(this.palette().inkMuted)
+          }
           if (!this.modelReady) {
-            Button('配置 AI 或浏览模型目录').height(44).fontSize(13).type(ButtonType.Normal).borderRadius(8)
+            Button('配置模型或使用本地助手').height(44).fontSize(13).type(ButtonType.Normal).borderRadius(8)
               .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary).onClick(() => this.onOpenModelSettings())
           }
         }

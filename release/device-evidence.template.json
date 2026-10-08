@@ -1,5 +1,5 @@
 {
-  "versionCode": 1001001,
+  "versionCode": 1001002,
   "appSha256": "",
   "sourceCommit": "",
   "devices": [
@@ -74,6 +74,22 @@
         "delete_export": {
           "status": "TODO",
           "evidence": ""
+        },
+        "first_launch_empty": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "local_assistant": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "create_note": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "stylus_handwriting": {
+          "status": "TODO",
+          "evidence": ""
         }
       }
     },
@@ -146,6 +162,22 @@
           "evidence": ""
         },
         "delete_export": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "first_launch_empty": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "local_assistant": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "create_note": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "stylus_handwriting": {
           "status": "TODO",
           "evidence": ""
         }

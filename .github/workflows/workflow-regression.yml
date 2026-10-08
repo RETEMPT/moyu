@@ -26,6 +26,7 @@ jobs:
         run: |
           node tools/verify-app-market.mjs
           node tools/generate-market-materials.mjs --check
+          node tools/generate-ui-icons.mjs --check
           node tools/app-market-preflight.mjs --project-only
       - name: Check whitespace errors
         run: git diff --check HEAD^ HEAD

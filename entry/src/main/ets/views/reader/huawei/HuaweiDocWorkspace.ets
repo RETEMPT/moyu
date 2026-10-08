@@ -18,6 +18,8 @@
  *   4. 双模分屏与统一模态弹窗。
  */
 import { promptAction } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
+import { SystemShareService } from '../../../services/SystemShareService';
 import { ColorPalette, TypographyTokens, LayoutTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { NoteItem } from '../../../common/types/NoteItem';
@@ -27,6 +29,8 @@ import { PdfAnnotatorView } from '../pdf/PdfAnnotatorView';
 import { HandwritingCanvas } from '../HandwritingCanvas';
 import { HuaweiAiSplitPanel } from './HuaweiAiSplitPanel';
 import { HuaweiDocActionDialog, HuaweiDocDialogType } from './HuaweiDocActionDialog';
+import { AppIcon } from '../../common/AppIcon';
+import { IconButton } from '../../common/IconButton';
 
 export type HuaweiTabType = 'file' | 'view' | 'play' | 'annotate' | 'ai';
 export type SplitModeType = 'none' | 'ai' | 'scratchpad';
@@ -50,7 +54,6 @@ export struct HuaweiDocWorkspace {
   private handleBackRequest(): void {
     if (this.activeModal.length > 0) { this.activeModal = ''; return; }
     if (this.jumpDialogOpen) { this.jumpDialogOpen = false; return; }
-    if (this.moreMenuOpen) { this.moreMenuOpen = false; return; }
     if (this.exitDialogOpen) { if (!this.exitSaving) { this.exitDialogOpen = false; } return; }
     if (this.isPhone && this.splitMode !== 'none') { this.splitMode = 'none'; return; }
     if (!this.exitSaving) { this.exitDialogOpen = true; }
@@ -69,8 +72,10 @@ export struct HuaweiDocWorkspace {
   @State selectedColor: string = '#DC2626';
   @State selectedWidth: number = 3;
   @State undoTrigger: number = 0;
+  @State redoTrigger: number = 0;
+  @State fingerDrawing: boolean = false;
+  private previousInkTool: AnnotationTool = 'pen';
   @State clearTrigger: number = 0;
-  @State moreMenuOpen: boolean = false;
   @State exitDialogOpen: boolean = false;
   @State exitSaving: boolean = false;
   @State exitSaveToken: number = 0;
@@ -83,9 +88,12 @@ export struct HuaweiDocWorkspace {
 
   // 页码与阅读控制
   @State currentPage: number = 1;
-  @State totalPages: number = 9;
+  @State totalPages: number = 1;
   @State zoomPercent: number = 100;
   @State isContinuousScroll: boolean = true;
+  @State penOptionsOpen: boolean = false;
+  @State penPaletteWidth: number = 360;
+  @State shareBusy: boolean = false;
   @State isPresentationMode: boolean = false;
   @State jumpDialogOpen: boolean = false;
 
@@ -107,8 +115,7 @@ export struct HuaweiDocWorkspace {
   aboutToAppear(): void {
     this.loadedNoteId = this.note.id;
     if (this.isDocumentOrExam()) {
-      const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount :
-        (this.note.id.startsWith('note-seed-') ? 9 : 1);
+      const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount : 1;
       this.totalPages = count;
       this.currentPage = Math.max(1, Math.min(this.sourcePage, count));
     } else {
@@ -123,8 +130,7 @@ export struct HuaweiDocWorkspace {
     this.activeModal = '';
     this.jumpDialogOpen = false;
     if (this.isDocumentOrExam()) {
-      const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount :
-        (this.note.id.startsWith('note-seed-') ? 9 : 1);
+      const count = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount : 1;
       this.totalPages = count;
     }
   }
@@ -160,15 +166,7 @@ export struct HuaweiDocWorkspace {
    * 判断是否为手指触控（严格过滤手写笔 Pen 触控，避免笔迹落笔时误触发呼出）
    */
   private isFingerTouch(event: TouchEvent): boolean {
-    try {
-      // 鸿蒙 ArkUI 中 SourceType.Pen 为 3，过滤手写笔触控
-      if (event.source === 3) {
-        return false;
-      }
-    } catch (e) {
-      // 容错降级
-    }
-    return true;
+    return event.sourceTool === SourceTool.Finger;
   }
 
   /** 切换顶底栏显隐 */
@@ -207,7 +205,6 @@ export struct HuaweiDocWorkspace {
   /** 清空当前页批注 */
   private clearCurrentPageAnnotations(): void {
     this.clearTrigger++;
-    this.showToast(`第 ${this.currentPage} 页手写批注已清空`);
   }
 
   private showToast(msg: string): void {
@@ -232,216 +229,54 @@ export struct HuaweiDocWorkspace {
   // ------------------------------------------------------------------
 
   @Builder
-  topNavigationBar() {
-    Row({ space: 12 }) {
-      // 1. 退出全屏胶囊（Obsidian 简约返回样式，触发退出保存确认）
-      Row({ space: 5 }) {
-        Text('←')
-          .fontSize(14)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.palette().inkPrimary)
-        if (!this.isPhone) {
-          Text('退出')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkPrimary)
-        }
-      }
-      .padding({ left: 10, right: this.isPhone ? 10 : 12, top: 6, bottom: 6 })
-      .borderRadius(14)
-      .backgroundColor(this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-          this.exitDialogOpen = true;
-        });
-      })
-
-      // 2. 文档标题与 Obsidian 质感格式勋章
-      Row({ space: 8 }) {
-        Text(this.note.title.startsWith('《') ? this.note.title : `《${this.note.title}》`)
-          .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.palette().inkPrimary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-
-        if (!this.isPhone) {
-          Text(this.isDocumentOrExam() ? 'PDF · 考研真题' : (this.isHandwritingNote() ? '稿纸 · 手写演算' : this.note.type.toUpperCase()))
-            .fontSize(TypographyTokens.TINY)
-            .fontWeight(FontWeight.Normal)
-            .fontColor(this.palette().inkSecondary)
-            .padding({ left: 8, right: 8, top: 2, bottom: 2 })
-            .borderRadius(6)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .border({ width: 1, color: this.palette().borderSubtle })
-        }
-
-        // 收藏星标快捷切换
-        Row({ space: 4 }) {
-          Text(this.note.favorite === true ? '★' : '☆')
-            .fontSize(13)
-            .fontColor(this.note.favorite === true ? this.palette().warning : this.palette().inkSecondary)
-          if (!this.isPhone) {
-            Text(this.note.favorite === true ? '已收藏' : '收藏')
-              .fontSize(TypographyTokens.TINY)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.note.favorite === true ? this.palette().warning : this.palette().inkSecondary)
-          }
-        }
-        .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-        .borderRadius(8)
-        .backgroundColor(this.note.favorite === true ? this.palette().accentSoft : this.palette().surfaceSubtle)
-        .border({ width: 1, color: this.note.favorite === true ? this.palette().warning : this.palette().borderSubtle })
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          this.onToggleFavorite(this.note);
-        })
-      }
-      .layoutWeight(1)
-
-      // 3. 居中模式分段选择器：阅读模式 vs 手写批注 (Obsidian 极简几何图标)
-      Row({ space: 3 }) {
-        // 阅读模式
-        Row({ space: 5 }) {
-          Text('▤')
-            .fontSize(12)
-            .fontColor(!this.isAnnotateMode ? this.palette().accent : this.palette().inkSecondary)
-          Text('阅读')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(!this.isAnnotateMode ? FontWeight.Bold : FontWeight.Normal)
-            .fontColor(!this.isAnnotateMode ? this.palette().accent : this.palette().inkSecondary)
-        }
-        .padding({ left: 12, right: 12, top: 5, bottom: 5 })
-        .borderRadius(14)
-        .backgroundColor(!this.isAnnotateMode ? this.palette().surface : Color.Transparent)
-        .border({ width: 1, color: !this.isAnnotateMode ? this.palette().borderSubtle : Color.Transparent })
-        .shadow(!this.isAnnotateMode ? { radius: 6, color: this.isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.06)', offsetY: 1 } : { radius: 0, color: 'transparent' })
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-            this.isAnnotateMode = false;
-            this.showToast('已进入阅读模式：触控滑动翻页，防误触');
-          });
-        })
-
-        // 手写批注
-        Row({ space: 5 }) {
-          Text('✎')
-            .fontSize(12)
-            .fontColor(this.isAnnotateMode ? '#DC2626' : this.palette().inkSecondary)
-          Text('批注')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.isAnnotateMode ? FontWeight.Bold : FontWeight.Normal)
-            .fontColor(this.isAnnotateMode ? '#DC2626' : this.palette().inkSecondary)
-        }
-        .padding({ left: 12, right: 12, top: 5, bottom: 5 })
-        .borderRadius(14)
-        .backgroundColor(this.isAnnotateMode ? this.palette().surface : Color.Transparent)
-        .border({ width: 1, color: this.isAnnotateMode ? this.palette().borderSubtle : Color.Transparent })
-        .shadow(this.isAnnotateMode ? { radius: 6, color: this.isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.06)', offsetY: 1 } : { radius: 0, color: 'transparent' })
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-            this.isAnnotateMode = true;
-            this.isPenPaletteExpanded = true;
-            this.showToast('已进入手写批注模式：可随时落笔书写或点击退出');
-          });
-        })
-      }
-      .padding(3)
-      .borderRadius(18)
-      .backgroundColor(this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.palette().borderSubtle })
-
-      Blank()
-
-      // 4. 右侧分屏模式与更多操作 (Obsidian 极简图标)
-      Row({ space: 8 }) {
-        // 分屏胶囊
-        Row({ space: 3 }) {
-          this.splitSegmentItem('⊡', '单页', 'none')
-          this.splitSegmentItem('✦', 'AI 伴读', 'ai')
-          this.splitSegmentItem('▦', '稿纸', 'scratchpad')
-        }
-        .padding(3)
-        .borderRadius(18)
-        .backgroundColor(this.palette().surfaceSubtle)
-        .border({ width: 1, color: this.palette().borderSubtle })
-
-        // 沉浸阅读隐藏顶底栏
-        Row({ space: 4 }) {
-          Text('⛶')
-            .fontSize(12)
-            .fontColor(this.palette().accent)
-          Text('沉浸')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().accent)
-        }
-        .padding({ left: 10, right: 12, top: 5, bottom: 5 })
-        .borderRadius(14)
-        .backgroundColor(this.palette().accentSoft)
-        .border({ width: 1, color: this.palette().borderSubtle })
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          this.toggleBars(false);
-          this.showToast('已进入沉浸全屏，触碰屏幕顶/底边缘即可唤回');
-        })
-
-        // 更多操作入口（Obsidian 风格中点省略号）
-        Row({ space: 4 }) {
-          Text('⋯')
-            .fontSize(14)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.palette().inkPrimary)
-          Text('更多')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkPrimary)
-        }
-        .padding({ left: 10, right: 12, top: 5, bottom: 5 })
-        .borderRadius(14)
-        .backgroundColor(this.palette().surfaceSubtle)
-        .border({ width: 1, color: this.palette().borderSubtle })
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-            this.moreMenuOpen = !this.moreMenuOpen;
-          });
-        })
-      }
-    }
-    .width('100%')
-    .height(48)
-    .padding({ left: 16, right: 16 })
-    .backgroundColor(this.palette().surface)
-    .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
+  readerModeButton(icon: Resource, label: string, annotate: boolean) {
+    Button({ type: ButtonType.Normal }) {
+      AppIcon({ source: icon, iconSize: 22, tint: this.isAnnotateMode === annotate ? this.palette().accent : this.palette().inkSecondary })
+    }.width(44).height(44).padding(0).borderRadius(12)
+      .backgroundColor(this.isAnnotateMode === annotate ? this.palette().accentSoft : Color.Transparent)
+      .accessibilityText(label).bindTips(label)
+      .onClick(() => { this.isAnnotateMode = annotate; if (annotate) { this.isPenPaletteExpanded = true; } })
   }
 
   @Builder
-  splitSegmentItem(icon: string, label: string, mode: SplitModeType) {
-    Row({ space: 4 }) {
-      Text(icon)
-        .fontSize(12)
-        .fontColor(this.splitMode === mode ? this.palette().accent : this.palette().inkSecondary)
-      Text(label)
-        .fontSize(TypographyTokens.CAPTION)
-        .fontWeight(this.splitMode === mode ? FontWeight.Bold : FontWeight.Normal)
-        .fontColor(this.splitMode === mode ? this.palette().accent : this.palette().inkSecondary)
-    }
-    .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-    .borderRadius(14)
-    .backgroundColor(this.splitMode === mode ? this.palette().surface : Color.Transparent)
-    .border({ width: 1, color: this.splitMode === mode ? this.palette().borderSubtle : Color.Transparent })
-    .shadow(this.splitMode === mode ? { radius: 6, color: this.isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.06)', offsetY: 1 } : { radius: 0, color: 'transparent' })
-    .hoverEffect(HoverEffect.Highlight)
-    .onClick(() => {
-      animateTo({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD }, () => {
-        this.splitMode = mode;
-      });
-    })
+  topNavigationBar() {
+    Column({ space: 2 }) {
+      Row({ space: 4 }) {
+        IconButton({ icon: $r('app.media.ic_back'), label: '返回并选择保存方式', onAction: () => { this.exitDialogOpen = true; } })
+        Text(this.note.title).fontSize(16).fontWeight(FontWeight.Medium)
+          .fontColor(this.palette().inkPrimary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+        IconButton({ icon: $r('app.media.ic_star'), label: this.note.favorite ? '取消收藏' : '收藏',
+          selected: this.note.favorite === true, onAction: () => this.onToggleFavorite(this.note) })
+        IconButton({ icon: $r('app.media.ic_fullscreen'), label: '沉浸阅读',
+          onAction: () => { this.toggleBars(false); this.showToast('轻触屏幕边缘显示工具栏'); } })
+        IconButton({ icon: $r('app.media.ic_more'), label: '更多文档操作' })
+          .bindMenu(() => { this.documentMenu(); })
+      }.width('100%').height(48)
+      Scroll() {
+        Row({ space: 4 }) {
+          this.readerModeButton($r('app.media.ic_read'), '阅读', false)
+          this.readerModeButton($r('app.media.ic_pen'), '批注', true)
+          Divider().vertical(true).height(24).color(this.palette().border).margin({ left: 4, right: 4 })
+          this.splitSegmentItem($r('app.media.ic_page'), '单页', 'none')
+          this.splitSegmentItem($r('app.media.ic_sparkle'), '墨客', 'ai')
+          this.splitSegmentItem($r('app.media.ic_canvas'), '稿纸', 'scratchpad')
+        }
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+    }.width('100%').padding({ left: 8, right: 8, bottom: 4 }).backgroundColor(this.palette().surface)
+      .border({ width: { bottom: 1 }, color: this.palette().borderSubtle })
+  }
+
+  @Builder
+  splitSegmentItem(icon: Resource, label: string, mode: SplitModeType) {
+    Button({ type: ButtonType.Normal }) {
+      AppIcon({ source: icon, iconSize: 22, tint: this.splitMode === mode ? this.palette().accent : this.palette().inkSecondary })
+    }.width(44).height(44).padding(0).borderRadius(12)
+      .backgroundColor(this.splitMode === mode ? this.palette().accentSoft : Color.Transparent)
+      .accessibilityText(mode === 'none' ? '仅显示文档' : `打开${label}分屏`)
+      .bindTips(mode === 'none' ? '仅显示文档' : `打开${label}分屏`)
+      .onClick(() => {
+        animateTo({ duration: AnimationTokens.DURATION_SPLIT, curve: Curve.EaseInOut }, () => { this.splitMode = mode; });
+      })
   }
 
   // ------------------------------------------------------------------
@@ -449,261 +284,83 @@ export struct HuaweiDocWorkspace {
   // ------------------------------------------------------------------
 
   @Builder
-  floatingPenPalette() {
-    Row({ space: this.isPhone ? 4 : 8 }) {
-      // 1. 突出「退出批注」胶囊 (一键退出回阅读模式)
-      Row({ space: 4 }) {
-        Text('✕')
-          .fontSize(12)
-          .fontWeight(FontWeight.Bold)
-          .fontColor('#DC2626')
-        if (!this.isPhone) {
-          Text('退出')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor('#DC2626')
-        }
-      }
-      .padding({ left: this.isPhone ? 8 : 10, right: this.isPhone ? 8 : 12, top: 6, bottom: 6 })
-      .borderRadius(16)
-      .backgroundColor(this.isDarkMode ? '#3B181E' : '#FEE2E2')
-      .border({ width: 1, color: this.isDarkMode ? '#5C2229' : '#FCA5A5' })
-      .hoverEffect(HoverEffect.Highlight)
+  pdfInkTool(icon: Resource, label: string, tool: AnnotationTool) {
+    Button({ type: ButtonType.Normal }) {
+      AppIcon({ source: icon, iconSize: 22, tint: this.currentTool === tool ? this.palette().accent : this.palette().inkSecondary })
+    }.width(44).height(44).padding(0).borderRadius(10)
+      .backgroundColor(this.currentTool === tool ? this.palette().accentSoft : Color.Transparent).accessibilityText(label).bindTips(label)
       .onClick(() => {
-        animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-          this.isAnnotateMode = false;
-          this.showToast('已退出批注，恢复阅读模式');
-        });
+        this.currentTool = tool;
+        if (tool === 'highlighter') { this.selectedColor = '#FACC15'; this.selectedWidth = 14; }
+        if (tool === 'pen') {
+          if (this.selectedColor === '#FACC15' || this.selectedColor === '#4ADE80') { this.selectedColor = '#DC2626'; }
+          this.selectedWidth = 3;
+        }
       })
-
-      Divider()
-        .vertical(true)
-        .height(18)
-        .color(this.palette().borderSubtle)
-
-      // 2. 笔工具模式选择 (钢笔 / 荧光笔 / 橡皮擦 / 漫游平移 - Obsidian 极简几何字形)
-      // 钢笔
-      Row({ space: 4 }) {
-        Text('✎')
-          .fontSize(13)
-          .fontColor(this.currentTool === 'pen' ? '#FFFFFF' : this.palette().inkPrimary)
-        if (!this.isPhone) {
-          Text('钢笔')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTool === 'pen' ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTool === 'pen' ? '#FFFFFF' : this.palette().inkPrimary)
-        }
-      }
-      .padding({ left: this.isPhone ? 7 : 10, right: this.isPhone ? 7 : 10, top: 6, bottom: 6 })
-      .borderRadius(14)
-      .backgroundColor(this.currentTool === 'pen' ? '#2563EB' : this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.currentTool === 'pen' ? '#2563EB' : this.palette().borderSubtle })
-      .onClick(() => {
-        this.currentTool = 'pen';
-        if (this.selectedColor === '#FACC15' || this.selectedColor === '#4ADE80') {
-          this.selectedColor = '#DC2626';
-        }
-        this.selectedWidth = 3;
-      })
-
-      // 荧光笔 (Obsidian 风格几何粗矩形块 ▰)
-      Row({ space: 4 }) {
-        Text('▰')
-          .fontSize(13)
-          .fontColor(this.currentTool === 'highlighter' ? '#FFFFFF' : this.palette().inkPrimary)
-        if (!this.isPhone) {
-          Text('荧光')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTool === 'highlighter' ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTool === 'highlighter' ? '#FFFFFF' : this.palette().inkPrimary)
-        }
-      }
-      .padding({ left: this.isPhone ? 7 : 10, right: this.isPhone ? 7 : 10, top: 6, bottom: 6 })
-      .borderRadius(14)
-      .backgroundColor(this.currentTool === 'highlighter' ? '#EAB308' : this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.currentTool === 'highlighter' ? '#EAB308' : this.palette().borderSubtle })
-      .onClick(() => {
-        this.currentTool = 'highlighter';
-        this.selectedColor = '#FACC15';
-        this.selectedWidth = 14;
-      })
-
-      // 橡皮擦 (Obsidian 退格删除符号 ⌫)
-      Row({ space: 4 }) {
-        Text('⌫')
-          .fontSize(13)
-          .fontColor(this.currentTool === 'eraser' ? '#FFFFFF' : this.palette().inkPrimary)
-        if (!this.isPhone) {
-          Text('橡皮')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTool === 'eraser' ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTool === 'eraser' ? '#FFFFFF' : this.palette().inkPrimary)
-        }
-      }
-      .padding({ left: this.isPhone ? 7 : 10, right: this.isPhone ? 7 : 10, top: 6, bottom: 6 })
-      .borderRadius(14)
-      .backgroundColor(this.currentTool === 'eraser' ? '#DC2626' : this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.currentTool === 'eraser' ? '#DC2626' : this.palette().borderSubtle })
-      .onClick(() => {
-        this.currentTool = 'eraser';
-      })
-
-      // 漫游平移 (Obsidian 极简四向漫游十字 ✥)
-      Row({ space: 4 }) {
-        Text('✥')
-          .fontSize(13)
-          .fontColor(this.currentTool === 'pan' ? '#FFFFFF' : this.palette().inkPrimary)
-        if (!this.isPhone) {
-          Text('漫游')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(this.currentTool === 'pan' ? FontWeight.Medium : FontWeight.Normal)
-            .fontColor(this.currentTool === 'pan' ? '#FFFFFF' : this.palette().inkPrimary)
-        }
-      }
-      .padding({ left: this.isPhone ? 7 : 10, right: this.isPhone ? 7 : 10, top: 6, bottom: 6 })
-      .borderRadius(14)
-      .backgroundColor(this.currentTool === 'pan' ? '#475569' : this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.currentTool === 'pan' ? '#475569' : this.palette().borderSubtle })
-      .onClick(() => {
-        this.currentTool = 'pan';
-      })
-
-      Divider()
-        .vertical(true)
-        .height(18)
-        .color(this.palette().borderSubtle)
-
-      // 3. 颜色选择器
-      if (this.currentTool === 'pen') {
-        Row({ space: 6 }) {
-          ForEach(['#1C1917', '#2563EB', '#DC2626', '#059669'], (c: string) => {
-            Circle({ width: 18, height: 18 })
-              .fill(c)
-              .stroke(this.selectedColor === c ? (this.isDarkMode ? '#FFFFFF' : '#000000') : 'transparent')
-              .strokeWidth(2)
-              .onClick(() => {
-                this.selectedColor = c;
-              })
-          }, (c: string) => c)
-        }
-      } else if (this.currentTool === 'highlighter') {
-        Row({ space: 6 }) {
-          ForEach(['#FACC15', '#4ADE80'], (c: string) => {
-            Circle({ width: 18, height: 18 })
-              .fill(c)
-              .stroke(this.selectedColor === c ? (this.isDarkMode ? '#FFFFFF' : '#000000') : 'transparent')
-              .strokeWidth(2)
-              .onClick(() => {
-                this.selectedColor = c;
-              })
-          }, (c: string) => c)
-        }
-      }
-
-      // 4. 笔宽选择 (Obsidian 简约几何圆点 · / ● / ⬤)
-      if (this.currentTool === 'pen') {
-        Divider()
-          .vertical(true)
-          .height(18)
-          .color(this.palette().borderSubtle)
-
-        Row({ space: 5 }) {
-          ForEach([2, 4, 8], (w: number) => {
-            Text(w === 2 ? '· 细' : (w === 4 ? '● 中' : '⬤ 粗'))
-              .fontSize(TypographyTokens.TINY)
-              .fontWeight(this.selectedWidth === w ? FontWeight.Bold : FontWeight.Normal)
-              .fontColor(this.selectedWidth === w ? this.palette().accent : this.palette().inkSecondary)
-              .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-              .borderRadius(6)
-              .backgroundColor(this.selectedWidth === w ? this.palette().accentSoft : this.palette().surfaceSubtle)
-              .border({ width: 1, color: this.selectedWidth === w ? this.palette().accent : this.palette().borderSubtle })
-              .onClick(() => {
-                this.selectedWidth = w;
-              })
-          }, (w: number) => `w_${w}`)
-        }
-      }
-
-      Divider()
-        .vertical(true)
-        .height(18)
-        .color(this.palette().borderSubtle)
-
-      // 5. 撤销 (Obsidian 弧形单线撤销箭头 ↶)
-      Row({ space: 4 }) {
-        Text('↶')
-          .fontSize(14)
-          .fontColor(this.palette().inkPrimary)
-        if (!this.isPhone) {
-          Text('撤销')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkPrimary)
-        }
-      }
-      .padding({ left: 8, right: 10, top: 6, bottom: 6 })
-      .borderRadius(14)
-      .backgroundColor(this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.undoTrigger++;
-        this.showToast('已撤销上一笔');
-      })
-
-      // 6. 收起为悬浮球 (Obsidian 极简减号/水平杠 —)
-      Row({ space: 4 }) {
-        Text('—')
-          .fontSize(12)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.palette().inkMuted)
-        Text('折叠')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-      }
-      .padding({ left: 8, right: 10, top: 6, bottom: 6 })
-      .borderRadius(14)
-      .backgroundColor(this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-          this.isPenPaletteExpanded = false;
-        });
-      })
-    }
-    .padding({ left: 14, right: 14, top: 8, bottom: 8 })
-    .borderRadius(26)
-    .backgroundColor(this.isDarkMode ? 'rgba(30, 30, 35, 0.95)' : 'rgba(255, 255, 255, 0.96)')
-    .backdropBlur(16)
-    .shadow({
-      radius: 20,
-      color: this.isDarkMode ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.14)',
-      offsetY: 8
-    })
-    .border({ width: 1, color: this.palette().borderSubtle })
-    .margin({ bottom: 20 })
-    .zIndex(60)
-    .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
   }
 
-  // ------------------------------------------------------------------
-  // 灵动悬浮球 (Floating Ball) - 华为笔记极简收折形态 (Obsidian 钢笔字形)
-  // ------------------------------------------------------------------
+  @Builder
+  floatingPenPalette() {
+    Column({ space: 4 }) {
+      Scroll() {
+      Row() {
+        this.pdfInkTool($r('app.media.ic_pen'), '笔', 'pen')
+        this.pdfInkTool($r('app.media.ic_highlighter'), '荧光', 'highlighter')
+        this.pdfInkTool($r('app.media.ic_eraser'), '橡皮', 'eraser')
+        IconButton({ icon: $r('app.media.ic_undo'), label: '撤销批注', onAction: () => { this.undoTrigger++; } })
+        IconButton({ icon: $r('app.media.ic_redo'), label: '重做批注', onAction: () => { this.redoTrigger++; } })
+        IconButton({ icon: $r('app.media.ic_settings'), label: '颜色、笔粗与触控设置', selected: this.penOptionsOpen,
+          onAction: () => { this.penOptionsOpen = !this.penOptionsOpen; } })
+      }.width(Math.max(264, this.penPaletteWidth - 16)).justifyContent(FlexAlign.SpaceBetween)
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+      if (this.penOptionsOpen) {
+        Scroll() {
+          Row({ space: 4 }) {
+            ForEach(this.currentTool === 'highlighter' ? ['#FACC15', '#4ADE80'] : ['#1C1917', '#2563EB', '#DC2626', '#059669'], (color: string) => {
+              Button({ type: ButtonType.Normal }) {
+                Circle({ width: 20, height: 20 }).fill(color)
+                  .stroke(this.selectedColor === color ? this.palette().inkPrimary : this.palette().border)
+                  .strokeWidth(this.selectedColor === color ? 3 : 1)
+              }.width(44).height(44).padding(0).borderRadius(10)
+                .backgroundColor(this.selectedColor === color ? this.palette().accentSoft : Color.Transparent)
+                .accessibilityText(`批注颜色 ${color}`).onClick(() => { this.selectedColor = color; })
+            }, (color: string) => color)
+            if (this.currentTool === 'pen') {
+              Divider().vertical(true).height(24).color(this.palette().border)
+              ForEach([2, 4, 8], (width: number) => {
+                Button({ type: ButtonType.Normal }) {
+                  Circle({ width: width * 2 + 4, height: width * 2 + 4 }).fill(this.palette().inkPrimary)
+                }.width(44).height(44).padding(0).borderRadius(10)
+                  .backgroundColor(this.selectedWidth === width ? this.palette().accentSoft : Color.Transparent)
+                  .accessibilityText(`笔粗 ${width}`).onClick(() => { this.selectedWidth = width; })
+              }, (width: number) => `${width}`)
+            }
+            IconButton({ icon: $r('app.media.ic_hand'), label: '切换为手指浏览', selected: this.currentTool === 'pan',
+              onAction: () => { this.currentTool = 'pan'; } })
+            IconButton({ icon: $r('app.media.ic_pen'), label: this.fingerDrawing ? '关闭手指书写，仅使用手写笔' : '开启手指书写',
+              selected: this.fingerDrawing, onAction: () => { this.fingerDrawing = !this.fingerDrawing; } })
+            IconButton({ icon: $r('app.media.ic_chevron_down'), label: '折叠笔工具', onAction: () => { this.isPenPaletteExpanded = false; } })
+            IconButton({ icon: $r('app.media.ic_close'), label: '退出批注，继续阅读', onAction: () => { this.isAnnotateMode = false; } })
+          }
+        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+      }
+    }.width('96%').constraintSize({ maxWidth: 600 })
+      .onAreaChange((before: Area, after: Area) => { this.penPaletteWidth = Number(after.width); })
+      .padding({ left: 8, right: 8, top: 6, bottom: 6 }).borderRadius(18)
+      .backgroundColor(this.palette().surface).border({ width: 1, color: this.palette().border })
+      .shadow({ radius: 12, color: this.isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(36,32,51,0.12)', offsetY: 3 })
+  }
 
   @Builder
   floatingBall() {
     Row({ space: 6 }) {
-      Text('✎')
-        .fontSize(15)
-        .fontColor('#FFFFFF')
+      AppIcon({ source: $r('app.media.ic_pen'), tint: this.palette().onAccent })
       if (!this.isAnnotateMode) {
-        Text('批注')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#FFFFFF')
       }
     }
     .padding(this.isAnnotateMode ? 12 : { left: 14, right: 16, top: 10, bottom: 10 })
+    .constraintSize({ minWidth: 44, minHeight: 44 })
+    .accessibilityText('打开批注工具')
     .borderRadius(24)
     .backgroundColor(this.palette().accent)
     .shadow({
@@ -731,158 +388,34 @@ export struct HuaweiDocWorkspace {
   // 「··· 更多」功能操作面板与统一入口 (Obsidian 简约命令卡片风格)
   // ------------------------------------------------------------------
 
-  @Builder
-  moreActionSheet() {
-    Column() {
-      // 操作卡片
-      Column({ space: 16 }) {
-        Row() {
-          Text('文档操作与工具')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.palette().inkPrimary)
-
-          Blank()
-
-          Button('✕')
-            .type(ButtonType.Normal)
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkMuted)
-            .width(44)
-            .height(44)
-            .padding(0)
-            .borderRadius(22)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .border({ width: 1, color: this.palette().borderSubtle })
-            .onClick(() => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.moreMenuOpen = false;
-              });
-            })
-        }
-        .width('100%')
-
-        if (this.note.sourceType === 'pdf' && this.note.sourceUri) {
-          Button('提取 PDF 文字并核对页码').width('100%').height(44).onClick(() => {
-            this.moreMenuOpen = false;
-            this.onExtractPdfText(this.currentPage);
-          })
-        }
-        // 功能网格 (Obsidian 极简几何矢量符号卡片) - 静态双行布局，杜绝虚拟化网格与多层撕裂
-        Column({ space: 10 }) {
-          Row({ space: 10 }) {
-            this.moreActionItem('⭳', '保存并退出', '确认保存', () => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.moreMenuOpen = false;
-                this.exitDialogOpen = true;
-              });
-            })
-            this.moreActionItem('▤', '跳转页面', '指定页码', () => {
-              this.moreMenuOpen = false;
-              this.jumpDialogOpen = true;
-            })
-            this.moreActionItem('✦', '文字排版', '识别图片', () => {
-              this.moreMenuOpen = false;
-              this.onSmartExtract();
-            })
-            this.moreActionItem('⭳', '导出笔记', 'Markdown 文本', () => {
-              this.moreMenuOpen = false;
-              this.onExportText();
-            })
-          }
-          .width('100%')
-          Row({ space: 10 }) {
-            this.moreActionItem('⌕', '搜索笔记', '工作台检索', () => {
-              this.moreMenuOpen = false;
-              this.onSearchNotes();
-            })
-            this.moreActionItem('☰', '显示工具栏', '阅读工具', () => {
-              this.moreMenuOpen = false;
-              this.toggleBars(true);
-            })
-            this.moreActionItem(this.isContinuousScroll ? '☰' : '▯', this.isContinuousScroll ? '连续滚动' : '单页排版', '切换视图', () => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.isContinuousScroll = !this.isContinuousScroll;
-                this.moreMenuOpen = false;
-              });
-              this.showToast(this.isContinuousScroll ? '已切换为连续纵向滚动' : '已切换为单页排版');
-            })
-            this.moreActionItem('⎚', '清空批注', '清空本页笔迹', () => {
-              animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                this.moreMenuOpen = false;
-              });
-              this.clearCurrentPageAnnotations();
-            })
-          }
-          .width('100%')
-        }
-        .width('100%')
-      }
-      .width(this.isPhone ? '92%' : 440)
-      .padding(20)
-      .borderRadius(16)
-      .backgroundColor(this.palette().surface)
-      .shadow({ radius: 16, color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)', offsetY: 4 })
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .onClick(() => {
-        // 消费卡片点击，防止冒泡到遮罩关闭
-      })
-      .transition(
-        TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
-          .combine(TransitionEffect.OPACITY)
-          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
-      )
-    }
-    .width('100%')
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.65)' : 'rgba(0,0,0,0.45)')
-    .zIndex(220)
-    .transition(
-      TransitionEffect.OPACITY
-        .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
-    )
-    .onClick(() => {
-      animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-        this.moreMenuOpen = false;
-      });
-    })
+  private async shareOriginalPdf(): Promise<void> {
+    if (this.shareBusy) { return; }
+    this.shareBusy = true;
+    const title = this.note.title;
+    const source = this.note.sourceUri || '';
+    try {
+      await SystemShareService.sharePdf(this.getUIContext().getHostContext() as common.UIAbilityContext, title, source);
+    } catch (error) {
+      this.showToast(error instanceof Error ? error.message : '系统分享未打开，请使用资料备份');
+    } finally { this.shareBusy = false; }
   }
 
   @Builder
-  moreActionItem(icon: string, title: string, subtitle: string, onClick: () => void) {
-    Column({ space: 5 }) {
-      // Obsidian 图标小徽章
-      Row() {
-        Text(icon)
-          .fontSize(16)
-          .fontColor(this.palette().accent)
+  documentMenu() {
+    Menu() {
+      if (this.note.sourceType === 'pdf' && this.note.sourceUri) {
+        MenuItem({ content: '分享原 PDF' }).enabled(!this.shareBusy).onClick(() => this.shareOriginalPdf())
+        MenuItem({ content: '提取页面文字' }).onClick(() => this.onExtractPdfText(this.currentPage))
+        MenuItem({ content: '跳转页码' }).onClick(() => { this.jumpDialogOpen = true; })
+        MenuItem({ content: this.isContinuousScroll ? '切换单页阅读' : '切换连续阅读' })
+          .onClick(() => { this.isContinuousScroll = !this.isContinuousScroll; })
+        MenuItem({ content: '清空本页笔迹，可撤销' }).onClick(() => this.clearCurrentPageAnnotations())
       }
-      .width(32)
-      .height(32)
-      .borderRadius(8)
-      .backgroundColor(this.palette().accentSoft)
-      .justifyContent(FlexAlign.Center)
-
-      Text(title)
-        .fontSize(TypographyTokens.CAPTION)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.palette().inkPrimary)
-
-      Text(subtitle)
-        .fontSize(TypographyTokens.TINY)
-        .fontColor(this.palette().inkMuted)
+      MenuItem({ content: '提取图片或文字' }).onClick(() => this.onSmartExtract())
+      MenuItem({ content: '导出笔记文字' }).onClick(() => this.onExportText())
+      MenuItem({ content: '搜索资料' }).onClick(() => this.onSearchNotes())
+      MenuItem({ content: '保存并退出' }).onClick(() => { this.exitDialogOpen = true; })
     }
-    .layoutWeight(1)
-    .height(86)
-    .padding({ top: 8, bottom: 8, left: 4, right: 4 })
-    .borderRadius(12)
-    .backgroundColor(this.palette().surfaceSubtle)
-    .border({ width: 1, color: this.palette().borderSubtle })
-    .justifyContent(FlexAlign.Center)
-    .hoverEffect(HoverEffect.Highlight)
-    .onClick(onClick)
   }
 
   // ------------------------------------------------------------------
@@ -891,165 +424,35 @@ export struct HuaweiDocWorkspace {
 
   @Builder
   bottomReadingConsole() {
-    Row({ space: this.isPhone ? 6 : 14 }) {
-      // 1. 上一页胶囊按钮 (Obsidian 单线角标 ‹)
+    Column({ space: 4 }) {
       Row({ space: 4 }) {
-        Text('‹')
-          .fontSize(15)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.currentPage <= 1 ? this.palette().inkMuted : this.palette().inkPrimary)
-        if (!this.isPhone) {
-          Text('上一页')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.currentPage <= 1 ? this.palette().inkMuted : this.palette().inkPrimary)
-        }
+        IconButton({ icon: $r('app.media.ic_chevron_left'), label: '上一页', available: this.currentPage > 1,
+          onAction: () => this.prevPage() })
+        Button(`${this.currentPage} / ${this.totalPages}`, { type: ButtonType.Normal })
+          .height(44).layoutWeight(1).constraintSize({ minWidth: 44 })
+          .fontSize(14).fontColor(this.palette().inkPrimary).backgroundColor(Color.Transparent)
+          .accessibilityText(`当前第 ${this.currentPage} 页，共 ${this.totalPages} 页，点击跳转`)
+          .onClick(() => { this.jumpDialogOpen = true; })
+        IconButton({ icon: $r('app.media.ic_chevron_right'), label: '下一页', available: this.currentPage < this.totalPages,
+          onAction: () => this.nextPage() })
+        IconButton({ icon: this.isContinuousScroll ? $r('app.media.ic_menu') : $r('app.media.ic_page'),
+          label: this.isContinuousScroll ? '切换单页阅读' : '切换连续阅读',
+          onAction: () => { this.isContinuousScroll = !this.isContinuousScroll; } })
+        IconButton({ icon: $r('app.media.ic_chevron_down'), label: '隐藏阅读工具栏',
+          onAction: () => this.toggleBars(false) })
+      }.width('100%')
+      if (!this.isPhone && this.totalPages > 1) {
+        Slider({ value: this.currentPage, min: 1, max: this.totalPages, step: 1, style: SliderStyle.OutSet })
+          .width('100%').height(28).trackColor(this.palette().surfaceSubtle).selectedColor(this.palette().accent)
+          .accessibilityText('翻页进度').onChange((value: number) => { this.currentPage = Math.round(value); })
       }
-      .padding({ left: this.isPhone ? 8 : 12, right: this.isPhone ? 10 : 14, top: 7, bottom: 7 })
-      .borderRadius(16)
-      .backgroundColor(this.currentPage <= 1 ? Color.Transparent : this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.currentPage <= 1 ? Color.Transparent : this.palette().borderSubtle })
-      .enabled(this.currentPage > 1)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => this.prevPage())
-
-      // 2. 页码指示与滑块进度条
-      Row({ space: this.isPhone ? 6 : 10 }) {
-        // 当前页码胶囊
-        Text(this.isPhone ? `${this.currentPage}/${this.totalPages}` : `第 ${this.currentPage} / ${this.totalPages} 页`)
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.palette().inkPrimary)
-
-        // 翻页进度滑块
-        Slider({
-          value: this.currentPage,
-          min: 1,
-          max: this.totalPages,
-          step: 1,
-          style: SliderStyle.OutSet
-        })
-        .width(this.isPhone ? 70 : 160)
-        .trackColor(this.palette().surfaceSubtle)
-        .selectedColor(this.palette().accent)
-        .onChange((val: number) => {
-          this.currentPage = Math.round(val);
-        })
-
-        // 百分比胶囊 (手机上省略以腾出空间)
-        if (!this.isPhone) {
-          Text(`${Math.round((this.currentPage / this.totalPages) * 100)}%`)
-            .fontSize(TypographyTokens.TINY)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().accent)
-            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-            .borderRadius(6)
-            .backgroundColor(this.palette().accentSoft)
-        }
-      }
-
-      // 3. 下一页胶囊按钮 (Obsidian 单线角标 ›)
-      Row({ space: 4 }) {
-        if (!this.isPhone) {
-          Text('下一页')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.currentPage >= this.totalPages ? this.palette().inkMuted : this.palette().inkPrimary)
-        }
-        Text('›')
-          .fontSize(15)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.currentPage >= this.totalPages ? this.palette().inkMuted : this.palette().inkPrimary)
-      }
-      .padding({ left: this.isPhone ? 10 : 14, right: this.isPhone ? 8 : 12, top: 7, bottom: 7 })
-      .borderRadius(16)
-      .backgroundColor(this.currentPage >= this.totalPages ? Color.Transparent : this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.currentPage >= this.totalPages ? Color.Transparent : this.palette().borderSubtle })
-      .enabled(this.currentPage < this.totalPages)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => this.nextPage())
-
-      if (!this.isPhone) {
-        Divider()
-          .vertical(true)
-          .height(18)
-          .color(this.palette().borderSubtle)
-
-        // 4. 连续/单页视图切换 (Obsidian 单线排版字形 ☰ / ▯)
-        Row({ space: 5 }) {
-          Text(this.isContinuousScroll ? '☰' : '▯')
-            .fontSize(13)
-            .fontColor(this.palette().inkSecondary)
-          Text(this.isContinuousScroll ? '连续' : '单页')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkSecondary)
-        }
-        .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-        .borderRadius(14)
-        .backgroundColor(this.palette().surfaceSubtle)
-        .border({ width: 1, color: this.palette().borderSubtle })
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-            this.isContinuousScroll = !this.isContinuousScroll;
-          });
-          this.showToast(this.isContinuousScroll ? '已切换为连续滚动视图' : '已切换为单页排版');
-        })
-      }
-
-      // 5. 快速页码跳转 (Obsidian 准星定位字形 ⌖)
-      Row({ space: 4 }) {
-        Text('⌖')
-          .fontSize(12)
-          .fontColor(this.palette().inkSecondary)
-        Text('跳转')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.palette().inkSecondary)
-      }
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-      .borderRadius(14)
-      .backgroundColor(this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-          this.jumpDialogOpen = true;
-        });
-      })
-
-      // 6. 沉浸隐藏底栏按钮
-      Row({ space: 3 }) {
-        Text('⌄')
-          .fontSize(13)
-          .fontColor(this.palette().inkMuted)
-        Text('隐藏')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-      }
-      .padding({ left: 8, right: 10, top: 6, bottom: 6 })
-      .borderRadius(14)
-      .backgroundColor(this.palette().surfaceSubtle)
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.toggleBars(false);
-      })
-    }
-    .padding({ left: 16, right: 16, top: 8, bottom: 8 })
-    .borderRadius(26)
-    .backgroundColor(this.isDarkMode ? 'rgba(30, 30, 35, 0.92)' : 'rgba(255, 255, 255, 0.94)')
-    .backdropBlur(16)
-    .border({ width: 1, color: this.palette().borderSubtle })
-    .shadow({
-      radius: 20,
-      color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)',
-      offsetY: 6
-    })
-    .margin({ bottom: 20 })
-    .translate({ y: this.barsVisible ? 0 : 96 })
-    .opacity(this.barsVisible ? 1 : 0)
-    .enabled(this.barsVisible)
-    .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
+    }.width('96%').constraintSize({ maxWidth: 600 })
+      .padding({ left: 8, right: 8, top: 4, bottom: 4 }).borderRadius(18)
+      .backgroundColor(this.palette().surface).border({ width: 1, color: this.palette().border })
+      .shadow({ radius: 12, color: this.isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(36,32,51,0.12)', offsetY: 3 })
+      .margin({ bottom: 12 }).translate({ y: this.barsVisible ? 0 : 96 })
+      .opacity(this.barsVisible ? 1 : 0).enabled(this.barsVisible)
+      .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
   }
 
   // ------------------------------------------------------------------
@@ -1495,6 +898,7 @@ export struct HuaweiDocWorkspace {
               PdfAnnotatorView({
                 note: this.note,
                 currentPage: this.currentPage,
+                onPageChanged: (page: number) => { this.currentPage = page; },
                 exitSaveToken: this.exitSaveToken,
                 onCommitForExit: this.onCommitForExit,
                 onExitSaveFinished: (ok: boolean) => {
@@ -1508,6 +912,13 @@ export struct HuaweiDocWorkspace {
                 selectedColor: this.selectedColor,
                 selectedWidth: this.selectedWidth,
                 undoTrigger: this.undoTrigger,
+                redoTrigger: this.redoTrigger,
+                fingerDrawing: this.fingerDrawing,
+                onToggleEraser: () => {
+                  if (this.currentTool === 'eraser') { this.currentTool = this.previousInkTool; }
+                  else { this.previousInkTool = this.currentTool === 'pan' ? 'pen' : this.currentTool; this.currentTool = 'eraser'; }
+                },
+                onShowPenTools: () => { this.isPenPaletteExpanded = true; this.penOptionsOpen = true; this.barsVisible = true; },
                 clearTrigger: this.clearTrigger,
                 onSaved: this.onSaved,
                 onSaveStateChange: this.onSaveStateChange
@@ -1613,9 +1024,6 @@ export struct HuaweiDocWorkspace {
       }
 
       // ---- 7. 「··· 更多」功能操作面板 ----
-      if (this.moreMenuOpen) {
-        this.moreActionSheet()
-      }
 
       // ---- 8. 退出阅读器保存确认弹窗 (Obsidian 风格) ----
       if (this.exitDialogOpen) {

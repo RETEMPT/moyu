@@ -59,11 +59,15 @@ export class GeminiProvider implements ModelProvider {
     }
   }
 
-  async complete(profile: ModelProfile, request: ChatCompletionRequest): Promise<string> {
+  async complete(profile: ModelProfile, request: ChatCompletionRequest, onHandle?: (handle: StreamHandle) => void): Promise<string> {
     RemoteAiPolicy.assertAllowed(profile);
     const url: string = `${this.cleanBase(profile.baseUrl)}/models/${encodeURIComponent(profile.modelId)}:generateContent`;
     const body: string = this.buildBody(profile, request);
     const client = http.createHttp();
+    let closed = false;
+    const close = (): void => { if (!closed) { closed = true; client.destroy(); } };
+    if (onHandle) { onHandle(new StreamHandleImpl(close)); }
+    if (closed) { throw new Error('已停止生成'); }
     let resp: http.HttpResponse;
     try { resp = await client.request(url, {
       method: http.RequestMethod.POST,
@@ -73,7 +77,7 @@ export class GeminiProvider implements ModelProvider {
       maxRedirects: 0,
         connectTimeout: 15000,
       readTimeout: 60000
-    }); } finally { client.destroy(); }
+    }); } finally { close(); }
     if (resp.responseCode !== 200) {
       throw new Error(`AI 服务返回 HTTP ${resp.responseCode}，请核对密钥、模型与服务额度`);
     }

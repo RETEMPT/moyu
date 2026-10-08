@@ -1,25 +1,25 @@
 /**
- * 编辑格式工具栏（功能5）+ 插入入口（功能4 图片 / 15 OCR / 14 录音）
+ * 编辑格式与双向链接工具栏。
  *
- * iOS 备忘录风格：主栏只放三个高频入口——
+ * 主栏保留格式与链接入口。
  *   `Aa 格式`  展开格式面板（标题级别 / 加粗 / 斜体 / 列表 / 待办 / 引用）
- *   `🔗 链接`  双向链接（Word 链条图标），直接动作
- *   `📎 插入`  展开插入面板（图片 / OCR / 录音），取代原来的省略号
+ *   `⊡ 链接`  双向链接，直接动作
  * 面板内每个选项都是「图标 + 中文」，避免裸符号看不懂。
  *
  * 格式动作统一走 onAction(action)，由 MarkdownReader 按当前选区改写正文（功能5）；
- * 图片 / OCR / 录音属后续阶段，点击暂提示「即将上线」。仅编辑模式下悬浮于正文底部。
+ * 仅编辑模式下显示；图片识别从全局导入与整理入口使用。
  */
 import { curves } from '@kit.ArkUI';
 import { ColorPalette, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
+import { AppIcon } from '../common/AppIcon';
 
 @Component
 export struct EditorToolbar {
   /** 统一动作回调；本阶段父组件可不实现（默认 no-op） */
   onAction: (action: string) => void = () => {};
 
-  /** 当前展开的面板：'' 无 / 'format' 格式 / 'insert' 插入 */
+  /** 当前展开的面板：'' 无 / 'format' 格式 */
   @State openPanel: string = '';
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
@@ -43,31 +43,31 @@ export struct EditorToolbar {
   // ---- 主栏按钮 ----
 
   @Builder
-  mainPanelBtn(label: string, panel: string) {
-    Text(label)
-      .fontSize(TypographyTokens.CAPTION)
-      .fontWeight(FontWeight.Medium)
-      .fontColor(this.openPanel === panel ? this.palette().accent : this.palette().inkSecondary)
-      .textAlign(TextAlign.Center)
-      .height(36)
+  mainPanelBtn(icon: Resource, label: string, panel: string) {
+    Row({ space: 6 }) {
+      AppIcon({ source: icon, iconSize: 18, tint: this.openPanel === panel ? this.palette().accent : this.palette().inkSecondary })
+    }
+      .height(44)
+      .constraintSize({ minWidth: 44 })
       .padding({ left: this.btnPad(), right: this.btnPad() })
       .borderRadius(8)
       .backgroundColor(this.openPanel === panel ? this.palette().accentSoft : Color.Transparent)
       .hoverEffect(HoverEffect.Highlight)
+      .accessibilityText(label).bindTips(label)
       .onClick(() => this.togglePanel(panel))
   }
 
   @Builder
-  mainActionBtn(label: string, action: string) {
-    Text(label)
-      .fontSize(TypographyTokens.CAPTION)
-      .fontWeight(FontWeight.Medium)
-      .fontColor(this.palette().inkSecondary)
-      .textAlign(TextAlign.Center)
-      .height(36)
+  mainActionBtn(icon: Resource, label: string, action: string) {
+    Row({ space: 6 }) {
+      AppIcon({ source: icon, iconSize: 18, tint: this.palette().inkSecondary })
+    }
+      .height(44)
+      .constraintSize({ minWidth: 44 })
       .padding({ left: this.btnPad(), right: this.btnPad() })
       .borderRadius(8)
       .hoverEffect(HoverEffect.Highlight)
+      .accessibilityText(label).bindTips(label)
       .onClick(() => this.onAction(action))
   }
 
@@ -89,6 +89,7 @@ export struct EditorToolbar {
       .fontSize(TypographyTokens.CAPTION)
       .fontColor(this.palette().inkPrimary)
       .textAlign(TextAlign.Center)
+      .constraintSize({ minHeight: 44 })
       .padding({ left: 12, right: 12, top: 9, bottom: 9 })
       .borderRadius(8)
       .backgroundColor(this.palette().surfaceSubtle)
@@ -135,33 +136,17 @@ export struct EditorToolbar {
     .padding({ left: 4, right: 4, top: 4, bottom: 8 })
   }
 
-  @Builder
-  insertPanel() {
-    Row({ space: 8 }) {
-      this.chip('🖼  图片', 'insert_image')
-      this.chip('📷  OCR', 'ocr')
-      this.chip('🎙  录音', 'record')
-    }
-    .width('100%')
-    .padding({ left: 4, right: 4, top: 4, bottom: 8 })
-  }
-
   build() {
     Column() {
       if (this.openPanel === 'format') {
         this.formatPanel()
         Divider().strokeWidth(1).color(this.palette().borderSubtle).margin({ bottom: 6 })
-      } else if (this.openPanel === 'insert') {
-        this.insertPanel()
-        Divider().strokeWidth(1).color(this.palette().borderSubtle).margin({ bottom: 6 })
       }
 
       Row({ space: 6 }) {
-        this.mainPanelBtn('Aa  格式', 'format')
+        this.mainPanelBtn($r('app.media.ic_format'), '格式', 'format')
         this.groupDivider()
-        this.mainActionBtn('🔗  链接', 'wikilink')
-        this.groupDivider()
-        this.mainPanelBtn('📎  插入', 'insert')
+        this.mainActionBtn($r('app.media.ic_link'), '链接', 'wikilink')
       }
       .alignItems(VerticalAlign.Center)
     }

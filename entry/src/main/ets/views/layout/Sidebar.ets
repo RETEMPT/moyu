@@ -26,6 +26,7 @@ import { ChatSession, StoredMessage } from '../../common/types/ChatSession';
 import { NAV_AI, NAV_CANVAS, NAV_FAVORITE, NAV_GRAPH, NAV_HOME, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
 import { noteRenderKey, spaceRenderKey } from '../../common/utils/ForEachKeys';
 import { BrandMark } from '../brand/BrandMark';
+import { AppIcon } from '../common/AppIcon';
 import { ProjectMenuSheet } from './sheets/ProjectMenuSheet';
 import { NewProjectSheet } from './sheets/NewProjectSheet';
 import { NewContentSheet } from './sheets/NewContentSheet';
@@ -398,6 +399,7 @@ export struct Sidebar {
         .width(18)
         .height(18)
         .objectFit(ImageFit.Contain)
+        .fillColor(this.activeNav === navKey ? this.palette().accent : this.palette().inkSecondary)
       Text(label)
         .fontSize(TypographyTokens.BODY_REGULAR)
         .fontColor(this.activeNav === navKey ? this.palette().inkPrimary : this.palette().inkSecondary)
@@ -674,7 +676,7 @@ export struct Sidebar {
         // ---- 顶部工作区品牌 ----
         Row({ space: 8 }) {
           BrandMark({ markSize: 22 })
-          Text('墨语 · 空间')
+          Text('墨语')
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.activeNav === NAV_HOME ? this.palette().inkPrimary : this.palette().inkSecondary)
             .fontWeight(FontWeight.Medium)
@@ -683,7 +685,7 @@ export struct Sidebar {
             .layoutWeight(1)
         }
         .width('100%')
-        .height(42)
+        .height(48)
         .padding({ left: 10, right: 8 })
         .borderRadius(8)
         .backgroundColor(this.activeNav === NAV_HOME ? this.palette().activeBg : Color.Transparent)
@@ -707,16 +709,11 @@ export struct Sidebar {
           Image($r('app.media.ic_search'))
             .width(18)
             .height(18)
+            .fillColor(this.palette().inkMuted)
           Text('快速搜索')
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().inkMuted)
             .layoutWeight(1)
-          Text('全库')
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkMuted)
-            .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-            .borderRadius(4)
-            .backgroundColor(this.palette().surface)
         }
         .width('100%')
         .height(44)
@@ -732,7 +729,7 @@ export struct Sidebar {
         Column({ space: 2 }) {
           this.navRow($r('app.media.ic_graph'), '知识图谱', NAV_GRAPH)
           this.navRow($r('app.media.ic_canvas'), '自由白板', NAV_CANVAS)
-          this.navRow($r('app.media.ic_sparkle'), 'AI 墨客', NAV_AI)
+          this.navRow($r('app.media.ic_sparkle'), '墨客', NAV_AI)
           this.navRow($r('app.media.ic_star'), '收藏', NAV_FAVORITE, this.favoriteCount)
           this.navRow($r('app.media.ic_check'), '待办', NAV_TODO, this.todoPendingCount)
           this.navRow($r('app.media.ic_trash'), '回收站', NAV_TRASH, this.trashCount)
@@ -786,23 +783,15 @@ export struct Sidebar {
 
         // ---- 底部设置入口 ----
         Row({ space: 8 }) {
-          Text('⚙')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().inkSecondary)
-          Text('外观与数据设置')
+          AppIcon({ source: $r('app.media.ic_settings'), tint: this.palette().inkSecondary })
+          Text('外观与数据')
             .fontSize(TypographyTokens.CAPTION)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.palette().inkSecondary)
             .layoutWeight(1)
-          Text('v2.0')
-            .fontSize(TypographyTokens.TINY)
-            .fontColor(this.palette().inkMuted)
-            .padding({ left: 6, right: 6, top: 1, bottom: 1 })
-            .borderRadius(4)
-            .backgroundColor(this.palette().surfaceSubtle)
         }
         .width('100%')
-        .height(38)
+        .height(48)
         .padding({ left: 10, right: 10 })
         .borderRadius(8)
         .backgroundColor(this.palette().surfaceSubtle)

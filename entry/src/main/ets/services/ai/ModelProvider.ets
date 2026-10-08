@@ -47,7 +47,7 @@ export interface ModelProvider {
   ): Promise<StreamHandle>;
 
   /** 非流式补全，返回完整文本 */
-  complete(profile: ModelProfile, request: ChatCompletionRequest): Promise<string>;
+  complete(profile: ModelProfile, request: ChatCompletionRequest, onHandle?: (handle: StreamHandle) => void): Promise<string>;
 }
 
 /** 工厂：按 protocol 分派 */

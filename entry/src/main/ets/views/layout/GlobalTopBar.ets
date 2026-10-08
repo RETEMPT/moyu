@@ -7,6 +7,7 @@
 import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { SAVE_FAILED, SAVE_SAVING } from '../../common/constants/WorkspaceConstants';
+import { IconButton } from '../common/IconButton';
 
 const TOP_BAR_HEIGHT: number = 52;
 const ICON_SIZE: number = 44;
@@ -59,6 +60,7 @@ export struct GlobalTopBar {
           .width(20)
           .height(20)
           .objectFit(ImageFit.Contain)
+          .fillColor(this.palette().inkSecondary)
       }
       .width(this.iconSize())
       .height(this.iconSize())
@@ -91,10 +93,13 @@ export struct GlobalTopBar {
       Row({ space: 5 }) {
         Circle({ width: 6, height: 6 })
           .fill(this.saveStateColor())
-        Text(this.saveState)
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.palette().inkMuted)
+        if (!this.isPhone || this.saveState === SAVE_FAILED) {
+          Text(this.saveState)
+            .fontSize(TypographyTokens.CAPTION)
+            .fontColor(this.saveStateColor())
+        }
       }
+      .accessibilityText(this.saveState)
       .margin({ right: 8 })
 
       Row() {
@@ -102,6 +107,7 @@ export struct GlobalTopBar {
           .width(20)
           .height(20)
           .objectFit(ImageFit.Contain)
+          .fillColor(this.palette().inkSecondary)
       }
       .width(this.iconSize())
       .height(this.iconSize())
@@ -112,16 +118,8 @@ export struct GlobalTopBar {
       .onClick(() => this.onOpenSearch())
 
       if (this.showContextToggle) {
-        Text(this.contextPanelOpen ? '❯' : '❮')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.contextPanelOpen ? this.palette().accent : this.palette().inkSecondary)
-          .width(this.iconSize())
-          .height(this.iconSize())
-          .textAlign(TextAlign.Center)
-          .borderRadius(6)
-          .backgroundColor(this.contextPanelOpen ? this.palette().accentSoft : Color.Transparent)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => this.onToggleContext())
+        IconButton({ icon: $r('app.media.ic_panel'), label: this.contextPanelOpen ? '收起文档信息' : '打开文档信息',
+          selected: this.contextPanelOpen, onAction: () => this.onToggleContext() })
       }
     }
     .width('100%')

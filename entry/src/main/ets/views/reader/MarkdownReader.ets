@@ -18,6 +18,9 @@ import { TimeFormat } from '../../common/utils/TimeFormat';
 import { SAVE_FAILED, SAVE_IDLE, SAVE_SAVING } from '../../common/constants/WorkspaceConstants';
 import { EditorToolbar } from './EditorToolbar';
 import { NoteCoverVisual } from './NoteCoverVisual';
+import { AppIcon } from '../common/AppIcon';
+import { IconButton } from '../common/IconButton';
+import { SystemShareService } from '../../services/SystemShareService';
 
 /** 输入停止后延迟落盘的毫秒数 */
 const AUTOSAVE_DELAY_MS: number = 800;
@@ -117,6 +120,8 @@ export struct MarkdownReader {
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
+  @State private shareBusy: boolean = false;
+  private previousKeyboardMode: KeyboardAvoidMode = KeyboardAvoidMode.OFFSET;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode);
@@ -125,11 +130,13 @@ export struct MarkdownReader {
   aboutToAppear(): void {
     // 键盘避让用 RESIZE：页面可用高度被键盘压缩，底部悬浮的编辑工具栏
     // 会自动贴到键盘正上方并跟随升降，无需手动监听键盘高度。
+    this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
     this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
     this.loadDocument();
   }
 
   aboutToDisappear(): void {
+    this.getUIContext().setKeyboardAvoidMode(this.previousKeyboardMode);
     // 离开研读页时立即落盘，避免 800ms 窗口内的输入丢失
     this.flushSave();
   }
@@ -205,6 +212,8 @@ export struct MarkdownReader {
       console.error(`研读正文读取失败: ${JSON.stringify(error)}`);
       this.applyContent(this.note.contentDetail);
     }
+    // Newly created blank notes open directly into editing.
+    this.isEditing = this.content.trim() === `# ${this.note.title}` || this.content.trim().length === 0;
   }
 
   /** 复制笔记元数据，用于把「正文归属」与可变的 @Prop note 彻底解耦 */
@@ -473,7 +482,7 @@ export struct MarkdownReader {
   // 编辑格式动作（功能5）：按当前选区改写 Markdown 正文
   // ------------------------------------------------------------------
 
-  /** 处理工具栏动作：块级标记按行切换，行内标记包裹选区，插入类暂提示未上线 */
+  /** 处理工具栏动作：块级标记按行切换，行内标记包裹选区 */
   private handleEditorAction(action: string): void {
     if (!this.isEditing) {
       return;
@@ -498,8 +507,6 @@ export struct MarkdownReader {
       this.applyBlockMarker('- [ ] ');
     } else if (action === 'quote') {
       this.applyBlockMarker('> ');
-    } else if (action === 'insert_image' || action === 'ocr' || action === 'record') {
-      promptAction.showToast({ message: '该功能即将上线', duration: 1600 });
     }
   }
 
@@ -887,22 +894,42 @@ export struct MarkdownReader {
     .margin({ top: 6, bottom: 14 })
   }
 
+  private async shareText(): Promise<void> {
+    if (this.shareBusy) { return; }
+    this.shareBusy = true;
+    const title = this.title;
+    const text = this.content;
+    try {
+      await SystemShareService.shareText(this.getUIContext().getHostContext() as common.UIAbilityContext, title, text);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '系统分享未打开，请使用导出';
+      promptAction.showToast({ message: message });
+    } finally { this.shareBusy = false; }
+  }
+
+  private formatIcon(action: string): Resource {
+    if (action === 'bold') { return $r('app.media.ic_bold'); }
+    if (action === 'italic') { return $r('app.media.ic_italic'); }
+    if (action === 'strike') { return $r('app.media.ic_strike'); }
+    if (action === 'h1') { return $r('app.media.ic_h1'); }
+    if (action === 'h2') { return $r('app.media.ic_h2'); }
+    if (action === 'h3') { return $r('app.media.ic_h3'); }
+    if (action === 'bullet') { return $r('app.media.ic_list'); }
+    if (action === 'ordered') { return $r('app.media.ic_ordered'); }
+    if (action === 'task') { return $r('app.media.ic_check'); }
+    if (action === 'quote') { return $r('app.media.ic_quote'); }
+    if (action === 'code') { return $r('app.media.ic_code'); }
+    if (action === 'divider') { return $r('app.media.ic_divider'); }
+    if (action === 'link') { return $r('app.media.ic_link'); }
+    return $r('app.media.ic_tag');
+  }
+
   @Builder
   formatBarButton(item: FormatAction) {
-    Text(item.label)
-      .fontSize(item.action === 'h1' || item.action === 'h2' || item.action === 'h3' ? 13 : 15)
-      .fontWeight(item.action === 'bold' ? FontWeight.Bold
-        : (item.action === 'italic' ? FontStyle.Italic : FontWeight.Normal))
-      .fontColor(this.palette().inkSecondary)
-      .width(item.action === 'link' ? 42 : 34)
-      .height(32)
-      .textAlign(TextAlign.Center)
-      .borderRadius(6)
-      .backgroundColor(Color.Transparent)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.handleFormatAction(item.action);
-      })
+    Button({ type: ButtonType.Normal }) {
+      AppIcon({ source: this.formatIcon(item.action), tint: this.palette().inkSecondary })
+    }.width(44).height(44).padding(0).borderRadius(10).backgroundColor(Color.Transparent)
+      .accessibilityText(item.tip).bindTips(item.tip).onClick(() => this.handleFormatAction(item.action))
   }
 
   /** 编辑态底部格式工具栏：紧凑可横向滚动，贴合键盘 */
@@ -919,7 +946,7 @@ export struct MarkdownReader {
     .scrollable(ScrollDirection.Horizontal)
     .scrollBar(BarState.Off)
     .width('100%')
-    .height(40)
+    .height(52)
     .backgroundColor(this.palette().surface)
     .border({ width: { top: 1 }, color: { top: this.palette().borderSubtle } })
     .expandSafeArea([SafeAreaType.KEYBOARD])
@@ -936,82 +963,20 @@ export struct MarkdownReader {
   @Builder
   editorToolbar() {
     Row({ space: 8 }) {
-      // 阅读 / 编辑 切换按钮
-      Row({ space: 4 }) {
-        Text(this.isEditing ? '✓' : '✎')
-          .fontSize(12)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.isEditing ? Color.White : this.palette().inkPrimary)
-        Text(this.isEditing ? '完成' : '编辑')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.isEditing ? Color.White : this.palette().inkPrimary)
-      }
-      .padding({ left: 10, right: 12, top: 5, bottom: 5 })
-      .height(44)
-      .borderRadius(8)
-      .backgroundColor(this.isEditing ? this.palette().accent : this.palette().surfaceSubtle)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        if (this.isEditing) {
-          this.exitEdit();
-        } else {
-          this.enterEdit();
-        }
-      })
-
-      // 编辑状态下显示常用快捷入口：双向链接、待办、标签
+      IconButton({ icon: this.isEditing ? $r('app.media.ic_check') : $r('app.media.ic_pen'),
+        label: this.isEditing ? '完成编辑' : '编辑笔记', selected: this.isEditing,
+        onAction: () => { if (this.isEditing) { this.exitEdit(); } else { this.enterEdit(); } } })
       if (this.isEditing) {
-        Row({ space: 4 }) {
-          Text('↔')
-            .fontSize(12)
-          Text('[[双链]]')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().link)
-        }
-        .padding({ left: 8, right: 10, top: 5, bottom: 5 })
-        .height(44)
-        .borderRadius(8)
-        .backgroundColor(this.palette().accentSoft)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          this.handleFormatAction('link');
-        })
-
-        Row({ space: 4 }) {
-          Text('☐')
-            .fontSize(12)
-          Text('待办')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(this.palette().inkSecondary)
-        }
-        .padding({ left: 8, right: 10, top: 5, bottom: 5 })
-        .height(44)
-        .borderRadius(8)
-        .backgroundColor(this.palette().surfaceSubtle)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => {
-          this.handleFormatAction('task');
-        })
-      }
-
-      if (!this.isEditing) {
-        Text('▧ 封面').fontSize(12).height(44).padding({ left: 12, right: 12 })
-          .fontColor(this.palette().inkSecondary).backgroundColor(this.palette().surfaceSubtle)
-          .borderRadius(8).accessibilityText('更换或移除笔记封面').onClick(() => this.onChooseCover())
+        IconButton({ icon: $r('app.media.ic_link'), label: '插入双向链接', onAction: () => this.handleFormatAction('link') })
+        IconButton({ icon: $r('app.media.ic_check'), label: '插入待办', onAction: () => this.handleFormatAction('task') })
+      } else {
+        IconButton({ icon: $r('app.media.ic_cover'), label: '更换或移除封面', onAction: () => this.onChooseCover() })
       }
       Blank()
-
-      Text(this.saveState)
-        .fontSize(TypographyTokens.TINY)
-        .fontColor(this.saveState === SAVE_FAILED ? this.palette().danger : this.palette().inkMuted)
-    }
-    .width('100%')
-    .margin({ bottom: 8 })
-    // 消费工具栏区域点击，防止冒泡触发退出编辑
-    .onClick(() => {})
+      IconButton({ icon: $r('app.media.ic_export'), label: '通过系统面板分享当前文字', available: !this.shareBusy,
+        onAction: () => this.shareText() })
+      Text(this.saveState).fontSize(10).fontColor(this.saveState === SAVE_FAILED ? this.palette().danger : this.palette().inkMuted)
+    }.width('100%').margin({ bottom: 8 }).onClick(() => {})
   }
 
   build() {

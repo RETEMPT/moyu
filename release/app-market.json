@@ -11,6 +11,7 @@
   "aiServiceReviewEvidence": "",
   "deviceEvidence": "",
   "screenshots": [],
-  "previousReleaseCode": 1000000,
-  "signingEvidence": ""
+  "previousReleaseCode": 1001001,
+  "signingEvidence": "",
+  "assistantMode": "local-only"
 }

@@ -24,7 +24,7 @@ export struct BottomNavBar {
   private tabs: BottomTabItem[] = [
     { icon: $r('app.media.ic_home'), label: '首页', navKey: NAV_HOME },
     { icon: $r('app.media.ic_note'), label: '资料', navKey: NAV_LIBRARY },
-    { icon: $r('app.media.ic_sparkle'), label: 'AI 墨客', navKey: NAV_AI },
+    { icon: $r('app.media.ic_sparkle'), label: '墨客', navKey: NAV_AI },
     { icon: $r('app.media.ic_check'), label: '待办', navKey: NAV_TODO },
     { icon: $r('app.media.ic_graph'), label: '图谱', navKey: NAV_GRAPH }
   ];
@@ -67,6 +67,7 @@ export struct BottomNavBar {
         .width(20)
         .height(20)
         .objectFit(ImageFit.Contain)
+        .fillColor(this.activeNav === tab.navKey ? this.palette().accent : this.palette().inkSecondary)
       Text(tab.label)
         .fontSize(TypographyTokens.TINY)
         .fontWeight(this.activeNav === tab.navKey ? FontWeight.Bold : FontWeight.Normal)

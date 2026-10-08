@@ -37,19 +37,19 @@ export struct NewContentSheet {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
 
         SheetActionRow({
-          label: '📝 新建笔记',
+          label: '文字笔记', icon: $r('app.media.ic_note'),
           onAction: () => this.onCreateNoteInProject('未命名笔记', this.project.name, 'Markdown')
         })
         SheetActionRow({
-          label: '📄 从模板新建',
+          label: '从模板新建', icon: $r('app.media.ic_read'),
           onAction: () => this.onRequestTemplate(this.project.name)
         })
         SheetActionRow({
-          label: '⬡ 新建白板',
-          onAction: () => this.onCreateNoteInProject('未命名导图', this.project.name, 'Canvas')
+          label: '手写笔记', icon: $r('app.media.ic_pen'),
+          onAction: () => this.onCreateNoteInProject('未命名手写笔记', this.project.name, 'Handwriting')
         })
         SheetActionRow({
-          label: '📥 导入 PDF / 文档',
+          label: '导入文档', icon: $r('app.media.ic_import'),
           onAction: () => this.onImportIntoProject(this.project.name)
         })
 

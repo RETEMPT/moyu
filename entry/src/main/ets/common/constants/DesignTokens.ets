@@ -24,6 +24,7 @@ export interface ColorPalette {
   link: string;            // Obsidian 标志性双向链接紫青色
   accent: string;          // 主交互强调色 (按钮、激活图标)
   accentSoft: string;      // 主交互浅底色
+  onAccent: string;        // 强调色按钮上的文字与图标
   success: string;         // 已保存、已同步、已完成
   warning: string;         // 正在保存、待复习、中优先级
   danger: string;          // 保存失败、删除、高优先级
@@ -40,60 +41,62 @@ export interface ColorPalette {
 
 // 浅色模式: 纯净高对比度学习阅读色阶
 export const LightColors: ColorPalette = {
-  canvas: '#FAF9F6',
-  sidebar: '#F3F4F6',
+  canvas: '#F8F7FB',
+  sidebar: '#F1EFF6',
   surface: '#FFFFFF',
-  surfaceSubtle: '#F1F5F9',
-  border: '#E2E8F0',
-  borderSubtle: '#ECEEF2',
-  inkPrimary: '#0F172A',   // 墨夜黑 (对比度 14:1)
-  inkSecondary: '#475569', // 石板灰 (对比度 6.5:1)
-  inkMuted: '#64748B',     // 弱化灰 (对比度 4.6:1, 符合 WCAG AA)
-  hoverBg: '#E2E8F0',
-  activeBg: '#CBD5E1',
-  link: '#6366F1',         // 经典靛蓝链接
-  accent: '#2563EB',       // 皇家蓝
-  accentSoft: '#EFF6FF',
+  surfaceSubtle: '#F1EFF6',
+  border: '#DDD9E7',
+  borderSubtle: '#E9E6EF',
+  inkPrimary: '#242033',
+  inkSecondary: '#575267',
+  inkMuted: '#716A80',
+  hoverBg: '#EAE5F4',
+  activeBg: '#E9E1FC',
+  link: '#6342D9',
+  accent: '#6842E3',
+  accentSoft: '#EEE8FC',
+  onAccent: '#FFFFFF',
   success: '#059669',      // 翡翠绿
   warning: '#D97706',      // 琥珀橙
   danger: '#DC2626',       // 玫瑰红
-  primary: '#2563EB',
-  primarySoft: '#EFF6FF',
-  accentPurple: '#8B5CF6', // 智能紫色
+  primary: '#6842E3',
+  primarySoft: '#EEE8FC',
+  accentPurple: '#6842E3',
   cardBackground: '#FFFFFF',
-  borderFocus: '#3B82F6',
-  statusPending: '#2563EB',
+  borderFocus: '#8566E9',
+  statusPending: '#6842E3',
   statusCompleted: '#059669',
-  tagBg: '#F1F5F9'
+  tagBg: '#F1EFF6'
 };
 
 // 深色模式: 优雅 OLED 曜石黑与深邃暗夜灰阶
 export const DarkColors: ColorPalette = {
-  canvas: '#121214',
-  sidebar: '#18181B',
-  surface: '#1E1E22',
-  surfaceSubtle: '#27272E',
-  border: '#2E2E38',
-  borderSubtle: '#262630',
+  canvas: '#15131C',
+  sidebar: '#1B1824',
+  surface: '#221E2D',
+  surfaceSubtle: '#2C2638',
+  border: '#40374E',
+  borderSubtle: '#332D40',
   inkPrimary: '#F8FAFC',   // 纯净雪白 (对比度 15:1)
-  inkSecondary: '#94A3B8', // 柔雾灰 (对比度 7:1)
-  inkMuted: '#64748B',     // 中性灰 (对比度 4.5:1)
-  hoverBg: '#27272E',
-  activeBg: '#33333E',
-  link: '#A5B4FC',
-  accent: '#3B82F6',
-  accentSoft: '#1E293B',
+  inkSecondary: '#B8B0C7',
+  inkMuted: '#A49AB6',
+  hoverBg: '#352E43',
+  activeBg: '#3B2D57',
+  link: '#C0ADFF',
+  accent: '#BBA4FF',
+  accentSoft: '#382A52',
+  onAccent: '#21172F',
   success: '#34D399',
   warning: '#FBBF24',
   danger: '#F87171',
-  primary: '#3B82F6',
-  primarySoft: '#1E293B',
-  accentPurple: '#A78BFA',
-  cardBackground: '#1E1E22',
-  borderFocus: '#60A5FA',
-  statusPending: '#60A5FA',
+  primary: '#BBA4FF',
+  primarySoft: '#382A52',
+  accentPurple: '#BBA4FF',
+  cardBackground: '#221E2D',
+  borderFocus: '#C8B6FF',
+  statusPending: '#BBA4FF',
   statusCompleted: '#34D399',
-  tagBg: '#27272E'
+  tagBg: '#2C2638'
 };
 
 export class LayoutTokens {
