@@ -6,6 +6,8 @@
 
 2026-10-09：设置信息结构下沉为纯数据 `SettingsCatalog`，视图通过原生 `Navigation / NavDestination` 组织目录和详情；模型草稿保护统一处理详情返回、目录切换和离开工作空间。`ThemeStyle` 提供四套明暗语义色，视图订阅配色与明暗两个维度；`ThemeManager` 串行保存设置，写入失败不发布成功状态。`LocalTextFormatter` 专门负责无模型排版和可选图片断行，`AiParser` 负责结构化候选，`SmartCaptureService` 负责保存；图片预览与阅读共用 `AssistantTextParser`。`AiProviderCatalog` 是显式选择的服务模板，创建新草稿，不携带密钥、授权或自动启用联网。整体方案见 [体验设计](UX_PLAN_2026-10-09.md)。
 
+智能提取新增 `DocumentExtractService` 负责限量本机 PDF/文字读取与临时资源清理，`MarkerImportPolicy` 单独校验 Markdown 输出互通；没有引入 Python、推理服务或模型权重。`WorkspaceNotePolicy` 下沉 AI 正文版本与资料类型保护，`WorkspaceToolExecutor` 继续校验及等待实际端口。Index 的 AI 写入队列包住读取最新状态到持久化的整个操作；跨所有 UI/阅读器队列的事务仍未统一。首页按 12 项增量显示并缓存同源筛选排序。端侧模型计划与已实现边界见 [评估记录](MARKER_HARMONY_REVIEW_2026-10-09.md)。
+
 ```mermaid
 flowchart TD
   Page["Index：导航、状态与装配"] --> View["views：布局、输入与状态显示"]

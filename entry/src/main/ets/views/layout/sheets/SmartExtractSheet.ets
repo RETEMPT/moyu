@@ -7,6 +7,11 @@ import { SmartTask } from '../../../common/types/SmartTask';
 import { SmartExtractService, SmartLayoutStyle, SMART_INPUT_LIMIT } from '../../../services/smart/SmartExtractService';
 import { SmartNoteBuilder } from '../../../services/smart/SmartNoteBuilder';
 import { OcrService } from '../../../services/ocr/OcrService';
+import { DocumentExtractService } from '../../../services/smart/DocumentExtractService';
+import { ModelConfigService } from '../../../services/ai/ModelConfigService';
+import { ModelProfilePolicy } from '../../../services/ai/ModelProfilePolicy';
+import { RemoteAiPolicy } from '../../../services/ai/RemoteAiPolicy';
+import { common } from '@kit.AbilityKit';
 import { REMOTE_AI_ENABLED } from '../../../common/constants/RuntimeCapabilities';
 import { IconButton } from '../../common/IconButton';
 import { AppIcon } from '../../common/AppIcon';
@@ -42,6 +47,10 @@ export struct SmartExtractSheet {
   @State private sourceNotice: string = '';
   @State private layoutStyle: SmartLayoutStyle = 'faithful';
   @State private useAi: boolean = false;
+  @State private aiReady: boolean = false;
+  @State private pdfStart: string = '1';
+  @State private pdfEnd: string = '1';
+  @State private importProgress: string = '';
   @State private mergeWrappedLines: boolean = false;
   @State private result: SmartContent | null = null;
   @State private title: string = '';
@@ -80,6 +89,7 @@ export struct SmartExtractSheet {
     }
     this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
     this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
+    this.loadAiAvailability();
   }
 
   aboutToDisappear(): void {
@@ -93,7 +103,37 @@ export struct SmartExtractSheet {
   }
 
   private busy(): boolean {
-    return this.step === 'ocr' || this.step === 'extracting' || this.step === 'saving';
+    return this.step === 'ocr' || this.step === 'importing' || this.step === 'extracting' || this.step === 'saving';
+  }
+
+  private async loadAiAvailability(): Promise<void> {
+    try {
+      const profile = await ModelConfigService.getInstance().getActiveProfile();
+      if (!this.alive) { return; }
+      this.aiReady = REMOTE_AI_ENABLED && !ModelProfilePolicy.validate(profile) && !profile.credentialUnavailable && RemoteAiPolicy.consented(profile);
+    } catch { if (this.alive) { this.aiReady = false; } }
+    if (this.alive && !this.aiReady) { this.useAi = false; }
+  }
+
+  private async pickDocument(): Promise<void> {
+    if (this.busy()) { return; }
+    const id = ++this.requestId; this.step = 'importing'; this.errorMsg = ''; this.importProgress = '选择文档…';
+    try {
+      const options = new picker.DocumentSelectOptions(); options.maxSelectNumber = 1;
+      options.fileSuffixFilters = ['文档与 Marker 结果|.pdf,.md,.txt,.json'];
+      const selected = await new picker.DocumentViewPicker().select(options);
+      if (!this.alive || id !== this.requestId || !selected.length) { return; }
+      this.importProgress = '正在读取文档…';
+      const result = await DocumentExtractService.read(getContext(this) as common.UIAbilityContext, selected[0],
+        Number(this.pdfStart), Number(this.pdfEnd), () => !this.alive || id !== this.requestId,
+        (page: number) => { if (this.alive && id === this.requestId) { this.importProgress = `正在提取第 ${page} 页…`; } });
+      if (!this.alive || id !== this.requestId) { return; }
+      const appended = this.inputText.trim() ? `${this.inputText}\n\n${result.text}` : result.text;
+      if (appended.length > SMART_INPUT_LIMIT) { throw new Error('追加后文字超过上限，请先整理当前内容或缩小导入范围'); }
+      this.inputText = appended; this.sourceNotice = result.notice; AppStorage.setOrCreate('smartExtractDraft', appended);
+    } catch (error) {
+      if (this.alive && id === this.requestId) { this.errorMsg = error instanceof Error ? error.message : '文档提取未成功，原输入已保留'; }
+    } finally { if (this.alive && id === this.requestId) { this.step = 'input'; this.importProgress = ''; } }
   }
 
   private requestClose(): void {
@@ -160,7 +200,7 @@ export struct SmartExtractSheet {
     this.errorMsg = '';
     this.step = 'extracting';
     try {
-      const extracted = await SmartExtractService.getInstance().extract(this.inputText, '整理笔记', this.layoutStyle, this.useAi, this.mergeWrappedLines);
+      const extracted = await SmartExtractService.getInstance().extract(this.inputText, '整理笔记', this.layoutStyle, this.useAi && this.aiReady, this.mergeWrappedLines);
       if (!this.alive || id !== this.requestId) {
         return;
       }
@@ -253,6 +293,17 @@ export struct SmartExtractSheet {
       }.width('100%').height(48)
         .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle)
         .onClick(() => this.pickImageAndOcr())
+      Button('导入 PDF / 文字 / Marker 结果').width('100%').height(48)
+        .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle).onClick(() => this.pickDocument())
+      Row({ space: 8 }) {
+        Text('PDF 页范围').fontSize(12).fontColor(this.palette().inkSecondary)
+        TextInput({ text: this.pdfStart, placeholder: '起始页' }).layoutWeight(1).height(44)
+          .onChange((value: string) => { this.pdfStart = value; })
+        Text('–').fontColor(this.palette().inkMuted)
+        TextInput({ text: this.pdfEnd, placeholder: '结束页' }).layoutWeight(1).height(44)
+          .onChange((value: string) => { this.pdfEnd = value; })
+      }.width('100%')
+      this.hint('PDF 每次最多 5 页，本机识别；Marker 可导入 .md 或 markdown 响应 JSON，无需服务器。')
       if (this.imageUri.length > 0) {
         Image(this.imageUri).width('100%').height(100).objectFit(ImageFit.Contain).borderRadius(8)
       }
@@ -289,10 +340,12 @@ export struct SmartExtractSheet {
       if (this.mergeWrappedLines) { this.hint('尝试连接普通正文的断行，列表、空段、代码、表格与公式保留。请对照原文检查多栏内容和特殊换行。') }
       if (REMOTE_AI_ENABLED) {
       Row({ space: 8 }) {
-        Text('使用 AI 排版').layoutWeight(1).fontColor(this.palette().inkPrimary)
-        Toggle({ type: ToggleType.Switch, isOn: this.useAi }).onChange((value: boolean) => { this.useAi = value; })
+        Text('AI 整理').layoutWeight(1).fontColor(this.palette().inkPrimary)
+        Toggle({ type: ToggleType.Switch, isOn: this.useAi && this.aiReady }).enabled(this.aiReady).selectedColor(this.palette().accent)
+          .onChange((value: boolean) => { this.useAi = value && this.aiReady; })
       }.width('100%').constraintSize({ minHeight: 44 })
-      this.hint(this.useAi ? '校对后的文字将发送到你配置并授权的模型服务，保存前可检查并编辑结果。' : '当前使用本地规则，不联网。AI 排版是可选的进一步整理。')
+      this.hint(this.useAi && this.aiReady ? '校对后的文字将发送到你配置并授权的模型服务，保存前可检查并编辑结果。' :
+        this.aiReady ? '关闭时使用本地规则，不联网。' : '未配置或未授权模型，AI 整理不可用；本机识别与离线排版仍可使用。')
       Button('模型设置').height(44).fontColor(this.palette().inkSecondary)
         .backgroundColor(this.palette().surfaceSubtle).onClick(() => {
           this.requestClose();
@@ -379,7 +432,7 @@ export struct SmartExtractSheet {
               this.resultPanel()
             } else {
               LoadingProgress().width(42).height(42).color(this.palette().accent)
-              this.hint(this.step === 'ocr' ? '正在识别图片文字…' : (this.step === 'saving' ? '正在保存笔记和待办…' : '正在整理排版，请稍候…'))
+              this.hint(this.step === 'importing' ? this.importProgress : this.step === 'ocr' ? '正在识别图片文字…' : (this.step === 'saving' ? '正在保存笔记和待办…' : '正在整理排版，请稍候…'))
             }
           }.width('100%')
         }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
@@ -387,7 +440,7 @@ export struct SmartExtractSheet {
           Text(this.errorMsg).width('100%').fontSize(14).fontColor(this.palette().danger)
         }
         if (this.step === 'input') {
-          Button(this.useAi ? '开始 AI 排版' : '开始本地整理').width('100%').height(48)
+          Button(this.useAi && this.aiReady ? '开始 AI 排版' : '开始本地整理').width('100%').height(48)
             .fontColor(this.palette().onAccent).backgroundColor(this.palette().accent)
             .enabled(this.inputText.trim().length > 0 && this.inputText.length <= SMART_INPUT_LIMIT)
             .onClick(() => this.triggerExtraction())

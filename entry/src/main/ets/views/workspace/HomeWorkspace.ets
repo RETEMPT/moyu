@@ -66,6 +66,10 @@ export struct HomeWorkspace {
   @State private activeShelfFilter: ShelfFilterType = 'all';
   @State private pressedCardId: string = '';
   @State private hoveredCardId: string = '';
+  @State private shelfVisibleCount: number = 12;
+  private cachedShelfSource: NoteItem[] | null = null;
+  private cachedShelfFilter: ShelfFilterType = 'all';
+  private cachedShelfNotes: NoteItem[] = [];
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
@@ -83,6 +87,7 @@ export struct HomeWorkspace {
 
   /** 按筛选条件过滤并保证置顶在前 */
   private displayNotes(): NoteItem[] {
+    if (this.cachedShelfSource === this.recentNotes && this.cachedShelfFilter === this.activeShelfFilter) { return this.cachedShelfNotes; }
     let list: NoteItem[] = this.recentNotes.slice();
 
     if (this.activeShelfFilter === 'pinned') {
@@ -104,6 +109,7 @@ export struct HomeWorkspace {
       return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
     });
 
+    this.cachedShelfSource = this.recentNotes; this.cachedShelfFilter = this.activeShelfFilter; this.cachedShelfNotes = list;
     return list;
   }
 
@@ -127,24 +133,6 @@ export struct HomeWorkspace {
             DocumentCover({ type: note.type, pageCount: note.pageCount || 0 })
           }
 
-          if (!this.isPdfNote(note) && !this.isHandwritingNote(note)) {
-            Row() {
-              Image($r('app.media.ic_cover_white'))
-                .width(18)
-                .height(18)
-                .objectFit(ImageFit.Contain)
-            }
-            .width(44)
-            .height(44)
-            .justifyContent(FlexAlign.Center)
-            .borderRadius(10)
-            .backgroundColor('rgba(0,0,0,0.55)')
-            .margin({ right: 8, bottom: 8 })
-            .accessibilityText('选择笔记封面')
-            .onClick(() => {
-              this.onChooseCover(note.id);
-            })
-          }
         }
         .width('100%')
         .height(106)
@@ -393,6 +381,7 @@ export struct HomeWorkspace {
                     .onClick(() => {
                       animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
                         this.activeShelfFilter = item.key;
+                        this.shelfVisibleCount = 12;
                       });
                     })
                 }, (item: FilterOption) => item.key)
@@ -425,7 +414,7 @@ export struct HomeWorkspace {
             .margin({ bottom: 20 })
           } else {
             GridRow({ columns: this.isPhone ? 1 : 3, gutter: this.isPhone ? 10 : 14 }) {
-              ForEach(this.displayNotes(), (note: NoteItem) => {
+              ForEach(this.displayNotes().slice(0, this.shelfVisibleCount), (note: NoteItem) => {
                 GridCol() {
                   this.shelfCard(note)
                 }
@@ -433,6 +422,11 @@ export struct HomeWorkspace {
             }
             .width('100%')
             .margin({ bottom: 24 })
+            if (this.displayNotes().length > this.shelfVisibleCount) {
+              Button(`显示更多资料 · 已显示 ${this.shelfVisibleCount} / ${this.displayNotes().length}`)
+                .height(44).width('100%').fontColor(this.palette().inkSecondary).backgroundColor(this.palette().surfaceSubtle)
+                .onClick(() => { this.shelfVisibleCount += 12; })
+            }
           }
 
           // ---- 4. 待创建的概念网络 (思维脉络) ----

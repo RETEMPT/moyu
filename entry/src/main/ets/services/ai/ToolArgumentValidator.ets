@@ -4,6 +4,7 @@ export interface ToolArguments {
   query?: string; limit?: number; category?: string; identifier?: string;
   title?: string; date?: string; tags?: string; sourceIdentifier?: string;
   targetTitle?: string; reason?: string; tag?: string; content?: string; status?: string;
+  offset?: number; expectedUpdatedAt?: number; flag?: string; value?: string;
 }
 
 export class ToolArgumentValidator {
@@ -14,6 +15,8 @@ export class ToolArgumentValidator {
       case 'tags': return a.tags; case 'sourceIdentifier': return a.sourceIdentifier;
       case 'targetTitle': return a.targetTitle; case 'reason': return a.reason;
       case 'tag': return a.tag; case 'content': return a.content; case 'status': return a.status;
+      case 'offset': return a.offset; case 'expectedUpdatedAt': return a.expectedUpdatedAt;
+      case 'flag': return a.flag; case 'value': return a.value;
       default: return undefined;
     }
   }
@@ -34,11 +37,19 @@ export class ToolArgumentValidator {
       if (typeof value === 'string') {
         if (param.required && !value.trim()) { throw new Error(`参数 ${param.name} 不能为空`); }
         if (value.length > (param.name === 'content' ? 20000 : 2000)) { throw new Error(`参数 ${param.name} 过长`); }
-      } else if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1 || value > 10) { throw new Error('检索条数需为 1–10 的整数'); }
+      } else {
+        const min = param.name === 'offset' || param.name === 'expectedUpdatedAt' ? 0 : 1;
+        const max = param.name === 'offset' ? 1000000 : param.name === 'expectedUpdatedAt' ? Number.MAX_SAFE_INTEGER :
+          name === 'read_note' ? 12000 : name === 'list_notes' || name === 'list_todos' ? 50 : 10;
+        if (!Number.isSafeInteger(value) || value < min || value > max) { throw new Error(`参数 ${param.name} 需为 ${min}–${max} 的整数`); }
+      }
     }
     if (args.date && args.date.trim()) { args.date = ToolArgumentValidator.date(args.date); }
     if (name === 'create_link' && /[\[\]\r\n]/.test(args.targetTitle || '')) { throw new Error('双链目标不能包含括号或换行'); }
     if (args.status && !['all', 'pending', 'done'].includes(args.status)) { throw new Error('待办状态需为 all、pending 或 done'); }
+    if (name === 'set_todo_status' && !['pending', 'done'].includes(args.status || '')) { throw new Error('请选择 pending 或 done'); }
+    if (name === 'set_note_flag' && (!['favorite', 'pinned'].includes(args.flag || '') || !['yes', 'no'].includes(args.value || ''))) { throw new Error('收藏/置顶参数无效'); }
+    if (name === 'rename_note' && /[\r\n]/.test(args.title || '')) { throw new Error('笔记标题不能包含换行'); }
     return args;
   }
 

@@ -18,10 +18,12 @@
 
 ## 验证边界
 
-- `tools/verify-workflows.mjs`：339 项服务/视图方法测试，平台依赖使用替身。
+- `tools/verify-workflows.mjs`：354 项服务/视图方法测试，平台依赖使用替身。
 - `tools/verify-pdf-chain.mjs`：30 项原件导入、恢复、批注和保存专项。
 - `tools/verify-app-market.mjs`：11 项规则；生成隐私资源与 68 个 SVG 图标一致。
-- `tools/verify-compiled-ui.mjs`：先构建 release，再执行 SDK 实际生成的组件代码。5 项用更新订阅及原生组件适配器检查按钮/图标高亮、菜单 builder 与可点击菜单项、阅读控件替换和返回恢复、稿纸/AI 分屏入口、记录搜索与选择。
+- `tools/verify-compiled-ui.mjs`：先构建 release，再执行 SDK 实际生成的组件代码。6 项用更新订阅及原生组件适配器检查按钮/图标高亮、菜单 builder 与可点击菜单项、阅读控件替换和返回恢复、稿纸/AI 分屏入口、记录搜索与选择，以及首页首批节点与封面菜单。
+
+智能提取及资料管理的额外范围见 [端侧评估](MARKER_HARMONY_REVIEW_2026-10-09.md)。
 
 编译后适配器不测原生命中范围、GPU、手势裁决、动画帧率、PDFKit 位图或物理笔事件；不能将它当作真机测试。GitHub CI 执行前三类回归，SDK 编译与编译后 UI 检查在本机执行。
 

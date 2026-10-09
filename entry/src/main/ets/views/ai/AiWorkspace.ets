@@ -22,6 +22,7 @@ import {
 } from '../../common/types/ChatSession';
 import { ModelProfile } from '../../common/types/ModelConfig';
 import { WorkspaceToolExecutor } from '../../services/ai/WorkspaceToolExecutor';
+import { ToolArgumentValidator } from '../../services/ai/ToolArgumentValidator';
 import { ModelProfilePolicy } from '../../services/ai/ModelProfilePolicy';
 import { RemoteAiPolicy } from '../../services/ai/RemoteAiPolicy';
 import { NoteToolReader } from '../../services/ai/NoteToolReader';
@@ -171,6 +172,8 @@ export struct AiWorkspace {
   onCreateLinkBetweenNotes: (sourceIdentifier: string, targetTitle: string) => Promise<void> = async () => {};
   onCategorizeNote: (identifier: string, category: string) => Promise<void> = async () => {};
   onCreateNewNote: (title: string, category: string, tag: string, content: string) => Promise<void> = async () => {};
+  onManageNote: (operation: string, identifier: string, value: string, expectedUpdatedAt: number) => Promise<string> = async () => { throw new Error('资料管理未连接'); };
+  onSetTodoStatus: (identifier: string, status: string) => Promise<string> = async () => { throw new Error('待办管理未连接'); };
   onOpenSearch: () => void = () => {};
   onSmartExtract: () => void = () => {};
   onOpenCitation: (citation: ChatCitation) => void = () => {};
@@ -609,16 +612,18 @@ export struct AiWorkspace {
   private buildExecutor(): WorkspaceToolExecutor {
     return new WorkspaceToolExecutor({
       search: (query: string, limit: number) => this.toolSearchNotes(query, limit),
-      list: (category: string) => this.toolListNotes(category),
-      read: (identifier: string) => this.toolReadNote(identifier),
+      list: (category: string, offset?: number, limit?: number) => this.toolListNotes(category, offset, limit),
+      read: (identifier: string, offset?: number, limit?: number) => this.toolReadNote(identifier, offset, limit),
       summarize: () => this.toolSummarizeVault(),
       outline: (identifier: string) => this.toolNoteOutline(identifier),
-      todos: (date: string, status: string) => this.toolListTodos(date, status),
+      todos: (date: string, status: string, offset?: number, limit?: number) => this.toolListTodos(date, status, offset, limit),
       createTodo: (date: string, title: string) => this.toolCreateTodo(date, title),
       addTag: (identifier: string, tags: string) => this.toolAddTagToNote(identifier, tags),
       createLink: (source: string, target: string, reason?: string) => this.toolCreateLink(source, target, reason),
       categorize: (identifier: string, category: string) => this.toolCategorizeNote(identifier, category),
       createNote: (title: string, category: string, tag: string, content: string) => this.toolCreateNote(title, category, tag, content),
+      manageNote: (operation: string, identifier: string, value: string, expectedUpdatedAt: number) => this.onManageNote(operation, identifier, value, expectedUpdatedAt),
+      setTodoStatus: (identifier: string, status: string) => this.onSetTodoStatus(identifier, status),
       progress: (text: string) => { if (this.alive) { this.toolStatus = text; } }
     });
   }
@@ -637,7 +642,7 @@ export struct AiWorkspace {
     return out;
   }
 
-  private toolListNotes(category: string): string {
+  private toolListNotes(category: string, offset: number = 0, limit: number = 20): string {
     const filtered: NoteItem[] = [];
     for (const n of this.allNotes) {
       if (category.length === 0 || n.category === category) {
@@ -648,25 +653,29 @@ export struct AiWorkspace {
       return category.length > 0 ? `项目「${category}」下无笔记。` : '资料库暂无笔记。';
     }
     let out: string = `知识库笔记清单（共 ${filtered.length} 篇）：\n`;
-    for (const n of filtered.slice(0, 40)) {
-      out += `- ${n.title} | 分类: ${n.category || '未分类'} | 标签: ${n.tag || '无'} | 更新于: ${n.updateTime}\n`;
+    for (const n of filtered.slice(offset, offset + limit)) {
+      out += `- ID: ${n.id} | ${n.title} | 分类: ${n.category || '未分类'} | 标签: ${n.tag || '无'} | updatedAt: ${n.updatedAt || 0}\n`;
     }
+    out += offset + limit < filtered.length ? `下一起点 offset=${offset + limit}` : '已到清单末尾';
     return out;
   }
 
-  private toolReadNote(identifier: string): string {
+  private toolReadNote(identifier: string, offset: number = 0, limit: number = 12000): string {
     const note = NoteToolReader.resolve(this.allNotes, identifier);
-    const body = StudySourceService.context(note, 24000);
-    return `【${note.title}】 ID: ${note.id}\n分类: ${note.category || '未分类'}\n标签: ${note.tag || '无'}\n正文:\n${body || '（空文档）'}${body.length < note.contentDetail.length ? '\n（内容较长，已截取前 24000 字符）' : ''}`;
+    const source = StudySourceService.context(note, offset + limit + 1);
+    const body = source.slice(offset, offset + limit);
+    return `【${note.title}】 ID: ${note.id} · updatedAt: ${note.updatedAt || 0}\n分类: ${note.category || '未分类'}\n标签: ${note.tag || '无'}\n正文（起点 ${offset}）:\n${body || '（此范围无文字）'}\n${source.length > offset + limit ? `下一起点 offset=${offset + limit}` : '已到正文末尾'}`;
   }
 
   private toolNoteOutline(identifier: string): string { return NoteToolReader.outline(NoteToolReader.resolve(this.allNotes, identifier)); }
 
-  private toolListTodos(date: string, status: string): string {
+  private toolListTodos(date: string, status: string, offset: number = 0, limit: number = 50): string {
     const tasks = this.todos.filter((todo: TodoItem) => (!date || todo.date === date) &&
       (status === 'all' || (status === 'done' ? todo.done : !todo.done)));
-    return tasks.length ? tasks.slice(0, 50).map((todo: TodoItem) =>
-      `${todo.done ? '[x]' : '[ ]'} ${todo.date} · ${todo.title}`).join('\n') : '没有符合条件的待办';
+    if (!tasks.length) { return '没有符合条件的待办'; }
+    const body = tasks.slice(offset, offset + limit).map((todo: TodoItem) =>
+      `${todo.done ? '[x]' : '[ ]'} ID: ${todo.id} · ${todo.date} · ${todo.title}`).join('\n');
+    return `待办清单（共 ${tasks.length} 项）：\n${body}\n${offset + limit < tasks.length ? `下一起点 offset=${offset + limit}` : '已到待办末尾'}`;
   }
   private toolSummarizeVault(): string {
     const catMap: Map<string, number> = new Map();
@@ -726,6 +735,14 @@ export struct AiWorkspace {
   }
 
   private describeToolArgs(toolName: string, argsJson: string): string {
+    if (['rename_note', 'update_note', 'set_note_flag', 'set_todo_status'].includes(toolName)) {
+      try {
+        const args = ToolArgumentValidator.parse(toolName, argsJson);
+        return `目标：${args.identifier || ''}\n${toolName === 'rename_note' ? `新标题：${args.title}` :
+          toolName === 'update_note' ? `读取版本：${args.expectedUpdatedAt}\n新正文：\n${args.content}` :
+          toolName === 'set_todo_status' ? `状态：${args.status}` : `${args.flag}：${args.value}`}`;
+      } catch { return '参数无效，操作不会执行'; }
+    }
     if (toolName === 'create_todo') {
       try {
         const args: CreateTodoArgs = JSON.parse(argsJson) as CreateTodoArgs;

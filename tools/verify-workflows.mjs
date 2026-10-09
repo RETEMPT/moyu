@@ -2106,6 +2106,194 @@ test('overlapping fresh conversation saves share one ID and preserve ordered sna
 });
 
 const { ChatHistoryPolicy } = load(`${base}services/ai/ChatHistoryPolicy.ets`);
+const { MarkerImportPolicy } = load(`${base}services/smart/MarkerImportPolicy.ets`, {
+  [path.resolve(root, `${base}services/smart/SmartExtractService.ets`)]: { SMART_INPUT_LIMIT: 12000 } });
+test('Marker Markdown and official success JSON preserve formulas, tables and order without treating raw structure as prose', () => {
+  const markdown = '# 课程\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n$$x^2+y^2=1$$';
+  assert.equal(MarkerImportPolicy.parse(markdown, false), markdown);
+  assert.equal(MarkerImportPolicy.parse(JSON.stringify({ success: true, format: 'markdown', output: markdown, images: { 'img.png': 'base64' } }), true), markdown);
+  for (const value of [{ success: false, error: 'engine' }, { success: 'false', output: markdown }, { format: 'json', output: '{}' }, { children: [] }, null, []]) {
+    assert.throws(() => MarkerImportPolicy.parse(JSON.stringify(value), true));
+  }
+  assert.throws(() => MarkerImportPolicy.parse('x'.repeat(12001), false), /分段/);
+});
+
+function documentImportHarness({ fail = false, cancelled = () => false, text = '真实扫描文字', pdf = true } = {}) {
+  const calls = [], fsAdapter = { OpenMode: { READ_ONLY: 0 }, openSync: () => ({ fd: 1 }), closeSync: () => calls.push('closed'),
+    statSync: () => ({ size: 300 }), readSync: (_, buffer) => { new Uint8Array(buffer).set(Buffer.from(pdf ? '%PDF-' : '# MD\n')); return 5; },
+    readText: async () => text };
+  const service = { savePdfToSandbox: async () => { calls.push('copied'); return '/sandbox/documents/extract.pdf'; },
+    extractPages: async (_, start, end, scan, cancel, progress) => {
+      calls.push([start, end, scan]); if (fail) throw Error('OCR failed'); if (cancel()) throw Error('cancel'); progress(start);
+      return [{ pageNumber: start, text, method: 'ocr' }];
+    }, removeManagedPdf: async (_, uri) => calls.push(['removed', uri]) };
+  const { DocumentExtractService } = load(`${base}services/smart/DocumentExtractService.ets`, {
+    '@kit.CoreFileKit': { fileIo: fsAdapter }, '@kit.AbilityKit': {},
+    [path.resolve(root, `${base}services/smart/SmartExtractService.ets`)]: { SMART_INPUT_LIMIT: 12000 },
+    [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: { PdfDocumentService: { getInstance: () => service } } });
+  return { calls, read: (start = 1, end = 1) => DocumentExtractService.read({ filesDir: '/sandbox' }, pdf ? 'file://source.pdf' : 'file://result.md', start, end, cancelled, () => {}) };
+}
+
+test('local PDF extraction releases the source handle and temporary copy on success, error and cancellation', async () => {
+  const success = documentImportHarness(); const result = await success.read();
+  assert.match(result.text, /真实扫描文字/); assert.match(result.notice, /本机/); assert.equal(success.calls[0], 'closed');
+  assert.deepEqual(success.calls.at(-1), ['removed', '/sandbox/documents/extract.pdf']);
+  const failure = documentImportHarness({ fail: true }); await assert.rejects(failure.read()); assert.equal(failure.calls.at(-1)[0], 'removed');
+  let checks = 0; const cancel = documentImportHarness({ cancelled: () => ++checks > 1 });
+  await assert.rejects(cancel.read(), /取消/); assert.equal(cancel.calls.at(-1)[0], 'removed');
+});
+
+test('document extraction rejects oversized results and excessive page ranges without modifying a draft', async () => {
+  const text = documentImportHarness({ pdf: false, text: '# 原文\n\n保留内容' }); assert.equal((await text.read()).text, '# 原文\n\n保留内容');
+  const range = documentImportHarness(); await assert.rejects(range.read(1, 6), /1–5/); assert.ok(!range.calls.includes('copied'));
+  const large = documentImportHarness({ text: 'x'.repeat(12001) }); await assert.rejects(large.read(), /页范围/); assert.equal(large.calls.at(-1)[0], 'removed');
+});
+
+test('late document import cannot append into a closed or superseded extraction sheet; repeated taps use one picker', async () => {
+  let release, picks = 0;
+  class DocumentSelectOptions {}
+  class DocumentViewPicker { async select() { picks++; return ['file://source.pdf']; } }
+  const pick = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'pickDocument', {
+    picker: { DocumentSelectOptions, DocumentViewPicker }, SMART_INPUT_LIMIT: 12000, AppStorage: { setOrCreate() {} },
+    DocumentExtractService: { read: () => new Promise(resolve => { release = resolve; }) } });
+  const v = { alive: true, requestId: 0, step: 'input', inputText: '保留草稿', pdfStart: '1', pdfEnd: '1', busy() { return this.step !== 'input'; } };
+  const pending = pick.call(v); await Promise.resolve(); await pick.call(v); assert.equal(picks, 1);
+  v.requestId++; v.alive = false; release({ text: '晚到结果', notice: '' }); await pending; assert.equal(v.inputText, '保留草稿');
+});
+
+test('AI extraction toggle requires a valid consented profile and ignores readiness results after closing', async () => {
+  for (const allowed of [false, true]) {
+    const ready = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'loadAiAvailability', {
+      REMOTE_AI_ENABLED: true, ModelConfigService: { getInstance: () => ({ getActiveProfile: async () => profile({}) }) },
+      ModelProfilePolicy: { validate: () => '' }, RemoteAiPolicy: { consented: () => allowed } });
+    const v = { alive: true, useAi: true, aiReady: false }; await ready.call(v);
+    assert.equal(v.aiReady, allowed); assert.equal(v.useAi, allowed);
+    v.alive = false; v.aiReady = false; await ready.call(v); assert.equal(v.aiReady, false);
+  }
+});
+
+test('a restored AI preference cannot send extraction before model readiness finishes', async () => {
+  const requests = [];
+  const extract = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'triggerExtraction', {
+    SMART_INPUT_LIMIT: 12000, SmartExtractService: { getInstance: () => ({ extract: async (...args) => {
+      requests.push(args); return { title: '资料', formattedMarkdown: '# 资料', tasks: [] };
+    } }) } });
+  const v = { alive: true, requestId: 0, busy: () => false, inputText: '原文', layoutStyle: 'faithful',
+    useAi: true, aiReady: false, mergeWrappedLines: false };
+  await extract.call(v); assert.equal(requests[0][3], false); assert.equal(v.step, 'result');
+  v.aiReady = true; await extract.call(v); assert.equal(requests[1][3], true);
+});
+
+const { WorkspaceNotePolicy } = load(`${base}services/ai/WorkspaceNotePolicy.ets`);
+test('AI content changes require the read version and preserve unrelated data while binary content is immutable', () => {
+  const original = studyNote({ type: 'Markdown', updatedAt: 10, favorite: true, scratchpadStrokes: 'ink', coverUrl: 'cover:mist' });
+  const before = JSON.stringify(original);
+  assert.throws(() => WorkspaceNotePolicy.mutate(original, 'update_note', '# 新正文', 9), /已变化/);
+  const changed = WorkspaceNotePolicy.mutate(original, 'update_note', '# 新正文', 10);
+  assert.equal(changed.contentDetail, '# 新正文'); assert.equal(changed.scratchpadStrokes, 'ink'); assert.equal(changed.coverUrl, 'cover:mist');
+  for (const type of ['PDF', 'Handwriting', 'Doc']) assert.throws(() => WorkspaceNotePolicy.mutate({ ...original, type }, 'update_note', '覆盖', 10), /文字笔记/);
+  assert.equal(WorkspaceNotePolicy.mutate(original, 'set_note_flag', 'pinned:yes', 0).isPinned, true);
+  assert.equal(WorkspaceNotePolicy.mutate(original, 'rename_note', '新标题', 0).title, '新标题');
+  const future = { ...original, updatedAt: Date.now() + 100000 };
+  assert.equal(WorkspaceNotePolicy.mutate(future, 'rename_note', '新标题', 0).updatedAt, future.updatedAt + 1);
+  assert.throws(() => WorkspaceNotePolicy.mutate(original, 'set_note_flag', 'secret:yes', 0)); assert.equal(JSON.stringify(original), before);
+});
+
+test('expanded function tools validate pagination, enum flags and revisions before dispatching write ports', async () => {
+  const requests = [];
+  const executor = new WorkspaceToolExecutor(toolPorts({ manageNote: async (...args) => { requests.push(args); return 'saved'; },
+    setTodoStatus: async (...args) => { requests.push(args); return 'saved'; } }));
+  assert.equal((await executor.execute('update_note', JSON.stringify({ identifier: 'a', content: '# 新', expectedUpdatedAt: 10 }))).ok, true);
+  assert.deepEqual(requests[0], ['update_note', 'a', '# 新', 10]);
+  assert.equal((await executor.execute('set_todo_status', '{"identifier":"todo-1","status":"done"}')).ok, true);
+  assert.equal((await executor.execute('set_note_flag', '{"identifier":"a","flag":"system","value":"yes"}')).ok, false);
+  assert.equal(requests.length, 2);
+  assert.throws(() => ToolArgumentValidator.parse('read_note', '{"identifier":"a","offset":-1}'));
+  assert.equal(ToolArgumentValidator.parse('list_notes', '{"offset":50,"limit":50}').limit, 50);
+  const todoExecutor = new WorkspaceToolExecutor(toolPorts({ todos: (...args) => { requests.push(args); return 'todo'; } }));
+  await todoExecutor.execute('list_todos', '{"offset":50,"limit":20,"status":"done"}');
+  assert.deepEqual(requests.at(-1), ['', 'done', 50, 20]);
+});
+
+test('paginated note listing and reading reach later content with IDs and versions instead of dropping the tail', () => {
+  const notes = Array.from({ length: 55 }, (_, i) => studyNote({ id: String(i), title: `笔记 ${i}`, contentDetail: 'abcdefghij'.repeat(3000), updatedAt: 123 }));
+  const listing = viewMethod('views/ai/AiWorkspace.ets', 'toolListNotes'); const reading = viewMethod('views/ai/AiWorkspace.ets', 'toolReadNote', { NoteToolReader, StudySourceService });
+  const v = { allNotes: notes }; assert.match(listing.call(v, '', 50, 20), /ID: 54/); assert.match(listing.call(v, '', 50, 20), /末尾/);
+  const text = reading.call(v, '54', 24000, 12000); assert.match(text, /updatedAt: 123/); assert.ok(text.includes('abcdefghij'.repeat(600))); assert.match(text, /末尾/);
+  const todos = Array.from({ length: 61 }, (_, i) => ({ id: `todo-${i}`, title: `任务 ${i}`, date: '2026-10-09', done: false }));
+  const listTodos = viewMethod('views/ai/AiWorkspace.ets', 'toolListTodos');
+  assert.match(listTodos.call({ todos }, '', 'all'), /offset=50/);
+  assert.match(listTodos.call({ todos }, '', 'all', 50, 50), /ID: todo-60/);
+  assert.match(listTodos.call({ todos }, '', 'all', 50, 50), /末尾/);
+});
+
+test('queued AI tag edits read the latest state and a failed task does not strand subsequent mutations', async () => {
+  const { SerialTaskQueue } = load(`${base}services/storage/SerialTaskQueue.ets`);
+  const change = viewMethod('pages/Index.ets', 'handleAiAddTag'); let release;
+  const v = { aiMutationQueue: new SerialTaskQueue(), note: studyNote({ tags: [], tag: '' }), requireAiNote() { return this.note; },
+    saveAiNote: async note => { if (note.tags.length === 1) await new Promise(resolve => { release = resolve; }); v.note = note; } };
+  const a = change.call(v, 'a', '数学'), b = change.call(v, 'a', '复习'); await Promise.resolve(); release(); await Promise.all([a, b]);
+  assert.deepEqual(plain(v.note.tags), ['数学', '复习']);
+  await assert.rejects(change.call(v, 'a', '')); await change.call(v, 'a', '考试'); assert.equal(v.note.tags.length, 3);
+});
+
+test('AI body writes preserve the original file and UI snapshot when metadata fails, including new-note cleanup', async () => {
+  const save = viewMethod('pages/Index.ets', 'saveAiNote', { Error });
+  const original = studyNote({ id: 'a', type: 'Markdown', contentDetail: '原文' }), changed = { ...original, contentDetail: '新文' };
+  const calls = [], v = { notes: [original], readingOpen: false, fullScreenDocOpen: false, readingNote: { id: '' },
+    getAbilityContext: () => ({}), storage: { saveDocument: async (_, note, text) => calls.push([note.id, text]),
+      save: async () => { throw Error('metadata'); }, delete: async (_, id) => calls.push(['delete', id]) },
+    rebuildSpaces() { calls.push('published'); }, refreshStats() {}, refreshGraph: async () => {} };
+  await assert.rejects(save.call(v, changed, true), /metadata/);
+  assert.deepEqual(calls, [['a', '新文'], ['a', '原文']]); assert.equal(v.notes[0], original);
+  calls.length = 0; await assert.rejects(save.call(v, { ...changed, id: 'b' }, true), /metadata/);
+  assert.deepEqual(calls, [['b', '新文'], ['delete', 'b']]); assert.equal(v.notes.length, 1);
+});
+
+test('AI body editing blocks both reader surfaces before file I/O and publishes only after durable success', async () => {
+  const save = viewMethod('pages/Index.ets', 'saveAiNote'), original = studyNote({ id: 'a' }); let writes = 0, release, reachedSave;
+  const waitingSave = new Promise(resolve => { reachedSave = resolve; });
+  const v = { notes: [original], readingNote: original, fullScreenDocNote: original, readingOpen: true, fullScreenDocOpen: false,
+    getAbilityContext: () => ({}), storage: { saveDocument: async () => { writes++; }, save: () => new Promise(resolve => { release = resolve; reachedSave(); }) },
+    rebuildSpaces() {}, refreshStats() {}, refreshGraph: async () => {} };
+  const changed = { ...original, contentDetail: '新文' };
+  await assert.rejects(save.call(v, changed, true), /结束/); assert.equal(writes, 0);
+  v.readingOpen = false; v.fullScreenDocOpen = true;
+  await assert.rejects(save.call(v, changed, true), /结束/); assert.equal(writes, 0);
+  v.fullScreenDocOpen = false; const pending = save.call(v, changed, true); await waitingSave;
+  assert.equal(v.notes[0], original); release(); await pending; assert.equal(v.notes[0], changed); assert.equal(v.readingNote, changed);
+});
+
+test('AI todo status is persisted before publishing and failed writes keep the previous state', async () => {
+  const { SerialTaskQueue } = load(`${base}services/storage/SerialTaskQueue.ets`);
+  const change = viewMethod('pages/Index.ets', 'handleAiSetTodoStatus'); let fail = true, release;
+  const todo = { id: 'todo-1', date: '2026-10-09', title: '复习', done: false, noteRefs: [], createdAt: 1, updatedAt: 1 };
+  const v = { aiMutationQueue: new SerialTaskQueue(), todos: [todo], getAbilityContext: () => ({}),
+    todoStorage: { saveTodos: async () => { if (fail) throw Error('disk'); await new Promise(resolve => { release = resolve; }); } } };
+  await assert.rejects(change.call(v, todo.id, 'done'), /disk/); assert.equal(v.todos[0], todo);
+  fail = false; const pending = change.call(v, todo.id, 'done'); await Promise.resolve();
+  assert.equal(v.todos[0].done, false); release(); await pending; assert.equal(v.todos[0].done, true);
+  await assert.rejects(change.call(v, todo.id, 'invalid'), /无效/); assert.equal(v.todos[0].done, true);
+});
+
+test('AI link creation refuses binary notes and appends once to the latest text note', async () => {
+  const { SerialTaskQueue } = load(`${base}services/storage/SerialTaskQueue.ets`);
+  const change = viewMethod('pages/Index.ets', 'handleAiCreateLink', { WorkspaceNotePolicy });
+  const v = { aiMutationQueue: new SerialTaskQueue(), note: studyNote({ type: 'PDF' }), writes: 0,
+    requireAiNote() { return this.note; }, saveAiNote: async note => { v.writes++; v.note = note; } };
+  await assert.rejects(change.call(v, 'a', '概念'), /文字笔记/); assert.equal(v.writes, 0);
+  v.note = studyNote({ type: 'Markdown' }); await change.call(v, 'a', '概念'); await change.call(v, 'a', '概念');
+  assert.equal(v.writes, 1); assert.ok(v.note.contentDetail.endsWith('[[概念]]\n'));
+});
+
+test('home shelf sorts once for the same source and filter, then refreshes when the immutable library snapshot changes', () => {
+  const display = viewMethod('views/workspace/HomeWorkspace.ets', 'displayNotes');
+  const v = { recentNotes: [studyNote({ updatedAt: 1 }), studyNote({ id: 'b', updatedAt: 2 })], activeShelfFilter: 'all', cachedShelfSource: null,
+    isPdfNote: n => n.type === 'PDF', isHandwritingNote: n => n.type === 'Handwriting' };
+  const sorted = display.call(v); assert.equal(display.call(v), sorted); assert.equal(sorted[0].id, 'b');
+  v.recentNotes = v.recentNotes.concat(studyNote({ id: 'c', updatedAt: 3 })); assert.equal(display.call(v)[0].id, 'c');
+  assert.equal(v.recentNotes[0].updatedAt, 1); v.activeShelfFilter = 'favorite'; assert.equal(display.call(v).length, 0);
+});
 test('history search groups pinned conversations once, ignores hidden tool output and orders newest first', () => {
   const now = new Date(2026, 9, 9, 10).getTime();
   const make = overrides => ({ id: 'a', title: '数学笔记', pinned: false, updatedAt: now, messages: [], ...overrides });
@@ -2764,7 +2952,7 @@ test('recognition drafts retain layout choices, images and edited results while 
     title: '校对标题', category: '课程', body: '校对正文', tasks: [], selectedTaskIds: [], includeRelations: false,
     layoutStyle: 'study', mergeWrappedLines: true, useAi: false, requestId: 0, onClose: () => closed++ };
   close.call(view); assert.equal(closed, 1);
-  const restored = { getUIContext: () => ({ getKeyboardAvoidMode: () => 0, setKeyboardAvoidMode: () => {} }) };
+  const restored = { loadAiAvailability() {}, getUIContext: () => ({ getKeyboardAvoidMode: () => 0, setKeyboardAvoidMode: () => {} }) };
   appear.call(restored); assert.equal(restored.layoutStyle, 'study'); assert.equal(restored.mergeWrappedLines, true);
   assert.equal(restored.body, '校对正文'); assert.equal(restored.imageUri, 'photo://selected'); assert.equal(restored.step, 'result');
   view.step = 'saving'; close.call(view); assert.equal(closed, 1);

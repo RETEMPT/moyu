@@ -96,13 +96,13 @@ function renderer() {
     TransitionEffect: new Proxy({}, { get: (_, key) => key === 'OPACITY' ? { animation() { return this; } } : () => ({ combine() { return this; }, animation() { return this; } }) }),
     SourceTool: { Finger: 1, Pen: 2 }, TouchType: { Down: 0, Up: 1, Move: 2, Cancel: 3 } };
   for (const name of ['Button', 'Column', 'Row', 'Text', 'Blank', 'Image', 'Stack', 'Scroll', 'TextInput', 'TextArea',
-    'Divider', 'Canvas', 'Circle', 'Menu', 'MenuItem', 'MenuItemGroup', 'If', 'ForEach', 'Slider', 'Flex', 'Context', 'List', 'ListItem']) globals[name] = native(name);
+    'Divider', 'Canvas', 'Circle', 'Menu', 'MenuItem', 'MenuItemGroup', 'If', 'ForEach', 'Slider', 'Flex', 'Context', 'List', 'ListItem', 'GridRow', 'GridCol']) globals[name] = native(name);
   for (const name of ['ButtonType', 'FontWeight', 'Color', 'HorizontalAlign', 'FlexAlign', 'TextAlign', 'TextOverflow',
     'ScrollDirection', 'BarState', 'Alignment', 'ItemAlign', 'Placement', 'Curve', 'HitTestMode', 'HoverEffect',
-    'GestureMode', 'GestureDirection', 'TransitionEdge', 'ModifierKey', 'ImageFit', 'ImageInterpolation', 'SliderStyle', 'FlexWrap', 'FlexDirection', 'ItemAlign']) globals[name] = enums;
+    'GestureMode', 'GestureDirection', 'TransitionEdge', 'ModifierKey', 'ImageFit', 'ImageInterpolation', 'SliderStyle', 'FlexWrap', 'FlexDirection', 'ItemAlign', 'ResponseType', 'VerticalAlign']) globals[name] = enums;
   const realViews = new Set(['views/common/IconButton', 'views/common/AppIcon', 'views/common/InkWidthSlider',
     'views/reader/HandwritingCanvas', 'views/ai/AiWorkspace', 'views/ai/ChatHistorySidebar',
-    'views/reader/huawei/HuaweiDocWorkspace', 'views/layout/Sidebar', 'views/brand/BrandMark']);
+    'views/reader/huawei/HuaweiDocWorkspace', 'views/layout/Sidebar', 'views/brand/BrandMark', 'views/workspace/HomeWorkspace']);
   function load(relative, compiled = realViews.has(relative)) {
     const key = `${compiled}:${relative}`; if (modules.has(key)) return modules.get(key).exports;
     const file = path.join(compiled ? cacheRoot : path.join(root, 'entry/src/main/ets'), relative + (compiled ? '.ts' : '.ets'));
@@ -209,4 +209,14 @@ test('compiled history replaces navigation, filters rows and retains callbacks f
   const input = [...ui.nodes.values()].find(node => node.type === 'TextInput'); input.props.onChange('英语'); ui.flush();
   assert.equal(ui.find('打开对话：数学笔记'), undefined); assert.ok(ui.find('打开对话：英语阅读'));
   view.historyOpen = false; ui.flush(); assert.ok(ui.find('项目与资料')); assert.equal(ui.find('对话记录'), undefined);
+});
+
+test('compiled shelf has bounded initial cards, no cover shortcut and retains cover selection in the context menu', () => {
+  const ui = renderer(), chosen = [];
+  const notes = Array.from({ length: 30 }, (_, i) => ({ id: String(i), title: `笔记 ${i}`, type: 'Markdown', category: '课程', tag: '', updatedAt: i }));
+  const view = ui.mount('views/workspace/HomeWorkspace', 'HomeWorkspace', { recentNotes: notes, onChooseCover: id => chosen.push(id) });
+  assert.equal(ui.find('选择笔记封面'), undefined);
+  assert.ok(ui.find('笔记 29')); assert.equal(ui.find('笔记 0'), undefined);
+  ui.click('显示更多资料 · 已显示 12 / 30'); assert.ok(ui.find('笔记 6'));
+  view.cardContextMenu(notes[0]); ui.flush(); ui.click('更换封面'); assert.deepEqual(chosen, ['0']);
 });

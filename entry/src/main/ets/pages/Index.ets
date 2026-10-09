@@ -11,6 +11,8 @@ import { common } from '@kit.AbilityKit';
 import { curves, promptAction } from '@kit.ArkUI';
 import { NoteItem } from '../common/types/NoteItem';
 import { ReaderSaveKind } from '../common/types/ReaderSaveKind';
+import { SerialTaskQueue } from '../services/storage/SerialTaskQueue';
+import { WorkspaceNotePolicy } from '../services/ai/WorkspaceNotePolicy';
 import { SpaceFolder } from '../common/types/SpaceFolder';
 import { LinkGraph, Backlink, UnresolvedLink } from '../common/types/LinkGraph';
 import { MarkdownOutlineItem } from '../common/types/MarkdownOutlineItem';
@@ -152,6 +154,7 @@ struct Index {
   @State activeSessionId: string = '';
   @State chatHistoryOpen: boolean = false;
   private historyRestoreCollapsed: boolean = false;
+  private aiMutationQueue: SerialTaskQueue = new SerialTaskQueue();
   /** AI 墨客右栏「来源与上下文」由工作台上报 */
   @State aiCitations: ChatCitation[] = [];
   @State aiPinnedNotes: NoteItem[] = [];
@@ -1321,10 +1324,15 @@ struct Index {
     return matches[0];
   }
 
-  private async commitAiNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
+  private commitAiNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
+    return this.aiMutationQueue.run<void>(() => this.saveAiNote(note, writeBody));
+  }
+
+  private async saveAiNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
     const previous = this.notes.find((item: NoteItem) => item.id === note.id);
     const context = this.getAbilityContext();
-    if (writeBody && previous && this.readingOpen && this.readingNote.id === previous.id) {
+    if (writeBody && previous && ((this.readingOpen && this.readingNote.id === previous.id) ||
+      (this.fullScreenDocOpen && this.fullScreenDocNote.id === previous.id))) {
       throw new Error('请先结束当前笔记编辑并返回，再修改正文');
     }
     if (writeBody) { await this.storage.saveDocument(context, note, note.contentDetail); }
@@ -1344,36 +1352,42 @@ struct Index {
   }
 
   private async handleAiAddTag(identifier: string, tags: string): Promise<void> {
-    const note = this.requireAiNote(identifier);
-    const values = tags.split(/[,，]/).map((value: string) => value.trim()).filter((value: string) => value.length > 0);
-    if (!values.length) { throw new Error('标签不能为空'); }
-    const merged = note.tags ? note.tags.slice() : note.tag.split(',').filter((value: string) => value.trim().length > 0);
-    for (const value of values) { if (!merged.includes(value)) { merged.push(value); } }
-    const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
-    updated.tags = merged; updated.tag = merged.join(', '); updated.updatedAt = Date.now();
-    await this.commitAiNote(updated);
+    return this.aiMutationQueue.run<void>(async () => {
+      const note = this.requireAiNote(identifier);
+      const values = tags.split(/[,，]/).map((value: string) => value.trim()).filter((value: string) => value.length > 0);
+      if (!values.length) { throw new Error('标签不能为空'); }
+      const merged = note.tags ? note.tags.slice() : note.tag.split(',').filter((value: string) => value.trim().length > 0);
+      for (const value of values) { if (!merged.includes(value)) { merged.push(value); } }
+      const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
+      updated.tags = merged; updated.tag = merged.join(', '); updated.updatedAt = Math.max(Date.now(), (note.updatedAt || 0) + 1); updated.updateTime = '刚刚';
+      await this.saveAiNote(updated);
+    });
   }
 
   private async handleAiCreateLink(identifier: string, title: string): Promise<void> {
-    const note = this.requireAiNote(identifier);
-    const link = `[[${title}]]`;
-    if (note.contentDetail.includes(link)) { return; }
-    const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
-    updated.contentDetail = `${note.contentDetail}\n\n${link}\n`; updated.updatedAt = Date.now(); updated.updateTime = '刚刚';
-    await this.commitAiNote(updated, true);
+    return this.aiMutationQueue.run<void>(async () => {
+      const note = this.requireAiNote(identifier);
+      const link = `[[${title}]]`;
+      const updated = WorkspaceNotePolicy.mutate(note, 'update_note',
+        note.contentDetail.includes(link) ? note.contentDetail : `${note.contentDetail}\n\n${link}\n`, note.updatedAt || 0);
+      if (note.contentDetail.includes(link)) { return; }
+      await this.saveAiNote(updated, true);
+    });
   }
 
   private async handleAiCategorize(identifier: string, category: string): Promise<void> {
-    const note = this.requireAiNote(identifier);
-    const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
-    updated.category = category; updated.updatedAt = Date.now();
-    await this.commitAiNote(updated);
+    return this.aiMutationQueue.run<void>(async () => {
+      const note = this.requireAiNote(identifier);
+      const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
+      updated.category = category; updated.updatedAt = Math.max(Date.now(), (note.updatedAt || 0) + 1); updated.updateTime = '刚刚';
+      await this.saveAiNote(updated);
+    });
   }
 
   private async handleAiCreateNote(title: string, category: string, tag: string, content: string): Promise<void> {
     const now = Date.now();
     const tags = tag.trim() ? tag.split(/[,，]/).map((value: string) => value.trim()).filter((value: string) => !!value) : ['AI生成'];
-    const note: NoteItem = { id: `note-${now}-${this.notes.length}`, title, category: category || CATEGORY_UNFILED,
+    const note: NoteItem = { id: `note-${now}-${Math.floor(Math.random() * 1000000000)}`, title, category: category || CATEGORY_UNFILED,
       type: 'Markdown', previewText: content.slice(0, 100).replace(/[#*`\n]/g, ' ').trim(), tag: tags.join(', '), tags,
       tagColor: '', updateTime: '刚刚', contentDetail: content, createdAt: now, updatedAt: now };
     await this.commitAiNote(note, true);
@@ -1381,12 +1395,38 @@ struct Index {
   }
 
   private async handleAiCreateTodo(date: string, title: string): Promise<void> {
+    return this.aiMutationQueue.run<void>(() => this.saveAiTodo(date, title));
+  }
+
+  private async saveAiTodo(date: string, title: string): Promise<void> {
     const now = Date.now();
     const todo: TodoItem = { id: `todo-${now}-${this.todos.length}`, date, title, done: false,
       noteRefs: [], createdAt: now, updatedAt: now };
     const next = [todo].concat(this.todos);
     await this.todoStorage.saveTodos(this.getAbilityContext(), next);
     this.todos = next;
+  }
+
+  private handleAiManageNote(operation: string, identifier: string, value: string, expectedUpdatedAt: number): Promise<string> {
+    return this.aiMutationQueue.run<string>(async () => {
+      const current = this.requireAiNote(identifier);
+      const next = WorkspaceNotePolicy.mutate(current, operation, value, expectedUpdatedAt);
+      await this.saveAiNote(next, operation === 'update_note');
+      return `已保存《${next.title}》 · ID ${next.id} · updatedAt ${next.updatedAt}`;
+    });
+  }
+
+  private handleAiSetTodoStatus(identifier: string, status: string): Promise<string> {
+    return this.aiMutationQueue.run<string>(async () => {
+      const current = this.todos.find((todo: TodoItem) => todo.id === identifier);
+      if (!current) { throw new Error('待办已不存在，请重新查询 ID'); }
+      if (!['done', 'pending'].includes(status)) { throw new Error('待办状态无效'); }
+      const next = this.todos.map((todo: TodoItem) => todo.id === current.id ?
+        { id: todo.id, date: todo.date, title: todo.title, done: status === 'done', noteRefs: todo.noteRefs,
+          createdAt: todo.createdAt, updatedAt: Date.now() } as TodoItem : todo);
+      await this.todoStorage.saveTodos(this.getAbilityContext(), next); this.todos = next;
+      return `待办 ${identifier} 已设为${status === 'done' ? '完成' : '未完成'}`;
+    });
   }
   // ==================================================================
   // 重命名 / 移动分类
@@ -2040,6 +2080,9 @@ struct Index {
         onCreateLinkBetweenNotes: (sourceIdentifier: string, targetTitle: string) => this.handleAiCreateLink(sourceIdentifier, targetTitle),
         onCategorizeNote: (identifier: string, category: string) => this.handleAiCategorize(identifier, category),
         onCreateNewNote: (title: string, category: string, tag: string, content: string) => this.handleAiCreateNote(title, category, tag, content),
+        onManageNote: (operation: string, identifier: string, value: string, expectedUpdatedAt: number) =>
+          this.handleAiManageNote(operation, identifier, value, expectedUpdatedAt),
+        onSetTodoStatus: (identifier: string, status: string) => this.handleAiSetTodoStatus(identifier, status),
         onOpenSearch: () => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.searchVisible = true;
