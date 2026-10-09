@@ -10,7 +10,7 @@ export const SETTINGS_ENTRIES: SettingsEntry[] = [
   { id: 'ai', group: 'connection', title: 'AI 与模型', detail: '离线助手与可选自配 API', keywords: '大模型 密钥 Seed Qwen DeepSeek GLM 授权' },
   { id: 'backup', group: 'connection', title: '备份与传递', detail: '导出、恢复与附近设备', keywords: '数据 换机 同步 云盘 备份 恢复 云服务' },
   { id: 'ecosystem', group: 'connection', title: '鸿蒙与设备', detail: '系统分享、手写笔与多端', keywords: '华为 Pad 平板 手机 星闪 Penkit 互通 权限' },
-  { id: 'guide', group: 'help', title: '使用指引', detail: '从收集到阅读与复习', keywords: '教程 帮助 示例 测试 PDF' },
+  { id: 'guide', group: 'help', title: '使用指引', detail: '从收集到阅读与复习', keywords: '教程 图解 API 密钥 DeepSeek 阿里 百炼 帮助 示例 测试 PDF' },
   { id: 'legal', group: 'help', title: '隐私与数据', detail: '数据去向、授权与协议', keywords: '安全 隐私 网络 删除 密钥' },
   { id: 'about', group: 'help', title: '关于墨语', detail: '版本与开源项目', keywords: '版本 更新 开源 GitHub FlowMind' }
 ];

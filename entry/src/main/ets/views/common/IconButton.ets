@@ -22,7 +22,7 @@ export struct IconButton {
       Column({ space: 3 }) {
       AppIcon({ source: this.icon, tint: this.destructive ? this.palette().danger :
         (this.selected ? this.palette().accent : this.palette().inkSecondary) })
-      if (this.caption) { Text(this.caption).fontSize(10).maxLines(1).fontColor(this.palette().inkSecondary) }
+      if (this.caption) { Text(this.caption).fontSize(10).maxLines(1).fontColor(this.selected ? this.palette().accent : this.palette().inkSecondary).fontWeight(this.selected ? FontWeight.Bold : FontWeight.Normal) }
       }
     }
     .width(this.caption ? 56 : LayoutTokens.MIN_TOUCH_TARGET)

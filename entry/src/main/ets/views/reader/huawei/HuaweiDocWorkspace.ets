@@ -26,6 +26,8 @@ import { NoteItem } from '../../../common/types/NoteItem';
 import { ReaderSaveKind } from '../../../common/types/ReaderSaveKind';
 import { AnnotationTool } from '../../../common/types/PdfAnnotationTypes';
 import { PdfAnnotatorView } from '../pdf/PdfAnnotatorView';
+import { InkWidthSlider } from '../../common/InkWidthSlider';
+import { InkToolPolicy } from '../../../services/ink/InkToolPolicy';
 import { HandwritingCanvas } from '../HandwritingCanvas';
 import { HuaweiAiSplitPanel } from './HuaweiAiSplitPanel';
 import { HuaweiDocActionDialog, HuaweiDocDialogType } from './HuaweiDocActionDialog';
@@ -80,6 +82,12 @@ export struct HuaweiDocWorkspace {
   @State currentTool: AnnotationTool = 'pen';
   @State selectedColor: string = '#DC2626';
   @State selectedWidth: number = 3;
+  private penWidth: number = 3;
+  private highlighterWidth: number = 14;
+  @State eraserWidth: number = 20;
+  private penColor: string = '#DC2626';
+  private highlighterColor: string = '#FACC15';
+  @State whiteboardTool: string = 'pen';
   @State undoTrigger: number = 0;
   @State redoTrigger: number = 0;
   @State fingerDrawing: boolean = false;
@@ -358,7 +366,7 @@ export struct HuaweiDocWorkspace {
     Button({ type: ButtonType.Normal }) {
       Column({ space: 3 }) {
       AppIcon({ source: icon, iconSize: 22, tint: this.isAnnotateMode === annotate ? this.palette().accent : this.palette().inkSecondary })
-      Text(label).fontSize(10).fontColor(this.palette().inkSecondary)
+      Text(label).fontSize(10).fontColor(this.palette().inkPrimary)
       }
     }.width(56).height(56).padding(0).borderRadius(12)
       .backgroundColor(this.isAnnotateMode === annotate ? this.palette().accentSoft : Color.Transparent)
@@ -384,13 +392,18 @@ export struct HuaweiDocWorkspace {
           caption: '收藏', selected: this.note.favorite === true, onAction: () => this.onToggleFavorite(this.note) })
         IconButton({ icon: $r('app.media.ic_fullscreen'), label: '沉浸阅读', caption: '沉浸',
           onAction: () => { this.toggleBars(false); this.showToast('轻触屏幕边缘显示工具栏'); } })
-        IconButton({ icon: $r('app.media.ic_more'), label: '更多文档操作', caption: '更多' })
+        Button({ type: ButtonType.Normal }) {
+          Column({ space: 3 }) {
+            AppIcon({ source: $r('app.media.ic_more'), tint: this.palette().inkSecondary })
+            Text('更多').fontSize(10).fontColor(this.palette().inkSecondary)
+          }
+        }.width(44).height(56).padding(0).borderRadius(12).backgroundColor(Color.Transparent).accessibilityText('更多文档操作')
           .bindMenu(() => { this.documentMenu(); })
       }.width('100%').height(60)
       Scroll() {
         Row({ space: 4 }) {
           this.readerModeButton($r('app.media.ic_read'), '阅读', false)
-          this.readerModeButton($r('app.media.ic_pen'), '批注', true)
+          this.readerModeButton(this.isAnnotateMode ? this.activeToolIcon() : $r('app.media.ic_pen'), this.isAnnotateMode ? InkToolPolicy.label(this.activeTool()) : '批注', true)
           Divider().vertical(true).height(24).color(this.palette().border).margin({ left: 4, right: 4 })
           this.splitSegmentItem($r('app.media.ic_page'), '单页', 'none')
           this.splitSegmentItem($r('app.media.ic_sparkle'), '墨客', 'ai')
@@ -406,7 +419,7 @@ export struct HuaweiDocWorkspace {
     Button({ type: ButtonType.Normal }) {
       Column({ space: 3 }) {
       AppIcon({ source: icon, iconSize: 22, tint: this.splitMode === mode ? this.palette().accent : this.palette().inkSecondary })
-      Text(label).fontSize(10).fontColor(this.palette().inkSecondary)
+      Text(label).fontSize(10).fontColor(this.palette().inkPrimary)
       }
     }.width(56).height(56).padding(0).borderRadius(12)
       .backgroundColor(this.splitMode === mode ? this.palette().accentSoft : Color.Transparent)
@@ -421,23 +434,35 @@ export struct HuaweiDocWorkspace {
   // 灵动悬浮笔盘 (Floating Pen Palette) - 遵循鸿蒙笔控设计规范与 Obsidian 极简质感
   // ------------------------------------------------------------------
 
+  private activeTool(): string { return this.isHandwritingNote() ? this.whiteboardTool : this.currentTool; }
+  private activeToolIcon(): Resource {
+    const tool = this.activeTool();
+    return tool === 'eraser' ? $r('app.media.ic_eraser') : tool === 'highlighter' ? $r('app.media.ic_highlighter') : tool === 'pan' ? $r('app.media.ic_hand') : $r('app.media.ic_pen');
+  }
+  private selectPdfTool(tool: AnnotationTool): void {
+    if (this.exitSaving || this.restoreSourceBusy) { return; }
+    if (this.currentTool === 'pen') { this.penColor = this.selectedColor; this.penWidth = this.selectedWidth; }
+    if (this.currentTool === 'highlighter') { this.highlighterColor = this.selectedColor; this.highlighterWidth = this.selectedWidth; }
+    if (tool === 'eraser' && this.currentTool !== 'eraser') { this.previousInkTool = this.currentTool === 'highlighter' ? 'highlighter' : 'pen'; }
+    this.currentTool = tool;
+    if (tool === 'pen') { this.selectedColor = this.penColor; this.selectedWidth = this.penWidth; }
+    if (tool === 'highlighter') { this.selectedColor = this.highlighterColor; this.selectedWidth = this.highlighterWidth; }
+  }
+  private changePdfWidth(value: number): void {
+    if (this.currentTool === 'eraser') { this.eraserWidth = InkToolPolicy.width('eraser', value); }
+    else if (this.currentTool !== 'pan') { this.selectedWidth = InkToolPolicy.width(this.currentTool, value); }
+  }
+
   @Builder
   pdfInkTool(icon: Resource, label: string, tool: AnnotationTool) {
     Button({ type: ButtonType.Normal }) {
       Column({ space: 3 }) {
       AppIcon({ source: icon, iconSize: 22, tint: this.currentTool === tool ? this.palette().accent : this.palette().inkSecondary })
-      Text(label).fontSize(10).fontColor(this.palette().inkSecondary)
+      Text(label).fontSize(10).fontWeight(this.currentTool === tool ? FontWeight.Bold : FontWeight.Normal).fontColor(this.currentTool === tool ? this.palette().accent : this.palette().inkSecondary)
       }
     }.width(56).height(56).padding(0).borderRadius(10)
-      .backgroundColor(this.currentTool === tool ? this.palette().accentSoft : Color.Transparent).accessibilityText(label).bindTips(label)
-      .onClick(() => {
-        this.currentTool = tool;
-        if (tool === 'highlighter') { this.selectedColor = '#FACC15'; this.selectedWidth = 14; }
-        if (tool === 'pen') {
-          if (this.selectedColor === '#FACC15' || this.selectedColor === '#4ADE80') { this.selectedColor = '#DC2626'; }
-          this.selectedWidth = 3;
-        }
-      })
+      .backgroundColor(this.currentTool === tool ? this.palette().accentSoft : Color.Transparent).accessibilityText(`${label}${this.currentTool === tool ? '，已选中' : ''}`).bindTips(label)
+      .onClick(() => this.selectPdfTool(tool))
   }
 
   @Builder
@@ -454,9 +479,14 @@ export struct HuaweiDocWorkspace {
           onAction: () => { this.penOptionsOpen = !this.penOptionsOpen; } })
       }.width(Math.max(336, this.penPaletteWidth - 16)).justifyContent(FlexAlign.SpaceBetween)
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+      Text(`当前：${InkToolPolicy.label(this.currentTool)}`).fontSize(12).fontColor(this.palette().accent).width('100%').padding({ left: 8 })
       if (this.penOptionsOpen) {
+        if (this.currentTool !== 'pan') {
+          InkWidthSlider({ tool: this.currentTool, value: this.currentTool === 'eraser' ? this.eraserWidth : this.selectedWidth, onChange: (value: number) => this.changePdfWidth(value) })
+        }
         Scroll() {
           Row({ space: 4 }) {
+            if (this.currentTool === 'pen' || this.currentTool === 'highlighter') {
             ForEach(this.currentTool === 'highlighter' ? ['#FACC15', '#4ADE80'] : ['#1C1917', '#2563EB', '#DC2626', '#059669'], (color: string) => {
               Button({ type: ButtonType.Normal }) {
                 Circle({ width: 20, height: 20 }).fill(color)
@@ -466,19 +496,10 @@ export struct HuaweiDocWorkspace {
                 .backgroundColor(this.selectedColor === color ? this.palette().accentSoft : Color.Transparent)
                 .accessibilityText(`批注颜色 ${color}`).onClick(() => { this.selectedColor = color; })
             }, (color: string) => color)
-            if (this.currentTool === 'pen') {
-              Divider().vertical(true).height(24).color(this.palette().border)
-              ForEach([2, 4, 8], (width: number) => {
-                Button({ type: ButtonType.Normal }) {
-                  Circle({ width: width * 2 + 4, height: width * 2 + 4 }).fill(this.palette().inkPrimary)
-                }.width(44).height(44).padding(0).borderRadius(10)
-                  .backgroundColor(this.selectedWidth === width ? this.palette().accentSoft : Color.Transparent)
-                  .accessibilityText(`笔粗 ${width}`).onClick(() => { this.selectedWidth = width; })
-              }, (width: number) => `${width}`)
             }
             IconButton({ icon: $r('app.media.ic_hand'), label: '切换为手指浏览', selected: this.currentTool === 'pan',
-              onAction: () => { this.currentTool = 'pan'; } })
-            IconButton({ icon: $r('app.media.ic_pen'), label: this.fingerDrawing ? '关闭手指书写，仅使用手写笔' : '开启手指书写',
+              caption: '浏览', onAction: () => this.selectPdfTool('pan') })
+            IconButton({ icon: $r('app.media.ic_hand'), caption: '手指', label: this.fingerDrawing ? '关闭手指书写，仅使用手写笔' : '开启手指书写',
               selected: this.fingerDrawing, onAction: () => { this.fingerDrawing = !this.fingerDrawing; } })
             IconButton({ icon: $r('app.media.ic_chevron_down'), label: '折叠笔工具', onAction: () => { this.isPenPaletteExpanded = false; } })
             IconButton({ icon: $r('app.media.ic_close'), label: '退出批注，继续阅读', onAction: () => this.returnToReading() })
@@ -495,13 +516,13 @@ export struct HuaweiDocWorkspace {
   @Builder
   floatingBall() {
     Row({ space: 6 }) {
-      AppIcon({ source: $r('app.media.ic_pen'), tint: this.palette().onAccent })
+      AppIcon({ source: this.isAnnotateMode ? this.activeToolIcon() : $r('app.media.ic_pen'), tint: this.palette().onAccent })
       if (!this.isAnnotateMode) {
       }
     }
     .padding(this.isAnnotateMode ? 12 : { left: 14, right: 16, top: 10, bottom: 10 })
     .constraintSize({ minWidth: 44, minHeight: 44 })
-    .accessibilityText('打开批注工具')
+    .accessibilityText(this.isAnnotateMode ? `当前${InkToolPolicy.label(this.activeTool())}，打开批注工具` : '打开批注工具')
     .borderRadius(24)
     .backgroundColor(this.palette().accent)
     .shadow({
@@ -888,6 +909,7 @@ export struct HuaweiDocWorkspace {
               HandwritingCanvas({
                 note: this.note,
                 isScratchpad: false,
+                onToolChange: (tool: string) => { this.whiteboardTool = tool; },
                 onContentReady: (ready: boolean) => { this.whiteboardReady = ready; },
                 readOnly: !this.isAnnotateMode || this.exitSaving,
                 onReadingScroll: (offset: number) => this.handleReadingScroll(offset),
@@ -920,12 +942,12 @@ export struct HuaweiDocWorkspace {
                 currentTool: this.currentTool,
                 selectedColor: this.selectedColor,
                 selectedWidth: this.selectedWidth,
+                eraserWidth: this.eraserWidth,
                 undoTrigger: this.undoTrigger,
                 redoTrigger: this.redoTrigger,
                 fingerDrawing: this.fingerDrawing,
                 onToggleEraser: () => {
-                  if (this.currentTool === 'eraser') { this.currentTool = this.previousInkTool; }
-                  else { this.previousInkTool = this.currentTool === 'pan' ? 'pen' : this.currentTool; this.currentTool = 'eraser'; }
+                  this.selectPdfTool(this.currentTool === 'eraser' ? this.previousInkTool : 'eraser');
                 },
                 onShowPenTools: () => { this.isPenPaletteExpanded = true; this.penOptionsOpen = true; this.barsVisible = true; },
                 clearTrigger: this.clearTrigger,
@@ -969,6 +991,11 @@ export struct HuaweiDocWorkspace {
                     else { this.onOpenModelSettings(); }
                   },
                   note: this.note,
+                  currentPage: this.currentPage,
+                  onExtractText: () => {
+                    if (this.isAnnotateMode || this.exitSaving || this.documentDirty || this.scratchpadDirty) { this.showToast('请先返回阅读并完成文档保存'); }
+                    else { this.onExtractPdfText(this.currentPage); }
+                  },
                   onClose: () => {
                     animateTo({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD }, () => {
                       this.splitMode = 'none';

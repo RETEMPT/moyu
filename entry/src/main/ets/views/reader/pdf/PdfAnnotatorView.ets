@@ -60,8 +60,9 @@ export struct PdfAnnotatorView {
   // 交互与工具栏状态
   @Prop isAnnotateMode: boolean = false;
   @Prop currentTool: AnnotationTool = 'pen';
-  @Prop selectedColor: string = '#DC2626';
-  @Prop selectedWidth: number = 3;
+  @Prop @Watch('finishActiveInput') selectedColor: string = '#DC2626';
+  @Prop @Watch('finishActiveInput') selectedWidth: number = 3;
+  @Prop @Watch('finishActiveInput') eraserWidth: number = 20;
   @Prop @Watch('onUndoTriggered') undoTrigger: number = 0;
   @Prop @Watch('onRedoTriggered') redoTrigger: number = 0;
   @Prop fingerDrawing: boolean = false;
@@ -212,7 +213,7 @@ export struct PdfAnnotatorView {
     if (!current || !this.eraseBefore) { return; }
     const x = u * width; const y = v * height;
     const remaining = current.filter((stroke: PageAnnotationStroke) => {
-      const radius = 10 + stroke.width * width / 1440;
+      const radius = (this.eraserWidth + stroke.width) * width / 1440;
       for (let i = 0; i < stroke.points.length; i++) {
         const a = stroke.points[Math.max(0, i - 1)]; const b = stroke.points[i];
         if (InkRenderer.nearSegment(x, y, a.u * width, a.v * height, b.u * width, b.v * height, radius)) { return false; }

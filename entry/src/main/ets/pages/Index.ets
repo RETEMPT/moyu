@@ -696,7 +696,8 @@ struct Index {
         onClose: () => this.closeSheet(),
           onCreateNoteInProject: (title: string, projectName: string, type: string) => {
           this.closeSheet();
-          this.requestCreateNote(projectName, type, title);
+          if (type === 'Doc') { this.importDocument(projectName); }
+          else { this.requestCreateNote(projectName, type, title); }
         },
         onRequestRename: (project: SpaceFolder) => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
@@ -715,7 +716,8 @@ struct Index {
         onClose: () => this.closeSheet(),
         onCreateNoteInProject: (title: string, projectName: string, type: string) => {
           this.closeSheet();
-          this.requestCreateNote(projectName, type, title);
+          if (type === 'Doc') { this.importDocument(projectName); }
+          else { this.requestCreateNote(projectName, type, title); }
         },
         onImportIntoProject: (projectName: string) => {
           this.closeSheet();
@@ -955,7 +957,7 @@ struct Index {
     this.noteCreateError = '';
     const pending: PendingNoteCreate = {
       projectName: projectName,
-      type: type,
+      type: /^(canvas|handwriting)$/i.test(type) ? 'Handwriting' : 'Markdown',
       defaultName: defaultName
     };
     animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
@@ -964,13 +966,13 @@ struct Index {
   }
 
   /** 命名层确认：按意图分发到全局新建或项目内新建。 */
-  private async commitPendingCreate(name: string): Promise<void> {
+  private async commitPendingCreate(name: string, projectName?: string, tags: string[] = []): Promise<void> {
     if (this.noteCreateBusy) { return; }
     const pending: PendingNoteCreate | null = this.pendingCreate;
     if (pending === null) {
       return;
     }
-    const ok = await this.createNote(name, pending.type, pending.projectName || this.activeSpaceName());
+    const ok = await this.createNote(name, pending.type, projectName === undefined ? pending.projectName || this.activeSpaceName() : projectName, '', tags);
     if (ok) { this.pendingCreate = null; }
   }
 
@@ -980,7 +982,7 @@ struct Index {
     return pending !== null ? pending.defaultName : '未命名笔记';
   }
 
-  private async createNote(title: string, type: string = 'Markdown', projectName: string = this.activeSpaceName(), body: string = ''): Promise<boolean> {
+  private async createNote(title: string, type: string = 'Markdown', projectName: string = this.activeSpaceName(), body: string = '', tags: string[] = []): Promise<boolean> {
     if (this.noteCreateBusy) { return false; }
     this.noteCreateBusy = true;
     this.noteCreateError = '';
@@ -995,12 +997,12 @@ struct Index {
       category: category.length === 0 ? '未分类' : category,
       type: handwriting ? 'Handwriting' : 'Markdown',
       previewText: '空白笔记',
-      tag: '',
+      tag: tags[0] || '',
       tagColor: '',
       updateTime: this.formatTime(now),
       contentDetail: body || `# ${cleanTitle}\n\n`,
       strokes: handwriting ? '[]' : undefined,
-      tags: [],
+      tags: tags.slice(0, 12),
       createdAt: now.getTime(),
       updatedAt: now.getTime()
     };
@@ -2207,8 +2209,9 @@ struct Index {
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onCreateNoteInProject: (title: string, projectName: string, type: string) => {
-          // title 在这里作为命名层的默认标题（未命名笔记 / 未命名导图 / 未命名参考资料）
-            this.requestCreateNote(projectName, type, title);
+          // 文档导入需要真实源文件，不能创建空 PDF 占位。
+          if (type === 'Doc') { this.importDocument(projectName); }
+          else { this.requestCreateNote(projectName, type, title); }
         },
         onCreateFromTemplate: (templateName: string, projectName: string) => {
           this.createNoteFromTemplate(templateName, projectName);
@@ -2388,6 +2391,8 @@ struct Index {
         NameNoteSheet({
           defaultName: this.pendingDefaultName(),
           noteType: this.pendingCreate?.type || 'Markdown',
+          defaultProject: this.pendingCreate?.projectName || this.activeSpaceName() || '未分类',
+          projects: this.customProjects.map((p: SpaceFolder) => p.name).concat(this.allCategories()),
           busy: this.noteCreateBusy,
           errorMessage: this.noteCreateError,
           onTypeChange: (type: string) => {
@@ -2402,8 +2407,8 @@ struct Index {
               this.pendingCreate = null;
             });
           },
-          onConfirm: (name: string) => {
-            this.commitPendingCreate(name);
+          onConfirm: (name: string, project: string, tags: string[]) => {
+            this.commitPendingCreate(name, project, tags);
           }
         })
       }

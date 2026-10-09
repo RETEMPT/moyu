@@ -21,6 +21,8 @@ import { CanvasViewport, InkBounds } from '../../services/ink/CanvasViewport';
 import { CanvasPaperGuides } from '../../services/ink/CanvasPaperGuides';
 import { CanvasStrokePolicy } from '../../services/ink/CanvasStrokePolicy';
 import { AppIcon } from '../common/AppIcon';
+import { InkWidthSlider } from '../common/InkWidthSlider';
+import { InkToolPolicy } from '../../services/ink/InkToolPolicy';
 import { IconButton } from '../common/IconButton';
 
 const PEN_COLORS: string[] = [
@@ -31,7 +33,6 @@ const PEN_COLORS: string[] = [
   '#EAB308'  // 荧光黄高亮
 ];
 
-const STROKE_WIDTHS: number[] = [2, 4, 8];
 
 @Component
 export struct HandwritingCanvas {
@@ -48,6 +49,7 @@ export struct HandwritingCanvas {
   onDirtyChange: (dirty: boolean) => void = () => {};
   onReadingScroll: (offset: number) => void = () => {};
   onBlankTap: () => void = () => {};
+  onToolChange: (tool: string) => void = () => {};
   onContentReady: (ready: boolean) => void = () => {};
 
   @StorageProp('flowmindDarkMode') @Watch('requestRedraw') isDarkMode: boolean = false;
@@ -65,6 +67,11 @@ export struct HandwritingCanvas {
   private loadedRaw: string | undefined = undefined;
   @State selectedColor: string = '#1C1917';
   @State selectedWidth: number = 3;
+  private penWidth: number = 3;
+  private highlighterWidth: number = 14;
+  @State eraserWidth: number = 18;
+  private penColor: string = '#1C1917';
+  private highlighterColor: string = '#EAB308';
   @State isHighlighter: boolean = false;
   @State isEraser: boolean = false;
   private currentStroke: CanvasStroke | null = null;
@@ -108,6 +115,7 @@ export struct HandwritingCanvas {
     this.loadedNoteId = this.note.id;
     this.title = this.note.title;
     this.selectedColor = this.isDarkMode ? '#F5F5F4' : '#1C1917';
+    this.penColor = this.selectedColor; this.onToolChange(this.activeTool());
     this.loadStrokes();
   }
 
@@ -264,7 +272,7 @@ export struct HandwritingCanvas {
   private toggleEraser(): void {
     if (this.readOnly || this.loadError) { return; }
     this.shortcuts.claim();
-    this.finishStroke(); this.isEraser = !this.isEraser;
+    this.finishStroke(); this.isEraser = !this.isEraser; this.onToolChange(this.activeTool());
   }
 
   onReadOnlyChanged(): void {
@@ -300,7 +308,7 @@ export struct HandwritingCanvas {
       if (this.currentStroke) { this.currentStroke = null; this.redrawAll(); }
       this.shortcuts.claim(); this.inkContact = true;
       this.onDirtyChange(true);
-      this.currentStroke = { points: [], color: this.selectedColor, width: (this.isEraser ? 18 : this.selectedWidth) / this.zoomScale,
+      this.currentStroke = { points: [], color: this.selectedColor, width: (this.isEraser ? this.eraserWidth : this.selectedWidth) / this.zoomScale,
         referenceWidth: CanvasViewport.REFERENCE_WIDTH, isHighlighter: this.isHighlighter && !this.isEraser, isEraser: this.isEraser };
     }
     const stroke = this.currentStroke;
@@ -395,19 +403,38 @@ export struct HandwritingCanvas {
   // 工具栏构建
   // ------------------------------------------------------------------
 
+  private activeTool(): string { return this.isEraser ? 'eraser' : this.isHighlighter ? 'highlighter' : 'pen'; }
+
+  private rememberInkSettings(): void {
+    if (this.isHighlighter) { this.highlighterColor = this.selectedColor; this.highlighterWidth = this.selectedWidth; }
+    else { this.penColor = this.selectedColor; this.penWidth = this.selectedWidth; }
+  }
+
   private selectPen(): void {
     if (this.readOnly || this.loadError) { return; }
-    this.finishStroke();
-    if (this.isHighlighter) {
-      this.selectedColor = this.isDarkMode ? '#F5F5F4' : '#1C1917'; this.selectedWidth = 3;
-    }
+    this.finishStroke(); this.rememberInkSettings();
     this.isEraser = false; this.isHighlighter = false;
+    this.selectedColor = this.penColor; this.selectedWidth = this.penWidth;
+    this.onToolChange(this.activeTool());
   }
 
   private selectHighlighter(): void {
     if (this.readOnly || this.loadError) { return; }
-    this.finishStroke(); this.isEraser = false; this.isHighlighter = true;
-    this.selectedColor = '#EAB308'; this.selectedWidth = 14;
+    this.finishStroke(); this.rememberInkSettings(); this.isEraser = false; this.isHighlighter = true;
+    this.selectedColor = this.highlighterColor; this.selectedWidth = this.highlighterWidth;
+    this.onToolChange(this.activeTool());
+  }
+
+  private changeWidth(value: number): void {
+    if (this.readOnly || this.loadError) { return; }
+    this.finishStroke();
+    if (this.isEraser) { this.eraserWidth = InkToolPolicy.width('eraser', value); }
+    else { this.selectedWidth = InkToolPolicy.width(this.activeTool(), value); this.rememberInkSettings(); }
+  }
+
+  private changeColor(color: string): void {
+    if (this.readOnly || this.loadError || this.isEraser) { return; }
+    this.finishStroke(); this.selectedColor = color; this.rememberInkSettings();
   }
 
   private inkColors(): string[] {
@@ -428,11 +455,11 @@ export struct HandwritingCanvas {
     Button({ type: ButtonType.Normal }) {
       Column({ space: 3 }) {
       AppIcon({ source: icon, iconSize: 22, tint: selected ? this.palette().accent : this.palette().inkSecondary })
-      Text(label).fontSize(10).fontColor(this.palette().inkSecondary)
+      Text(label).fontSize(10).fontWeight(selected ? FontWeight.Bold : FontWeight.Normal).fontColor(selected ? this.palette().accent : this.palette().inkSecondary)
       }
     }.width(56).height(56).padding(0).borderRadius(10)
       .backgroundColor(selected ? this.palette().accentSoft : Color.Transparent)
-      .accessibilityText(label).bindTips(label).onClick(() => { this.shortcuts.claim(); action(); })
+      .accessibilityText(`${label}${selected ? '，已选中' : ''}`).bindTips(label).onClick(() => { this.shortcuts.claim(); action(); })
   }
 
   @Builder
@@ -468,9 +495,12 @@ export struct HandwritingCanvas {
         this.inkTool($r('app.media.ic_settings'), '更多', this.toolsVisible, () => { this.toolsVisible = !this.toolsVisible; })
       }.width(Math.max(336, this.viewportWidth - 24)).justifyContent(FlexAlign.SpaceBetween)
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+      Text(`当前：${InkToolPolicy.label(this.activeTool())}`).fontSize(12).fontColor(this.palette().accent).width('100%')
       if (this.toolsVisible) {
+        InkWidthSlider({ tool: this.activeTool(), value: this.isEraser ? this.eraserWidth : this.selectedWidth, onChange: (value: number) => this.changeWidth(value) })
         Scroll() {
           Row({ space: 4 }) {
+            if (!this.isEraser) {
             ForEach(this.inkColors(), (color: string) => {
               Button({ type: ButtonType.Normal }) {
                 Circle({ width: 20, height: 20 }).fill(color)
@@ -479,17 +509,9 @@ export struct HandwritingCanvas {
               }.width(44).height(44).padding(0).borderRadius(10)
                 .backgroundColor(this.selectedColor === color ? this.palette().accentSoft : Color.Transparent)
                 .accessibilityText(`画笔颜色：${this.colorName(color)}`)
-                .onClick(() => { this.selectPen(); this.selectedColor = color; })
+                .onClick(() => this.changeColor(color))
             }, (color: string) => color)
-            Divider().vertical(true).height(24).color(this.palette().border)
-            ForEach(STROKE_WIDTHS, (width: number) => {
-              Button({ type: ButtonType.Normal }) {
-                Circle({ width: width * 2 + 4, height: width * 2 + 4 }).fill(this.palette().inkPrimary)
-              }.width(44).height(44).padding(0).borderRadius(10)
-                .backgroundColor(this.selectedWidth === width ? this.palette().accentSoft : Color.Transparent)
-                .accessibilityText(`笔粗 ${width}`)
-                .onClick(() => { this.selectPen(); this.selectedWidth = width; })
-            }, (width: number) => `${width}`)
+            }
             IconButton({ icon: $r('app.media.ic_plus'), label: '延长稿纸', caption: '向下',
               onAction: () => this.extendCanvas(800) })
             IconButton({ icon: $r('app.media.ic_chevron_left'), label: '向左展开白板', caption: '向左',

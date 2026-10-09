@@ -295,7 +295,7 @@ export struct ModelSettingsSheet {
       this.baseUrl = v;
       if (RemoteAiPolicy.endpoint(v) !== this.consentEndpoint) { this.remoteConsent = false; }
     })
-    this.hint(this.protocol === 'gemini' ? 'Gemini 地址应含 API 版本，例如 /v1beta。' : this.protocol === 'anthropic' ? '填写服务根地址，程序追加 /v1/messages。' : '填写兼容 API 的根地址（通常以 /v1 结尾），程序追加 /chat/completions。')
+    this.hint(this.protocol === 'gemini' ? 'Gemini 地址应含 API 版本，例如 /v1beta。' : this.protocol === 'anthropic' ? '填写服务根地址，程序追加 /v1/messages。' : '可填写兼容根地址（程序追加 /chat/completions），或完整对话地址；不要重复追加路径。')
     Row({ space: 8 }) {
       TextInput({ text: this.apiKey, placeholder: 'API Key' }).type(this.showKey ? InputType.Normal : InputType.Password)
         .height(48).layoutWeight(1).fontSize(14).backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary)

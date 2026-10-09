@@ -8,6 +8,7 @@ import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
 import { BrandMark } from '../brand/BrandMark';
 import { ModelSettingsSheet } from './ModelSettingsSheet';
+import { ModelSetupGuide } from './ModelSetupGuide';
 import { GUIDE_STEPS, GuideStep } from './UsageGuideSheet';
 import { promptAction } from '@kit.ArkUI';
 import { NoteItem } from '../../common/types/NoteItem';
@@ -246,6 +247,7 @@ export struct SettingsWorkspace {
       this.action('备份与附近传递', () => this.navigate('backup'))
       this.action('文字识别与排版', () => this.navigate('capture'))
     } else if (name === 'guide') {
+      ModelSetupGuide({ onConfigure: () => this.navigate('ai') })
       ForEach(GUIDE_STEPS, (step: GuideStep) => {
         Column({ space: 8 }) { this.heading(step.title); this.paragraph(step.text) }
           .padding(16).borderRadius(12).backgroundColor(this.palette().surface).width('100%')

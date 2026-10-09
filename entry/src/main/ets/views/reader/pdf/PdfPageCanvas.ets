@@ -33,8 +33,8 @@ export struct PdfPageCanvas {
   @Prop @Watch('finishInputForModeChange') isAnnotateMode: boolean = false;
   @Prop @Watch('finishInputForModeChange') tool: AnnotationTool = 'pen';
   @Prop @Watch('finishInputForModeChange') fingerDrawing: boolean = false;
-  @Prop selectedColor: string = '#DC2626';
-  @Prop selectedWidth: number = 3;
+  @Prop @Watch('finishInputForModeChange') selectedColor: string = '#DC2626';
+  @Prop @Watch('finishInputForModeChange') selectedWidth: number = 3;
   @Prop isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 

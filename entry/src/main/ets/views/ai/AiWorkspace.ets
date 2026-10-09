@@ -42,6 +42,7 @@ import { RetrievalHit } from '../../common/types/RagTypes';
 import { AgentToolExecutor, AgentToolResult } from '../../common/types/AgentTypes';
 import { AGENT_TOOLS, toolDisplayName } from '../../services/ai/ToolRegistry';
 import { AssistantModeService, ASSISTANT_MODE_KEY } from '../../services/ai/AssistantModeService';
+import { AiReferenceSearch } from '../../services/ai/AiReferenceSearch';
 import { LocalAssistantService } from '../../services/ai/LocalAssistantService';
 import { REMOTE_AI_ENABLED } from '../../common/constants/RuntimeCapabilities';
 import { AssistantText } from '../common/AssistantText';
@@ -238,7 +239,7 @@ export struct AiWorkspace {
 
   aboutToDisappear(): void {
     this.alive = false;
-    this.closeComposerMenus();
+    this.closeComposerMenus(); this.pickerOpen = false;
     this.attachmentRequestId++;
     this.modelSwitchRequestId++;
     this.contextRevision++;
@@ -282,7 +283,7 @@ export struct AiWorkspace {
     if (this.activeSessionId === this.loadedSessionId) {
       return;
     }
-    this.closeComposerMenus();
+    this.closeComposerMenus(); this.pickerOpen = false;
     this.attachmentRequestId++;
     this.attachmentBusy = false;
     this.cancelStream();
@@ -957,27 +958,32 @@ export struct AiWorkspace {
   }
 
   private pickerCandidates(): NoteItem[] {
-    const keyword: string = this.pickerKeyword.trim().toLowerCase();
-    const pickedIds: Set<string> = new Set(this.pinnedNotes.map((n: NoteItem) => n.id));
-    const result: NoteItem[] = [];
-    for (const n of this.allNotes) {
-      if (pickedIds.has(n.id)) {
-        continue;
-      }
-      if (keyword.length > 0) {
-        const hit: boolean = n.title.toLowerCase().includes(keyword)
-          || n.tag.toLowerCase().includes(keyword)
-          || n.category.toLowerCase().includes(keyword);
-        if (!hit) {
-          continue;
-        }
-      }
-      result.push(n);
-      if (result.length >= 30) {
-        break;
-      }
-    }
-    return result;
+    return AiReferenceSearch.find(this.allNotes, this.pickerKeyword, this.pinnedNotes.map((n: NoteItem) => n.id));
+  }
+
+  private openReferencePicker(): void {
+    if (!this.menuActionsAvailable()) { return; }
+    this.closeComposerMenus(); this.pickerKeyword = ''; this.pickerOpen = true;
+  }
+
+  private async prepareLocalTask(query: string): Promise<void> {
+    if (!this.menuActionsAvailable()) { return; }
+    const sessionId = this.loadedSessionId;
+    const activeSessionId = this.activeSessionId;
+    const draft = this.inputText;
+    this.closeComposerMenus();
+    if (this.assistantMode !== 'local') { await this.switchLocalAssistant(); }
+    if (this.alive && sessionId === this.loadedSessionId && activeSessionId === this.activeSessionId &&
+      draft === this.inputText && this.assistantMode === 'local' && this.menuActionsAvailable()) { this.inputText = query; }
+  }
+
+  private remoteTaskAvailable(): boolean {
+    return REMOTE_AI_ENABLED && this.assistantMode === 'remote' && this.modelReady && this.menuActionsAvailable();
+  }
+
+  private prepareModelTask(query: string): void {
+    if (!this.remoteTaskAvailable()) { return; }
+    this.closeComposerMenus(); this.inputText = query;
   }
 
   private copyToClipboard(text: string): void {
@@ -1022,6 +1028,7 @@ export struct AiWorkspace {
       this.cancelStream();
     }
     this.loadedSessionId = '';
+    this.pickerOpen = false; this.pickerKeyword = '';
     this.closeComposerMenus(); this.inputText = '';
     this.messages = [];
     this.lastCitations = [];
@@ -1505,7 +1512,8 @@ export struct AiWorkspace {
   }
 
   private handleBackRequest(): void {
-    if (this.plusMenuOpen) { this.plusMenuOpen = false; }
+    if (this.pickerOpen) { this.pickerOpen = false; }
+    else if (this.plusMenuOpen) { this.plusMenuOpen = false; }
     else if (this.modelMenuOpen) { this.modelMenuOpen = false; }
     else if (this.conversationMenuOpen) { this.conversationMenuOpen = false; }
     else { this.onNavigateBack(); }
@@ -1535,19 +1543,19 @@ export struct AiWorkspace {
   }
 
   @Builder
-  menuActionContent(title: string, icon: Resource, destructive: boolean) {
+  menuActionContent(title: string, icon: Resource, destructive: boolean, available: boolean) {
     Row({ space: 10 }) {
-      AppIcon({ source: icon, tint: destructive ? this.palette().danger : this.palette().inkSecondary, iconSize: 18 })
-      Text(title).fontSize(14).fontColor(destructive ? this.palette().danger : this.palette().inkPrimary)
+      AppIcon({ source: icon, tint: !available ? this.palette().inkMuted : destructive ? this.palette().danger : this.palette().inkSecondary, iconSize: 18 })
+      Text(title).fontSize(14).fontColor(!available ? this.palette().inkMuted : destructive ? this.palette().danger : this.palette().inkPrimary)
         .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
     }.width('100%').constraintSize({ minHeight: 40 })
   }
 
   @Builder
-  menuAction(title: string, icon: Resource, action: () => void, destructive: boolean = false) {
-    MenuItem(() => { this.menuActionContent(title, icon, destructive); })
-      .constraintSize({ minHeight: 48 }).accessibilityText(title).onClick(() => {
-      if (this.menuActionsAvailable()) { action(); }
+  menuAction(title: string, icon: Resource, action: () => void, destructive: boolean = false, available: boolean = true) {
+    MenuItem(() => { this.menuActionContent(title, icon, destructive, available); })
+      .constraintSize({ minHeight: 48 }).enabled(this.menuActionsAvailable() && available).accessibilityText(title).onClick(() => {
+      if (this.menuActionsAvailable() && available) { action(); }
     })
   }
 
@@ -1556,13 +1564,22 @@ export struct AiWorkspace {
     Menu() {
       MenuItemGroup({ header: '添加资料' }) {
         this.menuAction('引用库内资料', $r('app.media.ic_note'), () => {
-          this.plusMenuOpen = false;
-          if (!this.contextPanelOpen) { this.onToggleContextPanel(); }
+          this.openReferencePicker();
         })
         this.menuAction('导入文件到资料库', $r('app.media.ic_import'), () => this.importExternalFile())
         this.menuAction('识别图片与整理文字', $r('app.media.ic_sparkle'), () => {
           this.plusMenuOpen = false; this.onSmartExtract();
         })
+      }
+      MenuItemGroup({ header: '离线任务' }) {
+        this.menuAction('提取原文要点', $r('app.media.ic_read'), () => this.prepareLocalTask('提取要点'))
+        this.menuAction('整理原文明示待办', $r('app.media.ic_check'), () => this.prepareLocalTask('整理待办'))
+        this.menuAction('资料库概览', $r('app.media.ic_folder'), () => this.prepareLocalTask('资料概览'))
+      }
+      MenuItemGroup({ header: this.remoteTaskAvailable() ? '模型任务' : '模型任务 · 需选择已配置并授权的模型' }) {
+        this.menuAction('讲解引用资料', $r('app.media.ic_sparkle'), () => this.prepareModelTask('请依据引用资料，解释核心概念并标注原文来源。'), false, this.remoteTaskAvailable())
+        this.menuAction('生成自测题', $r('app.media.ic_note'), () => this.prepareModelTask('依据引用资料生成自测题，给出答案与来源。'), false, this.remoteTaskAvailable())
+        this.menuAction('比较资料观点', $r('app.media.ic_link'), () => this.prepareModelTask('比较引用资料的观点与证据，区分一致点和差异并给出来源。'), false, this.remoteTaskAvailable())
       }
       if (this.pinnedNotes.length > 0) {
         MenuItemGroup({ header: `已引用 ${this.pinnedNotes.length} 篇资料` }) {
@@ -1576,8 +1593,11 @@ export struct AiWorkspace {
   @Builder
   conversationActionMenu() {
     Menu() {
-      this.menuAction('新建对话', $r('app.media.ic_plus'), () => this.startNewChat())
+      this.menuAction('搜索并引用资料', $r('app.media.ic_search'), () => this.openReferencePicker())
+      this.menuAction('助手与模型设置', $r('app.media.ic_settings'), () => { this.conversationMenuOpen = false; this.onOpenModelSettings(); })
       if (this.messages.length > 0) {
+        this.menuAction('复制当前对话', $r('app.media.ic_copy'), () => this.copyToClipboard(this.messages.map((m: StoredMessage) => `${m.role === 'user' ? '我' : '墨客'}：${m.text}`).join('\n\n')))
+        this.menuAction('重新回答上一问', $r('app.media.ic_redo'), () => { this.conversationMenuOpen = false; this.regenerateLastResponse(); })
         this.menuAction('撤回上一轮消息', $r('app.media.ic_undo'), () => {
           this.conversationMenuOpen = false; this.rewindLastMessage();
         })
@@ -1590,6 +1610,41 @@ export struct AiWorkspace {
     }.width(this.menuWidth()).fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surface)
       .enabled(this.menuActionsAvailable())
   }
+  @Builder
+  referencePicker() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('搜索并引用资料').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).layoutWeight(1)
+        IconButton({ icon: $r('app.media.ic_close'), label: '关闭资料选择', onAction: () => { this.pickerOpen = false; } })
+      }.width('100%')
+      TextInput({ text: this.pickerKeyword, placeholder: '课程名、标签或正文关键词' }).height(44)
+        .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary)
+        .onChange((v: string) => { this.pickerKeyword = v; })
+      List({ space: 4 }) {
+        ForEach(this.pickerCandidates(), (n: NoteItem) => {
+          ListItem() {
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 8 }) {
+                AppIcon({ source: $r('app.media.ic_note'), tint: this.palette().inkSecondary })
+                Column({ space: 2 }) {
+                  Text(n.title).fontSize(14).fontColor(this.palette().inkPrimary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(`${n.category || '未分类'} · ${n.type}`).fontSize(11).fontColor(this.palette().inkMuted)
+                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                Text('引用').fontSize(12).fontColor(this.palette().accent)
+              }.width('100%')
+            }.width('100%').height(52).backgroundColor(this.palette().surfaceSubtle).borderRadius(8)
+              .enabled(this.menuActionsAvailable()).accessibilityText(`引用${n.title}`).onClick(() => {
+                if (this.menuActionsAvailable()) { this.togglePin(n); }
+              })
+          }
+        }, (n: NoteItem) => n.id)
+      }.width('100%').height(this.isPhone ? 140 : 180).scrollBar(BarState.Auto)
+      Text(this.pickerCandidates().length ? '显示最多 40 项；扫描 PDF 的正文须先提取并校对。' : '没有匹配资料，可缩短关键词或先导入文件。')
+        .fontSize(11).fontColor(this.palette().inkMuted).width('100%')
+    }.width('100%').padding(12).borderRadius(12).backgroundColor(this.palette().surface)
+      .border({ width: 1, color: this.palette().border })
+  }
+
   build() {
     Stack({ alignContent: Alignment.TopEnd }) {
       Column() {
@@ -1597,12 +1652,14 @@ export struct AiWorkspace {
           Row({ space: 12 }) {
             Text('墨客').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
             Blank().layoutWeight(1)
-            IconButton({ icon: $r('app.media.ic_more'), label: '对话操作', selected: this.conversationMenuOpen,
-              available: this.menuActionsAvailable(), onAction: () => {
-                const open = !this.conversationMenuOpen; this.closeComposerMenus(); this.conversationMenuOpen = open;
-              } })
-              .bindMenu(this.conversationMenuOpen, () => { this.conversationActionMenu(); }, {
+            IconButton({ icon: $r('app.media.ic_plus'), label: '新建对话', available: this.menuActionsAvailable(), onAction: () => this.startNewChat() })
+            Button({ type: ButtonType.Normal }) {
+              AppIcon({ source: $r('app.media.ic_more'), tint: this.palette().inkSecondary })
+            }.width(44).height(44).padding(0).borderRadius(12).backgroundColor(this.conversationMenuOpen ? this.palette().accentSoft : Color.Transparent)
+              .enabled(this.menuActionsAvailable()).accessibilityText('对话操作')
+              .bindMenu(() => { this.conversationActionMenu(); }, {
                 placement: Placement.BottomRight, backgroundColor: this.palette().surface,
+                aboutToAppear: () => { this.conversationMenuOpen = true; },
                 aboutToDisappear: () => { this.conversationMenuOpen = false; }
               })
           }.width('100%').height(44)
@@ -1751,6 +1808,7 @@ export struct AiWorkspace {
       }
 
       Column({ space: 8 }) {
+        if (this.pickerOpen) { this.referencePicker() }
         if (this.pinnedNotes.length > 0) {
           Row({ space: 8 }) {
             Scroll() {
@@ -1776,17 +1834,18 @@ export struct AiWorkspace {
             .fontColor(this.palette().inkPrimary).placeholderColor(this.palette().inkMuted)
             .backgroundColor(Color.Transparent).onChange((v: string) => { this.inputText = v; })
           Row({ space: 8 }) {
-            IconButton({ icon: this.plusMenuOpen ? $r('app.media.ic_close') : $r('app.media.ic_plus'), label: '添加资料',
-              selected: this.plusMenuOpen, available: this.menuActionsAvailable(), onAction: () => {
-                const open = !this.plusMenuOpen; this.closeComposerMenus(); this.plusMenuOpen = open;
-              } })
-              .bindMenu(this.plusMenuOpen, () => { this.plusActionMenu(); }, {
+            Button({ type: ButtonType.Normal }) {
+              AppIcon({ source: $r('app.media.ic_plus'), tint: this.palette().inkSecondary })
+            }.width(44).height(44).padding(0).borderRadius(12).backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : Color.Transparent)
+              .enabled(this.menuActionsAvailable()).accessibilityText('添加资料与任务')
+              .bindMenu(() => { this.plusActionMenu(); }, {
                 placement: Placement.TopLeft, backgroundColor: this.palette().surface,
+                aboutToAppear: () => { this.plusMenuOpen = true; },
                 aboutToDisappear: () => { this.plusMenuOpen = false; }
               })
             Button({ type: ButtonType.Normal }) {
               Row({ space: 6 }) {
-                Text(this.modelSwitchBusy ? '切换中…' : this.modelLabel || '选择助手')
+                Text(this.modelSwitchBusy ? '切换中…' : this.assistantMode === 'local' ? '选择模型' : this.modelLabel || '选择模型')
                   .fontSize(12).fontColor(this.palette().inkSecondary).maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
                 AppIcon({ source: $r('app.media.ic_chevron_down'), tint: this.palette().inkSecondary, iconSize: 16 })
@@ -1794,11 +1853,9 @@ export struct AiWorkspace {
             }.layoutWeight(1).height(44).padding({ left: 8, right: 8 }).borderRadius(8)
               .backgroundColor(this.modelMenuOpen ? this.palette().accentSoft : Color.Transparent)
               .enabled(this.menuActionsAvailable()).accessibilityText(`选择助手与模型，当前${this.modelLabel}`)
-              .onClick(() => {
-                const open = !this.modelMenuOpen; this.closeComposerMenus(); this.modelMenuOpen = open;
-              })
-              .bindMenu(this.modelMenuOpen, () => { this.modelSelectMenu(); }, {
+              .bindMenu(() => { this.modelSelectMenu(); }, {
                 placement: Placement.TopRight, backgroundColor: this.palette().surface,
+                aboutToAppear: () => { this.modelMenuOpen = true; },
                 aboutToDisappear: () => { this.modelMenuOpen = false; }
               })
             if (this.isLoading) {
