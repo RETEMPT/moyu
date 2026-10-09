@@ -25,14 +25,14 @@ import {
 
 @Component
 export struct PdfPageCanvas {
-  @Prop pageModel: PdfPageModel;
-  @Prop sourceUri: string = '';
+  @Prop @Watch('onSourceChanged') pageModel: PdfPageModel;
+  @Prop @Watch('onSourceChanged') sourceUri: string = '';
   @Prop useRealPdf: boolean = false;
   @State private pageAspectRatio: number = 0.707;
   @Prop @Watch('onStrokesChanged') strokes: PageAnnotationStroke[] = [];
-  @Prop @Watch('resetInput') isAnnotateMode: boolean = false;
-  @Prop @Watch('resetInput') tool: AnnotationTool = 'pen';
-  @Prop fingerDrawing: boolean = false;
+  @Prop @Watch('finishInputForModeChange') isAnnotateMode: boolean = false;
+  @Prop @Watch('finishInputForModeChange') tool: AnnotationTool = 'pen';
+  @Prop @Watch('finishInputForModeChange') fingerDrawing: boolean = false;
   @Prop selectedColor: string = '#DC2626';
   @Prop selectedWidth: number = 3;
   @Prop isDarkMode: boolean = false;
@@ -44,6 +44,10 @@ export struct PdfPageCanvas {
   onEraseFinished: (commit: boolean) => void = () => {};
   onInkContactChange: (active: boolean) => void = () => {};
   onPenActive: () => void = () => {};
+  onSourceReady: (ready: boolean) => void = () => {};
+  onRestoreSource: () => void = () => {};
+  onActiveFinisherChange: (finish: (() => void) | null) => void = () => {};
+  @State private sourceReady: boolean = false;
   private input: InkInputService = new InkInputService();
   private erasing: boolean = false;
 
@@ -95,23 +99,49 @@ export struct PdfPageCanvas {
   }
 
   private resetInput(): void {
-    this.input.reset(); this.currentStroke = null;
+    this.finishInput(false);
+  }
+
+  private finishInputForModeChange(): void {
+    this.finishInput(true);
+  }
+
+  private finishInput(commit: boolean): void {
+    this.input.reset();
+    const stroke = this.currentStroke; this.currentStroke = null;
+    if (this.erasing) { this.erasing = false; this.onEraseFinished(commit); }
+    if (commit && stroke && stroke.points.length > 0) { this.onStrokeAdded(stroke); }
     this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight);
-    if (this.erasing) { this.onEraseFinished(false); this.erasing = false; }
+    this.onActiveFinisherChange(null);
     this.onInkContactChange(false);
+  }
+
+  private onSourceChanged(): void {
+    this.resetInput(); this.sourceReady = false; this.onSourceReady(false);
+    this.pageAspectRatio = 0.707;
+  }
+
+  private setSourceReady(ready: boolean): void {
+    if (!ready) { this.resetInput(); }
+    this.sourceReady = ready; this.onSourceReady(ready);
   }
 
   aboutToDisappear(): void { this.resetInput(); }
 
   private handleTouch(event: TouchEvent): void {
-    if (!this.isAnnotateMode || this.tool === 'pan' || this.pageWidth <= 0 || this.pageHeight <= 0) { return; }
+    if (!this.sourceReady || !this.isAnnotateMode || this.tool === 'pan' || this.pageWidth <= 0 || this.pageHeight <= 0) { return; }
+    if (event.type === TouchType.Down && event.sourceTool === SourceTool.Pen && this.input.isActive() && !this.input.isPenActive()) {
+      this.finishInput(true);
+    }
     const batch = this.input.read(event, this.fingerDrawing);
     if (batch.phase === 'ignore') { return; }
     event.stopPropagation();
     if (batch.phase === 'cancel') { this.resetInput(); return; }
     if (batch.phase === 'begin') {
       this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight);
-      this.onPenActive(); this.onInkContactChange(true);
+      this.onPenActive();
+      this.onActiveFinisherChange(() => this.finishInput(true));
+      this.onInkContactChange(true);
       if (this.tool === 'eraser') { this.erasing = true; this.onEraseStarted(); }
       else {
         this.currentStroke = { id: 'stroke_' + Date.now() + '_' + Math.floor(Math.random() * 1000000),
@@ -136,28 +166,26 @@ export struct PdfPageCanvas {
       InkRenderer.segment(this.liveContext, tail, tail.length - 1, this.style(stroke));
     }
     if (batch.phase === 'end') {
-      if (this.erasing) { this.erasing = false; this.onEraseFinished(true); }
-      if (stroke && stroke.points.length) {
-        this.currentStroke = null; this.onStrokeAdded(stroke);
-      }
-      this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight);
-      this.onInkContactChange(false);
+      this.finishInput(true);
     }
   }
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       PdfPageBackground({ sourceUri: this.sourceUri, pageIndex: this.pageModel.pageIndex,
-        onAspectRatio: (ratio: number) => { this.pageAspectRatio = ratio; } })
+        onAspectRatio: (ratio: number) => { this.pageAspectRatio = ratio; },
+        onSourceReady: (ready: boolean) => this.setSourceReady(ready),
+        onRestoreSource: () => this.onRestoreSource() })
 
       // ---- 第二层：归一化矢量批注 Canvas 图层 ----
       Canvas(this.context)
         .width('100%')
         .height('100%')
+        .opacity(this.sourceReady ? 1 : 0)
         .hitTestBehavior(HitTestMode.None)
       Canvas(this.liveContext).width('100%').height('100%')
-        .opacity(this.tool === 'highlighter' ? 0.35 : 1)
-        .hitTestBehavior(!this.isAnnotateMode || this.tool === 'pan' ? HitTestMode.None : HitTestMode.Transparent)
+        .opacity(this.sourceReady ? (this.tool === 'highlighter' ? 0.35 : 1) : 0)
+        .hitTestBehavior(!this.sourceReady || !this.isAnnotateMode || this.tool === 'pan' ? HitTestMode.None : HitTestMode.Transparent)
         .onReady(() => this.redrawAll())
         .onTouch((event: TouchEvent) => this.handleTouch(event))
     }

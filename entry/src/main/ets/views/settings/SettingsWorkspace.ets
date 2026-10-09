@@ -27,6 +27,7 @@ export struct SettingsWorkspace {
   onOpenBackup: () => void = () => {};
   onOpenCapture: () => void = () => {};
   onImportExample: () => Promise<NoteItem | null> = async () => null;
+  onImportSnapshot: () => Promise<NoteItem | null> = async () => null;
   onOpenPrivacy: () => void = () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
@@ -254,6 +255,12 @@ export struct SettingsWorkspace {
       this.action(this.sampleBusy ? '正在导入…' : '导入阅读测试 PDF', async () => {
         this.sampleBusy = true;
         try { await this.onImportExample(); } finally { if (this.alive) { this.sampleBusy = false; } }
+      }, false, !this.sampleBusy)
+      this.paragraph('快照测试 PDF 由两页图片组成，可检查扫描资料的显示、翻页与批注；提取文字时需要启用图片识别。')
+      this.action(this.sampleBusy ? '正在导入…' : '导入快照测试 PDF', async () => {
+        if (this.sampleBusy) { return; }
+        this.sampleBusy = true;
+        try { await this.onImportSnapshot(); } finally { if (this.alive) { this.sampleBusy = false; } }
       }, false, !this.sampleBusy)
     } else if (name === 'legal') {
       this.heading('默认本地，联网由你选择')

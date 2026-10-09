@@ -42,20 +42,25 @@ export class PdfDocumentService {
    */
   async savePdfToSandbox(context: Context, srcUri: string, targetName: string): Promise<string> {
     const docDir: string = `${context.filesDir}/documents`;
-    if (!fs.accessSync(docDir)) {
-      fs.mkdirSync(docDir);
-    }
+    this.ensureDirectory(docDir);
 
     const sanitizedName = targetName.replace(/[\\/:*?"<>|]/g, '_');
     const destPath: string = `${docDir}/${Date.now()}_${Math.floor(Math.random() * 1000000)}_${sanitizedName}`;
 
     const srcFile = fs.openSync(srcUri, fs.OpenMode.READ_ONLY);
     try {
+      const expectedSize = fs.statSync(srcFile.fd).size;
+      if (expectedSize <= 0) { throw new Error('PDF 文件为空'); }
       await fs.copyFile(srcFile.fd, destPath);
+      const copy = fs.openSync(destPath, fs.OpenMode.READ_WRITE);
+      try {
+        if (fs.statSync(copy.fd).size !== expectedSize) { throw new Error('PDF 复制不完整'); }
+        await fs.fsync(copy.fd);
+      } finally { fs.closeSync(copy); }
       return destPath;
-    } catch {
+    } catch (error) {
       try { fs.unlinkSync(destPath); } catch { /* 未创建目标 */ }
-      throw new Error('PDF 复制失败，请检查存储空间或文件权限');
+      throw new Error(error instanceof Error ? `PDF 复制失败：${error.message}` : 'PDF 复制失败，请检查存储空间或文件权限');
     } finally {
       fs.closeSync(srcFile);
     }
@@ -64,16 +69,18 @@ export class PdfDocumentService {
   /**
    * 显式导入内置阅读测试文件，不在首次启动时创建笔记
    */
-  async saveBundledExample(context: Context): Promise<string> {
-    const data = await context.resourceManager.getRawFileContent('example-course.pdf');
+  async saveBundledExample(context: Context, snapshot: boolean = false): Promise<string> {
+    const name = snapshot ? 'example-snapshot.pdf' : 'example-course.pdf';
+    const data = await context.resourceManager.getRawFileContent(name);
     if (data.length < 5 || data[0] !== 37 || data[1] !== 80 || data[2] !== 68 || data[3] !== 70) { throw new Error('测试 PDF 资源不可读'); }
     const directory = `${context.filesDir}/documents`;
-    if (!fs.accessSync(directory)) { fs.mkdirSync(directory); }
-    const path = `${directory}/${Date.now()}_${Math.floor(Math.random() * 1000000)}_example-course.pdf`;
+    this.ensureDirectory(directory);
+    const path = `${directory}/${Date.now()}_${Math.floor(Math.random() * 1000000)}_${name}`;
     const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
     try {
       const written = fs.writeSync(file.fd, data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
       if (written !== data.byteLength) { throw new Error('PDF 写入不完整'); }
+      fs.fsyncSync(file.fd);
     }
     catch { try { fs.unlinkSync(path); } catch {} throw new Error('测试 PDF 保存失败，请检查存储空间'); }
     finally { fs.closeSync(file); }
@@ -81,19 +88,14 @@ export class PdfDocumentService {
   }
 
   async getPdfInfo(filePath: string): Promise<PdfDocumentInfo> {
-    let size = 0;
-    try {
-      const stat = fs.statSync(filePath);
-      size = stat.size;
-    } catch (e) {
-      // ignore
-    }
+    this.requireSource(filePath);
+    const size = fs.statSync(filePath).size;
 
     const document = new pdfService.PdfDocument();
     try {
       this.loadDocument(document, filePath);
       const count = document.getPageCount();
-      if (count <= 0) { throw new Error('PDF 没有可读页面'); }
+      if (!Number.isInteger(count) || count <= 0 || count > 10000) { throw new Error('PDF 页数无效或超过 10000 页'); }
       return { filePath: filePath, fileName: filePath.split('/').pop() || 'document.pdf',
         fileSize: size, pageCount: count };
     } finally {
@@ -106,7 +108,7 @@ export class PdfDocumentService {
     let page: pdfService.PdfPage | null = null;
     try {
       this.loadDocument(document, filePath);
-      if (pageIndex < 0 || pageIndex >= document.getPageCount()) { throw new Error('PDF 页码超出范围'); }
+      if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= document.getPageCount()) { throw new Error('PDF 页码超出范围'); }
       page = document.getPage(pageIndex);
       const width = page.getWidth();
       const height = page.getHeight();
@@ -124,6 +126,7 @@ export class PdfDocumentService {
   }
 
   private loadDocument(document: pdfService.PdfDocument, filePath: string): void {
+    this.requireSource(filePath);
     const result = document.loadDocument(filePath);
     if (result === pdfService.ParseResult.PARSE_ERROR_PASSWORD) {
       throw new Error('此 PDF 需要密码，请先解锁后再导入');
@@ -131,6 +134,35 @@ export class PdfDocumentService {
     if (result !== pdfService.ParseResult.PARSE_SUCCESS) {
       throw new Error('PDF 无法读取，请检查文件是否损坏或设备是否支持 PDFKit');
     }
+  }
+
+  /** The caller publishes a source only after native parsing and a real first-page render succeed. */
+  async validateImport(filePath: string): Promise<PdfDocumentInfo> {
+    const info = await this.getPdfInfo(filePath);
+    const preview = this.renderPage(filePath, 0);
+    await preview.pixelMap.release();
+    return info;
+  }
+
+  /** Cleanup may only touch direct files created inside our PDF directory. */
+  async removeManagedPdf(context: Context, filePath: string): Promise<void> {
+    const prefix = `${context.filesDir}/documents/`;
+    const name = filePath.startsWith(prefix) ? filePath.substring(prefix.length) : '';
+    if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) { return; }
+    if (fs.accessSync(filePath)) { await fs.unlink(filePath); }
+  }
+
+  private ensureDirectory(directory: string): void {
+    if (fs.accessSync(directory)) { return; }
+    try { fs.mkdirSync(directory); }
+    catch { if (!fs.accessSync(directory)) { throw new Error('PDF 保存目录无法创建，请检查存储空间'); } }
+  }
+
+  private requireSource(filePath: string): void {
+    if (!filePath) { throw new Error('这份资料缺少 PDF 原文件，请重新关联原 PDF。'); }
+    try {
+      if (!fs.accessSync(filePath) || fs.statSync(filePath).size <= 0) { throw new Error('missing'); }
+    } catch { throw new Error('PDF 原文件不存在或不可读，请重新关联原 PDF。'); }
   }
 
   /** Bounded batches keep extraction cancellable; reviewed results alone enter the index. */

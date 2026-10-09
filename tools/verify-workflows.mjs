@@ -534,6 +534,7 @@ function pdfService({ status = 0, pageCount = 3, renderFails = false, copyFails 
     '@kit.CoreFileKit': { fileIo: { OpenMode: { READ_ONLY: 0 }, accessSync: () => true,
       statSync: () => ({ size: 8000 }), openSync: () => ({ fd: 1 }), closeSync: () => calls.push('file-close'),
       copyFile: async () => { if (copyFails) throw Error('disk'); calls.push('copied'); },
+      fsync: async () => calls.push('file-sync'),
       unlinkSync: () => calls.push('partial-copy-removed') } }
   };
   return { calls, bitmap, service: load(`${base}services/document/PdfDocumentService.ets`, mocks).PdfDocumentService.getInstance() };
@@ -602,7 +603,7 @@ function importService(uri, { pdfFails = false, writeFails = false, unlinkFails 
         } } },
     [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: {
       PdfDocumentService: { getInstance: () => ({ savePdfToSandbox: async () => '/sandbox/copy.pdf', saveBundledExample: async () => '/sandbox/copy.pdf',
-        getPdfInfo: async () => { if (pdfFails) throw Error('PDF 损坏'); return { pageCount: 2 }; } }) }
+        validateImport: async () => { if (pdfFails) throw Error('PDF 损坏'); return { pageCount: 2 }; } }) }
     }
   };
   return { calls, raw: () => raw, service: new (load(`${base}services/NoteStorageService.ets`, mocks).NoteStorageService)() };
@@ -860,7 +861,7 @@ function backupFileFixture({ selected = ['/picked/backup.json'], failPdf = false
       if (failImage) throw Error('broken image'); return { size: { width: 1, height: 1 } };
     }, release: async () => calls.push(['image-release', filename]) }) } },
     [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: { PdfDocumentService: { getInstance: () => ({
-      getPdfInfo: async filename => { if (failPdf) throw Error('broken pdf'); return { pageCount: 2 }; }
+      validateImport: async filename => { if (failPdf) throw Error('broken pdf'); return { pageCount: 2 }; }
     }) } }
   };
   const { StudyBackupService } = load(`${base}services/study/StudyBackupService.ets`, mocks);
@@ -1811,8 +1812,8 @@ test('each nonstream adapter exposes cancellation before sending and destroys th
 
 function pdfHistoryView() {
   const relative='views/reader/pdf/PdfAnnotatorView.ets';let saved=0;
-  const view={pageStrokes:{0:[]},undoStack:[],redoStack:[],eraseBefore:null,erasePage:-1,currentPageIdx:0,scheduleSave:()=>saved++};
-  for(const method of ['remember','handleStrokeAdded','beginErase','finishErase','handleEraseAtPoint','handleUndo','onRedoTriggered','onClearTriggered'])
+  const view={pageStrokes:{0:[]},undoStack:[],redoStack:[],eraseBefore:null,erasePage:-1,currentPageIdx:0,scheduleSave:()=>saved++,activeInputFinisher:null,activeInputPage:-1};
+  for(const method of ['remember','handleStrokeAdded','beginErase','finishErase','handleEraseAtPoint','handleUndo','onRedoTriggered','onClearTriggered','finishActiveInput'])
     view[method]=viewMethod(relative,method,{InkRenderer});
   return {view,saved:()=>saved};
 }
@@ -1972,7 +1973,7 @@ test('canvas redraw scheduling coalesces moves without resizing the viewport', (
   queue[0][0]();assert.equal(draws,1);assert.equal(v.drawTimer,-1);assert.equal(v.canvasWidth,360);assert.equal(v.canvasHeight,700);
 });
 test('cancelled handwriting contacts discard live ink and preserve outstanding save state', () => {
-  const handle=viewMethod('views/reader/HandwritingCanvas.ets','handleTouch',{CanvasViewport});
+  const handle=viewMethod('views/reader/HandwritingCanvas.ets','handleTouch',{CanvasViewport,...penEnums});
   for(const pending of [false,true]) {
     const dirties=[];let clears=0,redraws=0;
     const v={navigateTouch:()=>false,readOnly:false,input:{read:()=>({phase:'cancel'})},saveRevision:pending?2:1,savedRevision:1,
@@ -2019,7 +2020,8 @@ test('read-only documents exit directly; only pending main or scratchpad changes
 test('exit waits for both main and scratchpad writes and keeps the reader open on failure', () => {
   const relative='views/reader/huawei/HuaweiDocWorkspace.ets';
   for(const success of [true,false]) {
-    let closed=0;const notices=[];const v={exitSaving:false,splitMode:'scratchpad',exitSaveToken:0,onClose:()=>closed++,showToast:m=>notices.push(m)};
+    let closed=0;const notices=[];const v={exitSaving:false,saveDestination:'close',splitMode:'scratchpad',exitSaveToken:0,onClose:()=>closed++,showToast:m=>notices.push(m),
+      beginReaderSave:viewMethod(relative,'beginReaderSave')};
     viewMethod(relative,'saveAndExit').call(v);assert.equal(v.exitPending,2);assert.equal(v.exitSaveToken,1);
     viewMethod(relative,'exitSaveFinished').call(v,true);assert.equal(closed,0);assert.equal(v.exitSaving,true);
     viewMethod(relative,'exitSaveFinished').call(v,success);assert.equal(closed,success?1:0);assert.equal(v.exitSaving,false);assert.equal(notices.length,success?0:1);
@@ -2060,7 +2062,7 @@ test('companion clearing requires confirmation and cannot clear a different docu
     const pending=clear.call(v);if(moved)v.loadedNoteId='b';resolve({index});await pending;assert.equal(clears,expected);assert.equal(v.clearConfirmBusy,false);
   }
 });
-test('AI back navigation first closes the centered action or model panel', () => {
+test('AI back navigation first closes the anchored action or model menu', () => {
   const back=viewMethod('views/ai/AiWorkspace.ets','handleBackRequest');let exits=0;
   const v={plusMenuOpen:true,modelMenuOpen:false,onNavigateBack:()=>exits++};back.call(v);assert.equal(v.plusMenuOpen,false);assert.equal(exits,0);
   v.modelMenuOpen=true;back.call(v);assert.equal(v.modelMenuOpen,false);assert.equal(exits,0);back.call(v);assert.equal(exits,1);
@@ -2116,7 +2118,8 @@ test('external PDF import persists library metadata before exposing the referenc
 test('AI external import waits for persistence and never pins into a different or closed conversation', async () => {
   const method=viewMethod('views/ai/AiWorkspace.ets','importExternalFile',{promptAction:{showToast:()=>{}}});
   for(const moved of [false,true]) {
-    let resolve;const v={alive:true,loadedSessionId:'a',pinnedNotes:[],onImportExternal:()=>new Promise(r=>resolve=r),emitContext:()=>{},onPinnedNotesChange:()=>{}};
+    let resolve;const v={alive:true,loadedSessionId:'a',activeSessionId:'a',attachmentRequestId:0,pinnedNotes:[],menuActionsAvailable:()=>true,
+      onImportExternal:()=>new Promise(r=>resolve=r),emitContext:()=>{},onPinnedNotesChange:()=>{}};
     const pending=method.call(v);assert.equal(v.pinnedNotes.length,0);if(moved)v.loadedSessionId='b';resolve({id:'pdf',title:'PDF'});await pending;
     assert.equal(v.pinnedNotes.length,moved?0:1);
   }
@@ -2134,10 +2137,10 @@ test('bundled PDF short writes and invalid resource bytes cannot leave a phantom
     const {PdfDocumentService}=load(`${base}services/document/PdfDocumentService.ets`,{'@kit.PDFKit':{pdfService:{}},
       '@kit.CoreFileKit':{fileIo:{OpenMode:{CREATE:1,WRITE_ONLY:2,TRUNC:4},accessSync:()=>true,openSync:()=>({fd:1}),
         writeSync:(_,buffer)=>{calls.push('write');assert.equal(Buffer.from(buffer).toString(),bytes.toString());return mode==='short'?1:buffer.byteLength;},
-        unlinkSync:()=>calls.push('remove'),closeSync:()=>calls.push('close')}},
+        fsyncSync:()=>calls.push('sync'),unlinkSync:()=>calls.push('remove'),closeSync:()=>calls.push('close')}},
       [path.resolve(root,`${base}services/ocr/OcrService.ets`)]:{OcrService:{}}});
     const pending=new PdfDocumentService().saveBundledExample({filesDir:'/sandbox',resourceManager:{getRawFileContent:async()=>bytes}});
-    if(mode==='ok'){assert.match(await pending,/^\/sandbox\/documents\/.*example-course\.pdf$/);assert.deepEqual(calls,['write','close']);}
+    if(mode==='ok'){assert.match(await pending,/^\/sandbox\/documents\/.*example-course\.pdf$/);assert.deepEqual(calls,['write','sync','close']);}
     else {await assert.rejects(pending);assert.deepEqual(calls,mode==='short'?['write','remove','close']:[]);}
   }
 });
@@ -2373,4 +2376,406 @@ test('choosing a service template creates a fresh draft and preserves the existi
   assert.equal(view.drafts.get('existing').apiKey, 'test-existing-key'); assert.equal(view.activeId, 'existing');
   assert.equal(view.profiles.length, 2); assert.equal(view.profiles[1].apiKey, ''); assert.equal(view.newProfiles.size, 1);
   assert.equal(view.sourceTab, 1); assert.equal(view.tab, 0);
+});
+
+function documentNavigationHarness(overrides = {}) {
+  const relative = 'views/reader/huawei/HuaweiDocWorkspace.ets';
+  const calls = [];
+  const view = { activeModal: '', jumpDialogOpen: false, exitDialogOpen: false, restoreSourceBusy: false,
+    isAnnotateMode: true, exitSaving: false, splitMode: 'none', isPhone: false, exitSaveToken: 0,
+    documentDirty: true, scratchpadDirty: false, barsVisible: false, penOptionsOpen: true, isPenPaletteExpanded: true,
+    scrollTravel: 50, onClose: () => calls.push('close'), showToast: message => calls.push(message),
+    ...overrides };
+  for (const method of ['handleBackRequest', 'returnToReading', 'beginReaderSave', 'exitSaveFinished', 'switchSplitMode']) {
+    view[method] = viewMethod(relative, method);
+  }
+  return { view, calls };
+}
+
+test('back leaves annotation in read-only mode and saves without closing the PDF or whiteboard', () => {
+  const { view, calls } = documentNavigationHarness();
+  view.handleBackRequest();
+  assert.equal(view.isAnnotateMode, false); assert.equal(view.barsVisible, true);
+  assert.equal(view.penOptionsOpen, false); assert.equal(view.scrollTravel, 0);
+  assert.equal(view.saveDestination, 'reading'); assert.equal(view.exitSaveToken, 1);
+  view.handleBackRequest(); assert.equal(view.exitSaveToken, 1); assert.deepEqual(calls, []);
+  view.documentDirty = false; view.exitSaveFinished(true);
+  assert.equal(view.exitSaving, false); assert.equal(view.exitDialogOpen, false);
+  assert.ok(!calls.includes('close'));
+  view.handleBackRequest(); assert.equal(calls.at(-1), 'close');
+});
+
+test('back closes a transient dialog first and never leaves the document during source recovery', () => {
+  const { view } = documentNavigationHarness({ jumpDialogOpen: true });
+  view.handleBackRequest(); assert.equal(view.jumpDialogOpen, false); assert.equal(view.isAnnotateMode, true);
+  view.restoreSourceBusy = true; view.handleBackRequest(); assert.equal(view.exitSaveToken, 0);
+});
+
+test('returning to reading waits for main and scratchpad, and failed persistence stays recoverable', () => {
+  const { view, calls } = documentNavigationHarness({ splitMode: 'scratchpad', scratchpadDirty: true });
+  view.handleBackRequest(); assert.equal(view.exitPending, 2);
+  view.exitSaveFinished(true); assert.equal(view.exitSaving, true);
+  view.exitSaveFinished(false); assert.equal(view.exitSaving, false); assert.equal(view.exitDialogOpen, true);
+  assert.ok(!calls.includes('close')); assert.equal(view.scratchpadDirty, true);
+  view.beginReaderSave(); assert.equal(view.exitPending, 2); assert.equal(view.exitSaveToken, 2);
+  view.documentDirty = false; view.scratchpadDirty = false;
+  view.exitSaveFinished(true); view.exitSaveFinished(true); assert.equal(view.exitDialogOpen, false);
+  assert.ok(!calls.includes('close'));
+});
+
+test('closing a dirty scratchpad waits for both saves and never unmounts it on failure', () => {
+  for (const success of [true, false]) {
+    const { view, calls } = documentNavigationHarness({ splitMode: 'scratchpad', scratchpadDirty: true });
+    view.switchSplitMode('none'); assert.equal(view.splitMode, 'scratchpad'); assert.equal(view.saveDestination, 'split');
+    view.exitSaveFinished(true); view.exitSaveFinished(success);
+    assert.equal(view.splitMode, success ? 'none' : 'scratchpad'); assert.ok(!calls.includes('close'));
+  }
+});
+
+test('unreadable PDFs cannot enter annotation, while whiteboards and readable PDFs can', () => {
+  const mode = viewMethod('views/reader/huawei/HuaweiDocWorkspace.ets', 'setAnnotationMode');
+  for (const [whiteboard, ready, expected] of [[false, false, false], [false, true, true], [true, false, true]]) {
+    const view = { exitSaving: false, restoreSourceBusy: false, isAnnotateMode: false, pdfSourceReady: ready, annotationError: '',
+      whiteboardReady: true,
+      note: {}, isHandwritingNote: () => whiteboard, showToast() {} };
+    mode.call(view, true); assert.equal(view.isAnnotateMode, expected);
+  }
+});
+
+test('source restoration is serialized with ink writes and preserves latest library and annotation fields', async () => {
+  const { ReaderCommitService } = load(`${base}services/document/ReaderCommitService.ets`);
+  const service = new ReaderCommitService();
+  let notes = [studyNote({ type: 'PDF', sourceUri: '/sandbox/old.pdf', pageAnnotations: 'old', pdfTextJson: 'old text', favorite: true })];
+  const ports = { notes: () => notes, saveNotes: async () => {}, saveDocument: async () => {}, publish: items => { notes = items; } };
+  const replacement = { ...notes[0], sourceUri: '/sandbox/new.pdf', pageCount: 2, pdfTextJson: undefined, favorite: false };
+  await Promise.all([service.commit({ ...notes[0], pageAnnotations: 'latest ink' }, '', ports, true, 'pdf'),
+    service.commit(replacement, '', ports, false, 'pdf-source'),
+    service.commit({ ...notes[0], scratchpadStrokes: 'new scratch' }, '', ports, true, 'scratchpad')]);
+  assert.equal(notes[0].sourceUri, '/sandbox/new.pdf'); assert.equal(notes[0].pageAnnotations, 'latest ink');
+  assert.equal(notes[0].favorite, true); assert.equal(notes[0].pdfTextJson, undefined);
+  assert.equal(notes[0].scratchpadStrokes, 'new scratch');
+});
+
+test('source restoration cleans only the new copy on save failure and keeps a referenced old source on success', async () => {
+  for (const fail of [true, false]) {
+    const removed = []; const old = '/sandbox/documents/old.pdf'; const fresh = '/sandbox/documents/new.pdf';
+    const restore = viewMethod('pages/Index.ets', 'restoreReaderPdfSource', {
+      Error,
+      PdfDocumentService: { getInstance: () => ({ removeManagedPdf: async (_, source) => removed.push(source) }) } });
+    const view = { getAbilityContext: () => ({}), fullScreenDocOpen: true, fullScreenDocNote: { id: 'a', sourceUri: old },
+      storage: { selectReplacementPdf: async () => ({ id: 'a', sourceUri: fresh, contentDetail: '' }) },
+      notes: [{ sourceUri: old }], trash: [], notify() {}, handleSaved: async () => { if (fail) throw Error('disk full'); } };
+    if (fail) { await assert.rejects(restore.call(view), /disk full/); assert.deepEqual(removed, [fresh]); }
+    else { await restore.call(view); assert.deepEqual(removed, []); }
+  }
+});
+
+test('source picker cancellation does not write or remove existing data', async () => {
+  const restore = viewMethod('pages/Index.ets', 'restoreReaderPdfSource'); let saved = 0;
+  const view = { getAbilityContext: () => ({}), fullScreenDocNote: { id: 'a', sourceUri: 'old' },
+    storage: { selectReplacementPdf: async () => null }, handleSaved: async () => saved++ };
+  await restore.call(view); assert.equal(saved, 0); assert.equal(view.fullScreenDocNote.sourceUri, 'old');
+});
+
+test('a previous document or save request cannot finish or close the current reader', () => {
+  const { view, calls } = documentNavigationHarness({ loadedNoteId: 'new', isAnnotateMode: false });
+  view.beginReaderSave(); view.saveDestination = 'close';
+  view.exitSaveFinished(true, 'old', view.exitSaveToken);
+  view.exitSaveFinished(true, 'new', view.exitSaveToken - 1);
+  assert.equal(view.exitPending, 1); assert.equal(view.exitSaving, true); assert.deepEqual(calls, []);
+  view.exitSaveFinished(true, 'new', view.exitSaveToken); assert.deepEqual(calls, ['close']);
+});
+
+test('late reader persistence publishes library data without replacing a different open document', async () => {
+  const save = viewMethod('pages/Index.ets', 'handleSaved');
+  for (const currentId of ['new', 'old']) {
+    const view = { formatTime: () => 'now', getAbilityContext: () => ({}), notes: [],
+      readingNote: { id: currentId, title: 'keep' }, fullScreenDocNote: { id: 'new', title: 'keep' }, refreshGraph() {},
+      storage: {}, readerCommits: { commit: async (note, content, ports) => ports.publish([note], { ...note, title: 'saved' }) } };
+    await save.call(view, { id: 'old' }, 'body', 'pdf');
+    assert.equal(view.readingNote.id, currentId); assert.equal(view.readingNote.title, currentId === 'old' ? 'saved' : 'keep');
+    assert.equal(view.fullScreenDocNote.id, 'new'); assert.equal(view.fullScreenDocNote.title, 'keep');
+    assert.equal(view.notes[0].id, 'old');
+  }
+});
+
+test('AI attachment import ignores repeated taps while awaiting durable import', async () => {
+  const importFile = viewMethod('views/ai/AiWorkspace.ets', 'importExternalFile', { promptAction: { showToast() {} } });
+  let release, imports = 0;
+  const view = { alive: true, loadedSessionId: 'a', activeSessionId: 'a', attachmentRequestId: 0, attachmentBusy: false,
+    menuActionsAvailable() { return !this.attachmentBusy; }, pinnedNotes: [], emitContext() {}, onPinnedNotesChange() {},
+    onImportExternal: () => { imports++; return new Promise(resolve => { release = resolve; }); } };
+  const pending = importFile.call(view); await importFile.call(view); assert.equal(imports, 1);
+  release(null); await pending; assert.equal(view.attachmentBusy, false); assert.deepEqual(view.pinnedNotes, []);
+});
+
+test('removing AI references respects newer selections and synchronizes confirmed context', async () => {
+  for (const changed of [false, true]) {
+    let answer, updates = 0;
+    const clear = viewMethod('views/ai/AiWorkspace.ets', 'clearPinnedReferences', {
+      promptAction: { showDialog: () => new Promise(resolve => { answer = resolve; }) } });
+    const view = { loadedSessionId: 'a', activeSessionId: 'a', pinnedNotes: [{ id: 'old' }], menuActionsAvailable: () => true,
+      palette: () => ({}), onPinnedNotesChange() { updates++; }, emitContext() { updates++; } };
+    const pending = clear.call(view); if (changed) { view.pinnedNotes = [{ id: 'new' }]; }
+    answer({ index: 1 }); await pending;
+    assert.deepEqual(plain(view.pinnedNotes), changed ? [{ id: 'new' }] : []); assert.equal(updates, changed ? 0 : 2);
+  }
+});
+
+test('AI context notifications coalesce latest state and cannot publish after leaving', () => {
+  const queued = [], published = [];
+  const emit = viewMethod('views/ai/AiWorkspace.ets', 'emitContext', { setTimeout: action => queued.push(action) });
+  const view = { alive: true, contextRevision: 0, lastCitations: ['old'], pinnedNotes: [{ id: 'old' }], runningLayer: 'L1',
+    layerTitle: layer => layer, modelLabel: 'local', onContextChange: (...args) => published.push(args) };
+  emit.call(view); view.pinnedNotes = [{ id: 'new' }]; view.lastCitations = ['new']; emit.call(view);
+  queued.splice(0).forEach(action => action()); assert.equal(published.length, 1);
+  assert.equal(published[0][1][0].id, 'new'); assert.equal(published[0][0][0], 'new');
+  emit.call(view); view.alive = false; queued[0](); assert.equal(published.length, 1);
+});
+test('pen contacts ignore repeated starts and unrelated cancellations without losing their initiating pointer', () => {
+  const input = new InkInputService();
+  assert.equal(input.read(touchEvent(0, 7, 2), true).phase, 'begin');
+  assert.equal(input.read(touchEvent(0, 7, 2), true).phase, 'ignore');
+  assert.equal(input.read(touchEvent(0, 9, 2), true).phase, 'ignore');
+  assert.equal(input.read(touchEvent(3, 9, 2), true).phase, 'ignore');
+  assert.equal(input.isActive(), true);
+  assert.equal(input.read(touchEvent(2, 7, 2), true).phase, 'move');
+  assert.equal(input.read(touchEvent(1, 7, 2), true).phase, 'end');
+  assert.equal(input.isActive(), false);
+});
+
+test('whiteboard finger input keeps a stable width and a stylus can take over without accepting palm release', () => {
+  const input = new InkInputService();
+  const first = input.read(touchEvent(0, 1, 1, { pressure: 0 }), true);
+  assert.equal(first.phase, 'begin'); assert.equal(first.samples[0].pressure, 0.5);
+  const move = input.read(touchEvent(2, 1, 1, { pressure: 0,
+    getHistoricalPoints: () => [{ touchObject: { id: 1, x: 7, y: 9 }, force: 0 }] }), true);
+  assert.deepEqual(plain(move.samples).map(point => point.pressure), [0.5, 0.5]);
+  assert.equal(input.read(touchEvent(0, 7, 2), true).phase, 'begin');
+  assert.equal(input.read(touchEvent(1, 1, 1), true).phase, 'ignore');
+  assert.equal(input.read(touchEvent(1, 7, 2), true).phase, 'end');
+});
+
+test('whiteboard exit persistence finalizes contact, waits for storage and only then clears current dirty state', async () => {
+  const save = viewMethod('views/reader/HandwritingCanvas.ets', 'saveForExit');
+  const dirty = [], states = [], finished = []; let release, finalized = 0;
+  const view = { saveTimer: -1, saveRevision: 4, savedRevision: 2, loadedNoteId: 'ink', isScratchpad: false,
+    finishStroke: () => finalized++, strokeSnapshot: () => ({ id: 'ink', contentDetail: 'body' }),
+    onCommitForExit: () => new Promise(resolve => { release = resolve; }),
+    onDirtyChange: value => dirty.push(value), onSaveStateChange: value => states.push(value),
+    onExitSaveFinished: ok => finished.push(ok) };
+  const pending = save.call(view); assert.equal(finalized, 1); assert.deepEqual(dirty, []); assert.deepEqual(finished, []);
+  release(); await pending;
+  assert.equal(view.savedRevision, 4); assert.deepEqual(dirty, [false]);
+  assert.deepEqual(states, ['已保存']); assert.deepEqual(finished, [true]);
+});
+
+test('failed or obsolete whiteboard exit saves preserve newer dirty state and do not publish a stale saved status', async () => {
+  const save = viewMethod('views/reader/HandwritingCanvas.ets', 'saveForExit');
+  for (const obsolete of ['revision', 'note', 'failure']) {
+    const dirty = [], states = [], finished = []; let release, reject;
+    const view = { saveTimer: -1, saveRevision: 4, savedRevision: 2, loadedNoteId: 'ink',
+      finishStroke() {}, strokeSnapshot: () => ({ id: 'ink', contentDetail: 'body' }),
+      onCommitForExit: () => new Promise((resolve, fail) => { release = resolve; reject = fail; }),
+      onDirtyChange: value => dirty.push(value), onSaveStateChange: value => states.push(value),
+      onExitSaveFinished: ok => finished.push(ok) };
+    const pending = save.call(view);
+    if (obsolete === 'revision') { view.saveRevision++; release(); }
+    else if (obsolete === 'note') { view.loadedNoteId = 'other'; release(); }
+    else { reject(Error('disk full')); }
+    await pending; assert.equal(view.savedRevision, 2); assert.deepEqual(dirty, []);
+    assert.deepEqual(states, obsolete === 'failure' ? ['保存失败'] : []);
+    assert.deepEqual(finished, [false]);
+  }
+});
+
+test('viewport redraw preserves an active eraser path instead of restoring ink underneath it', () => {
+  const redraw = viewMethod('views/reader/HandwritingCanvas.ets', 'redrawAll', { InkRenderer });
+  const recorder = inkRecorder(); let historical = 0, clears = 0;
+  Object.assign(recorder.ctx, { clearRect() { clears++; }, translate() {}, scale() {} });
+  const active = { points: [{ x: 20, y: 30 }, { x: 30, y: 40 }], isEraser: true };
+  redraw.call({ context: recorder.ctx, canvasWidth: 360, canvasHeight: 700, zoomScale: 0.3,
+    panX: 4, panY: -8, strokes: [{}], currentStroke: active,
+    drawPaperBackground() {}, drawSingleStroke: () => historical++, style: () => ({ color: '#000', width: 18, highlighter: false, eraser: true }) });
+  assert.equal(clears, 1); assert.equal(historical, 1);
+  assert.ok(recorder.calls.filter(call => ['stroke', 'fill'].includes(call[0])).every(call => call[3] === 'destination-out'));
+  assert.ok(recorder.calls.some(call => call[0] === 'line'));
+});
+
+test('whiteboard title and preview persist while scratchpad saves preserve all main and library fields', async () => {
+  const { ReaderCommitService } = load(`${base}services/document/ReaderCommitService.ets`);
+  const service = new ReaderCommitService();
+  const stale = studyNote({ type: '白板', favorite: false, category: 'old', strokes: 'old ink', scratchpadStrokes: 'old scratch' });
+  let notes = [studyNote({ type: '白板', favorite: true, category: 'new', coverUrl: 'cover:mist', tags: ['current'] })];
+  const ports = { notes: () => notes, saveDocument: async () => {}, saveNotes: async () => {}, publish: next => { notes = next; } };
+  await Promise.all([
+    service.commit({ ...stale, title: '课堂白板', previewText: '包含 1 条墨迹', strokes: 'new ink' }, '# 课堂白板', ports, true, 'handwriting'),
+    service.commit({ ...stale, title: '旧标题', scratchpadStrokes: 'new scratch' }, '旧正文', ports, true, 'scratchpad')
+  ]);
+  assert.equal(notes[0].title, '课堂白板'); assert.equal(notes[0].contentDetail, '# 课堂白板');
+  assert.equal(notes[0].previewText, '包含 1 条墨迹'); assert.equal(notes[0].strokes, 'new ink');
+  assert.equal(notes[0].scratchpadStrokes, 'new scratch'); assert.equal(notes[0].favorite, true);
+  assert.equal(notes[0].category, 'new'); assert.deepEqual(plain(notes[0].tags), ['current']);
+});
+
+test('re-attached PDF sources and concurrent annotation saves preserve each other and library metadata', async () => {
+  const { ReaderCommitService } = load(`${base}services/document/ReaderCommitService.ets`);
+  const service = new ReaderCommitService();
+  const stale = studyNote({ type: 'PDF', sourceUri: 'old.pdf', pageAnnotations: 'old ink', pdfTextJson: 'old page text' });
+  let notes = [studyNote({ type: 'PDF', favorite: true, tags: ['current'], pageAnnotations: 'current ink' })];
+  const ports = { notes: () => notes, saveDocument: async () => {}, saveNotes: async () => {}, publish: next => { notes = next; } };
+  await Promise.all([
+    service.commit({ ...stale, sourceUri: 'new.pdf', sourceType: 'pdf', pageCount: 3, pdfTextJson: undefined }, stale.contentDetail, ports, false, 'pdf-source'),
+    service.commit({ ...stale, pageAnnotations: 'new ink' }, stale.contentDetail, ports, false, 'pdf')
+  ]);
+  assert.equal(notes[0].sourceUri, 'new.pdf'); assert.equal(notes[0].sourceType, 'pdf'); assert.equal(notes[0].pageCount, 3);
+  assert.equal(notes[0].pdfTextJson, undefined); assert.equal(notes[0].pageAnnotations, 'new ink');
+  assert.equal(notes[0].favorite, true); assert.deepEqual(plain(notes[0].tags), ['current']);
+});
+
+test('late whiteboard clear confirmation cannot erase another note or a canvas returned to reading mode', async () => {
+  for (const changed of ['note', 'readOnly']) {
+    let confirm, mutations = 0;
+    const clear = viewMethod('views/reader/HandwritingCanvas.ets', 'handleClear', {
+      promptAction: { showDialog: () => new Promise(resolve => { confirm = resolve; }) }
+    });
+    const view = { readOnly: false, loadedNoteId: 'a', strokes: [{}], finishStroke() {},
+      remember: () => mutations++, redrawAll() {}, scheduleSave() {} };
+    const pending = clear.call(view);
+    if (changed === 'note') { view.loadedNoteId = 'b'; } else { view.readOnly = true; }
+    confirm({ index: 1 }); await pending;
+    assert.equal(mutations, 0); assert.equal(view.strokes.length, 1);
+  }
+});
+
+test('paper guides align with world movement, support ruled paper and cap visible work at tiny zoom', () => {
+  const { CanvasPaperGuides } = load(`${base}services/ink/CanvasPaperGuides.ets`);
+  const a = CanvasPaperGuides.lines(360, 700, 0.3, 0, 0, 'grid');
+  const b = CanvasPaperGuides.lines(360, 700, 0.3, 4, 8, 'grid');
+  const vertical = rows => rows.filter(line => line.x1 === line.x2);
+  const horizontal = rows => rows.filter(line => line.y1 === line.y2);
+  assert.ok(Math.abs(vertical(b)[0].x1 - vertical(a)[0].x1 - 4) < 1e-6);
+  assert.ok(Math.abs(horizontal(b)[0].y1 - horizontal(a)[0].y1 - 8) < 1e-6);
+  const ruled = CanvasPaperGuides.lines(360, 700, 0.3, -80, -500, 'ruled');
+  assert.ok(ruled.length); assert.equal(vertical(ruled).length, 0);
+  for (const zoom of [0.00001, 0.08, 0.3, 1, 8]) {
+    const lines = CanvasPaperGuides.lines(8000, 12000, zoom, -999, 881, 'grid');
+    assert.ok(lines.length <= 162); assert.ok(lines.length > 0);
+    assert.ok(lines.every(line => line.x1 >= 0 && line.x2 <= 8000 && line.y1 >= 0 && line.y2 <= 12000));
+  }
+  for (const style of ['blank', 'unknown']) { assert.equal(CanvasPaperGuides.lines(360, 700, 0.3, 0, 0, style).length, 0); }
+  assert.equal(CanvasPaperGuides.lines(NaN, 700, 0.3, 0, 0, 'grid').length, 0);
+});
+
+test('paper background renders to its own context and never becomes a stored or erasable stroke', () => {
+  const { CanvasPaperGuides } = load(`${base}services/ink/CanvasPaperGuides.ets`);
+  const render = viewMethod('views/reader/HandwritingCanvas.ets', 'drawPaperBackground', { CanvasPaperGuides });
+  const recorder = inkRecorder(); let clears = 0;
+  Object.assign(recorder.ctx, { clearRect() { clears++; } });
+  const strokes = [{ points: [{ x: 1, y: 2 }], isEraser: true }]; const before = JSON.stringify(strokes);
+  render.call({ paperContext: recorder.ctx, canvasWidth: 360, canvasHeight: 700, zoomScale: 0.3, panX: 0, panY: 0,
+    paperBackground: 'grid', strokes, palette: () => ({ border: '#ddd' }) });
+  assert.equal(clears, 1); assert.ok(recorder.calls.some(call => call[0] === 'stroke'));
+  assert.ok(recorder.calls.filter(call => call[0] === 'stroke').every(call => call[3] !== 'destination-out'));
+  assert.equal(JSON.stringify(strokes), before);
+});
+
+const { CanvasStrokePolicy } = load(`${base}services/ink/CanvasStrokePolicy.ets`);
+const validWhiteboardStroke = change => ({ points: [{ x: -42, y: 520, pressure: 0.5 }, { x: 100, y: 600 }],
+  color: '#2563EB', width: 18, referenceWidth: 1200, isHighlighter: false, isEraser: false, ...change });
+
+test('whiteboard snapshot validation preserves legacy optional fields, negative coordinates and the wide zoomed eraser', () => {
+  const legacy = { points: [{ x: -300, y: 400 }], color: 'black', width: 3 };
+  const rows = [legacy, validWhiteboardStroke({ width: 225, isEraser: true }), validWhiteboardStroke({ isHighlighter: true })];
+  assert.deepEqual(plain(CanvasStrokePolicy.parse(JSON.stringify(rows))), rows);
+  assert.equal(CanvasStrokePolicy.parse(undefined).length, 0); assert.equal(CanvasStrokePolicy.parse('').length, 0);
+  assert.equal(CanvasStrokePolicy.parse('[]').length, 0);
+});
+
+for (const [label, raw] of [
+  ['object instead of strokes', '{}'], ['null strokes', 'null'], ['broken JSON', '[{"points":'],
+  ...[null, {}, validWhiteboardStroke({ points: {} }), validWhiteboardStroke({ points: [null] }),
+    validWhiteboardStroke({ points: [{ x: '20', y: 30 }] }), validWhiteboardStroke({ points: [{ x: null, y: 30 }] }),
+    validWhiteboardStroke({ points: [{ x: 20, y: 30, pressure: 2 }] }), validWhiteboardStroke({ points: [{ x: 20, y: 30, pressure: null }] }),
+    validWhiteboardStroke({ points: [{ x: 1e10, y: 30 }] }), validWhiteboardStroke({ width: 0 }),
+    validWhiteboardStroke({ width: -1 }), validWhiteboardStroke({ width: '3' }), validWhiteboardStroke({ width: 4097 }),
+    validWhiteboardStroke({ referenceWidth: 0 }), validWhiteboardStroke({ referenceWidth: '1200' }),
+    validWhiteboardStroke({ isEraser: 'true' }), validWhiteboardStroke({ isHighlighter: null }),
+    validWhiteboardStroke({ color: '' }), validWhiteboardStroke({ color: {} })]
+    .map((row, index) => [`invalid row ${index}`, JSON.stringify([validWhiteboardStroke(), row])])
+]) {
+  test(`corrupted whiteboard snapshots reject the entire payload: ${label}`, () => {
+    assert.throws(() => CanvasStrokePolicy.parse(raw));
+  });
+}
+
+test('whiteboard loading failure reports unavailable content while keeping the exact original raw snapshot', () => {
+  const loadInk = viewMethod('views/reader/HandwritingCanvas.ets', 'loadStrokes', { CanvasStrokePolicy, CanvasViewport });
+  for (const scratchpad of [false, true]) {
+    const ready = [], dirty = []; const raw = '[{"points":null,"width":3,"color":"#000"}]';
+    const view = { note: { id: 'ink', strokes: raw, scratchpadStrokes: raw }, isScratchpad: scratchpad,
+      loadError: '', toolsVisible: true, boundsCache: new Map(), viewportReady: false,
+      onContentReady: value => ready.push(value), onDirtyChange: value => dirty.push(value) };
+    loadInk.call(view);
+    assert.equal(view.loadedRaw, raw); assert.equal(view.note.strokes, raw); assert.equal(view.note.scratchpadStrokes, raw);
+    assert.equal(view.strokes.length, 0); assert.ok(view.loadError); assert.equal(view.toolsVisible, false);
+    assert.equal(view.saveRevision, 0); assert.deepEqual(dirty, [false]); assert.deepEqual(ready, [false]);
+  }
+});
+
+test('damaged unchanged whiteboards and scratchpads allow reader return without writing empty data', async () => {
+  const save = viewMethod('views/reader/HandwritingCanvas.ets', 'saveForExit');
+  for (const scratchpad of [false, true]) {
+    let writes = 0; const finished = []; const raw = '{broken ink}';
+    const view = { isScratchpad: scratchpad, note: { id: 'ink', strokes: raw, scratchpadStrokes: raw }, loadedNoteId: 'ink',
+      exitSaveToken: 8, saveRevision: 0, saveTimer: -1, loadError: 'error', loadedRaw: raw,
+      finishStroke() {}, strokeSnapshot() { throw Error('must not generate empty snapshot'); },
+      onCommitForExit: async () => { writes++; }, onSaveStateChange() {},
+      onExitSaveFinished: (...args) => finished.push(args) };
+    await save.call(view); assert.equal(writes, 0); assert.deepEqual(finished, [[true, 'ink', 8]]);
+    assert.equal(view.note.strokes, raw); assert.equal(view.note.scratchpadStrokes, raw);
+  }
+});
+
+test('damaged whiteboard saves fail when revision or original raw has changed and never overwrite the source', async () => {
+  const save = viewMethod('views/reader/HandwritingCanvas.ets', 'saveForExit');
+  for (const changed of ['revision', 'raw']) {
+    let writes = 0; const states = [], finished = [];
+    const view = { note: { id: 'ink', strokes: changed === 'raw' ? '{new broken}' : '{broken}' }, loadedNoteId: 'ink',
+      exitSaveToken: 9, saveRevision: changed === 'revision' ? 1 : 0, saveTimer: -1, loadError: 'error', loadedRaw: '{broken}',
+      finishStroke() {}, strokeSnapshot() { throw Error('must not generate empty snapshot'); },
+      onCommitForExit: async () => { writes++; }, onSaveStateChange: value => states.push(value),
+      onExitSaveFinished: (...args) => finished.push(args) };
+    await save.call(view); assert.equal(writes, 0); assert.deepEqual(finished, [[false, 'ink', 9]]);
+    assert.ok(states[0].includes('恢复'));
+  }
+});
+
+test('damaged whiteboard snapshot and autosave preserve original metadata and refuse storage writes', async () => {
+  const snapshot = viewMethod('views/reader/HandwritingCanvas.ets', 'strokeSnapshot');
+  const flush = viewMethod('views/reader/HandwritingCanvas.ets', 'flushSave');
+  const original = { id: 'ink', title: '原标题', strokes: '{broken}', scratchpadStrokes: '{broken scratch}', contentDetail: '原正文' };
+  let writes = 0; const states = [];
+  const view = { editingNote: original, loadError: 'error', title: '误改标题', strokes: [], saveTimer: 1,
+    onSaved: async () => { writes++; }, onSaveStateChange: value => states.push(value),
+    strokeSnapshot() { throw Error('autosave must not create an empty snapshot'); } };
+  assert.deepEqual(plain(snapshot.call(view)), original);
+  await flush.call(view); assert.equal(writes, 0); assert.equal(view.saveTimer, -1); assert.ok(states[0].includes('恢复'));
+});
+
+test('restoring an unreadable whiteboard with the same note ID reloads and re-enables content without losing the original failure data', () => {
+  const changed = viewMethod('views/reader/HandwritingCanvas.ets', 'onNoteChanged');
+  const repaired = JSON.stringify([validWhiteboardStroke()]); let loads = 0, redraws = 0;
+  const view = { note: { id: 'ink', title: '恢复笔记', strokes: repaired }, loadedNoteId: 'ink', loadedRaw: '{broken}',
+    loadError: 'error', saveRevision: 0, loadStrokes: () => loads++, redrawAll: () => redraws++ };
+  changed.call(view); assert.equal(loads, 1); assert.equal(redraws, 1); assert.equal(view.editingNote.strokes, repaired);
+  assert.equal(view.title, '恢复笔记');
+});
+
+test('a stylus takeover completes finger ink before acquiring the new pen pointer', () => {
+  const handle = viewMethod('views/reader/HandwritingCanvas.ets', 'handleTouch', { ...penEnums, CanvasViewport });
+  const order = []; const view = { navigateTouch: () => false, readOnly: false, loadError: '',
+    input: { isActive: () => true, isPenActive: () => false, read: () => { order.push('read new pen'); return { phase: 'ignore' }; } },
+    finishStroke: () => order.push('finish old finger') };
+  handle.call(view, touchEvent(0, 7, 2)); assert.deepEqual(order, ['finish old finger', 'read new pen']);
 });

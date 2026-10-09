@@ -175,15 +175,15 @@ export class NoteStorageService {
       };
     } catch (error) {
       console.error(`文件导入失败: ${JSON.stringify(error)}`);
-      return { status: 'failed', message: '文件导入失败，请检查文件权限或重试' };
+      return { status: 'failed', message: error instanceof Error ? error.message : '文件导入失败，请检查文件权限或重试' };
     }
   }
 
   /** Imports a real bundled PDF only after an explicit user action. */
-  async importExamplePdf(context: Context): Promise<DocumentTransferResult> {
+  async importExamplePdf(context: Context, snapshot: boolean = false): Promise<DocumentTransferResult> {
     try {
-      const path = await PdfDocumentService.getInstance().saveBundledExample(context);
-      return await this.importPdfCopy(context, path, '墨语阅读测试.pdf', `example_${Date.now()}_${Math.floor(Math.random() * 1000000)}`);
+      const path = await PdfDocumentService.getInstance().saveBundledExample(context, snapshot);
+      return await this.importPdfCopy(context, path, snapshot ? '墨语快照测试.pdf' : '墨语阅读测试.pdf', `example_${Date.now()}_${Math.floor(Math.random() * 1000000)}`);
     } catch (error) {
       return { status: 'failed', message: error instanceof Error ? error.message : '测试 PDF 导入失败' };
     }
@@ -192,7 +192,7 @@ export class NoteStorageService {
   private async importPdfCopy(context: Context, savedPath: string, fileName: string, id: string): Promise<DocumentTransferResult> {
     let count: number = 0;
     try {
-      count = (await PdfDocumentService.getInstance().getPdfInfo(savedPath)).pageCount;
+      count = (await PdfDocumentService.getInstance().validateImport(savedPath)).pageCount;
     } catch (error) {
       try { await fileIo.unlink(savedPath); } catch { /* 不残留失败导入文件 */ }
       return { status: 'failed', message: error instanceof Error ? error.message : 'PDF 读取失败' };
@@ -213,6 +213,33 @@ export class NoteStorageService {
     return { status: 'imported', document: this.documentFor(context, note, note.contentDetail),
       fileName: fileName, noteType: 'PDF', sourceUri: savedPath, pageCount: count,
       message: '已导入 PDF「' + fileName + '」' };
+  }
+
+  /** Reattach a user-selected original without creating another note or changing saved annotations. */
+  async selectReplacementPdf(context: Context, note: NoteItem): Promise<NoteItem | null> {
+    const options = new picker.DocumentSelectOptions();
+    options.maxSelectNumber = 1; options.fileSuffixFilters = ['.pdf'];
+    const uris = await new picker.DocumentViewPicker(context).select(options);
+    if (!uris.length) { return null; }
+    const service = PdfDocumentService.getInstance();
+    const path = await service.savePdfToSandbox(context, uris[0], this.fileNameFromUri(uris[0]));
+    try {
+      const info = await service.validateImport(path);
+      const hasAnnotations = typeof note.pageAnnotations === 'string' && note.pageAnnotations.length > 0;
+      if (hasAnnotations && note.pageCount && info.pageCount !== note.pageCount) {
+        throw new Error(`所选 PDF 为 ${info.pageCount} 页，与现有 ${note.pageCount} 页批注不一致。请选择原文件；其他资料请单独导入。`);
+      }
+      const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
+      updated.sourceUri = path; updated.sourceType = 'pdf'; updated.type = 'PDF';
+      updated.pageCount = info.pageCount; updated.pageInfo = `${info.pageCount} 页`;
+      updated.documentMeta = JSON.stringify(info); updated.updatedAt = Date.now();
+      // Page count alone cannot prove this is the same content. Rebuild reviewed page text from the selected original.
+      updated.pdfTextJson = undefined;
+      return updated;
+    } catch (error) {
+      try { await service.removeManagedPdf(context, path); } catch { /* No existing source is deleted. */ }
+      throw new Error(error instanceof Error ? error.message : '原 PDF 未能关联');
+    }
   }
 
 

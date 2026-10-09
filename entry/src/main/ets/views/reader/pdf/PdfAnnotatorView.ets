@@ -25,6 +25,7 @@ import {
 } from '../../../common/types/PdfAnnotationTypes';
 import { PdfPageCanvas } from './PdfPageCanvas';
 import { PdfDocumentService } from '../../../services/document/PdfDocumentService';
+import { PdfAnnotationPolicy } from '../../../services/document/PdfAnnotationPolicy';
 import { InkRenderer } from '../../../services/ink/InkRenderer';
 import { StylusShortcutService } from '../../../services/ink/StylusShortcutService';
 
@@ -40,15 +41,18 @@ export struct PdfAnnotatorView {
   @Prop @Watch('onCurrentPageChanged') currentPage: number = 1;
   @Prop @Watch('saveForExit') exitSaveToken: number = 0;
   onCommitForExit: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
-  onExitSaveFinished: (ok: boolean) => void = () => {};
+  onExitSaveFinished: (ok: boolean, noteId: string, saveToken: number) => void = () => {};
   @Prop barsVisible: boolean = true;
-  @Prop isContinuousScroll: boolean = true;
+  @Prop @Watch('finishActiveInput') isContinuousScroll: boolean = true;
   onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onSaveStateChange: (state: string) => void = () => {};
   onDirtyChange: (dirty: boolean) => void = () => {};
   onReadingScroll: (offset: number) => void = () => {};
   onBlankTap: () => void = () => {};
   onPageChanged: (page: number) => void = () => {};
+  onRestoreSource: () => void = () => {};
+  onSourceReady: (ready: boolean) => void = () => {};
+  onAnnotationError: (message: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
@@ -87,11 +91,20 @@ export struct PdfAnnotatorView {
   private savedRevision: number = 0;
   private loadedNoteId: string = '';
   private editingNote: NoteItem | null = null;
+  private activeInputFinisher: (() => void) | null = null;
+  private activeInputPage: number = -1;
+  private readyPages: Record<number, boolean> = {};
+  private loadedSource: string = '';
+  private loadedPageCount: number = 0;
+  @State private annotationError: string = '';
+  private loadedAnnotationRaw: string | undefined = undefined;
 
   onCurrentPageChanged(): void {
     const idx = Math.max(0, Math.min(this.pages.length - 1, this.currentPage - 1));
     if (idx === this.currentPageIdx) { return; }
+    this.finishActiveInput();
     this.currentPageIdx = idx;
+    this.onSourceReady(this.readyPages[idx] === true && !this.annotationError);
     try {
       this.scroller.scrollToIndex(idx, true, ScrollAlign.START);
     } catch (e) {
@@ -106,11 +119,12 @@ export struct PdfAnnotatorView {
   }
 
   aboutToAppear(): void {
-    this.shortcuts.start(() => this.isAnnotateMode && !this.inkContact, this.onToggleEraser, this.onShowPenTools);
+    this.shortcuts.start(() => this.isAnnotateMode && !this.annotationError && this.readyPages[this.currentPageIdx] === true && !this.inkContact, this.onToggleEraser, this.onShowPenTools);
     this.loadedNoteId = this.note.id;
     this.editingNote = JSON.parse(JSON.stringify(this.note)) as NoteItem;
     this.initPages();
     this.loadAnnotations();
+    this.loadedSource = this.note.sourceUri || ''; this.loadedPageCount = this.pages.length;
   }
 
   aboutToDisappear(): void {
@@ -122,7 +136,16 @@ export struct PdfAnnotatorView {
   }
 
   onNoteChanged(): void {
-    if (this.loadedNoteId === this.note.id) { return; }
+    if (this.loadedNoteId === this.note.id) {
+      if (this.loadedSource !== (this.note.sourceUri || '') || this.loadedPageCount !== this.note.pageCount) {
+        this.finishActiveInput(); this.editingNote = JSON.parse(JSON.stringify(this.note)) as NoteItem;
+        this.readyPages = {}; this.onSourceReady(false); this.initPages();
+        this.loadedSource = this.note.sourceUri || ''; this.loadedPageCount = this.pages.length;
+        this.currentPageIdx = Math.max(0, Math.min(this.currentPageIdx, this.pages.length - 1));
+      }
+      return;
+    }
+    this.finishActiveInput();
     this.finishErase(false);
     if (this.saveTimer !== -1) { clearTimeout(this.saveTimer); this.flushSave(); }
     this.loadedNoteId = this.note.id;
@@ -132,6 +155,8 @@ export struct PdfAnnotatorView {
     this.zoomScale = 1; this.currentPageIdx = 0;
     this.initPages();
     this.loadAnnotations();
+    this.readyPages = {}; this.onSourceReady(false);
+    this.loadedSource = this.note.sourceUri || ''; this.loadedPageCount = this.pages.length;
   }
 
   /** 根据文档真实页数与标题动态生成排版页面 */
@@ -143,19 +168,15 @@ export struct PdfAnnotatorView {
   /** 从笔记中加载归一化矢量批注 */
   private loadAnnotations(): void {
     this.saveRevision = 0; this.savedRevision = 0; this.onDirtyChange(false);
-    const raw = this.note.pageAnnotations;
-    if (raw && raw.length > 0) {
-      try {
-        const parsed = JSON.parse(raw) as DocumentAnnotationData;
-        if (parsed && parsed.pages) {
-          this.pageStrokes = parsed.pages;
-          return;
-        }
-      } catch (e) {
-        console.error(`加载文档批注数据失败: ${JSON.stringify(e)}`);
-      }
+    this.annotationError = ''; this.onAnnotationError('');
+    this.loadedAnnotationRaw = this.note.pageAnnotations;
+    try {
+      this.pageStrokes = PdfAnnotationPolicy.read(this.note.pageAnnotations, this.pages.length).pages;
+    } catch (error) {
+      this.pageStrokes = {};
+      this.annotationError = error instanceof Error ? error.message : '批注数据无法读取，原记录已保留。';
+      this.onAnnotationError(this.annotationError); this.onSourceReady(false); this.onSaveStateChange('批注数据异常');
     }
-    this.pageStrokes = { 0: [], 1: [] };
   }
 
   private remember(pageIndex: number, before: PageAnnotationStroke[], after: PageAnnotationStroke[]): void {
@@ -165,6 +186,7 @@ export struct PdfAnnotatorView {
   }
 
   private handleStrokeAdded(stroke: PageAnnotationStroke): void {
+    if (this.annotationError) { return; }
     const before = this.pageStrokes[stroke.pageIndex] || [];
     const after = [...before, stroke];
     this.remember(stroke.pageIndex, before, after);
@@ -172,6 +194,7 @@ export struct PdfAnnotatorView {
   }
 
   private beginErase(pageIndex: number): void {
+    if (this.annotationError) { return; }
     this.erasePage = pageIndex; this.eraseBefore = (this.pageStrokes[pageIndex] || []).slice();
   }
 
@@ -200,12 +223,14 @@ export struct PdfAnnotatorView {
   }
 
   private handleUndo(): void {
+    this.finishActiveInput();
     const frame = this.undoStack.pop();
     if (!frame) { return; }
     this.pageStrokes[frame.pageIndex] = frame.before.slice(); this.redoStack.push(frame); this.scheduleSave();
   }
 
   onRedoTriggered(): void {
+    this.finishActiveInput();
     const frame = this.redoStack.pop();
     if (!frame) { return; }
     this.pageStrokes[frame.pageIndex] = frame.after.slice(); this.undoStack.push(frame); this.scheduleSave();
@@ -213,6 +238,7 @@ export struct PdfAnnotatorView {
 
   onUndoTriggered(): void { this.handleUndo(); }
   onClearTriggered(): void {
+    this.finishActiveInput();
     const page = this.currentPageIdx; const before = this.pageStrokes[page] || [];
     if (!before.length) { return; }
     this.remember(page, before, []); this.pageStrokes[page] = []; this.scheduleSave();
@@ -220,6 +246,7 @@ export struct PdfAnnotatorView {
 
   /** 计划防抖自动落盘 */
   private scheduleSave(): void {
+    if (this.annotationError) { return; }
     this.saveRevision++;
     this.onDirtyChange(true);
     if (this.saveTimer !== -1) {
@@ -234,6 +261,7 @@ export struct PdfAnnotatorView {
   /** 序列化并存入 NoteItem.pageAnnotations */
   private async flushSave(): Promise<void> {
     this.saveTimer = -1;
+    if (this.annotationError) { this.onSaveStateChange('批注数据异常'); return; }
     const revision = this.saveRevision;
     const updatedNote = this.annotationSnapshot();
     try { await this.onSaved(updatedNote, updatedNote.contentDetail, 'pdf'); if (revision === this.saveRevision && updatedNote.id === this.loadedNoteId) { this.savedRevision = revision; this.onDirtyChange(false); this.onSaveStateChange('已保存'); } }
@@ -241,18 +269,30 @@ export struct PdfAnnotatorView {
   }
 
   private async saveForExit(): Promise<void> {
+    const requestToken = this.exitSaveToken;
+    if (this.annotationError) {
+      this.onSaveStateChange('批注数据异常');
+      // A read-only invalid record can leave alongside a saved scratchpad without rewriting its original bytes.
+      const untouched = this.saveRevision === 0 && this.loadedAnnotationRaw === this.note.pageAnnotations;
+      this.onExitSaveFinished(untouched, this.loadedNoteId, requestToken); return;
+    }
+    this.finishActiveInput();
     if (this.saveTimer !== -1) { clearTimeout(this.saveTimer); this.saveTimer = -1; }
+    const revision = this.saveRevision;
     const snapshot = this.annotationSnapshot();
     try {
       await this.onCommitForExit(snapshot, snapshot.contentDetail, 'pdf');
-      this.onExitSaveFinished(true);
+      if (snapshot.id !== this.loadedNoteId || revision !== this.saveRevision) { this.onExitSaveFinished(false, snapshot.id, requestToken); return; }
+      this.savedRevision = revision; this.onDirtyChange(false); this.onSaveStateChange('已保存');
+      this.onExitSaveFinished(true, snapshot.id, requestToken);
     } catch {
-      this.onSaveStateChange('保存失败');
-      this.onExitSaveFinished(false);
+      if (snapshot.id === this.loadedNoteId && revision === this.saveRevision) { this.onSaveStateChange('保存失败'); }
+      this.onExitSaveFinished(false, snapshot.id, requestToken);
     }
   }
 
   private annotationSnapshot(): NoteItem {
+    if (this.annotationError) { throw new Error(this.annotationError); }
     const data: DocumentAnnotationData = {
       version: 1,
       pageCount: this.pages.length,
@@ -262,6 +302,31 @@ export struct PdfAnnotatorView {
     const updatedNote = JSON.parse(JSON.stringify(this.editingNote || this.note)) as NoteItem;
     updatedNote.pageAnnotations = serialized;
     return updatedNote;
+  }
+
+  private finishActiveInput(): void {
+    const finish = this.activeInputFinisher;
+    this.activeInputFinisher = null; this.activeInputPage = -1;
+    if (finish !== null) { finish(); }
+  }
+
+  private setActiveInputFinisher(pageIndex: number, finish: (() => void) | null): void {
+    if (finish === null) {
+      if (this.activeInputPage === pageIndex) { this.activeInputFinisher = null; this.activeInputPage = -1; }
+      return;
+    }
+    if (this.activeInputPage !== pageIndex) { this.finishActiveInput(); }
+    this.activeInputPage = pageIndex; this.activeInputFinisher = finish;
+  }
+
+  private setPageSourceReady(pageIndex: number, ready: boolean): void {
+    this.readyPages[pageIndex] = ready;
+    if (pageIndex === this.currentPageIdx) { this.onSourceReady(ready && !this.annotationError); }
+  }
+
+  private setPageInkContact(pageIndex: number, active: boolean): void {
+    if (!active && this.activeInputPage !== -1 && this.activeInputPage !== pageIndex) { return; }
+    this.inkContact = active; this.onDirtyChange(active || this.saveRevision !== this.savedRevision);
   }
 
   private judgeNavigation(event: BaseGestureEvent): GestureJudgeResult {
@@ -283,7 +348,7 @@ export struct PdfAnnotatorView {
                 sourceUri: this.note.sourceUri || '',
                 useRealPdf: true,
                 strokes: this.pageStrokes[pm.pageIndex] || [],
-                isAnnotateMode: this.isAnnotateMode,
+                isAnnotateMode: this.isAnnotateMode && !this.annotationError,
                 tool: this.currentTool,
                 selectedColor: this.selectedColor,
                 selectedWidth: this.selectedWidth,
@@ -291,7 +356,10 @@ export struct PdfAnnotatorView {
                 onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
                 fingerDrawing: this.fingerDrawing,
                 onPenActive: () => this.shortcuts.claim(),
-                onInkContactChange: (active: boolean) => { this.inkContact = active; this.onDirtyChange(active || this.saveRevision !== this.savedRevision); },
+                onActiveFinisherChange: (finish: (() => void) | null) => this.setActiveInputFinisher(pm.pageIndex, finish),
+                onSourceReady: (ready: boolean) => this.setPageSourceReady(pm.pageIndex, ready),
+                onRestoreSource: () => this.onRestoreSource(),
+                onInkContactChange: (active: boolean) => this.setPageInkContact(pm.pageIndex, active),
                 onEraseStarted: () => this.beginErase(pm.pageIndex),
                 onEraseFinished: (commit: boolean) => this.finishErase(commit),
                 onEraseAtPoint: (u: number, v: number, width: number, height: number) => this.handleEraseAtPoint(pm.pageIndex, u, v, width, height)
@@ -307,6 +375,7 @@ export struct PdfAnnotatorView {
         .onScroll((offset: number) => { if (!this.inkContact && !this.isAnnotateMode) { this.onReadingScroll(offset); } })
         .onScrollIndex((start: number) => {
           this.currentPageIdx = Math.max(0, start); this.onPageChanged(this.currentPageIdx + 1);
+          this.onSourceReady(this.readyPages[this.currentPageIdx] === true && !this.annotationError);
         })
         .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
         .backgroundColor(this.palette().canvas)
@@ -328,7 +397,7 @@ export struct PdfAnnotatorView {
               sourceUri: this.note.sourceUri || '',
               useRealPdf: true,
               strokes: this.pageStrokes[this.currentPageIdx] || [],
-              isAnnotateMode: this.isAnnotateMode,
+              isAnnotateMode: this.isAnnotateMode && !this.annotationError,
               tool: this.currentTool,
               selectedColor: this.selectedColor,
               selectedWidth: this.selectedWidth,
@@ -336,7 +405,10 @@ export struct PdfAnnotatorView {
               onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
               fingerDrawing: this.fingerDrawing,
               onPenActive: () => this.shortcuts.claim(),
-              onInkContactChange: (active: boolean) => { this.inkContact = active; this.onDirtyChange(active || this.saveRevision !== this.savedRevision); },
+              onActiveFinisherChange: (finish: (() => void) | null) => this.setActiveInputFinisher(this.currentPageIdx, finish),
+              onSourceReady: (ready: boolean) => this.setPageSourceReady(this.currentPageIdx, ready),
+              onRestoreSource: () => this.onRestoreSource(),
+              onInkContactChange: (active: boolean) => this.setPageInkContact(this.currentPageIdx, active),
               onEraseStarted: () => this.beginErase(this.currentPageIdx),
               onEraseFinished: (commit: boolean) => this.finishErase(commit),
               onEraseAtPoint: (u: number, v: number, width: number, height: number) => this.handleEraseAtPoint(this.currentPageIdx, u, v, width, height)
@@ -363,6 +435,11 @@ export struct PdfAnnotatorView {
         .onScroll((_x: number, y: number) => { if (!this.inkContact && !this.isAnnotateMode) { this.onReadingScroll(y); } })
         .onClick(() => { if (!this.inkContact && !this.isAnnotateMode) { this.onBlankTap(); } })
         .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
+      }
+      if (this.annotationError.length > 0) {
+        Text(this.annotationError).fontSize(13).fontColor(this.palette().inkPrimary)
+          .padding(12).backgroundColor(this.palette().surface).borderRadius(10)
+          .margin({ left: 20, right: 20, top: 12 }).align(Alignment.Top).hitTestBehavior(HitTestMode.None)
       }
     }
     .width('100%')

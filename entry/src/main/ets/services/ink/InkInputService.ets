@@ -10,6 +10,7 @@ export class InkInputService {
 
   reset(): void { this.pointerId = -1; this.pen = false; }
   isActive(): boolean { return this.pointerId !== -1; }
+  isPenActive(): boolean { return this.pointerId !== -1 && this.pen; }
 
   read(event: TouchEvent, fingerEnabled: boolean): InkInputBatch {
     const ignored: InkInputBatch = { phase: 'ignore', samples: [], pen: false };
@@ -24,10 +25,13 @@ export class InkInputService {
     const touch = this.pointerId === -1 || event.type === TouchType.Down ? changed[0] :
       changed.find((point: TouchObject) => point.id === this.pointerId);
     if (event.type === TouchType.Cancel) {
-      if (this.pointerId === -1 || (touch && touch.id !== this.pointerId)) { return ignored; }
+      if (this.pointerId === -1 || (changed.length > 0 && !touch)) { return ignored; }
       this.reset(); return { phase: 'cancel', samples: [], pen };
     }
     if (!touch || !Number.isFinite(touch.x) || !Number.isFinite(touch.y)) { return ignored; }
+    // Repeated Down packets and unrelated pen contacts must not restart a live stroke.
+    // A real pen may take over a finger contact (palm rejection), but keeps its own ID thereafter.
+    if (event.type === TouchType.Down && this.pointerId !== -1 && (!pen || this.pen)) { return ignored; }
     if (event.type === TouchType.Down) { this.pointerId = touch.id; this.pen = pen; }
     else if (this.pointerId !== touch.id) { return ignored; }
     if (pen) { this.palmUntil = Date.now() + 700; }
@@ -36,12 +40,13 @@ export class InkInputService {
       try {
         for (const point of event.getHistoricalPoints()) {
           if (point.touchObject.id === this.pointerId && Number.isFinite(point.touchObject.x) && Number.isFinite(point.touchObject.y)) {
-            samples.push({ x: point.touchObject.x, y: point.touchObject.y, pressure: InkInputService.pressure(point.force, true) });
+            samples.push({ x: point.touchObject.x, y: point.touchObject.y,
+              pressure: pen ? InkInputService.pressure(point.force, true) : 0.5 });
           }
         }
       } catch { /* The current point still works on devices without historical reporting. */ }
     }
-    const pressure = touch.pressure !== undefined && touch.pressure > 0 ?
+    const pressure = !pen ? 0.5 : touch.pressure !== undefined && touch.pressure > 0 ?
       InkInputService.pressure(touch.pressure, true) : InkInputService.pressure(event.pressure);
     samples.push({ x: touch.x, y: touch.y, pressure });
     let phase: InkPhase = event.type === TouchType.Down ? 'begin' : event.type === TouchType.Up ? 'end' : 'move';

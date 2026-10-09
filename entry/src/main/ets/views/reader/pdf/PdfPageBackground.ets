@@ -7,6 +7,8 @@ export struct PdfPageBackground {
   @Prop @Watch('reload') sourceUri: string = '';
   @Prop @Watch('reload') pageIndex: number = 0;
   onAspectRatio: (ratio: number) => void = () => {};
+  onSourceReady: (ready: boolean) => void = () => {};
+  onRestoreSource: () => void = () => {};
   @State private bitmap: image.PixelMap | undefined = undefined;
   @State private errorMessage: string = '';
   private visible: boolean = false;
@@ -19,6 +21,7 @@ export struct PdfPageBackground {
   private releaseBitmap(): void {
     const previous = this.bitmap;
     this.bitmap = undefined;
+    this.onSourceReady(false);
     if (previous !== undefined) { previous.release().catch(() => {}); }
   }
 
@@ -31,15 +34,18 @@ export struct PdfPageBackground {
   private loadPage(): void {
     if (this.bitmap !== undefined || this.errorMessage.length > 0) { return; }
     if (this.sourceUri.length === 0) {
-      this.errorMessage = '这份资料缺少 PDF 原文件，请重新导入。';
+      this.errorMessage = '这份资料缺少 PDF 原文件。关联原文件后可恢复阅读，已保存的批注会保留。';
+      this.onSourceReady(false);
       return;
     }
     try {
       const rendered = PdfDocumentService.getInstance().renderPage(this.sourceUri, this.pageIndex);
       this.bitmap = rendered.pixelMap;
       this.onAspectRatio(rendered.aspectRatio);
-    } catch {
-      this.errorMessage = '页面读取失败，请确认文件可读且设备支持 PDFKit。';
+      this.onSourceReady(true);
+    } catch (error) {
+      this.errorMessage = error instanceof Error ? error.message : '页面读取失败，请确认文件可读且设备支持 PDFKit。';
+      this.onSourceReady(false);
     }
   }
 
@@ -49,7 +55,11 @@ export struct PdfPageBackground {
         Image(this.bitmap).width('100%').height('100%').objectFit(ImageFit.Fill).hitTestBehavior(HitTestMode.None)
       } else if (this.errorMessage.length > 0) {
         Text(this.errorMessage).fontSize(14).fontColor('#57534E').padding(16)
-        Button('重试读取').height(44).onClick(() => this.reload())
+        Button('重新关联原 PDF').height(44).onClick(() => this.onRestoreSource())
+        if (this.sourceUri.length > 0) {
+          Button('重试读取').height(44).type(ButtonType.Normal).backgroundColor('#F3F4F6')
+            .fontColor('#374151').onClick(() => this.reload())
+        }
       } else {
         LoadingProgress().width(40).height(40)
         Text('正在读取 PDF 原页…').fontSize(14).fontColor('#57534E')

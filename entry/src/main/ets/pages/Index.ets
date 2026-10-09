@@ -37,6 +37,7 @@ import {
   TRASH_RETENTION_DAYS
 } from '../common/constants/WorkspaceConstants';
 import { NoteStorageService } from '../services/NoteStorageService';
+import { PdfDocumentService } from '../services/document/PdfDocumentService';
 import { NoteCoverService } from '../services/NoteCoverService';
 import { NoteSearchService } from '../services/NoteSearchService';
 import { TodoStorageService } from '../services/TodoStorageService';
@@ -1708,12 +1709,12 @@ struct Index {
    * 通过系统文件选择器导入文档。
    * @param targetCategory 导入后归入的项目名，默认「未分类」
    */
-  private async importDocument(targetCategory: string = '未分类', example: boolean = false): Promise<NoteItem | null> {
+  private async importDocument(targetCategory: string = '未分类', example: boolean = false, snapshot: boolean = false): Promise<NoteItem | null> {
     if (this.documentImportBusy) { return null; }
     this.documentImportBusy = true;
     const context: common.UIAbilityContext = this.getAbilityContext();
     try {
-      const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context) : await this.storage.importDocument(context);
+      const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context, snapshot) : await this.storage.importDocument(context);
       if (result.status === 'imported' && result.document !== undefined) {
         const document: MarkdownDocument = result.document;
         const now: Date = new Date();
@@ -1762,11 +1763,34 @@ struct Index {
       saveDocument: async (item: NoteItem, text: string) => { await this.storage.saveDocument(this.getAbilityContext(), item, text); },
       saveNotes: (items: NoteItem[]) => this.storage.save(items),
       publish: (items: NoteItem[], saved: NoteItem) => {
-        this.notes = items; this.readingNote = saved;
+        this.notes = items;
+        if (this.readingNote.id === saved.id) { this.readingNote = saved; }
         if (this.fullScreenDocNote.id === saved.id) { this.fullScreenDocNote = saved; }
         this.refreshGraph();
       }
-    }, true, kind);
+    }, kind !== 'pdf-source', kind);
+  }
+
+  private async restoreReaderPdfSource(): Promise<void> {
+    const context = this.getAbilityContext();
+    const originalId = this.fullScreenDocNote.id;
+    const previousSource = this.fullScreenDocNote.sourceUri || '';
+    const replacement = await this.storage.selectReplacementPdf(context, this.fullScreenDocNote);
+    if (!replacement) { return; }
+    try {
+      await this.handleSaved(replacement, replacement.contentDetail, 'pdf-source');
+    } catch (error) {
+      try { await PdfDocumentService.getInstance().removeManagedPdf(context, replacement.sourceUri || ''); }
+      catch { console.warn('关联失败后的 PDF 副本清理失败'); }
+      throw new Error(error instanceof Error ? error.message : '原 PDF 关联保存失败');
+    }
+    if (this.fullScreenDocOpen && this.fullScreenDocNote.id === originalId) {
+      this.notify('原 PDF 已关联，现有批注已保留');
+    }
+    if (previousSource !== replacement.sourceUri && !this.notes.concat(this.trash).some((item: NoteItem) => item.sourceUri === previousSource)) {
+      try { await PdfDocumentService.getInstance().removeManagedPdf(context, previousSource); }
+      catch { console.warn('旧 PDF 副本清理失败'); }
+    }
   }
 
   private formatTime(date: Date): string {
@@ -1813,6 +1837,7 @@ struct Index {
         exitRequestToken: this.settingsExitToken, onExitConfirmed: () => this.completeSettingsExit(),
         onOpenLibrary: () => { this.activeNav = NAV_LIBRARY; },
         onImportExample: () => this.importDocument('示例资料', true),
+        onImportSnapshot: () => this.importDocument('示例资料', true, true),
         onOpenCapture: () => { this.smartExtractVisible = true; },
         onOpenBackup: () => { this.backupVisible = true; }, onOpenPrivacy: () => { this.privacyVisible = true; } })
     } else if (this.readingOpen) {
@@ -2251,6 +2276,7 @@ struct Index {
       if (this.fullScreenDocOpen) {
         HuaweiDocWorkspace({
           note: this.fullScreenDocNote,
+          onRestorePdfSource: () => this.restoreReaderPdfSource(),
           onOpenModelSettings: () => this.openSettings('ai'),
           sourcePage: this.sourcePage,
           sourceJumpToken: this.sourceJumpToken,

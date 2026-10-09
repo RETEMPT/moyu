@@ -17,9 +17,9 @@ PAGES = [
         ('符号与表达式', ['α + β = γ     x² + y² = 1', '∫ f(x) dx = F(x) + C',
                        '标点示例：中文，句号。括号（说明）与英文 "quotes"。'])]),
     ('阅读与书写检查', '02 / WRITE', [
-        ('检查顺序', ['1. 在设置 - 资料库手动导入，再到“示例资料”中打开。',
+        ('检查顺序', ['1. 在设置 - 使用指南主动导入，再到“示例资料”中打开。',
                     '2. 默认只读；点击批注，使用画笔、荧光笔和橡皮擦。',
-                    '3. 保存后退出，重新进入检查笔迹与原页面。',
+                    '3. 批注中返回应先回到只读，再次返回才关闭资料。',
                     '4. 提取并校对文字，然后在墨客引用此文件检索原文。']),
         ('空白练习区域', ['在下方书写一段笔记，测试缩放、撤销与重做。']),
         ('说明', ['此文档为墨语原创测试资料，不包含试卷、私人信息或模型密钥。',
@@ -75,7 +75,7 @@ def main():
     reader = PdfReader(output)
     assert len(reader.pages) == 2
     assert '中文' in reader.pages[0].extract_text()
-    assert '重新进入' in reader.pages[1].extract_text()
+    assert '再次返回' in reader.pages[1].extract_text()
     for page in reader.pages:
         fonts = page['/Resources']['/Font'].get_object().values()
         assert any('/FontFile2' in f.get_object()['/FontDescriptor'].get_object()

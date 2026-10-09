@@ -18,6 +18,8 @@ import { InkInputService, InkSample } from '../../services/ink/InkInputService';
 import { InkRenderer, InkStyle } from '../../services/ink/InkRenderer';
 import { StylusShortcutService } from '../../services/ink/StylusShortcutService';
 import { CanvasViewport, InkBounds } from '../../services/ink/CanvasViewport';
+import { CanvasPaperGuides } from '../../services/ink/CanvasPaperGuides';
+import { CanvasStrokePolicy } from '../../services/ink/CanvasStrokePolicy';
 import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
 
@@ -37,31 +39,37 @@ export struct HandwritingCanvas {
   @Prop isScratchpad: boolean = false;
   @Prop persistOnDisappear: boolean = false;
   @Prop @Watch('onReadOnlyChanged') readOnly: boolean = false;
+  @Prop @Watch('requestRedraw') paperBackground: string = 'blank';
   @Prop @Watch('saveForExit') exitSaveToken: number = 0;
   onCommitForExit: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
-  onExitSaveFinished: (ok: boolean) => void = () => {};
+  onExitSaveFinished: (ok: boolean, noteId: string, saveToken: number) => void = () => {};
   onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onSaveStateChange: (state: string) => void = () => {};
   onDirtyChange: (dirty: boolean) => void = () => {};
   onReadingScroll: (offset: number) => void = () => {};
   onBlankTap: () => void = () => {};
+  onContentReady: (ready: boolean) => void = () => {};
 
-  @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindDarkMode') @Watch('requestRedraw') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') @Watch('requestRedraw') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   // 画布上下文
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
   private context: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
+  private paperContext: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
 
   // 笔迹数据
   @State strokes: CanvasStroke[] = [];
+  @State loadError: string = '';
+  private loadedRaw: string | undefined = undefined;
   @State selectedColor: string = '#1C1917';
   @State selectedWidth: number = 3;
   @State isHighlighter: boolean = false;
   @State isEraser: boolean = false;
   private currentStroke: CanvasStroke | null = null;
-  @State fingerDrawing: boolean = false;
+  // Whiteboards remain usable without a paired stylus. The hand toggle enables browsing instead.
+  @State fingerDrawing: boolean = true;
   @State inkContact: boolean = false;
   @State toolsVisible: boolean = false;
   @State zoomScale: number = 1;
@@ -96,7 +104,7 @@ export struct HandwritingCanvas {
 
   aboutToAppear(): void {
     this.editingNote = JSON.parse(JSON.stringify(this.editingNote || this.note)) as NoteItem;
-    this.shortcuts.start(() => !this.readOnly && !this.inkContact, () => this.toggleEraser(), () => { this.toolsVisible = true; });
+    this.shortcuts.start(() => !this.readOnly && !this.loadError && !this.inkContact, () => this.toggleEraser(), () => { this.toolsVisible = true; });
     this.loadedNoteId = this.note.id;
     this.title = this.note.title;
     this.selectedColor = this.isDarkMode ? '#F5F5F4' : '#1C1917';
@@ -104,7 +112,14 @@ export struct HandwritingCanvas {
   }
 
   onNoteChanged(): void {
-    if (this.loadedNoteId === this.note.id) { return; }
+    if (this.loadedNoteId === this.note.id) {
+      const raw = this.isScratchpad ? this.note.scratchpadStrokes : this.note.strokes;
+      if (this.loadError && this.saveRevision === 0 && raw !== this.loadedRaw) {
+        this.editingNote = JSON.parse(JSON.stringify(this.note)) as NoteItem;
+        this.title = this.note.title; this.loadStrokes(); this.redrawAll();
+      }
+      return;
+    }
     this.finishStroke();
     if (this.saveTimer !== -1) { clearTimeout(this.saveTimer); this.flushSave(); }
     this.editingNote = JSON.parse(JSON.stringify(this.note)) as NoteItem;
@@ -127,20 +142,37 @@ export struct HandwritingCanvas {
   }
 
   private async saveForExit(): Promise<void> {
+    const requestToken = this.exitSaveToken;
     this.finishStroke();
     if (this.saveTimer !== -1) { clearTimeout(this.saveTimer); this.saveTimer = -1; }
+    if (this.loadError) {
+      const raw = this.isScratchpad ? this.note.scratchpadStrokes : this.note.strokes;
+      const unchanged = this.saveRevision === 0 && raw === this.loadedRaw;
+      if (!unchanged) { this.onSaveStateChange('笔迹无法保存，请先从备份恢复'); }
+      // An unchanged damaged scratchpad must not block saving the main document, or be rewritten as empty ink.
+      this.onExitSaveFinished(unchanged, this.loadedNoteId, requestToken);
+      return;
+    }
+    const revision = this.saveRevision;
     const snapshot = this.strokeSnapshot();
     try {
       await this.onCommitForExit(snapshot, snapshot.contentDetail, this.isScratchpad ? 'scratchpad' : 'handwriting');
-      this.onExitSaveFinished(true);
+      if (revision !== this.saveRevision || snapshot.id !== this.loadedNoteId) {
+        this.onExitSaveFinished(false, snapshot.id, requestToken); return;
+      }
+      this.savedRevision = revision;
+      this.onDirtyChange(false);
+      this.onSaveStateChange('已保存');
+      this.onExitSaveFinished(true, snapshot.id, requestToken);
     } catch {
-      this.onSaveStateChange('保存失败');
-      this.onExitSaveFinished(false);
+      if (revision === this.saveRevision && snapshot.id === this.loadedNoteId) { this.onSaveStateChange('保存失败'); }
+      this.onExitSaveFinished(false, snapshot.id, requestToken);
     }
   }
 
   private strokeSnapshot(): NoteItem {
     const snapshot = JSON.parse(JSON.stringify(this.editingNote || this.note)) as NoteItem;
+    if (this.loadError) { return snapshot; }
     if (this.isScratchpad) {
       snapshot.scratchpadStrokes = JSON.stringify(this.strokes);
     } else {
@@ -154,20 +186,18 @@ export struct HandwritingCanvas {
 
   private loadStrokes(): void {
     const rawStrokes = this.isScratchpad ? this.note.scratchpadStrokes : this.note.strokes;
-    if (rawStrokes && rawStrokes.length > 0) {
-      try {
-        this.strokes = JSON.parse(rawStrokes) as CanvasStroke[];
-      } catch (e) {
-        console.error(`解析笔迹数据失败: ${JSON.stringify(e)}`);
-        this.strokes = [];
-      }
-    } else {
-      this.strokes = [];
+    this.loadedRaw = rawStrokes; this.loadError = '';
+    try { this.strokes = CanvasStrokePolicy.parse(rawStrokes); }
+    catch {
+      console.error('白板笔迹读取失败，原始数据已保留');
+      this.strokes = []; this.loadError = '笔迹数据无法读取，原始内容已保留。请从备份恢复后继续编辑。';
+      this.toolsVisible = false;
     }
 
     this.boundsCache.clear(); this.panX = 0; this.panY = 0;
     if (this.viewportReady) { this.zoomScale = this.canvasWidth / CanvasViewport.REFERENCE_WIDTH; }
     this.saveRevision = 0; this.savedRevision = 0; this.onDirtyChange(false);
+    this.onContentReady(!this.loadError);
   }
 
   /** 向下动态延展画布 */
@@ -184,17 +214,36 @@ export struct HandwritingCanvas {
     if (!this.context || this.canvasWidth <= 0 || this.canvasHeight <= 0) {
       return;
     }
+    this.drawPaperBackground();
     this.context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
 
     // 绘制全部历史笔迹
     for (let i = 0; i < this.strokes.length; i++) {
       this.drawSingleStroke(this.strokes[i]);
     }
-
+    // A queued viewport redraw must not bring ink back under an active eraser.
+    const active = this.currentStroke;
+    if (active && active.isEraser && active.points.length) {
+      this.context.save(); this.context.translate(this.panX, this.panY); this.context.scale(this.zoomScale, this.zoomScale);
+      InkRenderer.stroke(this.context, active.points, this.style(active)); this.context.restore();
+    }
   }
 
   private style(stroke: CanvasStroke): InkStyle {
     return { color: stroke.color, width: stroke.width, highlighter: stroke.isHighlighter, eraser: stroke.isEraser };
+  }
+
+  private drawPaperBackground(): void {
+    this.paperContext.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
+    const lines = CanvasPaperGuides.lines(this.canvasWidth, this.canvasHeight, this.zoomScale, this.panX, this.panY, this.paperBackground);
+    if (!lines.length) { return; }
+    this.paperContext.save(); this.paperContext.globalAlpha = 0.65;
+    this.paperContext.strokeStyle = this.palette().border; this.paperContext.lineWidth = 0.7;
+    this.paperContext.beginPath();
+    for (const line of lines) {
+      this.paperContext.moveTo(line.x1, line.y1); this.paperContext.lineTo(line.x2, line.y2);
+    }
+    this.paperContext.stroke(); this.paperContext.restore();
   }
 
   private drawSingleStroke(stroke: CanvasStroke): void {
@@ -213,6 +262,8 @@ export struct HandwritingCanvas {
   }
 
   private toggleEraser(): void {
+    if (this.readOnly || this.loadError) { return; }
+    this.shortcuts.claim();
     this.finishStroke(); this.isEraser = !this.isEraser;
   }
 
@@ -222,7 +273,7 @@ export struct HandwritingCanvas {
 
   private finishStroke(): void {
     const stroke = this.currentStroke;
-    if (stroke && stroke.points.length) {
+    if (!this.loadError && stroke && stroke.points.length) {
       this.remember(); this.strokes = [...this.strokes, stroke];
       this.liveContext.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
       this.drawSingleStroke(stroke); this.scheduleSave();
@@ -232,7 +283,10 @@ export struct HandwritingCanvas {
 
   private handleTouch(event: TouchEvent): void {
     if (this.navigateTouch(event)) { return; }
-    if (this.readOnly) { return; }
+    if (this.readOnly || this.loadError) { return; }
+    if (event.sourceTool === SourceTool.Pen && event.type === TouchType.Down && this.input.isActive() && !this.input.isPenActive()) {
+      this.finishStroke();
+    }
     const batch = this.input.read(event, this.fingerDrawing);
     if (batch.phase === 'ignore') { return; }
     event.stopPropagation();
@@ -282,6 +336,7 @@ export struct HandwritingCanvas {
   }
 
   private scheduleSave(): void {
+    if (this.loadError) { return; }
     this.saveRevision++;
     this.onDirtyChange(true);
     if (this.saveTimer !== -1) {
@@ -295,6 +350,7 @@ export struct HandwritingCanvas {
 
   private async flushSave(): Promise<void> {
     this.saveTimer = -1;
+    if (this.loadError) { this.onSaveStateChange('笔迹无法保存，请先从备份恢复'); return; }
     const revision = this.saveRevision;
     const snapshot = this.strokeSnapshot();
     try { await this.onSaved(snapshot, snapshot.contentDetail, this.isScratchpad ? 'scratchpad' : 'handwriting'); if (revision === this.saveRevision && snapshot.id === this.loadedNoteId) { this.savedRevision = revision; this.onDirtyChange(false); this.onSaveStateChange('已保存'); } }
@@ -306,6 +362,7 @@ export struct HandwritingCanvas {
   // ------------------------------------------------------------------
 
   private handleUndo(): void {
+    if (this.readOnly || this.loadError) { return; }
     this.finishStroke();
     const before = this.undoFrames.pop();
     if (!before) { return; }
@@ -314,6 +371,8 @@ export struct HandwritingCanvas {
   }
 
   private handleRedo(): void {
+    if (this.readOnly || this.loadError) { return; }
+    this.finishStroke();
     const after = this.redoFrames.pop();
     if (!after) { return; }
     this.undoFrames.push(this.strokes.slice()); this.strokes = after;
@@ -321,10 +380,13 @@ export struct HandwritingCanvas {
   }
 
   private async handleClear(): Promise<void> {
+    if (this.readOnly || this.loadError) { return; }
+    this.finishStroke();
     if (!this.strokes.length) { return; }
+    const noteId = this.loadedNoteId;
     const result = await promptAction.showDialog({ title: '清空笔迹？', message: '清空后可撤销。',
       buttons: [{ text: '取消', color: '#666666' }, { text: '清空', color: '#DC2626' }] });
-    if (result.index !== 1) { return; }
+    if (result.index !== 1 || this.readOnly || this.loadError || noteId !== this.loadedNoteId) { return; }
     this.finishStroke(); this.remember(); this.strokes = [];
     this.redrawAll(); this.scheduleSave();
   }
@@ -334,6 +396,7 @@ export struct HandwritingCanvas {
   // ------------------------------------------------------------------
 
   private selectPen(): void {
+    if (this.readOnly || this.loadError) { return; }
     this.finishStroke();
     if (this.isHighlighter) {
       this.selectedColor = this.isDarkMode ? '#F5F5F4' : '#1C1917'; this.selectedWidth = 3;
@@ -342,6 +405,7 @@ export struct HandwritingCanvas {
   }
 
   private selectHighlighter(): void {
+    if (this.readOnly || this.loadError) { return; }
     this.finishStroke(); this.isEraser = false; this.isHighlighter = true;
     this.selectedColor = '#EAB308'; this.selectedWidth = 14;
   }
@@ -368,7 +432,7 @@ export struct HandwritingCanvas {
       }
     }.width(56).height(56).padding(0).borderRadius(10)
       .backgroundColor(selected ? this.palette().accentSoft : Color.Transparent)
-      .accessibilityText(label).bindTips(label).onClick(action)
+      .accessibilityText(label).bindTips(label).onClick(() => { this.shortcuts.claim(); action(); })
   }
 
   @Builder
@@ -378,7 +442,7 @@ export struct HandwritingCanvas {
         if (this.isScratchpad) {
           Text('随堂草稿').fontSize(14).fontWeight(FontWeight.Medium)
             .fontColor(this.palette().inkPrimary).layoutWeight(1)
-        } else if (this.readOnly) {
+        } else if (this.readOnly || this.loadError) {
           Text(this.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).layoutWeight(1).maxLines(1)
         } else {
           TextInput({ text: this.title, placeholder: '笔记标题' })
@@ -386,14 +450,14 @@ export struct HandwritingCanvas {
             .backgroundColor(Color.Transparent).padding(0).height(44).layoutWeight(1)
             .onChange((value: string) => { this.title = value; this.scheduleSave(); })
         }
-        if (!this.readOnly) {
+        if (!this.readOnly && !this.loadError) {
         IconButton({ icon: $r('app.media.ic_hand'), selected: this.fingerDrawing,
           caption: '手指',
           label: this.fingerDrawing ? '关闭手指书写，仅使用手写笔' : '开启手指书写',
           onAction: () => { this.finishStroke(); this.fingerDrawing = !this.fingerDrawing; } })
         }
       }.width('100%')
-      if (!this.readOnly) {
+      if (!this.readOnly && !this.loadError) {
       Scroll() {
       Row() {
         this.inkTool($r('app.media.ic_pen'), '笔', !this.isEraser && !this.isHighlighter, () => this.selectPen())
@@ -451,6 +515,8 @@ export struct HandwritingCanvas {
       // 白纸质感手绘无限画布区 (支持向下无限滚动与动态延展)
       Stack({ alignContent: Alignment.TopStart }) {
         Column().width('100%').height('100%').backgroundColor(this.isDarkMode ? '#1C1C1E' : '#FAF9F5')
+        Canvas(this.paperContext).width('100%').height('100%').hitTestBehavior(HitTestMode.None)
+          .onReady(() => this.requestRedraw())
         Canvas(this.context).width('100%').height('100%').hitTestBehavior(HitTestMode.None)
         Canvas(this.liveContext).width('100%').height('100%')
           .opacity(this.isHighlighter && !this.isEraser ? 0.35 : 1)
@@ -464,6 +530,13 @@ export struct HandwritingCanvas {
           })
           .onTouch((event: TouchEvent) => this.handleTouch(event))
           .onClick(() => { if (this.readOnly && !this.inkContact) { this.onBlankTap(); } })
+        if (this.loadError) {
+          Column({ space: 12 }) {
+            AppIcon({ source: $r('app.media.ic_canvas'), iconSize: 32, tint: this.palette().inkSecondary })
+            Text('笔迹暂时无法读取').fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+            Text(this.loadError).fontSize(14).fontColor(this.palette().inkSecondary).textAlign(TextAlign.Center)
+          }.width('100%').height('100%').padding(24).justifyContent(FlexAlign.Center)
+        }
       }.width('100%')
       .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => {
         return event.sourceTool === SourceTool.Pen || this.inkContact || (this.fingerDrawing && !this.readOnly && event.fingerList.length === 1)

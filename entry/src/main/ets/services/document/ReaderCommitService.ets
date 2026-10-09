@@ -36,8 +36,19 @@ export class ReaderCommitService {
     const result = JSON.parse(JSON.stringify(current)) as NoteItem;
     if (kind === 'markdown') { result.title = input.title; result.contentDetail = input.contentDetail; result.previewText = input.previewText; }
     else if (kind === 'pdf') { result.pageAnnotations = input.pageAnnotations; }
+    else if (kind === 'pdf-source') {
+      result.sourceUri = input.sourceUri; result.sourceType = input.sourceType;
+      result.pageCount = input.pageCount; result.type = input.type; result.pdfTextJson = input.pdfTextJson;
+      result.pageInfo = input.pageInfo; result.documentMeta = input.documentMeta;
+    }
     else if (kind === 'scratchpad') { result.scratchpadStrokes = input.scratchpadStrokes; }
-    else { result.strokes = input.strokes; }
+    else {
+      result.strokes = input.strokes;
+      const type = current.type.toLowerCase();
+      if (['canvas', '白板', '白纸笔记', 'handwriting', '稿纸'].includes(type)) {
+        result.title = input.title; result.contentDetail = input.contentDetail; result.previewText = input.previewText;
+      }
+    }
     result.updateTime = input.updateTime; result.updatedAt = Date.now();
     if (result.createdAt === undefined) { result.createdAt = result.updatedAt; }
     return result;
