@@ -95,13 +95,14 @@ export struct Sidebar {
   onTogglePinSession: (session: ChatSession) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
   @State pressedItemId: string = '';
   @State liftedItemId: string = '';
   private suppressRowClick: boolean = false;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   /** 抽屉宽度：手机窄屏按屏宽百分比，避免几乎盖满；宽屏用固定宽度。 */
@@ -545,7 +546,7 @@ export struct Sidebar {
     Row({ space: 1 }) {
       Text('资料树')
         .fontSize(TypographyTokens.TINY)
-        .fontColor(this.sidebarMode === SIDEBAR_MODE_TREE ? Color.White : this.palette().inkSecondary)
+        .fontColor(this.sidebarMode === SIDEBAR_MODE_TREE ? this.palette().onAccent : this.palette().inkSecondary)
         .padding({ left: 8, right: 8, top: 3, bottom: 3 })
         .borderRadius(5)
         .backgroundColor(this.sidebarMode === SIDEBAR_MODE_TREE ? this.palette().accent : Color.Transparent)
@@ -553,7 +554,7 @@ export struct Sidebar {
 
       Text('对话')
         .fontSize(TypographyTokens.TINY)
-        .fontColor(this.sidebarMode === SIDEBAR_MODE_SESSIONS ? Color.White : this.palette().inkSecondary)
+        .fontColor(this.sidebarMode === SIDEBAR_MODE_SESSIONS ? this.palette().onAccent : this.palette().inkSecondary)
         .padding({ left: 8, right: 8, top: 3, bottom: 3 })
         .borderRadius(5)
         .backgroundColor(this.sidebarMode === SIDEBAR_MODE_SESSIONS ? this.palette().accent : Color.Transparent)

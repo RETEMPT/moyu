@@ -63,6 +63,7 @@ export struct AiSourcesPanel {
   onStartChatWithContext: (prefilledPrompt: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp(ASSISTANT_MODE_KEY) assistantMode: string = 'local';
 
   @State activeTab: string = 'explorer'; // 'explorer' | 'tools'
@@ -81,7 +82,7 @@ export struct AiSourcesPanel {
   @State folderOpenStates: Record<string, boolean> = {};
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private usesModel(): boolean { return REMOTE_AI_ENABLED && this.assistantMode === 'remote'; }
@@ -258,7 +259,7 @@ export struct AiSourcesPanel {
         if (this.pinnedNotes.length > 0) {
           Text(`${this.pinnedNotes.length}`)
             .fontSize(TypographyTokens.TINY)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
             .padding({ left: 4, right: 4, top: 1, bottom: 1 })
             .borderRadius(6)
             .backgroundColor(this.palette().accent)
@@ -480,7 +481,7 @@ export struct AiSourcesPanel {
               .type(ButtonType.Normal)
               .fontSize(TypographyTokens.TINY)
               .fontWeight(FontWeight.Medium)
-              .fontColor(Color.White)
+              .fontColor(this.palette().onAccent)
               .backgroundColor(this.palette().accent)
               .borderRadius(4)
               .height(26)

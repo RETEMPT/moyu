@@ -60,6 +60,7 @@ export struct HomeWorkspace {
   onNavigate: (navKey: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   @State private activeShelfFilter: ShelfFilterType = 'all';
@@ -67,7 +68,7 @@ export struct HomeWorkspace {
   @State private hoveredCardId: string = '';
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private isPdfNote(note: NoteItem): boolean {

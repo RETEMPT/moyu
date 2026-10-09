@@ -51,6 +51,7 @@ export struct PdfAnnotatorView {
   onPageChanged: (page: number) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   // 交互与工具栏状态
   @Prop isAnnotateMode: boolean = false;
@@ -101,7 +102,7 @@ export struct PdfAnnotatorView {
   @State pages: PdfPageModel[] = [];
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   aboutToAppear(): void {

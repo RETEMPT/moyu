@@ -29,8 +29,8 @@ export interface ThemeModeOption {
 /** 外观面板的选项顺序即此数组顺序 */
 export const THEME_MODE_OPTIONS: ThemeModeOption[] = [
   { mode: ThemeMode.SYSTEM, label: '跟随系统', hint: '系统切换深浅色时应用同步跟随' },
-  { mode: ThemeMode.LIGHT, label: '浅色', hint: '始终使用 Notion 白，界面固定不随系统变化' },
-  { mode: ThemeMode.DARK, label: '深色', hint: '始终使用曜石黑，界面固定不随系统变化' }
+  { mode: ThemeMode.LIGHT, label: '浅色', hint: '固定浅色，使用所选主题的纸面配色' },
+  { mode: ThemeMode.DARK, label: '深色', hint: '固定深色，使用所选主题的夜间配色' }
 ];
 
 /** 把持久化读回的任意数值收敛为合法枚举值 */

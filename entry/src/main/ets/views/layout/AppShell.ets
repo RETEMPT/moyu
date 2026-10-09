@@ -14,7 +14,7 @@ import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
 import { ChatSession } from '../../common/types/ChatSession';
-import { SAVE_IDLE } from '../../common/constants/WorkspaceConstants';
+import { SAVE_IDLE, NAV_SETTINGS } from '../../common/constants/WorkspaceConstants';
 import { GlobalTopBar } from './GlobalTopBar';
 import { Sidebar } from './Sidebar';
 import { BottomNavBar } from './BottomNavBar';
@@ -68,6 +68,7 @@ export struct AppShell {
   onTogglePinSession: (session: ChatSession) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   @State isThreeColumn: boolean = false;
   @State isTwoColumn: boolean = false;
@@ -100,7 +101,7 @@ export struct AppShell {
     if (changed) { this.onLayoutModeChange(!two, three); }
   }
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   /** 侧边栏是否常驻（双栏 / 三栏且未折叠） */
@@ -115,12 +116,12 @@ export struct AppShell {
 
   /** 上下文面板是否常驻（仅三栏） */
   private isContextDocked(): boolean {
-    return this.isThreeColumn && this.contextPanelOpen;
+    return this.activeNav !== NAV_SETTINGS && this.isThreeColumn && this.contextPanelOpen;
   }
 
   /** 上下文面板是否以浮层形式呈现（单栏 / 双栏） */
   private isContextOverlay(): boolean {
-    return !this.isThreeColumn && this.contextPanelOpen;
+    return this.activeNav !== NAV_SETTINGS && !this.isThreeColumn && this.contextPanelOpen;
   }
 
   @Builder
@@ -185,7 +186,7 @@ export struct AppShell {
             breadcrumb: this.breadcrumb,
             saveState: this.saveState,
             contextPanelOpen: this.contextPanelOpen,
-            showContextToggle: this.isTwoColumn || this.isThreeColumn || this.isPhone,
+            showContextToggle: this.activeNav !== NAV_SETTINGS && (this.isTwoColumn || this.isThreeColumn || this.isPhone),
             onToggleSidebar: this.onToggleSidebar,
             onToggleContext: this.onToggleContext,
             onOpenSearch: this.onOpenSearch,

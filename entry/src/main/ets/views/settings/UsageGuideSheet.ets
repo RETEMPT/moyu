@@ -17,16 +17,17 @@ export const GUIDE_STEPS: GuideStep[] = [
 export struct UsageGuideSheet {
   onClose: () => void = () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   build() {
     SheetOverlay({ onDismiss: this.onClose }) {
       Column({ space: 12 }) {
-        Text('使用指引').fontSize(20).fontWeight(FontWeight.Bold).fontColor(ThemeHelper.paletteOfDark(this.dark).inkPrimary).width('100%')
+        Text('使用指引').fontSize(20).fontWeight(FontWeight.Bold).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary).width('100%')
         Scroll() {
           Column({ space: 18 }) {
             ForEach(GUIDE_STEPS.filter((step: GuideStep) => REMOTE_AI_ENABLED || step.title !== '可选模型'), (step: GuideStep) => {
               Column({ space: 6 }) {
-                Text(step.title).fontSize(15).fontWeight(FontWeight.Medium).fontColor(ThemeHelper.paletteOfDark(this.dark).inkPrimary).width('100%')
-                Text(step.text).fontSize(14).lineHeight(22).fontColor(ThemeHelper.paletteOfDark(this.dark).inkSecondary).width('100%')
+                Text(step.title).fontSize(15).fontWeight(FontWeight.Medium).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary).width('100%')
+                Text(step.text).fontSize(14).lineHeight(22).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkSecondary).width('100%')
               }.width('100%')
             }, (step: GuideStep) => step.title)
           }.width('100%')

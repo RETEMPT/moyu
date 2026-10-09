@@ -40,7 +40,7 @@ function load(relative, mocks = {}, cache = new Map()) {
   vm.runInNewContext(output, { module, exports: module.exports, require: localRequire,
     console, Date, Error, Promise, setTimeout: mocks.setTimeout || setTimeout, clearTimeout: mocks.clearTimeout || clearTimeout,
     canIUse: mocks.canIUse || (() => true), AppStorage: mocks.AppStorage,
-    SourceTool: mocks.SourceTool, TouchType: mocks.TouchType }, { filename });
+    SourceTool: mocks.SourceTool, TouchType: mocks.TouchType, Curve: mocks.Curve || { EaseInOut: 'ease' } }, { filename });
   return module.exports;
 }
 
@@ -402,11 +402,11 @@ test('save without selected tasks never writes calendar or deletes unrelated rec
   assert.ok(!store.state.calls.includes('todos'));
 });
 
-function extractService({ key = '', response = '', fails = false } = {}) {
+function extractService({ key = '', response = '', fails = false, baseUrl = 'https://example.com/v1' } = {}) {
   const calls = [];
   const mocks = {
     [path.resolve(root, `${base}services/ai/ModelConfigService.ets`)]: {
-      ModelConfigService: { getInstance: () => ({ getActiveProfile: async () => ({ apiKey: key, protocol: 'openai-compat' }) }) }
+      ModelConfigService: { getInstance: () => ({ getActiveProfile: async () => ({ apiKey: key, protocol: 'openai-compat', baseUrl }) }) }
     },
     [path.resolve(root, `${base}services/ai/ModelProvider.ets`)]: {
       createProvider: () => ({ complete: async (profile, request) => {
@@ -439,7 +439,7 @@ test('AI formatting carries style instruction and preserves input instead of res
 for (const config of [{ fails: true }, { response: 'bad JSON' }, { response: '{"title":"标题"}' }]) {
   test(`AI failure falls back to original source (${JSON.stringify(config)})`, async () => {
     const { service } = extractService({ key: 'test', ...config });
-    const result = await service.extract(source);
+    const result = await service.extract(source, 'note', 'faithful', true);
     assert.equal(result.processingMode, 'local');
     assert.equal(result.rawMarkdown, source);
     assert.ok(result.processingNotice.includes('未成功'));
@@ -1585,6 +1585,13 @@ test('compatible stream provider errors and cancellation close exactly once with
   cancelled.receive('data: {"choices":[{"delta":{"content":"late"}}]}\n');assert.equal(cancelled.chunks.length,0);assert.equal(cancelled.destroyed(),1);
 });
 
+test('explicit model formatting can use a keyless loopback service while the default still performs no model request', async () => {
+  const { service, calls } = extractService({ baseUrl: 'http://127.0.0.1:11434/v1', response: '{"title":"课程","formattedMarkdown":"# 课程\\n\\n正文"}' });
+  await service.extract(source); assert.equal(calls.length, 0);
+  const result = await service.extract(source, '课程', 'faithful', true);
+  assert.equal(result.processingMode, 'ai'); assert.equal(calls.length, 1);
+});
+
 const { LocalAssistantService } = load(`${base}services/ai/LocalAssistantService.ets`);
 const localContext = (notes = [], pinned = []) => ({ notes, pinned, todos: [] });
 test('offline assistant works with an empty workspace without any platform or network dependency', async () => {
@@ -2133,4 +2140,237 @@ test('bundled PDF short writes and invalid resource bytes cannot leave a phantom
     if(mode==='ok'){assert.match(await pending,/^\/sandbox\/documents\/.*example-course\.pdf$/);assert.deepEqual(calls,['write','close']);}
     else {await assert.rejects(pending);assert.deepEqual(calls,mode==='short'?['write','remove','close']:[]);}
   }
+});
+
+const { LocalTextFormatter } = load(`${base}services/smart/LocalTextFormatter.ets`);
+test('local formatting has distinct study layout without discarding code, tables, formulas or source', async () => {
+  const input = '【课程记录】\n一、基本概念\n• 第一条定义\n• 第二条定义\n\n二、例题\n```python\n    prepare = "提交代码示例"\n```\n\n| 名称 | 数量 |\n| --- | --- |\n| 实验 | 42 |\n\n$$\nx = 42\n$$\n\n$$\ny = 7\n$$';
+  const { service, calls } = extractService({ key: 'configured' });
+  const faithful = await service.extract(input, '课程', 'faithful');
+  const study = await service.extract(input, '课程', 'study');
+  assert.equal(calls.length, 0); assert.equal(study.rawMarkdown, input);
+  assert.ok(study.formattedMarkdown.includes('## 一、基本概念'));
+  assert.ok(study.formattedMarkdown.includes('- 第一条定义'));
+  assert.ok(!faithful.formattedMarkdown.includes('## 一、基本概念'));
+  assert.ok(faithful.formattedMarkdown.endsWith(input));
+  for (const fragment of ['    prepare = "提交代码示例"', '| 实验 | 42 |', '$$\nx = 42\n$$', '$$\ny = 7\n$$']) {
+    assert.ok(study.formattedMarkdown.includes(fragment), fragment);
+  }
+  assert.equal(study.tasks.length, 0);
+});
+
+test('OCR paragraph repair is opt-in and protects all structural boundaries and explicit hard breaks', () => {
+  const input = '这是一段从照片中识别出的课程内容\n继续说明具体要求。\n\nAn introduction to the subject\ncontinues here.\n\n一、学习要求\n- 完成练习\n| 课程 | 学分 |\n| 数学 | 4 |\n\n```text\n这是一段足够长的代码示例文字内容\n这里的代码不能被合并\n```\n$$\n这是足够长的公式中的说明文字\n这一行应保持独立\n$$\n这是一段指定了硬换行的普通文字  \n下一行保持独立';
+  const body = LocalTextFormatter.format(input, '记录', 'study', true);
+  assert.ok(body.includes('课程内容继续说明具体要求。'));
+  assert.ok(body.includes('subject continues here.'));
+  assert.ok(body.includes('## 一、学习要求\n- 完成练习\n| 课程 | 学分 |'));
+  assert.ok(body.includes('示例文字内容\n这里的代码不能被合并'));
+  assert.ok(body.includes('说明文字\n这一行应保持独立'));
+  assert.ok(body.includes('普通文字  \n下一行保持独立'));
+  assert.ok(LocalTextFormatter.format(input, '记录', 'faithful').endsWith(input));
+});
+
+test('unclosed code fences, matching fence lengths and indented code never become headings or tasks', () => {
+  const input = '```text\n一、提交报告\n``\n• 完成练习\n\n    二、提交材料';
+  const body = LocalTextFormatter.format(input, '笔记', 'study', true);
+  assert.ok(body.endsWith(input)); assert.equal(AiParser.fromSource(input).tasks.length, 0);
+});
+
+test('local extraction preserves leading code indentation and explicit trailing line breaks inside the original source', async () => {
+  const input = '    prepare = "提交代码示例"\n    total = 42\n\n正常正文  \n下一行';
+  const { service, calls } = extractService();
+  const result = await service.extract(input, '代码与正文', 'study', false, true);
+  assert.equal(result.rawMarkdown, input); assert.equal(result.tasks.length, 0); assert.equal(calls.length, 0);
+  assert.ok(result.formattedMarkdown.endsWith(input));
+});
+
+test('completed checkboxes, negative clauses and cancelled actions never become calendar suggestions', () => {
+  const input = '- [x] 完成课程报名\n- [X] 提交旧报告\n不需要准备材料，也不要提交重复报告。\n报名取消。\n明天提交新的实验报告。';
+  const tasks = AiParser.fromSource(input).tasks;
+  assert.equal(tasks.length, 1); assert.equal(tasks[0].title, '明天提交新的实验报告');
+});
+
+test('failed or unconfigured optional AI keeps the selected local study layout and OCR repair', async () => {
+  for (const config of [{}, { key: 'test', fails: true }]) {
+    const { service } = extractService(config);
+    const input = '一、课程介绍\n这是一段从照片中识别出的课程内容\n继续说明具体要求。';
+    const result = await service.extract(input, '课程', 'study', true, true);
+    assert.equal(result.processingMode, 'local'); assert.equal(result.rawMarkdown, input);
+    assert.ok(result.formattedMarkdown.includes('## 一、课程介绍'));
+    assert.ok(result.formattedMarkdown.includes('课程内容继续说明'));
+    assert.ok(result.processingNotice.includes('核对'));
+  }
+});
+
+test('system OCR uses block paragraphs only when all SDK characters and their order match', async () => {
+  for (const [value, blocks, expected] of [
+    ['课程介绍\n准备材料', [{ value: '课程介绍' }, { value: '准备材料' }], '课程介绍\n\n准备材料'],
+    ['课程介绍\n准备材料', [{ value: '课程介绍' }], '课程介绍\n准备材料'],
+    ['课程介绍\n准备材料', [{ value: '准备材料' }, { value: '课程介绍' }], '课程介绍\n准备材料']
+  ]) {
+    const { OcrService } = load(ocrFile, { '@kit.CoreFileKit': {}, '@kit.ImageKit': {},
+      '@kit.CoreVisionKit': { textRecognition: { recognizeText: async () => ({ value, blocks }) } } });
+    assert.equal(await OcrService.getInstance().recognizePixelMap({}), expected);
+  }
+});
+
+test('unsupported system OCR fails before file access and leaves caller-owned maps untouched', async () => {
+  const { OcrService } = load(ocrFile, { canIUse: () => false, '@kit.CoreFileKit': {}, '@kit.ImageKit': {}, '@kit.CoreVisionKit': {} });
+  await assert.rejects(OcrService.getInstance().recognizeTextFromUri('photo://image'), /可粘贴/);
+  await assert.rejects(OcrService.getInstance().recognizePixelMap({ release: () => assert.fail('caller-owned map') }), /未提供/);
+});
+
+const { paletteForStyle, normalizeThemeStyle, THEME_STYLE_OPTIONS } = load(`${base}common/theme/ThemeStyle.ets`);
+function contrastRatio(a, b) {
+  const luminance = hex => {
+    const channels = hex.slice(1).match(/../g).map(part => parseInt(part, 16) / 255)
+      .map(c => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+    return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
+  };
+  const first = luminance(a), second = luminance(b);
+  return (Math.max(first, second) + .05) / (Math.min(first, second) + .05);
+}
+for (const option of THEME_STYLE_OPTIONS) {
+  test(`${option.label} light and dark palettes have readable text and accent foregrounds`, () => {
+    for (const dark of [false, true]) {
+      const palette = paletteForStyle(dark, option.id);
+      for (const text of ['inkPrimary', 'inkSecondary', 'inkMuted']) {
+        for (const background of ['canvas', 'surface', 'surfaceSubtle', 'accentSoft', 'sidebar', 'activeBg', 'hoverBg']) {
+          assert.ok(contrastRatio(palette[text], palette[background]) >= 4.5,
+            `${option.id} ${dark} ${text}/${background}: ${contrastRatio(palette[text], palette[background])}`);
+        }
+      }
+      assert.ok(contrastRatio(palette.accent, palette.onAccent) >= 4.5);
+    }
+    assert.equal(normalizeThemeStyle(option.id), option.id);
+  });
+}
+test('legacy and corrupt theme style values resolve to the original brand palette', () => {
+  for (const value of ['', 'invalid', undefined, 42]) { assert.equal(normalizeThemeStyle(value), 'ink'); }
+});
+
+async function themeFixture(initial = {}) {
+  const values = new Map(Object.entries(initial)), app = new Map(), calls = [];
+  let fail = false;
+  const store = { get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
+    put: async (key, value) => { calls.push([key, value]); values.set(key, value); },
+    flush: async () => { calls.push('flush'); if (fail) throw Error('storage'); } };
+  const application = { setColorMode: () => {} };
+  const { ThemeManager } = load(`${base}common/theme/ThemeManager.ets`, {
+    '@kit.AbilityKit': { ConfigurationConstant: { ColorMode: { COLOR_MODE_DARK: 0, COLOR_MODE_LIGHT: 1, COLOR_MODE_NOT_SET: -1 } }, bundleManager: {} },
+    '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 24 } }, '@kit.ArkData': { preferences: { getPreferences: async () => store } },
+    AppStorage: { get: key => app.get(key), setOrCreate: (key, value) => app.set(key, value) }
+  });
+  await ThemeManager.restore({ getApplicationContext: () => application }, 1);
+  return { ThemeManager, values, app, calls, fail: value => { fail = value; } };
+}
+
+test('theme style and dark mode persist independently and restore before the first page', async () => {
+  const f = await themeFixture(); await f.ThemeManager.setStyle('blue'); await f.ThemeManager.setMode(2);
+  assert.equal(f.app.get('flowmindThemeStyle'), 'blue'); assert.equal(f.app.get('flowmindDarkMode'), true);
+  const restored = await themeFixture(Object.fromEntries(f.values));
+  assert.equal(restored.ThemeManager.currentStyle(), 'blue'); assert.equal(restored.ThemeManager.currentMode(), 2);
+  assert.equal(restored.app.get('flowmindDarkMode'), true);
+});
+
+test('failed appearance persistence rejects, restores preference cache, and does not change the published UI', async () => {
+  const f = await themeFixture(); f.fail(true);
+  await assert.rejects(f.ThemeManager.setStyle('mono')); await assert.rejects(f.ThemeManager.setMode(2));
+  await assert.rejects(f.ThemeManager.setReduceMotion(true));
+  assert.equal(f.ThemeManager.currentStyle(), 'ink'); assert.equal(f.ThemeManager.currentMode(), 0);
+  assert.equal(f.app.get('flowmindDarkMode'), false); assert.equal(f.app.get('flowmindReduceMotion'), false);
+  assert.equal(f.values.get('themeStyle'), 'ink'); assert.equal(f.values.get('themeMode'), 0);
+  f.fail(false); await f.ThemeManager.setStyle('mist'); assert.equal(f.app.get('flowmindThemeStyle'), 'mist');
+});
+
+test('rapid appearance changes commit in order and the last choice wins without mixing mode and style', async () => {
+  const f = await themeFixture();
+  await Promise.all([f.ThemeManager.setStyle('blue'), f.ThemeManager.setMode(2), f.ThemeManager.setStyle('mono'), f.ThemeManager.setReduceMotion(true)]);
+  assert.equal(f.ThemeManager.currentStyle(), 'mono'); assert.equal(f.ThemeManager.currentMode(), 2);
+  assert.equal(f.app.get('flowmindReduceMotion'), true);
+  assert.deepEqual(f.calls, [['themeStyle', 'blue'], 'flush', ['themeMode', 2], 'flush', ['themeStyle', 'mono'], 'flush', ['reduceMotion', true], 'flush']);
+});
+
+const { SettingsCatalog, SETTINGS_ENTRIES, SETTINGS_GROUPS } = load(`${base}common/constants/SettingsCatalog.ets`);
+test('settings search covers names and user vocabulary, preserves group boundaries and returns no fake matches', () => {
+  assert.equal(SettingsCatalog.search('OCR')[0].id, 'capture');
+  assert.equal(SettingsCatalog.search('浅蓝')[0].id, 'theme');
+  assert.equal(SettingsCatalog.search('deepseek API')[0].id, 'ai');
+  assert.equal(SettingsCatalog.search('恢复', 'connection')[0].id, 'backup');
+  assert.equal(SettingsCatalog.search('恢复', 'workspace').length, 0);
+  assert.equal(SettingsCatalog.search('不存在的选项').length, 0);
+  assert.equal(new Set(SETTINGS_ENTRIES.map(entry => entry.id)).size, SETTINGS_ENTRIES.length);
+  assert.ok(SETTINGS_ENTRIES.every(entry => SETTINGS_GROUPS.some(group => group.id === entry.group)));
+  assert.equal(SettingsCatalog.normalize('cloud'), 'backup'); assert.equal(SettingsCatalog.normalize('unknown'), 'overview');
+});
+
+test('settings categories and system back wait for the AI draft guard before modifying native page history', () => {
+  const navigate = viewMethod('views/settings/SettingsWorkspace.ets', 'navigate', { SettingsCatalog });
+  const applyNavigation = viewMethod('views/settings/SettingsWorkspace.ets', 'applyNavigation');
+  const calls = [], view = { section: 'ai', pendingSection: 'overview', modelCloseToken: 0, reduceMotion: true,
+    paths: { size: () => 1, replacePath: (...args) => calls.push(['replace', ...args]), clear: (...args) => calls.push(['clear', ...args]) } };
+  view.applyNavigation = () => applyNavigation.call(view);
+  navigate.call(view, 'theme'); assert.equal(view.modelCloseToken, 1); assert.equal(view.section, 'ai'); assert.equal(calls.length, 0);
+  // Only the guarded model's successful close callback allows navigation.
+  applyNavigation.call(view); assert.equal(view.section, 'theme'); assert.equal(calls[0][2], false);
+  navigate.call(view, 'overview'); assert.equal(view.section, 'overview'); assert.deepEqual(calls[1], ['clear', false]);
+});
+
+test('leaving settings through the main navigation waits for model draft confirmation and executes the selected action once', () => {
+  const requestExit = viewMethod('views/settings/SettingsWorkspace.ets', 'requestExit');
+  const applyNavigation = viewMethod('views/settings/SettingsWorkspace.ets', 'applyNavigation');
+  let confirmed = 0;
+  const view = { section: 'ai', leavePending: false, modelCloseToken: 0, onExitConfirmed: () => confirmed++ };
+  view.applyNavigation = () => applyNavigation.call(view);
+  requestExit.call(view); assert.equal(view.modelCloseToken, 1); assert.equal(confirmed, 0);
+  assert.equal(view.section, 'ai'); applyNavigation.call(view); assert.equal(confirmed, 1); assert.equal(view.leavePending, false);
+  const afterExit = viewMethod('pages/Index.ets', 'afterSettingsExit', { NAV_SETTINGS: 'settings' });
+  const complete = viewMethod('pages/Index.ets', 'completeSettingsExit', { NAV_HOME: 'home' });
+  const shell = { activeNav: 'settings', settingsExitToken: 0, settingsExitAction: null };
+  let opened = 0; afterExit.call(shell, () => opened++); assert.equal(opened, 0); assert.equal(shell.settingsExitToken, 1);
+  complete.call(shell); assert.equal(opened, 1); assert.equal(shell.activeNav, 'home'); assert.equal(shell.settingsExitAction, null);
+});
+
+test('recognition drafts retain layout choices, images and edited results while a save in progress cannot be dismissed', () => {
+  const app = new Map(), storage = { setOrCreate: (key, value) => app.set(key, value), get: key => app.get(key) };
+  const close = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'requestClose', { AppStorage: storage });
+  const appear = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'aboutToAppear', { AppStorage: storage,
+    REMOTE_AI_ENABLED: true, KeyboardAvoidMode: { RESIZE: 1 } });
+  let closed = 0;
+  const view = { step: 'result', inputText: '实际输入', imageUri: 'photo://selected', result: { id: 'actual-result' },
+    title: '校对标题', category: '课程', body: '校对正文', tasks: [], selectedTaskIds: [], includeRelations: false,
+    layoutStyle: 'study', mergeWrappedLines: true, useAi: false, requestId: 0, onClose: () => closed++ };
+  close.call(view); assert.equal(closed, 1);
+  const restored = { getUIContext: () => ({ getKeyboardAvoidMode: () => 0, setKeyboardAvoidMode: () => {} }) };
+  appear.call(restored); assert.equal(restored.layoutStyle, 'study'); assert.equal(restored.mergeWrappedLines, true);
+  assert.equal(restored.body, '校对正文'); assert.equal(restored.imageUri, 'photo://selected'); assert.equal(restored.step, 'result');
+  view.step = 'saving'; close.call(view); assert.equal(closed, 1);
+  app.set('smartExtractResultDraft', { input: '旧草稿', imageUri: '', result: null }); appear.call(restored);
+  assert.equal(restored.layoutStyle, 'faithful'); assert.equal(restored.mergeWrappedLines, false); assert.equal(restored.useAi, false);
+});
+
+const { AiProviderCatalog } = load(`${base}services/ai/AiProviderCatalog.ets`);
+test('provider catalog exposes the requested families without sharing mutable rows, keys or default consent', () => {
+  const entries = AiProviderCatalog.list();
+  for (const family of ['Seed', 'Qwen', 'DeepSeek', 'GLM']) { assert.ok(entries.some(entry => entry.label.includes(family))); }
+  for (const entry of entries) {
+    const draft = AiProviderCatalog.createDraft(entry.id, `draft-${entry.id}`);
+    assert.equal(draft.apiKey, ''); assert.equal(draft.remoteConsentVersion, undefined); assert.equal(draft.credentialRef, undefined);
+    assert.equal(draft.semanticSearch, false); assert.equal(draft.toolAccess, 'none'); assert.ok(draft.baseUrl.startsWith('https://'));
+  }
+  entries[0].baseUrl = 'https://changed.example.com'; assert.notEqual(AiProviderCatalog.list()[0].baseUrl, entries[0].baseUrl);
+  assert.equal(AiProviderCatalog.createDraft('unknown', 'new'), null);
+  assert.equal(AiProviderCatalog.createDraft('seed', ''), null);
+});
+
+test('choosing a service template creates a fresh draft and preserves the existing unsaved profile and active selection', () => {
+  const add = viewMethod('views/settings/ModelSettingsSheet.ets', 'addFromCatalog', { AiProviderCatalog });
+  const existing = profile({ id: 'existing', apiKey: 'test-existing-key' });
+  const view = { busy: false, currentId: 'existing', activeId: 'existing', profiles: [existing], drafts: new Map(), newProfiles: new Set(),
+    form: () => existing, fill(draft) { this.currentId = draft.id; }, report() {} };
+  add.call(view, AiProviderCatalog.list()[0]);
+  assert.equal(view.drafts.get('existing').apiKey, 'test-existing-key'); assert.equal(view.activeId, 'existing');
+  assert.equal(view.profiles.length, 2); assert.equal(view.profiles[1].apiKey, ''); assert.equal(view.newProfiles.size, 1);
+  assert.equal(view.sourceTab, 1); assert.equal(view.tab, 0);
 });

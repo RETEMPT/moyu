@@ -15,6 +15,7 @@ export struct StudyBackupSheet {
   onClose: () => void = () => {};
   onRestore: (note: NoteItem, cards: ReviewCard[]) => Promise<void> = async () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
   @State course: string = '';
   @State backup: StudyBackup | null = null;
@@ -30,7 +31,7 @@ export struct StudyBackupSheet {
   aboutToAppear(): void { this.alive = true; }
   aboutToDisappear(): void { this.alive = false; this.transfer.close(); }
   private closeRequested(): void { if (!this.busy) { this.onClose(); } }
-  private palette() { return ThemeHelper.paletteOfDark(this.dark); }
+  private palette() { return ThemeHelper.paletteOfDark(this.dark, this.themeStyle); }
   private async exportFile(): Promise<void> {
     if (this.busy) { return; } this.busy = true;
     try {

@@ -43,10 +43,11 @@ export struct TodoWorkspace {
   private memoTimer: number = -1;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   aboutToAppear(): void {
@@ -421,7 +422,7 @@ export struct TodoWorkspace {
         Blank()
         Text('＋ 添加待办')
           .fontSize(TypographyTokens.CAPTION)
-          .fontColor(Color.White)
+          .fontColor(this.palette().onAccent)
           .padding({ left: 12, right: 12, top: 6, bottom: 6 })
           .borderRadius(6)
           .backgroundColor(this.palette().accent)

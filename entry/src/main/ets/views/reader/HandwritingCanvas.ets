@@ -47,6 +47,7 @@ export struct HandwritingCanvas {
   onBlankTap: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   // 画布上下文
@@ -90,7 +91,7 @@ export struct HandwritingCanvas {
   private boundsCache: Map<CanvasStroke, InkBounds> = new Map();
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   aboutToAppear(): void {

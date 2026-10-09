@@ -172,6 +172,7 @@ export struct AiWorkspace {
   onOpenCitation: (citation: ChatCitation) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp(ACTIVE_STORAGE_KEY) @Watch('onActiveProfileChanged') activeProfileId: string = '';
   @StorageProp('flowmindModelRevision') @Watch('onActiveProfileChanged') modelRevision: number = 0;
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
@@ -390,7 +391,7 @@ export struct AiWorkspace {
   }
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private layerTitle(layer: AgentLayer | undefined): string {
@@ -1039,7 +1040,7 @@ export struct AiWorkspace {
         Blank()
         Text(msg.text ?? '')
           .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontColor(Color.White)
+          .fontColor(this.palette().onAccent)
           .padding({ left: 14, right: 14, top: 10, bottom: 10 })
           .borderRadius(14)
           .backgroundColor(this.palette().accent)

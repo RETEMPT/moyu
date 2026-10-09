@@ -4,6 +4,8 @@
 
 2026-10-08（1.0.3）：`AssistantModeService` 默认本地且独立于模型密钥库；`LocalAssistantService` 不访问网络。`RuntimeCapabilities` 允许可选自配 API、禁用团队云 AI，`RemoteAiPolicy` 核对 HTTPS 和地址/协议授权。`AssistantTextParser` 为本地/模型回答及阅读提供源文顺序与行号。`SettingsWorkspace` 统一设置入口；文档默认只读，保存与导入写入成功后再发布状态。真实示例 PDF 仅手动导入。笔输入/增量绘制/笔身事件统一服务，`CanvasViewport` 提供固定视口世界坐标。范围见 [审核整改](REVIEW_FIXES_2026-10-08.md)。
 
+2026-10-09：设置信息结构下沉为纯数据 `SettingsCatalog`，视图通过原生 `Navigation / NavDestination` 组织目录和详情；模型草稿保护统一处理详情返回、目录切换和离开工作空间。`ThemeStyle` 提供四套明暗语义色，视图订阅配色与明暗两个维度；`ThemeManager` 串行保存设置，写入失败不发布成功状态。`LocalTextFormatter` 专门负责无模型排版和可选图片断行，`AiParser` 负责结构化候选，`SmartCaptureService` 负责保存；图片预览与阅读共用 `AssistantTextParser`。`AiProviderCatalog` 是显式选择的服务模板，创建新草稿，不携带密钥、授权或自动启用联网。整体方案见 [体验设计](UX_PLAN_2026-10-09.md)。
+
 ```mermaid
 flowchart TD
   Page["Index：导航、状态与装配"] --> View["views：布局、输入与状态显示"]

@@ -43,10 +43,11 @@ export struct QuickSearchDialog {
   private searchTimer: number = -1;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   aboutToAppear(): void {
@@ -247,7 +248,7 @@ export struct QuickSearchDialog {
           Text('.*')
             .fontSize(TypographyTokens.CAPTION)
             .fontWeight(FontWeight.Medium)
-            .fontColor(this.regexOn ? Color.White : this.palette().inkMuted)
+            .fontColor(this.regexOn ? this.palette().onAccent : this.palette().inkMuted)
             .padding({ left: 8, right: 8, top: 3, bottom: 3 })
             .borderRadius(6)
             .backgroundColor(this.regexOn ? this.palette().accent : this.palette().surfaceSubtle)

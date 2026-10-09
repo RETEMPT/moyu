@@ -1,0 +1,190 @@
+import { ColorPalette, LightColors, DarkColors } from '../constants/DesignTokens';
+
+export interface ThemeStyleOption { id: string; label: string; hint: string; }
+export const THEME_STYLE_KEY: string = 'flowmindThemeStyle';
+export const THEME_STYLE_OPTIONS: ThemeStyleOption[] = [
+  { id: 'ink', label: '墨紫', hint: '沿用品牌配色，柔和紫色强调' },
+  { id: 'mono', label: '黑白', hint: '中性纸面，专注内容与阅读' },
+  { id: 'mist', label: '浅蓝', hint: '浅蓝背景，轻柔清晰的层级' },
+  { id: 'blue', label: '蓝白', hint: '纯净白底，鲜明蓝色操作' }
+];
+
+export function normalizeThemeStyle(value: string): string {
+  return THEME_STYLE_OPTIONS.some((option: ThemeStyleOption) => option.id === value) ? value : 'ink';
+}
+
+const MonoLight: ColorPalette = {
+  "canvas": "#FAFAFA",
+  "sidebar": "#F2F2F2",
+  "surface": "#FFFFFF",
+  "surfaceSubtle": "#F2F2F2",
+  "border": "#D9D9D9",
+  "borderSubtle": "#E5E5E5",
+  "inkPrimary": "#202020",
+  "inkSecondary": "#505050",
+  "inkMuted": "#606060",
+  "hoverBg": "#EBEBEB",
+  "activeBg": "#E3E3E3",
+  "link": "#343434",
+  "accent": "#292929",
+  "accentSoft": "#E8E8E8",
+  "onAccent": "#FFFFFF",
+  "success": "#059669",
+  "warning": "#D97706",
+  "danger": "#DC2626",
+  "primary": "#292929",
+  "primarySoft": "#E8E8E8",
+  "accentPurple": "#292929",
+  "cardBackground": "#FFFFFF",
+  "borderFocus": "#505050",
+  "statusPending": "#505050",
+  "statusCompleted": "#059669",
+  "tagBg": "#EFEFEF"
+};
+const MonoDark: ColorPalette = {
+  "canvas": "#161616",
+  "sidebar": "#1C1C1C",
+  "surface": "#242424",
+  "surfaceSubtle": "#2C2C2C",
+  "border": "#484848",
+  "borderSubtle": "#383838",
+  "inkPrimary": "#FAFAFA",
+  "inkSecondary": "#C2C2C2",
+  "inkMuted": "#ABABAB",
+  "hoverBg": "#343434",
+  "activeBg": "#3D3D3D",
+  "link": "#E2E2E2",
+  "accent": "#E8E8E8",
+  "accentSoft": "#383838",
+  "onAccent": "#202020",
+  "success": "#34D399",
+  "warning": "#FBBF24",
+  "danger": "#F87171",
+  "primary": "#E8E8E8",
+  "primarySoft": "#383838",
+  "accentPurple": "#E8E8E8",
+  "cardBackground": "#242424",
+  "borderFocus": "#D2D2D2",
+  "statusPending": "#C2C2C2",
+  "statusCompleted": "#34D399",
+  "tagBg": "#2C2C2C"
+};
+const MistLight: ColorPalette = {
+  "canvas": "#F2F7FC",
+  "sidebar": "#E8F0F8",
+  "surface": "#FFFFFF",
+  "surfaceSubtle": "#EAF2FA",
+  "border": "#CCDBE9",
+  "borderSubtle": "#DDE7F1",
+  "inkPrimary": "#203349",
+  "inkSecondary": "#4A6078",
+  "inkMuted": "#4E6279",
+  "hoverBg": "#DEEBF7",
+  "activeBg": "#D7E8FA",
+  "link": "#275F9D",
+  "accent": "#2C629C",
+  "accentSoft": "#DFEBF8",
+  "onAccent": "#FFFFFF",
+  "success": "#059669",
+  "warning": "#D97706",
+  "danger": "#DC2626",
+  "primary": "#2C629C",
+  "primarySoft": "#DFEBF8",
+  "accentPurple": "#2C629C",
+  "cardBackground": "#FFFFFF",
+  "borderFocus": "#2C629C",
+  "statusPending": "#2C629C",
+  "statusCompleted": "#059669",
+  "tagBg": "#EAF2FA"
+};
+const MistDark: ColorPalette = {
+  "canvas": "#131C27",
+  "sidebar": "#182332",
+  "surface": "#1E2C3D",
+  "surfaceSubtle": "#27374A",
+  "border": "#40536B",
+  "borderSubtle": "#33455B",
+  "inkPrimary": "#F3F8FF",
+  "inkSecondary": "#BACDE3",
+  "inkMuted": "#ABC2DB",
+  "hoverBg": "#30445C",
+  "activeBg": "#304C6B",
+  "link": "#A6CFFC",
+  "accent": "#A6CFFC",
+  "accentSoft": "#2B425F",
+  "onAccent": "#182B41",
+  "success": "#34D399",
+  "warning": "#FBBF24",
+  "danger": "#F87171",
+  "primary": "#A6CFFC",
+  "primarySoft": "#2B425F",
+  "accentPurple": "#A6CFFC",
+  "cardBackground": "#1E2C3D",
+  "borderFocus": "#A6CFFC",
+  "statusPending": "#A6CFFC",
+  "statusCompleted": "#34D399",
+  "tagBg": "#27374A"
+};
+const BlueLight: ColorPalette = {
+  "canvas": "#FFFFFF",
+  "sidebar": "#F3F6FA",
+  "surface": "#FFFFFF",
+  "surfaceSubtle": "#F0F5FB",
+  "border": "#D6DFEC",
+  "borderSubtle": "#E5EBF4",
+  "inkPrimary": "#192C43",
+  "inkSecondary": "#475D76",
+  "inkMuted": "#51647E",
+  "hoverBg": "#DEEBF7",
+  "activeBg": "#D7E8FA",
+  "link": "#245BBE",
+  "accent": "#245BBE",
+  "accentSoft": "#E6EEFC",
+  "onAccent": "#FFFFFF",
+  "success": "#059669",
+  "warning": "#D97706",
+  "danger": "#DC2626",
+  "primary": "#245BBE",
+  "primarySoft": "#E6EEFC",
+  "accentPurple": "#245BBE",
+  "cardBackground": "#FFFFFF",
+  "borderFocus": "#245BBE",
+  "statusPending": "#245BBE",
+  "statusCompleted": "#059669",
+  "tagBg": "#F0F5FB"
+};
+const BlueDark: ColorPalette = {
+  "canvas": "#121A27",
+  "sidebar": "#172131",
+  "surface": "#1C293D",
+  "surfaceSubtle": "#25354D",
+  "border": "#3C506E",
+  "borderSubtle": "#2E415D",
+  "inkPrimary": "#F3F8FF",
+  "inkSecondary": "#BACDE3",
+  "inkMuted": "#ABC2DB",
+  "hoverBg": "#30445C",
+  "activeBg": "#304C6B",
+  "link": "#A2C4FF",
+  "accent": "#A2C4FF",
+  "accentSoft": "#293F63",
+  "onAccent": "#162B4E",
+  "success": "#34D399",
+  "warning": "#FBBF24",
+  "danger": "#F87171",
+  "primary": "#A2C4FF",
+  "primarySoft": "#293F63",
+  "accentPurple": "#A2C4FF",
+  "cardBackground": "#1C293D",
+  "borderFocus": "#A2C4FF",
+  "statusPending": "#A2C4FF",
+  "statusCompleted": "#34D399",
+  "tagBg": "#25354D"
+};
+
+export function paletteForStyle(isDark: boolean, style: string): ColorPalette {
+  if (style === 'mono') { return isDark ? MonoDark : MonoLight; }
+  if (style === 'mist') { return isDark ? MistDark : MistLight; }
+  if (style === 'blue') { return isDark ? BlueDark : BlueLight; }
+  return isDark ? DarkColors : LightColors;
+}

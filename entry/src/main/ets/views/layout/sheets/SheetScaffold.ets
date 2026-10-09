@@ -16,6 +16,7 @@ export struct SheetOverlay {
   onDismiss: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   @Builder
@@ -33,7 +34,7 @@ export struct SheetOverlay {
       .constraintSize({ maxWidth: 440, maxHeight: '90%' })
       .padding(18)
       .borderRadius(20)
-      .backgroundColor(ThemeHelper.paletteOfDark(this.isDarkMode).surface)
+      .backgroundColor(ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle).surface)
       .shadow({ radius: 16, color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.14)', offsetY: 4 })
       .border({
         width: 1,
@@ -62,10 +63,11 @@ export struct SheetActionRow {
   onAction: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   build() {
@@ -97,6 +99,7 @@ export struct SheetCancelButton {
   @Prop label: string = '取消';
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   build() {
@@ -104,8 +107,8 @@ export struct SheetCancelButton {
       .width('100%')
       .height(44)
       .fontSize(TypographyTokens.CAPTION)
-      .fontColor(ThemeHelper.paletteOfDark(this.isDarkMode).inkSecondary)
-      .backgroundColor(ThemeHelper.paletteOfDark(this.isDarkMode).surfaceSubtle)
+      .fontColor(ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle).inkSecondary)
+      .backgroundColor(ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle).surfaceSubtle)
       .borderRadius(6)
       .margin({ top: 2 })
       .onClick(() => this.onCancel())
@@ -125,10 +128,11 @@ export struct DestructiveConfirm {
   onConfirm: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @State private isArmed: boolean = false;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   build() {

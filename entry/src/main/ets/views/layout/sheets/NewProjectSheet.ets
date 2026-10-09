@@ -27,6 +27,7 @@ export struct NewProjectSheet {
   onCreateProject: (name: string, color: string, icon: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   @State private name: string = '未命名项目';
   @State private icon: string = PRESET_ICONS[0];
@@ -35,7 +36,7 @@ export struct NewProjectSheet {
   private cleared: boolean = false;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private submit(): void {
@@ -113,7 +114,7 @@ export struct NewProjectSheet {
             .height(38)
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontWeight(FontWeight.Medium)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
             .backgroundColor(this.palette().accent)
             .borderRadius(10)
             .onClick(() => this.submit())

@@ -27,9 +27,10 @@ export struct TodoEditDialog {
   @State selected: string[] = [];
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   aboutToAppear(): void {
@@ -162,7 +163,7 @@ export struct TodoEditDialog {
             .onClick(() => this.onClose())
           Text('保存')
             .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
             .padding({ left: 18, right: 18, top: 8, bottom: 8 })
             .borderRadius(6)
             .backgroundColor(this.palette().accent)

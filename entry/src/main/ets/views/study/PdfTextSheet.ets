@@ -11,6 +11,7 @@ export struct PdfTextSheet {
   onClose: () => void = () => {};
   onSave: (pages: PdfTextPage[]) => Promise<void> = async () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
   @State start: string = '1';
   @State end: string = '1';
@@ -26,7 +27,7 @@ export struct PdfTextSheet {
   aboutToAppear(): void { this.alive = true; this.start = `${this.initialPage}`; this.end = `${Math.min(this.note.pageCount || 1, this.initialPage + 9)}`; }
   aboutToDisappear(): void { this.alive = false; this.cancelled = true; }
   private closeRequested(): void { if (this.saving) { return; } if (this.busy) { this.cancelled = true; } else { this.onClose(); } }
-  private palette() { return ThemeHelper.paletteOfDark(this.dark); }
+  private palette() { return ThemeHelper.paletteOfDark(this.dark, this.themeStyle); }
   private async extract(): Promise<void> {
     if (this.busy) { return; }
     this.busy = true; this.cancelled = false; this.status = '';

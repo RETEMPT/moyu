@@ -120,6 +120,9 @@ struct Index {
   @State activeNav: string = NAV_HOME;
   @State settingsSection: string = 'overview';
   @State settingsBackToken: number = 0;
+  @State settingsExitToken: number = 0;
+  @State settingsOpenToken: number = 0;
+  private settingsExitAction: (() => void) | null = null;
   @State aiBackToken: number = 0;
   private sessionDeleteBusy: boolean = false;
   @State activeSpaceId: string = '';
@@ -777,6 +780,7 @@ struct Index {
 
   /** 点击面包屑：分类段 → 回到资料库并按分类筛选；标题段 → 打开文档切换搜索 */
   private onBreadcrumbClick(index: number, segment: string): void {
+    if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.onBreadcrumbClick(index, segment)); return; }
     if (this.readingOpen || this.fullScreenDocOpen) {
       if (index === 0) {
         // 点击分类名：关闭当前文档，回到资料库并选中该项目
@@ -876,6 +880,7 @@ struct Index {
   }
 
   private openNote(note: NoteItem): void {
+    if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.openNote(note)); return; }
     const current = this.notes.find((item: NoteItem) => item.id === note.id);
     if (!current) { this.notify('笔记已被移走'); return; }
     note = current;
@@ -1778,7 +1783,21 @@ struct Index {
     }
     this.readingOpen = false; this.fullScreenDocOpen = false; this.contextPanelOpen = false;
     this.activeSheet = ''; this.settingsSection = section;
+    this.settingsOpenToken++;
     this.activeNav = NAV_SETTINGS; if (this.singleColumn) { this.sidebarCollapsed = true; }
+  }
+
+  private afterSettingsExit(action: () => void): void {
+    if (this.activeNav !== NAV_SETTINGS) { action(); return; }
+    this.settingsExitAction = action;
+    this.settingsExitToken++;
+  }
+
+  private completeSettingsExit(): void {
+    const action = this.settingsExitAction;
+    this.settingsExitAction = null;
+    this.activeNav = NAV_HOME;
+    if (action !== null) { action(); }
   }
 
   // ==================================================================
@@ -1789,9 +1808,12 @@ struct Index {
   workspaceContent() {
     if (this.activeNav === NAV_SETTINGS) {
       SettingsWorkspace({ initialSection: this.settingsSection, noteCount: this.notes.length, projectCount: this.spaces.length,
+        openRequestToken: this.settingsOpenToken,
         backRequestToken: this.settingsBackToken, onExit: () => { this.activeNav = NAV_HOME; },
+        exitRequestToken: this.settingsExitToken, onExitConfirmed: () => this.completeSettingsExit(),
         onOpenLibrary: () => { this.activeNav = NAV_LIBRARY; },
         onImportExample: () => this.importDocument('示例资料', true),
+        onOpenCapture: () => { this.smartExtractVisible = true; },
         onOpenBackup: () => { this.backupVisible = true; }, onOpenPrivacy: () => { this.privacyVisible = true; } })
     } else if (this.readingOpen) {
       ReaderWorkspace({
@@ -2118,14 +2140,16 @@ struct Index {
           });
         },
         onSelectNav: (navKey: string) => {
-          this.dismissNavigationOverlay();
-          this.activeNav = navKey;
-          this.readingOpen = false;
-          this.fullScreenDocOpen = false;
-          this.activeNoteId = '';
-          // 进入 AI 墨客自动切到对话列表；离开时切回资料树。
-          // 用户在 AI 里手动切回资料树后不会被强行拉回（只在导航变化时决策）。
-          this.sidebarMode = navKey === NAV_AI ? SIDEBAR_MODE_SESSIONS : SIDEBAR_MODE_TREE;
+          this.afterSettingsExit(() => {
+            this.dismissNavigationOverlay();
+            this.activeNav = navKey;
+            this.readingOpen = false;
+            this.fullScreenDocOpen = false;
+            this.activeNoteId = '';
+            // 进入 AI 墨客自动切到对话列表；离开时切回资料树。
+            // 用户在 AI 里手动切回资料树后不会被强行拉回（只在导航变化时决策）。
+            this.sidebarMode = navKey === NAV_AI ? SIDEBAR_MODE_SESSIONS : SIDEBAR_MODE_TREE;
+          });
         },
         onToggleSpace: (spaceId: string) => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
@@ -2147,11 +2171,13 @@ struct Index {
           });
         },
         onSelectSpace: (spaceId: string) => {
-          this.dismissNavigationOverlay();
-          this.activeSpaceId = this.activeSpaceId === spaceId ? '' : spaceId;
-          this.activeNav = NAV_LIBRARY;
-          this.readingOpen = false;
-          this.fullScreenDocOpen = false;
+          this.afterSettingsExit(() => {
+            this.dismissNavigationOverlay();
+            this.activeSpaceId = this.activeSpaceId === spaceId ? '' : spaceId;
+            this.activeNav = NAV_LIBRARY;
+            this.readingOpen = false;
+            this.fullScreenDocOpen = false;
+          });
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),

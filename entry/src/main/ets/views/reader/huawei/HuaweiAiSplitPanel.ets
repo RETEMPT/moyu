@@ -71,6 +71,7 @@ export struct HuaweiAiSplitPanel {
   onOpenModelSettings: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp(ACTIVE_STORAGE_KEY) @Watch('refreshModelLabel') activeProfileId: string = '';
   @StorageProp(ASSISTANT_MODE_KEY) @Watch('refreshModelLabel') assistantMode: string = 'local';
   @StorageProp('flowmindModelRevision') @Watch('refreshModelLabel') modelRevision: number = 0;
@@ -130,7 +131,7 @@ export struct HuaweiAiSplitPanel {
   }
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private scrollToBottom(): void {
@@ -277,7 +278,7 @@ export struct HuaweiAiSplitPanel {
         Column() {
           Text(msg.text)
             .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
         }
         .padding(10)
         .borderRadius(12)

@@ -8,6 +8,7 @@ export struct AssistantText {
   @Prop @Watch('refresh') streaming: boolean = false;
   @Prop hideActions: boolean = false;
   @StorageProp('flowmindDarkMode') dark: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @State blocks: AssistantBlock[] = [];
   private timer: number = -1;
   aboutToAppear(): void { this.blocks = AssistantTextParser.parse(this.text); }
@@ -27,7 +28,7 @@ export struct AssistantText {
           .fontStyle(span.style === 'italic' ? FontStyle.Italic : FontStyle.Normal)
           .fontFamily(span.style === 'code' ? 'monospace' : 'sans-serif')
           .decoration({ type: span.style === 'strike' ? TextDecorationType.LineThrough : TextDecorationType.None })
-          .fontColor(span.style === 'code' ? ThemeHelper.paletteOfDark(this.dark).accent : ThemeHelper.paletteOfDark(this.dark).inkPrimary)
+          .fontColor(span.style === 'code' ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent : ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary)
       })
     }.fontSize(15).lineHeight(24).width('100%').copyOption(CopyOptions.LocalDevice)
   }
@@ -35,11 +36,11 @@ export struct AssistantText {
   block(block: AssistantBlock) {
     if (block.kind === 'heading') {
       Text(block.text).fontSize(block.level === 1 ? 20 : block.level === 2 ? 17 : 15)
-        .fontWeight(FontWeight.Bold).fontColor(ThemeHelper.paletteOfDark(this.dark).inkPrimary)
+        .fontWeight(FontWeight.Bold).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary)
         .width('100%').margin({ top: 6, bottom: 2 }).copyOption(CopyOptions.LocalDevice)
     } else if (block.kind === 'list') {
       Row({ space: 8 }) {
-        Text(block.marker).fontSize(14).fontColor(ThemeHelper.paletteOfDark(this.dark).accent).width(24).margin({ top: 2 })
+        Text(block.marker).fontSize(14).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent).width(24).margin({ top: 2 })
         Column() { this.inline(block.text) }.layoutWeight(1)
       }.width('100%').alignItems(VerticalAlign.Top)
     } else if (block.kind === 'table') {
@@ -50,35 +51,35 @@ export struct AssistantText {
               ForEach(row, (cell: string) => {
                 Text(cell).width(148).padding(10).fontSize(13).lineHeight(20)
                   .fontWeight(rowIndex === 0 ? FontWeight.Bold : FontWeight.Normal)
-                  .fontColor(ThemeHelper.paletteOfDark(this.dark).inkPrimary).copyOption(CopyOptions.LocalDevice)
+                  .fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary).copyOption(CopyOptions.LocalDevice)
               })
-            }.backgroundColor(rowIndex === 0 ? ThemeHelper.paletteOfDark(this.dark).accentSoft : ThemeHelper.paletteOfDark(this.dark).surfaceSubtle)
-              .border({ width: { bottom: 1 }, color: ThemeHelper.paletteOfDark(this.dark).borderSubtle })
+            }.backgroundColor(rowIndex === 0 ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accentSoft : ThemeHelper.paletteOfDark(this.dark, this.themeStyle).surfaceSubtle)
+              .border({ width: { bottom: 1 }, color: ThemeHelper.paletteOfDark(this.dark, this.themeStyle).borderSubtle })
           })
         }
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto).width('100%').borderRadius(10)
     } else if (block.kind === 'code' || block.kind === 'math') {
       if (this.hideActions && block.language === 'action_proposal') {
-        Text('建议操作见下方，请核对后确认。').fontSize(12).fontColor(ThemeHelper.paletteOfDark(this.dark).accent)
+        Text('建议操作见下方，请核对后确认。').fontSize(12).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent)
       } else {
         Column({ space: 6 }) {
-          if (block.language) { Text(block.language).fontSize(11).fontColor(ThemeHelper.paletteOfDark(this.dark).inkMuted).width('100%') }
+          if (block.language) { Text(block.language).fontSize(11).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkMuted).width('100%') }
           Text(block.text).fontFamily('monospace').fontSize(13).lineHeight(21).width('100%')
-            .fontColor(ThemeHelper.paletteOfDark(this.dark).inkPrimary).copyOption(CopyOptions.LocalDevice)
-        }.width('100%').padding(12).borderRadius(10).backgroundColor(ThemeHelper.paletteOfDark(this.dark).surfaceSubtle)
+            .fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary).copyOption(CopyOptions.LocalDevice)
+        }.width('100%').padding(12).borderRadius(10).backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).surfaceSubtle)
       }
     } else if (block.kind === 'quote') {
       Column() { this.inline(block.text) }.width('100%').padding(10)
-        .border({ width: { left: 3 }, color: ThemeHelper.paletteOfDark(this.dark).accent })
-        .backgroundColor(ThemeHelper.paletteOfDark(this.dark).accentSoft)
-    } else if (block.kind === 'divider') { Divider().color(ThemeHelper.paletteOfDark(this.dark).borderSubtle) }
+        .border({ width: { left: 3 }, color: ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent })
+        .backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accentSoft)
+    } else if (block.kind === 'divider') { Divider().color(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).borderSubtle) }
     else { this.inline(block.text) }
   }
   build() {
     Column({ space: 8 }) {
       ForEach(this.blocks, (block: AssistantBlock) => { this.block(block) },
         (block: AssistantBlock, index: number) => `${index}-${block.kind}-${block.text}`)
-      if (this.streaming) { Text('生成中…').fontSize(11).fontColor(ThemeHelper.paletteOfDark(this.dark).inkMuted) }
+      if (this.streaming) { Text('生成中…').fontSize(11).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkMuted) }
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 }

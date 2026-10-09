@@ -22,13 +22,14 @@ export struct NameNoteSheet {
   onTypeChange: (type: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   @State private draft: string = '';
   /** 是否已执行过「聚焦即清空」，避免清空后再次聚焦又把用户输入抹掉 */
   private cleared: boolean = false;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   aboutToAppear(): void {

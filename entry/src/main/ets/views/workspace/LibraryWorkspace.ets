@@ -27,6 +27,7 @@ export struct LibraryWorkspace {
   onImportDocument: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   /** 功能11：排序键与升降序，驱动 displayNotes() 的真实排序 */
@@ -36,7 +37,7 @@ export struct LibraryWorkspace {
   @State selectedTags: string[] = [];
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private setSort(key: string): void {
@@ -162,7 +163,7 @@ export struct LibraryWorkspace {
   tagChip(tag: string) {
     Text(tag)
       .fontSize(TypographyTokens.TINY)
-      .fontColor(this.isTagSelected(tag) ? Color.White : this.palette().inkSecondary)
+      .fontColor(this.isTagSelected(tag) ? this.palette().onAccent : this.palette().inkSecondary)
       .padding({ left: 10, right: 10, top: 4, bottom: 4 })
       .borderRadius(10)
       .backgroundColor(this.isTagSelected(tag) ? this.palette().accent : this.palette().surfaceSubtle)
@@ -256,7 +257,7 @@ export struct LibraryWorkspace {
             .onClick(() => this.onImportDocument())
           Text('＋ 新建')
             .fontSize(TypographyTokens.CAPTION)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
             .padding({ left: 10, right: 10, top: 5, bottom: 5 })
             .borderRadius(6)
             .backgroundColor(this.palette().accent)

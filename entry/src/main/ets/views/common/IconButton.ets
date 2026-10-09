@@ -13,8 +13,9 @@ export struct IconButton {
   @Prop caption: string = '';
   onAction: () => void = () => {};
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
-  private palette(): ColorPalette { return ThemeHelper.paletteOfDark(this.isDarkMode); }
+  private palette(): ColorPalette { return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle); }
 
   build() {
     Button({ type: ButtonType.Normal }) {

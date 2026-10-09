@@ -36,6 +36,7 @@ export struct PdfPageCanvas {
   @Prop selectedColor: string = '#DC2626';
   @Prop selectedWidth: number = 3;
   @Prop isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   onStrokeAdded: (stroke: PageAnnotationStroke) => void = () => {};
   onEraseAtPoint: (u: number, v: number, width: number, height: number) => void = () => {};
@@ -56,7 +57,7 @@ export struct PdfPageCanvas {
   private currentStroke: PageAnnotationStroke | null = null;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   onStrokesChanged(): void {
