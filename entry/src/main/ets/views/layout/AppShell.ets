@@ -34,7 +34,7 @@ export struct AppShell {
   @Prop todoPendingCount: number = 0;
   @Prop favoriteCount: number = 0;
   /** 侧栏中段模式：'tree' 项目资料树 | 'sessions' 对话记录 */
-  @Prop sidebarMode: string = 'tree';
+  @Prop historyOpen: boolean = false;
   @Prop sessions: ChatSession[] = [];
   @Prop activeSessionId: string = '';
 
@@ -62,7 +62,8 @@ export struct AppShell {
   onBreadcrumbClick: (index: number, segment: string) => void = () => {};
   onOpenSheet: (type: string, project: SpaceFolder | null, note: NoteItem | null) => void = () => {};
   onOpenCreateProject: () => void = () => {};
-  onSidebarModeChange: (mode: string) => void = () => {};
+  onCloseHistory: () => void = () => {};
+  onNewSession: () => void = () => {};
   onSelectSession: (session: ChatSession) => void = () => {};
   onDeleteSession: (sessionId: string) => void = () => {};
   onTogglePinSession: (session: ChatSession) => void = () => {};
@@ -155,10 +156,11 @@ export struct AppShell {
       onOpenSettings: this.onOpenSettings,
       onOpenSheet: this.onOpenSheet,
       onOpenCreateProject: this.onOpenCreateProject,
-      sidebarMode: this.sidebarMode,
+      historyOpen: this.historyOpen,
       sessions: this.sessions,
       activeSessionId: this.activeSessionId,
-      onSidebarModeChange: this.onSidebarModeChange,
+      onCloseHistory: this.onCloseHistory,
+      onNewSession: this.onNewSession,
       onSelectSession: this.onSelectSession,
       onDeleteSession: this.onDeleteSession,
       onTogglePinSession: this.onTogglePinSession
@@ -227,6 +229,15 @@ export struct AppShell {
       .height('100%')
       .backgroundColor(this.palette().canvas)
 
+      // A docked history page dismisses on outside touch without discarding the composer draft.
+      if (this.historyOpen && this.isSidebarDocked()) {
+        Row() {
+          Column().width(LayoutTokens.SIDEBAR_WIDTH).height('100%').hitTestBehavior(HitTestMode.None)
+          Column().layoutWeight(1).height('100%').backgroundColor('rgba(0,0,0,0.02)')
+            .accessibilityText('关闭对话记录').onClick(this.onCloseHistory)
+        }.width('100%').height('100%').hitTestBehavior(HitTestMode.Transparent)
+      }
+
       // ---- 单栏：侧边栏浮层 ----
       if (this.isSidebarOverlay()) {
         Row() {
@@ -246,7 +257,7 @@ export struct AppShell {
             .height('100%')
             .backgroundColor('rgba(0,0,0,0.25)')
             .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
-            .onClick(() => this.onToggleSidebar())
+            .onClick(() => { if (this.historyOpen) { this.onCloseHistory(); } else { this.onToggleSidebar(); } })
         }
         .width('100%')
         .height('100%')

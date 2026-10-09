@@ -1814,10 +1814,11 @@ function pdfHistoryView() {
   const relative='views/reader/pdf/PdfAnnotatorView.ets';let saved=0;
   const view={pageStrokes:{0:[]},undoStack:[],redoStack:[],eraseBefore:null,erasePage:-1,eraserWidth:20,currentPageIdx:0,scheduleSave:()=>saved++,activeInputFinisher:null,activeInputPage:-1};
   for(const method of ['remember','handleStrokeAdded','beginErase','finishErase','handleEraseAtPoint','handleUndo','onRedoTriggered','onClearTriggered','finishActiveInput'])
-    view[method]=viewMethod(relative,method,{InkRenderer});
+    view[method]=viewMethod(relative,method,{InkRenderer, CanvasStrokeEraser});
   return {view,saved:()=>saved};
 }
 
+const { CanvasStrokeEraser } = load(`${base}services/ink/CanvasStrokeEraser.ets`);
 const { InkToolPolicy } = load(`${base}services/ink/InkToolPolicy.ets`);
 const { AiReferenceSearch } = load(`${base}services/ai/AiReferenceSearch.ets`);
 const { CompanionSourcePolicy } = load(`${base}services/ai/CompanionSourcePolicy.ets`);
@@ -1836,8 +1837,8 @@ function inkSelectionHarness() {
   const view = { readOnly: false, loadError: '', isEraser: false, isHighlighter: false,
     selectedWidth: 3, selectedColor: '#123456', penWidth: 3, penColor: '#123456', highlighterWidth: 14,
     highlighterColor: '#EAB308', eraserWidth: 18, shortcuts: { claim() {} },
-    finishStroke: () => finishes++, onToolChange: tool => selected.push(tool) };
-  for (const method of ['activeTool', 'rememberInkSettings', 'selectPen', 'selectHighlighter', 'toggleEraser', 'changeWidth', 'changeColor']) {
+    eraserMode: 'area', onToolStateChange() {}, finishStroke: () => finishes++, onToolChange: tool => selected.push(tool) };
+  for (const method of ['activeTool', 'rememberInkSettings', 'selectPen', 'selectHighlighter', 'toggleEraser', 'changeWidth', 'changeColor', 'emitToolState']) {
     view[method] = viewMethod('views/reader/HandwritingCanvas.ets', method, { InkToolPolicy });
   }
   return { view, selected, finishes: () => finishes };
@@ -2026,16 +2027,107 @@ test('new note submission honors an explicit unfiled destination and keeps the f
   v.createNote = async () => true; await commit.call(v, '标题', '课程'); assert.equal(v.pendingCreate, null);
 });
 
-test('composer menus are anchored on native buttons without a competing state toggle click handler', () => {
-  const src = fs.readFileSync(path.join(root, base, 'views/ai/AiWorkspace.ets'), 'utf8');
-  for (const menu of ['plusActionMenu', 'conversationActionMenu', 'modelSelectMenu']) {
-    const anchorEnd = src.indexOf(`.bindMenu(() => { this.${menu}(); }`); assert.ok(anchorEnd > 0);
-    const nativeStart = src.lastIndexOf('Button({ type: ButtonType.Normal })', anchorEnd);
-    assert.ok(nativeStart > 0); const anchor = src.slice(nativeStart, anchorEnd);
-    assert.ok(!anchor.includes('.onClick(')); assert.ok(anchor.includes('.enabled(this.menuActionsAvailable())'));
-  }
-  assert.ok(src.includes('.enabled(this.menuActionsAvailable() && available)'));
+test('composer menu state explicitly toggles, remains exclusive and refuses opening during an active operation', () => {
+  const v = { plusMenuOpen: false, modelMenuOpen: false, conversationMenuOpen: false, pickerOpen: true, alive: true };
+  for (const method of ['toggleComposerMenu', 'closeComposerMenus', 'menuActionsAvailable']) v[method] = viewMethod('views/ai/AiWorkspace.ets', method);
+  v.toggleComposerMenu('plus'); assert.equal(v.plusMenuOpen, true); assert.equal(v.pickerOpen, false);
+  v.toggleComposerMenu('plus'); assert.equal(v.plusMenuOpen, false);
+  v.toggleComposerMenu('conversation'); assert.equal(v.conversationMenuOpen, true);
+  v.toggleComposerMenu('model'); assert.equal(v.modelMenuOpen, true); assert.equal(v.conversationMenuOpen, false);
+  v.closeComposerMenus(); v.attachmentBusy = true; v.toggleComposerMenu('plus'); assert.equal(v.plusMenuOpen, false);
 });
+
+function chatLifecycleView() {
+  const v = { alive: true, isLoading: false, servicesReady: true, sessionLoadRequestId: 0,
+    activeSessionId: '', loadedSessionId: '', sessionLoadBusy: false, sessionLoadError: '',
+    messages: [], lastCitations: [], inputText: '', currentAgentMode: 'auto',
+    persistQueue: Promise.resolve(), unsavedSessions: new Map(), emitContext() {}, scrollToBottom() {},
+    onSessionSaved() {}, sessionService: { loadSessions: async () => [], saveSession: async () => {} } };
+  let created = 0;
+  for (const method of ['loadSessionById', 'persistSession', 'menuActionsAvailable']) {
+    v[method] = viewMethod('views/ai/AiWorkspace.ets', method, {
+      createEmptySession: () => ({ id: `created-${++created}`, title: '新对话', createdAt: 1, updatedAt: 1, messages: [] }),
+      promptAction: { showToast() {} } });
+  }
+  return v;
+}
+
+test('late conversation loads cannot overwrite the selected conversation or clear its loading state', async () => {
+  const v = chatLifecycleView(), pending = [];
+  v.sessionService.loadSessions = () => new Promise(resolve => pending.push(resolve));
+  v.activeSessionId = 'a'; const first = v.loadSessionById('a');
+  v.activeSessionId = 'b'; const second = v.loadSessionById('b');
+  pending[0]([{ id: 'a', messages: [{ id: 'a1', role: 'user', text: '旧记录' }] }]); await first;
+  assert.equal(v.loadedSessionId, 'b'); assert.equal(v.messages.length, 0); assert.equal(v.sessionLoadBusy, true);
+  pending[1]([{ id: 'b', messages: [{ id: 'b1', role: 'assistant', text: '新记录', citations: [{ noteId: 'b' }] }] }]); await second;
+  assert.equal(v.messages[0].text, '新记录'); assert.equal(v.sessionLoadBusy, false); assert.equal(v.lastCitations[0].noteId, 'b');
+  v.activeSessionId = 'a'; const after = v.loadSessionById('a'); v.alive = false;
+  pending[2]([{ id: 'a', messages: [{ text: '晚到' }] }]); await after; assert.equal(v.messages.length, 0);
+});
+
+test('a missing or unreadable conversation blocks actions until a successful retry without losing an initial draft', async () => {
+  const v = chatLifecycleView(); v.inputText = '从文档进入的提问'; await v.loadSessionById('');
+  assert.equal(v.inputText, '从文档进入的提问');
+  v.activeSessionId = 'a'; await v.loadSessionById('a'); assert.match(v.sessionLoadError, /不存在/); assert.equal(v.menuActionsAvailable(), false);
+  v.sessionService.loadSessions = async () => { throw Error('read'); };
+  await v.loadSessionById('a'); assert.match(v.sessionLoadError, /读取失败/); assert.equal(v.menuActionsAvailable(), false);
+  v.sessionService.loadSessions = async () => [{ id: 'a', messages: [] }];
+  await v.loadSessionById('a'); assert.equal(v.sessionLoadError, ''); assert.equal(v.menuActionsAvailable(), true);
+});
+
+test('a late save captures the original conversation and does not reactivate it after selection changes', async () => {
+  const v = chatLifecycleView(), saved = [], callbacks = []; let release;
+  v.loadedSessionId = 'a'; v.messages = [{ role: 'user', text: '保留 A' }];
+  v.sessionService.loadSessions = () => new Promise(resolve => { release = resolve; });
+  v.sessionService.saveSession = async session => saved.push(plain(session));
+  v.onSessionSaved = (session, activate) => callbacks.push([session.id, activate]);
+  const pending = v.persistSession(); await Promise.resolve();
+  v.loadedSessionId = 'b'; v.sessionLoadRequestId++; v.messages = [{ role: 'user', text: '新的 B' }];
+  release([{ id: 'a', title: 'A', createdAt: 1, pinned: true }]); await pending;
+  assert.equal(saved[0].id, 'a'); assert.equal(saved[0].messages[0].text, '保留 A'); assert.equal(saved[0].pinned, true);
+  assert.deepEqual(callbacks, [['a', false]]);
+  const publish = viewMethod('pages/Index.ets', 'handleSessionSaved');
+  const index = { sessions: [], activeSessionId: 'b', sortSessions: rows => rows };
+  publish.call(index, saved[0], false); assert.equal(index.activeSessionId, 'b'); assert.equal(index.sessions[0].id, 'a');
+});
+
+test('overlapping fresh conversation saves share one ID and preserve ordered snapshots through a failed retry', async () => {
+  const v = chatLifecycleView(), stored = new Map(), writes = []; let failures = 1;
+  v.sessionService.loadSessions = async () => [...stored.values()];
+  v.sessionService.saveSession = async session => {
+    if (failures-- > 0) throw Error('write');
+    stored.set(session.id, plain(session)); writes.push(plain(session));
+  };
+  v.messages = [{ role: 'user', text: '题目' }]; const first = v.persistSession();
+  const id = v.loadedSessionId; v.messages.push({ role: 'assistant', text: '答案' }); const second = v.persistSession();
+  await Promise.all([first, second]); assert.equal(v.loadedSessionId, id); assert.equal(stored.size, 1);
+  assert.equal(writes[0].messages.length, 2); assert.equal(writes[0].title, '题目'); assert.equal(v.unsavedSessions.size, 0);
+  v.messages.push({ role: 'assistant', text: '补充' }); await v.persistSession(); assert.equal(stored.get(id).messages.length, 3);
+});
+
+const { ChatHistoryPolicy } = load(`${base}services/ai/ChatHistoryPolicy.ets`);
+test('history search groups pinned conversations once, ignores hidden tool output and orders newest first', () => {
+  const now = new Date(2026, 9, 9, 10).getTime();
+  const make = overrides => ({ id: 'a', title: '数学笔记', pinned: false, updatedAt: now, messages: [], ...overrides });
+  const rows = [make({ id: 'old', updatedAt: now - 10 * 86400000 }), make({ id: 'pin', pinned: true }),
+    make({ id: 'today', messages: [{ role: 'user', text: '复习  线性代数' }, { role: 'tool', text: 'hidden-secret' }] }),
+    make({ id: 'week', updatedAt: now - 86400000 })];
+  assert.deepEqual(plain(ChatHistoryPolicy.filter(rows, '数学 线性', '今天', now)).map(row => row.id), ['today']);
+  assert.equal(ChatHistoryPolicy.filter(rows, 'hidden-secret', '今天', now).length, 0);
+  assert.equal(ChatHistoryPolicy.group(rows[1], now), '置顶');
+  assert.deepEqual(['置顶', '今天', '最近七天', '更早'].flatMap(group => plain(ChatHistoryPolicy.filter(rows, '', group, now)).map(row => row.id)).sort(), ['old', 'pin', 'today', 'week']);
+});
+
+test('opening and closing history restores the existing sidebar state without changing the active session', () => {
+  for (const collapsed of [false, true]) {
+    const v = { sidebarCollapsed: collapsed, chatHistoryOpen: false, activeSessionId: 'draft', singleColumn: false };
+    v.closeChatHistory = viewMethod('pages/Index.ets', 'closeChatHistory');
+    const toggle = viewMethod('pages/Index.ets', 'toggleChatHistory');
+    toggle.call(v); assert.equal(v.chatHistoryOpen, true); assert.equal(v.sidebarCollapsed, false);
+    toggle.call(v); assert.equal(v.chatHistoryOpen, false); assert.equal(v.sidebarCollapsed, collapsed); assert.equal(v.activeSessionId, 'draft');
+  }
+});
+
 test('PDF erasing uses line segments and groups a gesture into one reversible operation', () => {
   const f=pdfHistoryView(),v=f.view;const a={id:'a',pageIndex:0,width:3,points:[{u:0,v:0.5},{u:1,v:0.5}]};
   const b={id:'b',pageIndex:0,width:3,points:[{u:0,v:0.8},{u:1,v:0.8}]};
@@ -2168,6 +2260,113 @@ test('assistant inline formatting preserves plain text and literal markup that i
 });
 
 const { CanvasViewport } = load(`${base}services/ink/CanvasViewport.ets`);
+
+function canvasNavigationView() {
+  const v = { input: { isPenActive: () => false, reset() {} }, readOnly: false, inkContact: true,
+    fingerDrawing: true, currentStroke: { points: [{ x: 10, y: 10 }] }, strokes: [], eraseBefore: null,
+    navigating: false, pairIds: '', pairDistance: 0, zoomStart: 1, zoomScale: 1, panX: 0, panY: 0,
+    pairAnchor: { x: 0, y: 0 }, canvasWidth: 600, canvasHeight: 700, liveContext: { clearRect() {} },
+    onDirtyChange() {}, onFocused() {}, redrawAll() {}, requestRedraw() {} };
+  for (const method of ['navigateTouch', 'cancelContact', 'revealWritingSpace']) v[method] = viewMethod('views/reader/HandwritingCanvas.ets', method, { CanvasViewport, ...penEnums });
+  return v;
+}
+
+test('two fingers take over finger ink, pan and zoom around their moving center without an ink tail', () => {
+  const v = canvasNavigationView();
+  const event = (type, points, changed = points) => ({ type, sourceTool: penEnums.SourceTool.Finger, touches: points, changedTouches: changed });
+  const a = { id: 1, x: 100, y: 100 }, b = { id: 2, x: 200, y: 100 };
+  assert.equal(v.navigateTouch(event(0, [a, b])), true); assert.equal(v.currentStroke, null); assert.equal(v.inkContact, false);
+  v.navigateTouch(event(2, [{ ...a, x: 90, y: 130 }, { ...b, x: 290, y: 130 }]));
+  assert.equal(v.zoomScale, 2); assert.equal(v.panX, -110); assert.equal(v.panY, -70);
+  v.navigateTouch(event(1, [a], [b])); assert.equal(v.navigating, true);
+  v.navigateTouch(event(2, [{ ...a, x: 120 }])); assert.equal(v.currentStroke, null);
+  v.navigateTouch(event(1, [a], [a])); assert.equal(v.navigating, false);
+  assert.equal(v.navigateTouch(event(0, [a])), false);
+  v.navigateTouch(event(0, [a, b])); v.navigateTouch(event(3, [a, b])); assert.equal(v.navigating, false);
+});
+
+test('PDF navigation rejects a pen and its palm but allows two fingers to take over finger ink', () => {
+  const judge = viewMethod('views/reader/pdf/PdfAnnotatorView.ets', 'judgeNavigation', {
+    ...penEnums, GestureJudgeResult: { REJECT: 'reject', CONTINUE: 'continue' } });
+  const v = { penContact: false, inkContact: true, isAnnotateMode: true, fingerDrawing: true, currentTool: 'pen' };
+  const fingers = n => ({ sourceTool: penEnums.SourceTool.Finger, fingerList: Array(n).fill({}) });
+  assert.equal(judge.call(v, fingers(1)), 'reject'); assert.equal(judge.call(v, fingers(2)), 'continue');
+  v.penContact = true; assert.equal(judge.call(v, fingers(2)), 'reject');
+  assert.equal(judge.call(v, { sourceTool: penEnums.SourceTool.Pen, fingerList: [] }), 'reject');
+  Object.assign(v, { activeInputPage: 2, saveRevision: 1, savedRevision: 1, onDirtyChange() {} });
+  const change = viewMethod('views/reader/pdf/PdfAnnotatorView.ets', 'setPageInkContact');
+  change.call(v, 1, false); assert.equal(v.penContact, true);
+  change.call(v, 2, false); assert.equal(v.penContact, false); assert.equal(v.inkContact, false);
+});
+
+test('palm contacts cannot transform the whiteboard while a pen owns the pointer', () => {
+  const v = canvasNavigationView(); v.input.isPenActive = () => true;
+  assert.equal(v.navigateTouch({ sourceTool: penEnums.SourceTool.Finger, type: 0, touches: [{ id: 2, x: 1, y: 1 }, { id: 3, x: 2, y: 2 }] }), false);
+  assert.ok(v.currentStroke); assert.equal(v.zoomScale, 1); assert.equal(v.panX, 0);
+});
+
+test('writing near an edge reveals more whiteboard space only after lift and preserves stored coordinates', () => {
+  const v = canvasNavigationView(); v.strokes = [{ points: [{ x: 590, y: 690 }], isEraser: false }];
+  const before = JSON.stringify(v.strokes); v.revealWritingSpace();
+  assert.equal(v.panX, -150); assert.equal(v.panY, -210); assert.equal(JSON.stringify(v.strokes), before);
+  v.strokes = [{ points: [{ x: 590, y: 690 }], isEraser: true }]; v.revealWritingSpace(); assert.equal(v.panY, -210);
+});
+
+test('stroke erasing catches swept crossings and old reference widths without deleting area masks', () => {
+  const stroke = { points: [{ x: 50, y: 0 }, { x: 50, y: 100 }], color: '#000', width: 2, referenceWidth: 1200, isEraser: false };
+  assert.equal(CanvasStrokeEraser.hit(stroke, { x: 0, y: 50 }, { x: 100, y: 50 }, 4), true);
+  assert.equal(CanvasStrokeEraser.hit(stroke, { x: 0, y: 150 }, { x: 100, y: 150 }, 4), false);
+  assert.equal(CanvasStrokeEraser.hit({ ...stroke, referenceWidth: 600 }, { x: 100, y: 100 }, { x: 100, y: 100 }, 4), true);
+  assert.equal(CanvasStrokeEraser.hit({ ...stroke, isEraser: true }, { x: 50, y: 50 }, { x: 50, y: 50 }, 40), false);
+});
+
+test('a whiteboard stroke erase is one undo frame and cancellation restores the entire original snapshot', () => {
+  const before = [{ points: [{ x: 1, y: 1 }] }, { points: [{ x: 2, y: 2 }] }];
+  const v = canvasNavigationView(); let saved = 0;
+  Object.assign(v, { strokes: before.slice(1), eraseBefore: before, undoFrames: [], redoFrames: [before], currentStroke: null, scheduleSave: () => saved++ });
+  viewMethod('views/reader/HandwritingCanvas.ets', 'finishStroke').call(v);
+  assert.equal(v.undoFrames.length, 1); assert.equal(v.undoFrames[0], before); assert.equal(saved, 1); assert.equal(v.redoFrames.length, 0);
+  v.eraseBefore = before; v.strokes = []; v.cancelContact(); assert.equal(v.strokes, before); assert.equal(saved, 1);
+});
+
+test('topbar commands route only to the chosen canvas and remember each eraser mode', () => {
+  const v = inkSelectionHarness().view; const targets = [];
+  v.isScratchpad = true; v.toolCommand = { sequence: 1, target: 'document', action: 'eraser', value: '' };
+  v.selectEraser = () => targets.push('eraser'); v.changeEraserMode = viewMethod('views/reader/HandwritingCanvas.ets', 'changeEraserMode');
+  const command = viewMethod('views/reader/HandwritingCanvas.ets', 'handleToolCommand');
+  command.call(v); assert.equal(targets.length, 0);
+  v.toolCommand.target = 'scratchpad'; command.call(v); assert.deepEqual(targets, ['eraser']);
+  v.toolCommand = { sequence: 2, target: 'scratchpad', action: 'eraserMode', value: 'stroke' }; command.call(v);
+  assert.equal(v.eraserMode, 'stroke'); v.toolCommand.value = 'invalid'; command.call(v); assert.equal(v.eraserMode, 'stroke');
+});
+
+test('PDF swept stroke erase skips area eraser masks and can undo the complete gesture', () => {
+  const v = pdfHistoryView().view;
+  const stroke = { id: 'cross', pageIndex: 0, color: '#000', width: 2, isEraser: false, points: [{ u: .5, v: .1 }, { u: .5, v: .9 }] };
+  const mask = { ...stroke, id: 'mask', isEraser: true };
+  v.pageStrokes[0] = [stroke, mask]; v.beginErase(0);
+  v.handleEraseAtPoint(0, .1, .5, 720, 1000); v.handleEraseAtPoint(0, .9, .5, 720, 1000); v.finishErase(true);
+  assert.deepEqual(v.pageStrokes[0].map(item => item.id), ['mask']); v.handleUndo(); assert.equal(v.pageStrokes[0].length, 2);
+});
+
+test('PDF area erasing draws a reversible transparent mask and cancellation removes the preview without saving', () => {
+  for (const commit of [false, true]) {
+    const ink = inkRecorder(), live = inkRecorder(); ink.ctx.clearRect = () => {}; live.ctx.clearRect = () => {};
+    const saved = []; let wholeErase = 0, redraws = 0;
+    const v = { sourceReady: true, isAnnotateMode: true, tool: 'eraser', eraserMode: 'area', eraserWidth: 24,
+      pageWidth: 360, pageHeight: 500, pageModel: { pageIndex: 0 }, selectedColor: '#111', selectedWidth: 3,
+      input: new InkInputService(), fingerDrawing: true, context: ink.ctx, liveContext: live.ctx,
+      onPenActive() {}, onActiveFinisherChange() {}, onInkContactChange() {}, onEraseStarted: () => wholeErase++,
+      onStrokeAdded: stroke => saved.push(stroke), redrawAll: () => redraws++ };
+    for (const method of ['handleTouch', 'finishInput', 'resetInput', 'style']) v[method] = viewMethod('views/reader/pdf/PdfPageCanvas.ets', method, { ...penEnums, InkRenderer });
+    const event = type => ({ ...touchEvent(type), stopPropagation() {} });
+    v.handleTouch(event(0)); v.handleTouch(event(2)); v.handleTouch(event(commit ? 1 : 3));
+    assert.equal(wholeErase, 0); assert.equal(saved.length, commit ? 1 : 0); assert.equal(redraws, 1);
+    assert.ok(ink.calls.some(call => call[0] === 'fill' && call[3] === 'destination-out'));
+    assert.equal(live.calls.length, 0);
+    if (commit) { assert.equal(saved[0].isEraser, true); assert.equal(saved[0].width, 24); }
+  }
+});
 test('canvas screen and world coordinates round trip across pan, zoom and negative horizontal expansion', () => {
   for(const zoom of [.08,.3,1,8]) for(const [x,y,panX,panY] of [[0,0,320,-200],[420,780,-2000,1500]]) {
     const world=CanvasViewport.world(x,y,zoom,panX,panY);
@@ -2195,9 +2394,10 @@ test('cancelled handwriting contacts discard live ink and preserve outstanding s
   const handle=viewMethod('views/reader/HandwritingCanvas.ets','handleTouch',{CanvasViewport,...penEnums});
   for(const pending of [false,true]) {
     const dirties=[];let clears=0,redraws=0;
-    const v={navigateTouch:()=>false,readOnly:false,input:{read:()=>({phase:'cancel'})},saveRevision:pending?2:1,savedRevision:1,
+    const v={navigateTouch:()=>false,readOnly:false,input:{read:()=>({phase:'cancel'}),reset(){}},saveRevision:pending?2:1,savedRevision:1,
       inkContact:true,currentStroke:{points:[{x:1,y:2}]},onDirtyChange:d=>dirties.push(d),
       liveContext:{clearRect:()=>clears++},redrawAll:()=>redraws++,strokes:[]};
+    v.cancelContact = viewMethod('views/reader/HandwritingCanvas.ets','cancelContact');
     handle.call(v,{stopPropagation(){}});assert.deepEqual(dirties,[pending]);assert.equal(v.currentStroke,null);assert.equal(v.inkContact,false);
     assert.equal(clears,1);assert.equal(redraws,1);assert.equal(v.strokes.length,0);
   }

@@ -32,6 +32,8 @@ export struct PdfPageCanvas {
   @Prop @Watch('onStrokesChanged') strokes: PageAnnotationStroke[] = [];
   @Prop @Watch('finishInputForModeChange') isAnnotateMode: boolean = false;
   @Prop @Watch('finishInputForModeChange') tool: AnnotationTool = 'pen';
+  @Prop @Watch('finishInputForModeChange') eraserMode: string = 'stroke';
+  @Prop @Watch('finishInputForModeChange') eraserWidth: number = 20;
   @Prop @Watch('finishInputForModeChange') fingerDrawing: boolean = false;
   @Prop @Watch('finishInputForModeChange') selectedColor: string = '#DC2626';
   @Prop @Watch('finishInputForModeChange') selectedWidth: number = 3;
@@ -43,7 +45,7 @@ export struct PdfPageCanvas {
   onEraseStarted: () => void = () => {};
   onEraseFinished: (commit: boolean) => void = () => {};
   onInkContactChange: (active: boolean) => void = () => {};
-  onPenActive: () => void = () => {};
+  onPenActive: (pen: boolean) => void = () => {};
   onSourceReady: (ready: boolean) => void = () => {};
   onRestoreSource: () => void = () => {};
   onActiveFinisherChange: (finish: (() => void) | null) => void = () => {};
@@ -79,6 +81,7 @@ export struct PdfPageCanvas {
     for (let i = 0; i < this.strokes.length; i++) {
       this.renderStroke(this.strokes[i]);
     }
+    if (this.currentStroke && this.currentStroke.isEraser) { this.renderStroke(this.currentStroke); }
 
   }
 
@@ -114,6 +117,7 @@ export struct PdfPageCanvas {
     this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight);
     this.onActiveFinisherChange(null);
     this.onInkContactChange(false);
+    if (stroke && stroke.isEraser) { this.redrawAll(); }
   }
 
   private onSourceChanged(): void {
@@ -139,14 +143,14 @@ export struct PdfPageCanvas {
     if (batch.phase === 'cancel') { this.resetInput(); return; }
     if (batch.phase === 'begin') {
       this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight);
-      this.onPenActive();
       this.onActiveFinisherChange(() => this.finishInput(true));
+      this.onPenActive(batch.pen);
       this.onInkContactChange(true);
-      if (this.tool === 'eraser') { this.erasing = true; this.onEraseStarted(); }
+      if (this.tool === 'eraser' && this.eraserMode !== 'area') { this.erasing = true; this.onEraseStarted(); }
       else {
         this.currentStroke = { id: 'stroke_' + Date.now() + '_' + Math.floor(Math.random() * 1000000),
-          pageIndex: this.pageModel.pageIndex, color: this.selectedColor, width: this.selectedWidth,
-          isHighlighter: this.tool === 'highlighter', isEraser: false, points: [] };
+          pageIndex: this.pageModel.pageIndex, color: this.selectedColor, width: this.tool === 'eraser' ? this.eraserWidth : this.selectedWidth,
+          isHighlighter: this.tool === 'highlighter', isEraser: this.tool === 'eraser', points: [] };
       }
     }
     const stroke = this.currentStroke;
@@ -163,7 +167,7 @@ export struct PdfPageCanvas {
         const point: CanvasPoint = { x: p.u * this.pageWidth, y: p.v * this.pageHeight, pressure: p.pressure };
         return point;
       });
-      InkRenderer.segment(this.liveContext, tail, tail.length - 1, this.style(stroke));
+      InkRenderer.segment(stroke.isEraser ? this.context : this.liveContext, tail, tail.length - 1, this.style(stroke));
     }
     if (batch.phase === 'end') {
       this.finishInput(true);

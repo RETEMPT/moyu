@@ -1014,31 +1014,6 @@ export struct AiSourcesPanel {
       .width('100%')
       .scrollBar(BarState.Auto)
 
-      // 4. 底栏：模型状态与配置直达
-      Row({ space: 6 }) {
-        Circle({ width: 6, height: 6 })
-          .fill(this.modelLabel.includes('未配') ? '#F59E0B' : '#22C55E')
-        Text(this.modelLabel.length > 0 ? this.modelLabel : '本地助手 · 离线')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-
-        Text('⚙ 设置')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().accent)
-          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-          .borderRadius(4)
-          .backgroundColor(this.palette().accentSoft)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => this.onOpenModelSettings())
-      }
-      .width('100%')
-      .height(34)
-      .padding({ left: 10, right: 10 })
-      .border({ width: { top: 1 }, color: { top: this.palette().borderSubtle } })
-      .backgroundColor(this.palette().surface)
     }
     .width(LayoutTokens.CONTEXT_PANEL_WIDTH)
     .height('100%')

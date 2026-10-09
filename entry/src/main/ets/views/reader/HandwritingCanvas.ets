@@ -20,6 +20,8 @@ import { StylusShortcutService } from '../../services/ink/StylusShortcutService'
 import { CanvasViewport, InkBounds } from '../../services/ink/CanvasViewport';
 import { CanvasPaperGuides } from '../../services/ink/CanvasPaperGuides';
 import { CanvasStrokePolicy } from '../../services/ink/CanvasStrokePolicy';
+import { CanvasStrokeEraser } from '../../services/ink/CanvasStrokeEraser';
+import { CanvasToolState, CanvasToolCommand } from '../../common/types/CanvasToolState';
 import { AppIcon } from '../common/AppIcon';
 import { InkWidthSlider } from '../common/InkWidthSlider';
 import { InkToolPolicy } from '../../services/ink/InkToolPolicy';
@@ -50,6 +52,11 @@ export struct HandwritingCanvas {
   onReadingScroll: (offset: number) => void = () => {};
   onBlankTap: () => void = () => {};
   onToolChange: (tool: string) => void = () => {};
+  @Prop showToolbar: boolean = true;
+  @Prop @Watch('handleToolCommand') toolCommand: CanvasToolCommand = { sequence: 0, target: '', action: '', value: '' };
+  onFocused: () => void = () => {};
+  onShowTools: () => void = () => {};
+  onToolStateChange: (state: CanvasToolState) => void = () => {};
   onContentReady: (ready: boolean) => void = () => {};
 
   @StorageProp('flowmindDarkMode') @Watch('requestRedraw') isDarkMode: boolean = false;
@@ -74,6 +81,8 @@ export struct HandwritingCanvas {
   private highlighterColor: string = '#EAB308';
   @State isHighlighter: boolean = false;
   @State isEraser: boolean = false;
+  @State eraserMode: string = 'area';
+  private eraseBefore: CanvasStroke[] | null = null;
   private currentStroke: CanvasStroke | null = null;
   // Whiteboards remain usable without a paired stylus. The hand toggle enables browsing instead.
   @State fingerDrawing: boolean = true;
@@ -101,6 +110,10 @@ export struct HandwritingCanvas {
   private panning: boolean = false;
   private zoomAnchor: CanvasPoint = { x: 0, y: 0 };
   private viewportReady: boolean = false;
+  private navigating: boolean = false;
+  private pairIds: string = '';
+  private pairDistance: number = 0;
+  private pairAnchor: CanvasPoint = { x: 0, y: 0 };
   private drawTimer: number = -1;
   private savedRevision: number = 0;
   private boundsCache: Map<CanvasStroke, InkBounds> = new Map();
@@ -111,11 +124,11 @@ export struct HandwritingCanvas {
 
   aboutToAppear(): void {
     this.editingNote = JSON.parse(JSON.stringify(this.editingNote || this.note)) as NoteItem;
-    this.shortcuts.start(() => !this.readOnly && !this.loadError && !this.inkContact, () => this.toggleEraser(), () => { this.toolsVisible = true; });
+    this.shortcuts.start(() => !this.readOnly && !this.loadError && !this.inkContact, () => this.toggleEraser(), () => { this.onFocused(); if (this.showToolbar) { this.toolsVisible = true; } else { this.onShowTools(); } });
     this.loadedNoteId = this.note.id;
     this.title = this.note.title;
     this.selectedColor = this.isDarkMode ? '#F5F5F4' : '#1C1917';
-    this.penColor = this.selectedColor; this.onToolChange(this.activeTool());
+    this.penColor = this.selectedColor; this.onToolChange(this.activeTool()); this.emitToolState();
     this.loadStrokes();
   }
 
@@ -202,7 +215,7 @@ export struct HandwritingCanvas {
       this.toolsVisible = false;
     }
 
-    this.boundsCache.clear(); this.panX = 0; this.panY = 0;
+    this.boundsCache.clear(); this.panX = 0; this.panY = 0; this.navigating = false; this.pairIds = ''; this.eraseBefore = null;
     if (this.viewportReady) { this.zoomScale = this.canvasWidth / CanvasViewport.REFERENCE_WIDTH; }
     this.saveRevision = 0; this.savedRevision = 0; this.onDirtyChange(false);
     this.onContentReady(!this.loadError);
@@ -231,7 +244,7 @@ export struct HandwritingCanvas {
     }
     // A queued viewport redraw must not bring ink back under an active eraser.
     const active = this.currentStroke;
-    if (active && active.isEraser && active.points.length) {
+    if (active && active.isEraser && !this.eraseBefore && active.points.length) {
       this.context.save(); this.context.translate(this.panX, this.panY); this.context.scale(this.zoomScale, this.zoomScale);
       InkRenderer.stroke(this.context, active.points, this.style(active)); this.context.restore();
     }
@@ -272,7 +285,7 @@ export struct HandwritingCanvas {
   private toggleEraser(): void {
     if (this.readOnly || this.loadError) { return; }
     this.shortcuts.claim();
-    this.finishStroke(); this.isEraser = !this.isEraser; this.onToolChange(this.activeTool());
+    this.finishStroke(); this.isEraser = !this.isEraser; this.onToolChange(this.activeTool()); this.emitToolState();
   }
 
   onReadOnlyChanged(): void {
@@ -281,12 +294,25 @@ export struct HandwritingCanvas {
 
   private finishStroke(): void {
     const stroke = this.currentStroke;
-    if (!this.loadError && stroke && stroke.points.length) {
+    if (!this.loadError && this.eraseBefore) {
+      if (this.strokes.length !== this.eraseBefore.length) {
+        this.undoFrames.push(this.eraseBefore); if (this.undoFrames.length > 50) { this.undoFrames.shift(); }
+        this.redoFrames = []; this.scheduleSave();
+      } else { this.onDirtyChange(this.saveRevision !== this.savedRevision); }
+      this.eraseBefore = null;
+    } else if (!this.loadError && stroke && stroke.points.length) {
       this.remember(); this.strokes = [...this.strokes, stroke];
       this.liveContext.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
       this.drawSingleStroke(stroke); this.scheduleSave();
     }
     this.currentStroke = null; this.inkContact = false; this.input.reset();
+  }
+
+  private cancelContact(): void {
+    if (this.eraseBefore) { this.strokes = this.eraseBefore; this.eraseBefore = null; }
+    this.currentStroke = null; this.inkContact = false; this.input.reset();
+    this.onDirtyChange(this.saveRevision !== this.savedRevision);
+    this.liveContext.clearRect(0, 0, this.canvasWidth, this.canvasHeight); this.redrawAll();
   }
 
   private handleTouch(event: TouchEvent): void {
@@ -298,15 +324,12 @@ export struct HandwritingCanvas {
     const batch = this.input.read(event, this.fingerDrawing);
     if (batch.phase === 'ignore') { return; }
     event.stopPropagation();
-    if (batch.phase === 'cancel') {
-      this.currentStroke = null; this.inkContact = false;
-      this.onDirtyChange(this.saveRevision !== this.savedRevision);
-      this.liveContext.clearRect(0, 0, this.canvasWidth, this.canvasHeight); this.redrawAll(); return;
-    }
+    if (batch.phase === 'cancel') { this.cancelContact(); return; }
     if (batch.phase === 'begin') {
       this.liveContext.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
       if (this.currentStroke) { this.currentStroke = null; this.redrawAll(); }
-      this.shortcuts.claim(); this.inkContact = true;
+      this.shortcuts.claim(); this.onFocused(); this.inkContact = true;
+      if (this.isEraser && this.eraserMode === 'stroke') { this.eraseBefore = this.strokes.slice(); }
       this.onDirtyChange(true);
       this.currentStroke = { points: [], color: this.selectedColor, width: (this.isEraser ? this.eraserWidth : this.selectedWidth) / this.zoomScale,
         referenceWidth: CanvasViewport.REFERENCE_WIDTH, isHighlighter: this.isHighlighter && !this.isEraser, isEraser: this.isEraser };
@@ -321,20 +344,66 @@ export struct HandwritingCanvas {
       const last = stroke.points[stroke.points.length - 1];
       if (last && Math.hypot(last.x - world.x, last.y - world.y) * this.zoomScale < 0.35 && Math.abs((last.pressure || 0) - point.pressure) < 0.04) { continue; }
       stroke.points.push({ x: world.x, y: world.y, pressure: point.pressure });
-      InkRenderer.segment(target, stroke.points, stroke.points.length - 1, style);
+      if (this.eraseBefore) {
+        this.strokes = this.strokes.filter((saved: CanvasStroke) => !CanvasStrokeEraser.hit(saved, last || world, world, stroke.width / 2));
+      } else { InkRenderer.segment(target, stroke.points, stroke.points.length - 1, style); }
     }
     target.restore();
+    if (this.eraseBefore) { this.redrawAll(); }
     if (batch.phase === 'end') {
       this.finishStroke();
+      if (!stroke.isEraser && !this.isScratchpad) { this.revealWritingSpace(); }
     }
   }
 
+  private revealWritingSpace(): void {
+    const last = this.strokes[this.strokes.length - 1];
+    if (!last || last.isEraser || !last.points.length) { return; }
+    const point = last.points[last.points.length - 1];
+    const x = point.x * this.zoomScale + this.panX; const y = point.y * this.zoomScale + this.panY;
+    // Move only after lift: expanding must never move the paper underneath an active nib.
+    if (y > this.canvasHeight - 56) { this.panY -= this.canvasHeight * 0.3; }
+    if (x > this.canvasWidth - 40) { this.panX -= this.canvasWidth * 0.25; }
+    if (x < 40) { this.panX += this.canvasWidth * 0.25; }
+    this.requestRedraw();
+  }
+
   private navigateTouch(event: TouchEvent): boolean {
+    // A pen owns its contact; additional palm/finger contacts must not move the page.
+    if (event.sourceTool === SourceTool.Pen || this.input.isPenActive()) { return false; }
+    const touches = event.touches;
+    if (event.type === TouchType.Cancel && this.navigating) {
+      this.navigating = false; this.pairIds = ''; this.panning = false; return true;
+    }
+    if (touches.length >= 2) {
+      if (this.inkContact) { this.cancelContact(); }
+      this.onFocused(); this.panning = false; this.navigating = true;
+      const a = touches[0]; const b = touches[1];
+      const ids = `${a.id}:${b.id}`;
+      const centerX = (a.x + b.x) / 2; const centerY = (a.y + b.y) / 2;
+      const distance = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+      if (this.pairIds !== ids || event.type === TouchType.Down) {
+        this.pairIds = ids; this.pairDistance = distance; this.zoomStart = this.zoomScale;
+        this.pairAnchor = CanvasViewport.world(centerX, centerY, this.zoomScale, this.panX, this.panY);
+      } else if (event.type === TouchType.Move) {
+        this.zoomScale = Math.max(0.08, Math.min(8, this.zoomStart * distance / this.pairDistance));
+        this.panX = centerX - this.pairAnchor.x * this.zoomScale;
+        this.panY = centerY - this.pairAnchor.y * this.zoomScale; this.requestRedraw();
+      }
+      return true;
+    }
+    if (this.navigating) {
+      this.pairIds = '';
+      // A remaining finger cannot turn the end of a pinch into a new ink stroke.
+      const allReleased = event.type === TouchType.Up && touches.every((point: TouchObject) =>
+        event.changedTouches.some((changed: TouchObject) => changed.id === point.id));
+      if (!touches.length || allReleased) { this.navigating = false; }
+      return true;
+    }
     if (this.inkContact || (event.sourceTool !== SourceTool.Finger && !this.readOnly) || (this.fingerDrawing && !this.readOnly)) { return false; }
-    if (event.touches.length > 1) { this.panning = false; return true; }
-    const point = event.changedTouches[0] || event.touches[0];
+    const point = event.changedTouches[0] || touches[0];
     if (!point) { this.panning = false; return true; }
-    if (event.type === TouchType.Down) { this.panning = true; this.panTouchX = point.x; this.panTouchY = point.y; }
+    if (event.type === TouchType.Down) { this.onFocused(); this.panning = true; this.panTouchX = point.x; this.panTouchY = point.y; }
     else if (event.type === TouchType.Move && this.panning) {
       if (this.readOnly) { this.onReadingScroll(this.panTouchY - point.y); }
       this.panX += point.x - this.panTouchX; this.panY += point.y - this.panTouchY;
@@ -412,17 +481,19 @@ export struct HandwritingCanvas {
 
   private selectPen(): void {
     if (this.readOnly || this.loadError) { return; }
+    this.shortcuts.claim();
     this.finishStroke(); this.rememberInkSettings();
     this.isEraser = false; this.isHighlighter = false;
     this.selectedColor = this.penColor; this.selectedWidth = this.penWidth;
-    this.onToolChange(this.activeTool());
+    this.onToolChange(this.activeTool()); this.emitToolState();
   }
 
   private selectHighlighter(): void {
     if (this.readOnly || this.loadError) { return; }
+    this.shortcuts.claim();
     this.finishStroke(); this.rememberInkSettings(); this.isEraser = false; this.isHighlighter = true;
     this.selectedColor = this.highlighterColor; this.selectedWidth = this.highlighterWidth;
-    this.onToolChange(this.activeTool());
+    this.onToolChange(this.activeTool()); this.emitToolState();
   }
 
   private changeWidth(value: number): void {
@@ -430,11 +501,12 @@ export struct HandwritingCanvas {
     this.finishStroke();
     if (this.isEraser) { this.eraserWidth = InkToolPolicy.width('eraser', value); }
     else { this.selectedWidth = InkToolPolicy.width(this.activeTool(), value); this.rememberInkSettings(); }
+    this.emitToolState();
   }
 
   private changeColor(color: string): void {
     if (this.readOnly || this.loadError || this.isEraser) { return; }
-    this.finishStroke(); this.selectedColor = color; this.rememberInkSettings();
+    this.finishStroke(); this.selectedColor = color; this.rememberInkSettings(); this.emitToolState();
   }
 
   private inkColors(): string[] {
@@ -450,16 +522,36 @@ export struct HandwritingCanvas {
     return '黄色';
   }
 
-  @Builder
-  inkTool(icon: Resource, label: string, selected: boolean, action: () => void) {
-    Button({ type: ButtonType.Normal }) {
-      Column({ space: 3 }) {
-      AppIcon({ source: icon, iconSize: 22, tint: selected ? this.palette().accent : this.palette().inkSecondary })
-      Text(label).fontSize(10).fontWeight(selected ? FontWeight.Bold : FontWeight.Normal).fontColor(selected ? this.palette().accent : this.palette().inkSecondary)
-      }
-    }.width(56).height(56).padding(0).borderRadius(10)
-      .backgroundColor(selected ? this.palette().accentSoft : Color.Transparent)
-      .accessibilityText(`${label}${selected ? '，已选中' : ''}`).bindTips(label).onClick(() => { this.shortcuts.claim(); action(); })
+  private emitToolState(): void {
+    this.onToolStateChange({ tool: this.activeTool(), width: this.isEraser ? this.eraserWidth : this.selectedWidth,
+      color: this.selectedColor, fingerDrawing: this.fingerDrawing, eraserMode: this.eraserMode });
+  }
+
+  private selectEraser(): void {
+    if (!this.isEraser) { this.toggleEraser(); }
+  }
+
+  private changeEraserMode(mode: string): void {
+    if (this.readOnly || this.loadError || (mode !== 'area' && mode !== 'stroke')) { return; }
+    this.finishStroke(); this.eraserMode = mode; this.emitToolState();
+  }
+
+  private handleToolCommand(): void {
+    const command = this.toolCommand;
+    if (!command.sequence || command.target !== (this.isScratchpad ? 'scratchpad' : 'document') || this.readOnly || this.loadError) { return; }
+    this.shortcuts.claim();
+    if (command.action === 'pen') { this.selectPen(); }
+    else if (command.action === 'highlighter') { this.selectHighlighter(); }
+    else if (command.action === 'eraser') { this.selectEraser(); }
+    else if (command.action === 'width') { this.changeWidth(Number(command.value)); }
+    else if (command.action === 'color') { this.changeColor(command.value); }
+    else if (command.action === 'eraserMode') { this.changeEraserMode(command.value); }
+    else if (command.action === 'finger') { this.finishStroke(); this.fingerDrawing = !this.fingerDrawing; this.emitToolState(); }
+    else if (command.action === 'undo') { this.handleUndo(); }
+    else if (command.action === 'redo') { this.handleRedo(); }
+    else if (command.action === 'clear') { this.handleClear(); }
+    else if (command.action === 'extend') { this.extendCanvas(800); }
+    else if (command.action === 'settings') { this.toolsVisible = true; }
   }
 
   @Builder
@@ -479,24 +571,30 @@ export struct HandwritingCanvas {
         }
         if (!this.readOnly && !this.loadError) {
         IconButton({ icon: $r('app.media.ic_hand'), selected: this.fingerDrawing,
-          caption: '手指',
+          caption: '手指', compact: true,
           label: this.fingerDrawing ? '关闭手指书写，仅使用手写笔' : '开启手指书写',
-          onAction: () => { this.finishStroke(); this.fingerDrawing = !this.fingerDrawing; } })
+          onAction: () => { this.finishStroke(); this.fingerDrawing = !this.fingerDrawing; this.emitToolState(); } })
         }
       }.width('100%')
       if (!this.readOnly && !this.loadError) {
       Scroll() {
       Row() {
-        this.inkTool($r('app.media.ic_pen'), '笔', !this.isEraser && !this.isHighlighter, () => this.selectPen())
-        this.inkTool($r('app.media.ic_highlighter'), '荧光', this.isHighlighter && !this.isEraser, () => this.selectHighlighter())
-        this.inkTool($r('app.media.ic_eraser'), '橡皮', this.isEraser, () => this.toggleEraser())
-        this.inkTool($r('app.media.ic_undo'), '撤销', false, () => this.handleUndo())
-        this.inkTool($r('app.media.ic_redo'), '重做', false, () => this.handleRedo())
-        this.inkTool($r('app.media.ic_settings'), '更多', this.toolsVisible, () => { this.toolsVisible = !this.toolsVisible; })
-      }.width(Math.max(336, this.viewportWidth - 24)).justifyContent(FlexAlign.SpaceBetween)
+        IconButton({ icon: $r('app.media.ic_pen'), label: '普通笔', caption: '笔', compact: true, selected: !this.isEraser && !this.isHighlighter, onAction: () => this.selectPen() })
+        IconButton({ icon: $r('app.media.ic_highlighter'), label: '荧光笔', caption: '荧光', compact: true, selected: this.isHighlighter && !this.isEraser, onAction: () => this.selectHighlighter() })
+        IconButton({ icon: $r('app.media.ic_eraser'), label: '橡皮', caption: '橡皮', compact: true, selected: this.isEraser, onAction: () => this.selectEraser() })
+        IconButton({ icon: $r('app.media.ic_undo'), label: '撤销笔迹', compact: true, onAction: () => this.handleUndo() })
+        IconButton({ icon: $r('app.media.ic_redo'), label: '重做笔迹', compact: true, onAction: () => this.handleRedo() })
+        IconButton({ icon: $r('app.media.ic_settings'), label: '更多笔设置', compact: true, selected: this.toolsVisible, onAction: () => { this.toolsVisible = !this.toolsVisible; } })
+      }.constraintSize({ minWidth: 312 }).justifyContent(FlexAlign.Start)
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
-      Text(`当前：${InkToolPolicy.label(this.activeTool())}`).fontSize(12).fontColor(this.palette().accent).width('100%')
       if (this.toolsVisible) {
+        Row({ space: 4 }) {
+          Text('橡皮').fontSize(12).fontColor(this.palette().inkSecondary)
+          Button('区域消除', { type: ButtonType.Normal }).height(44).fontSize(12).fontColor(this.eraserMode === 'area' ? this.palette().accent : this.palette().inkSecondary)
+            .backgroundColor(this.eraserMode === 'area' ? this.palette().accentSoft : Color.Transparent).onClick(() => this.changeEraserMode('area'))
+          Button('笔画消除', { type: ButtonType.Normal }).height(44).fontSize(12).fontColor(this.eraserMode === 'stroke' ? this.palette().accent : this.palette().inkSecondary)
+            .backgroundColor(this.eraserMode === 'stroke' ? this.palette().accentSoft : Color.Transparent).onClick(() => this.changeEraserMode('stroke'))
+        }.width('100%')
         InkWidthSlider({ tool: this.activeTool(), value: this.isEraser ? this.eraserWidth : this.selectedWidth, onChange: (value: number) => this.changeWidth(value) })
         Scroll() {
           Row({ space: 4 }) {
@@ -532,7 +630,7 @@ export struct HandwritingCanvas {
   build() {
     Column() {
       // 顶部悬浮工具栏
-      this.penToolbar()
+      if (this.showToolbar) { this.penToolbar() }
 
       // 白纸质感手绘无限画布区 (支持向下无限滚动与动态延展)
       Stack({ alignContent: Alignment.TopStart }) {
@@ -560,20 +658,6 @@ export struct HandwritingCanvas {
           }.width('100%').height('100%').padding(24).justifyContent(FlexAlign.Center)
         }
       }.width('100%')
-      .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => {
-        return event.sourceTool === SourceTool.Pen || this.inkContact || (this.fingerDrawing && !this.readOnly && event.fingerList.length === 1)
-          ? GestureJudgeResult.REJECT : GestureJudgeResult.CONTINUE;
-      })
-      .parallelGesture(PinchGesture({ fingers: 2 }).onActionStart(() => {
-          this.panning = false; this.zoomStart = this.zoomScale;
-          this.zoomAnchor = CanvasViewport.world(this.canvasWidth / 2, this.canvasHeight / 2, this.zoomScale, this.panX, this.panY);
-        }).onActionUpdate((event: GestureEvent) => {
-          if (!this.inkContact && event.sourceTool !== SourceTool.Pen) {
-            this.zoomScale = Math.max(0.08, Math.min(8, this.zoomStart * event.scale));
-            this.panX = this.canvasWidth / 2 - this.zoomAnchor.x * this.zoomScale;
-            this.panY = this.canvasHeight / 2 - this.zoomAnchor.y * this.zoomScale; this.requestRedraw();
-          }
-        }))
       .layoutWeight(1)
       .margin({ top: 8 })
       .borderRadius(12)
@@ -585,7 +669,7 @@ export struct HandwritingCanvas {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 12, bottom: 16 })
+    .padding({ left: this.showToolbar ? LayoutTokens.gutter(this.isPhone) : 8, right: this.showToolbar ? LayoutTokens.gutter(this.isPhone) : 8, top: this.showToolbar ? 4 : 0, bottom: 8 })
     .backgroundColor(this.palette().canvas)
   }
 }

@@ -11,6 +11,7 @@ export struct IconButton {
   @Prop destructive: boolean = false;
   @Prop available: boolean = true;
   @Prop caption: string = '';
+  @Prop compact: boolean = false;
   onAction: () => void = () => {};
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
@@ -26,7 +27,7 @@ export struct IconButton {
       }
     }
     .width(this.caption ? 56 : LayoutTokens.MIN_TOUCH_TARGET)
-    .height(this.caption ? 56 : LayoutTokens.MIN_TOUCH_TARGET)
+    .height(this.caption && !this.compact ? 56 : LayoutTokens.MIN_TOUCH_TARGET)
     .padding(0)
     .borderRadius(12)
     .backgroundColor(this.selected ? this.palette().accentSoft : Color.Transparent)

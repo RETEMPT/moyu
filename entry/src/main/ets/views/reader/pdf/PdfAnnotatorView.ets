@@ -19,6 +19,7 @@ import { NoteItem } from '../../../common/types/NoteItem';
 import { ReaderSaveKind } from '../../../common/types/ReaderSaveKind';
 import {
   AnnotationTool,
+  NormalizedPoint,
   DocumentAnnotationData,
   PageAnnotationStroke,
   PdfPageModel
@@ -27,6 +28,8 @@ import { PdfPageCanvas } from './PdfPageCanvas';
 import { PdfDocumentService } from '../../../services/document/PdfDocumentService';
 import { PdfAnnotationPolicy } from '../../../services/document/PdfAnnotationPolicy';
 import { InkRenderer } from '../../../services/ink/InkRenderer';
+import { CanvasStroke, CanvasPoint } from '../../../common/types/CanvasStroke';
+import { CanvasStrokeEraser } from '../../../services/ink/CanvasStrokeEraser';
 import { StylusShortcutService } from '../../../services/ink/StylusShortcutService';
 
 interface InkHistoryFrame { pageIndex: number; before: PageAnnotationStroke[]; after: PageAnnotationStroke[]; }
@@ -53,22 +56,25 @@ export struct PdfAnnotatorView {
   onRestoreSource: () => void = () => {};
   onSourceReady: (ready: boolean) => void = () => {};
   onAnnotationError: (message: string) => void = () => {};
+  onFocused: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   // 交互与工具栏状态
-  @Prop isAnnotateMode: boolean = false;
+  @Prop @Watch('finishActiveInput') isAnnotateMode: boolean = false;
   @Prop currentTool: AnnotationTool = 'pen';
   @Prop @Watch('finishActiveInput') selectedColor: string = '#DC2626';
   @Prop @Watch('finishActiveInput') selectedWidth: number = 3;
   @Prop @Watch('finishActiveInput') eraserWidth: number = 20;
+  @Prop @Watch('finishActiveInput') eraserMode: string = 'stroke';
   @Prop @Watch('onUndoTriggered') undoTrigger: number = 0;
   @Prop @Watch('onRedoTriggered') redoTrigger: number = 0;
   @Prop fingerDrawing: boolean = false;
   onToggleEraser: () => void = () => {};
   onShowPenTools: () => void = () => {};
   @State inkContact: boolean = false;
+  @State penContact: boolean = false;
   @Prop @Watch('onClearTriggered') clearTrigger: number = 0;
   @State zoomScale: number = 1.0;
   @State currentPageIdx: number = 0;
@@ -85,6 +91,7 @@ export struct PdfAnnotatorView {
   private redoStack: InkHistoryFrame[] = [];
   private eraseBefore: PageAnnotationStroke[] | null = null;
   private erasePage: number = -1;
+  private erasePrevious: CanvasPoint | null = null;
   private shortcuts: StylusShortcutService = new StylusShortcutService();
   private zoomStart: number = 1;
   private saveTimer: number = -1;
@@ -196,13 +203,13 @@ export struct PdfAnnotatorView {
 
   private beginErase(pageIndex: number): void {
     if (this.annotationError) { return; }
-    this.erasePage = pageIndex; this.eraseBefore = (this.pageStrokes[pageIndex] || []).slice();
+    this.erasePrevious = null; this.erasePage = pageIndex; this.eraseBefore = (this.pageStrokes[pageIndex] || []).slice();
   }
 
   private finishErase(commit: boolean): void {
     if (!this.eraseBefore) { return; }
     const before = this.eraseBefore; const page = this.erasePage;
-    this.eraseBefore = null; this.erasePage = -1;
+    this.eraseBefore = null; this.erasePage = -1; this.erasePrevious = null;
     const after = this.pageStrokes[page] || [];
     if (!commit) { this.pageStrokes[page] = before; return; }
     if (before.length !== after.length) { this.remember(page, before, after); this.scheduleSave(); }
@@ -211,14 +218,12 @@ export struct PdfAnnotatorView {
   private handleEraseAtPoint(pageIndex: number, u: number, v: number, width: number, height: number): void {
     const current = this.pageStrokes[pageIndex];
     if (!current || !this.eraseBefore) { return; }
-    const x = u * width; const y = v * height;
+    const point: CanvasPoint = { x: u * width, y: v * height };
+    const previous = this.erasePrevious || point; this.erasePrevious = point;
     const remaining = current.filter((stroke: PageAnnotationStroke) => {
-      const radius = (this.eraserWidth + stroke.width) * width / 1440;
-      for (let i = 0; i < stroke.points.length; i++) {
-        const a = stroke.points[Math.max(0, i - 1)]; const b = stroke.points[i];
-        if (InkRenderer.nearSegment(x, y, a.u * width, a.v * height, b.u * width, b.v * height, radius)) { return false; }
-      }
-      return true;
+      const mapped: CanvasStroke = { points: stroke.points.map((p: NormalizedPoint) => { const mappedPoint: CanvasPoint = { x: p.u * width, y: p.v * height }; return mappedPoint; }),
+        width: stroke.width * width / 1440, color: stroke.color, referenceWidth: 1200, isHighlighter: stroke.isHighlighter, isEraser: stroke.isEraser };
+      return !CanvasStrokeEraser.hit(mapped, previous, point, this.eraserWidth * width / 1440);
     });
     if (remaining.length !== current.length) { this.pageStrokes[pageIndex] = remaining; }
   }
@@ -327,11 +332,12 @@ export struct PdfAnnotatorView {
 
   private setPageInkContact(pageIndex: number, active: boolean): void {
     if (!active && this.activeInputPage !== -1 && this.activeInputPage !== pageIndex) { return; }
+    if (!active) { this.penContact = false; }
     this.inkContact = active; this.onDirtyChange(active || this.saveRevision !== this.savedRevision);
   }
 
   private judgeNavigation(event: BaseGestureEvent): GestureJudgeResult {
-    return event.sourceTool === SourceTool.Pen || this.inkContact ||
+    return event.sourceTool === SourceTool.Pen || this.penContact || (this.inkContact && event.fingerList.length < 2) ||
       (this.isAnnotateMode && this.fingerDrawing && this.currentTool !== 'pan' && event.fingerList.length === 1)
       ? GestureJudgeResult.REJECT : GestureJudgeResult.CONTINUE;
   }
@@ -351,12 +357,14 @@ export struct PdfAnnotatorView {
                 strokes: this.pageStrokes[pm.pageIndex] || [],
                 isAnnotateMode: this.isAnnotateMode && !this.annotationError,
                 tool: this.currentTool,
+                eraserMode: this.eraserMode,
+                eraserWidth: this.eraserWidth,
                 selectedColor: this.selectedColor,
                 selectedWidth: this.selectedWidth,
                 isDarkMode: this.isDarkMode,
                 onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
                 fingerDrawing: this.fingerDrawing,
-                onPenActive: () => this.shortcuts.claim(),
+                onPenActive: (pen: boolean) => { this.penContact = pen; this.shortcuts.claim(); this.onFocused(); },
                 onActiveFinisherChange: (finish: (() => void) | null) => this.setActiveInputFinisher(pm.pageIndex, finish),
                 onSourceReady: (ready: boolean) => this.setPageSourceReady(pm.pageIndex, ready),
                 onRestoreSource: () => this.onRestoreSource(),
@@ -400,12 +408,14 @@ export struct PdfAnnotatorView {
               strokes: this.pageStrokes[this.currentPageIdx] || [],
               isAnnotateMode: this.isAnnotateMode && !this.annotationError,
               tool: this.currentTool,
+              eraserMode: this.eraserMode,
+              eraserWidth: this.eraserWidth,
               selectedColor: this.selectedColor,
               selectedWidth: this.selectedWidth,
               isDarkMode: this.isDarkMode,
               onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
               fingerDrawing: this.fingerDrawing,
-              onPenActive: () => this.shortcuts.claim(),
+              onPenActive: (pen: boolean) => { this.penContact = pen; this.shortcuts.claim(); this.onFocused(); },
               onActiveFinisherChange: (finish: (() => void) | null) => this.setActiveInputFinisher(this.currentPageIdx, finish),
               onSourceReady: (ready: boolean) => this.setPageSourceReady(this.currentPageIdx, ready),
               onRestoreSource: () => this.onRestoreSource(),

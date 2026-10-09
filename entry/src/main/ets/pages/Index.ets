@@ -49,7 +49,6 @@ import { AssistantModeService } from '../services/ai/AssistantModeService';
 import { UsageGuideSheet } from '../views/settings/UsageGuideSheet';
 import { REMOTE_AI_ENABLED } from '../common/constants/RuntimeCapabilities';
 import { AppShell } from '../views/layout/AppShell';
-import { SIDEBAR_MODE_SESSIONS, SIDEBAR_MODE_TREE } from '../views/layout/Sidebar';
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
 import { LibraryWorkspace } from '../views/workspace/LibraryWorkspace';
 import { GraphWorkspace } from '../views/workspace/GraphWorkspace';
@@ -151,7 +150,8 @@ struct Index {
   // ---- AI 会话（列表由 Index 持有，侧栏与工作台共用） ----
   @State sessions: ChatSession[] = [];
   @State activeSessionId: string = '';
-  @State sidebarMode: string = SIDEBAR_MODE_TREE;
+  @State chatHistoryOpen: boolean = false;
+  private historyRestoreCollapsed: boolean = false;
   /** AI 墨客右栏「来源与上下文」由工作台上报 */
   @State aiCitations: ChatCitation[] = [];
   @State aiPinnedNotes: NoteItem[] = [];
@@ -239,7 +239,20 @@ struct Index {
     return this.appContext;
   }
 
+  private toggleChatHistory(): void {
+    if (this.chatHistoryOpen) { this.closeChatHistory(); return; }
+    this.historyRestoreCollapsed = this.sidebarCollapsed;
+    this.chatHistoryOpen = true; this.sidebarCollapsed = false;
+    if (this.singleColumn) { this.contextPanelOpen = false; }
+  }
+
+  private closeChatHistory(): void {
+    if (!this.chatHistoryOpen) { return; }
+    this.chatHistoryOpen = false; this.sidebarCollapsed = this.historyRestoreCollapsed;
+  }
+
   private dismissNavigationOverlay(): void {
+    if (this.chatHistoryOpen) { this.closeChatHistory(); }
     if (this.singleColumn) { this.sidebarCollapsed = true; this.contextPanelOpen = false; }
   }
 
@@ -256,6 +269,7 @@ struct Index {
     if (this.smartExtractVisible) { this.smartExtractCloseToken++; return true; }
     if (this.searchVisible) { this.searchVisible = false; return true; }
     if (this.fullScreenDocOpen) { this.documentBackToken++; return true; }
+    if (this.chatHistoryOpen) { this.closeChatHistory(); return true; }
     if (this.singleColumn && this.contextPanelOpen) { this.contextPanelOpen = false; return true; }
     if (this.singleColumn && !this.sidebarCollapsed) { this.sidebarCollapsed = true; return true; }
     if (this.readingOpen) { this.closeReading(); return true; }
@@ -344,7 +358,7 @@ struct Index {
   }
 
   /** AiWorkspace 新建或更新会话后回写列表，并同步 activeSessionId */
-  private handleSessionSaved(session: ChatSession): void {
+  private handleSessionSaved(session: ChatSession, activate: boolean = true): void {
     let replaced: boolean = false;
     const next: ChatSession[] = [];
     for (let i = 0; i < this.sessions.length; i++) {
@@ -359,7 +373,7 @@ struct Index {
       next.unshift(session);
     }
     this.sessions = this.sortSessions(next);
-    this.activeSessionId = session.id;
+    if (activate) { this.activeSessionId = session.id; }
   }
 
   private handleSelectSession(session: ChatSession): void {
@@ -379,6 +393,7 @@ struct Index {
     this.activeNav = NAV_AI;
     this.readingOpen = false;
     this.fullScreenDocOpen = false;
+    this.aiPinnedNotes = []; this.aiPrefilledPrompt = '';
     this.activeSessionId = '';
   }
 
@@ -1988,6 +2003,9 @@ struct Index {
         onImportExternal: () => this.importDocument('外部参考'),
         backRequestToken: this.aiBackToken,
         onNavigateBack: () => { this.activeNav = NAV_HOME; },
+        onNewSession: () => this.handleNewSession(),
+        historyOpen: this.chatHistoryOpen,
+        onToggleHistory: () => this.toggleChatHistory(),
         onDeleteSession: (id: string) => { this.handleDeleteSession(id); },
         currentNote: this.activeNoteId.length > 0
           ? this.notes.find((note: NoteItem) => note.id === this.activeNoteId) ?? null
@@ -2005,8 +2023,8 @@ struct Index {
         onPinnedNotesChange: (pinned: NoteItem[]) => {
           this.aiPinnedNotes = pinned;
         },
-        onSessionSaved: (session: ChatSession) => {
-          this.handleSessionSaved(session);
+        onSessionSaved: (session: ChatSession, activate?: boolean) => {
+          this.handleSessionSaved(session, activate !== false);
         },
         onContextChange: (citations: ChatCitation[], pinned: NoteItem[], layerLabel: string, modelLabel: string) => {
           this.aiCitations = citations;
@@ -2146,10 +2164,12 @@ struct Index {
           this.onBreadcrumbClick(index, segment);
         },
         onLayoutModeChange: (singleColumn: boolean, threeColumn: boolean) => {
+          this.closeChatHistory();
           this.sidebarCollapsed = singleColumn;
           this.contextPanelOpen = threeColumn;
         },
         onToggleSidebar: () => {
+          if (this.chatHistoryOpen) { this.closeChatHistory(); return; }
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.sidebarCollapsed = !this.sidebarCollapsed;
             if (this.singleColumn && !this.sidebarCollapsed) { this.contextPanelOpen = false; }
@@ -2173,9 +2193,6 @@ struct Index {
             this.readingOpen = false;
             this.fullScreenDocOpen = false;
             this.activeNoteId = '';
-            // 进入 AI 墨客自动切到对话列表；离开时切回资料树。
-            // 用户在 AI 里手动切回资料树后不会被强行拉回（只在导航变化时决策）。
-            this.sidebarMode = navKey === NAV_AI ? SIDEBAR_MODE_SESSIONS : SIDEBAR_MODE_TREE;
           });
         },
         onToggleSpace: (spaceId: string) => {
@@ -2245,12 +2262,11 @@ struct Index {
         },
         trashCount: this.trash.length,
         todoPendingCount: this.todoPendingCount(),
-        sidebarMode: this.sidebarMode,
+        historyOpen: this.chatHistoryOpen,
         sessions: this.sessions,
         activeSessionId: this.activeSessionId,
-        onSidebarModeChange: (mode: string) => {
-          this.sidebarMode = mode;
-        },
+        onCloseHistory: () => this.closeChatHistory(),
+        onNewSession: () => this.handleNewSession(),
         onSelectSession: (session: ChatSession) => {
           this.handleSelectSession(session);
         },

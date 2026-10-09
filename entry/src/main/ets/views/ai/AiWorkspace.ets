@@ -141,11 +141,11 @@ const LOCAL_PROMPTS: QuickPrompt[] = [
 
 @Component
 export struct AiWorkspace {
-  currentNote: NoteItem | null = null;
-  allNotes: NoteItem[] = [];
-  todos: TodoItem[] = [];
-  reviewCards: ReviewCard[] = [];
-  stats: WorkspaceStats = { noteCount: 0, linkCount: 0, unresolvedCount: 0, tagCount: 0 };
+  @Prop currentNote: NoteItem | null = null;
+  @Prop allNotes: NoteItem[] = [];
+  @Prop todos: TodoItem[] = [];
+  @Prop reviewCards: ReviewCard[] = [];
+  @Prop stats: WorkspaceStats = { noteCount: 0, linkCount: 0, unresolvedCount: 0, tagCount: 0 };
 
   @Prop @Watch('onActiveSessionIdChanged') activeSessionId: string = '';
   @Prop @Watch('onExternalPinnedNotesChanged') externalPinnedNotes: NoteItem[] = [];
@@ -154,10 +154,13 @@ export struct AiWorkspace {
   @Prop contextPanelOpen: boolean = false;
   @Prop @Watch('handleBackRequest') backRequestToken: number = 0;
   onNavigateBack: () => void = () => {};
+  onNewSession: () => void = () => {};
+  @Prop historyOpen: boolean = false;
+  onToggleHistory: () => void = () => {};
   onDeleteSession: (id: string) => void = () => {};
   onImportExternal: () => Promise<NoteItem | null> = async () => null;
 
-  onSessionSaved: (session: ChatSession) => void = () => {};
+  onSessionSaved: (session: ChatSession, activate?: boolean) => void = () => {};
   onContextChange: (citations: ChatCitation[], pinned: NoteItem[], layerLabel: string, modelLabel: string) => void =
     () => {};
   onPinnedNotesChange: (pinned: NoteItem[]) => void = () => {};
@@ -204,6 +207,8 @@ export struct AiWorkspace {
   @State workspaceWidth: number = 360;
   @State showAllPrompts: boolean = false;
   @State historyBusy: boolean = false;
+  @State sessionLoadBusy: boolean = false;
+  @State sessionLoadError: string = '';
   @State selectedThinkingBudget: number = 16384;
   @State applyingProposal: string = '';
   @State proposalFeedback: string = '';
@@ -222,6 +227,9 @@ export struct AiWorkspace {
   private attachmentRequestId: number = 0;
   private modelSwitchRequestId: number = 0;
   private contextRevision: number = 0;
+  private sessionLoadRequestId: number = 0;
+  private persistQueue: Promise<void> = Promise.resolve();
+  private unsavedSessions: Map<string, ChatSession> = new Map();
 
   aboutToAppear(): void {
     this.alive = true;
@@ -242,7 +250,7 @@ export struct AiWorkspace {
     this.closeComposerMenus(); this.pickerOpen = false;
     this.attachmentRequestId++;
     this.modelSwitchRequestId++;
-    this.contextRevision++;
+    this.contextRevision++; this.sessionLoadRequestId++;
     this.attachmentBusy = false;
     this.modelSwitchBusy = false;
     this.cancelStream();
@@ -287,6 +295,7 @@ export struct AiWorkspace {
     this.attachmentRequestId++;
     this.attachmentBusy = false;
     this.cancelStream();
+    this.inputText = ''; this.pinnedNotes = []; this.onPinnedNotesChange([]);
     this.loadSessionById(this.activeSessionId);
   }
 
@@ -357,13 +366,23 @@ export struct AiWorkspace {
   }
 
   private menuActionsAvailable(): boolean {
-    return this.alive && !this.isLoading && !this.historyBusy && !this.attachmentBusy && !this.modelSwitchBusy && !this.applyingProposal;
+    return this.alive && !this.isLoading && !this.historyBusy && !this.sessionLoadBusy && !this.sessionLoadError && !this.attachmentBusy && !this.modelSwitchBusy && !this.applyingProposal;
   }
 
   private closeComposerMenus(): void {
     this.plusMenuOpen = false;
     this.modelMenuOpen = false;
     this.conversationMenuOpen = false;
+  }
+
+  private toggleComposerMenu(menu: string): void {
+    if (!this.menuActionsAvailable()) { return; }
+    const wasOpen = menu === 'plus' ? this.plusMenuOpen : menu === 'model' ? this.modelMenuOpen : this.conversationMenuOpen;
+    this.closeComposerMenus();
+    this.pickerOpen = false;
+    if (menu === 'plus') { this.plusMenuOpen = !wasOpen; }
+    else if (menu === 'model') { this.modelMenuOpen = !wasOpen; }
+    else if (menu === 'conversation') { this.conversationMenuOpen = !wasOpen; }
   }
 
   private menuWidth(): number { return Math.max(128, Math.min(300, this.workspaceWidth - 32)); }
@@ -378,9 +397,10 @@ export struct AiWorkspace {
   }
 
   private async loadSessionById(id: string): Promise<void> {
-    if (this.isLoading) {
-      return;
-    }
+    if (!this.alive || this.isLoading) { return; }
+    const request = ++this.sessionLoadRequestId;
+    this.sessionLoadBusy = id.length > 0;
+    this.sessionLoadError = '';
     if (id.length === 0) {
       this.loadedSessionId = '';
       this.messages = [];
@@ -391,8 +411,11 @@ export struct AiWorkspace {
       this.emitContext();
       return;
     }
+    this.loadedSessionId = id; this.messages = []; this.lastCitations = [];
+    this.streamingText = ''; this.streamingReasoning = ''; this.inputText = ''; this.emitContext();
     try {
       const sessions: ChatSession[] = await this.sessionService.loadSessions();
+      if (!this.alive || request !== this.sessionLoadRequestId || id !== this.activeSessionId) { return; }
       for (const s of sessions) {
         if (s && s.id === id) {
           this.loadedSessionId = id;
@@ -424,7 +447,7 @@ export struct AiWorkspace {
           }
           this.messages = safeMessages;
           this.currentAgentMode = s.agentMode || 'auto';
-          this.lastCitations = [];
+          this.lastCitations = safeMessages.slice().reverse().find((message: StoredMessage) => message.role === 'assistant')?.citations || [];
           this.streamingText = '';
           this.streamingReasoning = '';
           this.emitContext();
@@ -432,9 +455,10 @@ export struct AiWorkspace {
           return;
         }
       }
+      this.sessionLoadError = '这段对话已不存在，请从记录中重新选择';
     } catch (error) {
-      console.error(`会话装载失败: ${JSON.stringify(error)}`);
-    }
+      if (this.alive && request === this.sessionLoadRequestId) { this.sessionLoadError = '对话读取失败，请重试，原记录已保留'; }
+    } finally { if (this.alive && request === this.sessionLoadRequestId) { this.sessionLoadBusy = false; } }
   }
 
   private palette(): ColorPalette {
@@ -891,40 +915,36 @@ export struct AiWorkspace {
   }
 
   private async persistSession(strict: boolean = false): Promise<void> {
-    if (!this.servicesReady) {
-      return;
+    if (!this.servicesReady) { if (strict) { throw new Error('对话存储尚未准备好，请稍后重试'); } return; }
+    if (!this.loadedSessionId) {
+      const created = createEmptySession(); this.loadedSessionId = created.id;
+      this.unsavedSessions.set(created.id, created);
     }
+    const targetId = this.loadedSessionId;
+    const generation = this.sessionLoadRequestId;
+    const snapshot = JSON.parse(JSON.stringify(this.messages)) as StoredMessage[];
+    const mode = this.currentAgentMode;
+    const fallback = this.unsavedSessions.get(targetId);
+    const updatedAt = Date.now();
+    let saved: ChatSession | null = null;
+    // Capture before awaiting. A late write must never read another conversation's messages.
+    const pending = this.persistQueue.then(async () => {
+      const sessions = await this.sessionService.loadSessions();
+      const original = sessions.find((session: ChatSession) => session.id === targetId) || fallback;
+      if (!original) { throw new Error('这段对话已被删除，保存未覆盖其他记录'); }
+      const next: ChatSession = { id: targetId, title: original.title, pinned: original.pinned,
+        createdAt: original.createdAt, updatedAt, agentMode: mode, messages: snapshot };
+      if ((!next.title || next.title === '新对话') && snapshot[0]?.role === 'user') { next.title = snapshot[0].text.slice(0, 30); }
+      await this.sessionService.saveSession(next); this.unsavedSessions.delete(targetId); saved = next;
+    });
+    this.persistQueue = pending.catch(() => {});
     try {
-      if (this.loadedSessionId.length === 0) {
-        const session: ChatSession = createEmptySession();
-        session.messages = this.messages;
-        session.agentMode = this.currentAgentMode;
-        if (this.messages.length > 0 && this.messages[0].role === 'user') {
-          session.title = this.messages[0].text.slice(0, 30);
-        }
-        await this.sessionService.saveSession(session);
-        this.loadedSessionId = session.id;
-        this.onSessionSaved(session);
-      } else {
-        const sessions: ChatSession[] = await this.sessionService.loadSessions();
-        for (const s of sessions) {
-          if (s.id === this.loadedSessionId) {
-            s.messages = this.messages;
-            s.agentMode = this.currentAgentMode;
-            s.updatedAt = Date.now();
-            if (s.title.length === 0 && this.messages.length > 0 && this.messages[0].role === 'user') {
-              s.title = this.messages[0].text.slice(0, 30);
-            }
-            await this.sessionService.saveSession(s);
-            this.onSessionSaved(s);
-            return;
-          }
-        }
-      }
+      await pending;
+      if (saved !== null) { this.onSessionSaved(saved, this.alive && generation === this.sessionLoadRequestId && targetId === this.loadedSessionId); }
     } catch (error) {
       console.error(`会话保存失败: ${JSON.stringify(error)}`);
       if (strict) { throw new Error('变更已完成，但执行记录未能保存，请勿重复创建'); }
-      if (this.alive) { promptAction.showToast({ message: '对话未能保存，请检查存储后重试' }); }
+      if (this.alive && generation === this.sessionLoadRequestId) { promptAction.showToast({ message: '对话未能保存，请检查存储后重试' }); }
     }
   }
 
@@ -1023,11 +1043,13 @@ export struct AiWorkspace {
   }
 
   private startNewChat(): void {
-    if (this.historyBusy || this.attachmentBusy || this.modelSwitchBusy || this.applyingProposal.length > 0) { return; }
+    if (this.historyBusy || this.sessionLoadBusy || this.attachmentBusy || this.modelSwitchBusy || this.applyingProposal.length > 0) { return; }
     if (this.isLoading) {
       this.cancelStream();
     }
+    this.sessionLoadRequestId++; this.sessionLoadBusy = false; this.sessionLoadError = '';
     this.loadedSessionId = '';
+    this.onNewSession();
     this.pickerOpen = false; this.pickerKeyword = '';
     this.closeComposerMenus(); this.inputText = '';
     this.messages = [];
@@ -1543,20 +1565,13 @@ export struct AiWorkspace {
   }
 
   @Builder
-  menuActionContent(title: string, icon: Resource, destructive: boolean, available: boolean) {
-    Row({ space: 10 }) {
-      AppIcon({ source: icon, tint: !available ? this.palette().inkMuted : destructive ? this.palette().danger : this.palette().inkSecondary, iconSize: 18 })
-      Text(title).fontSize(14).fontColor(!available ? this.palette().inkMuted : destructive ? this.palette().danger : this.palette().inkPrimary)
-        .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-    }.width('100%').constraintSize({ minHeight: 40 })
-  }
-
-  @Builder
   menuAction(title: string, icon: Resource, action: () => void, destructive: boolean = false, available: boolean = true) {
-    MenuItem(() => { this.menuActionContent(title, icon, destructive, available); })
-      .constraintSize({ minHeight: 48 }).enabled(this.menuActionsAvailable() && available).accessibilityText(title).onClick(() => {
-      if (this.menuActionsAvailable() && available) { action(); }
-    })
+    MenuItem({ content: title, startIcon: icon })
+      .contentFontColor(destructive ? this.palette().danger : this.palette().inkPrimary)
+      .constraintSize({ minHeight: 48 }).enabled(this.menuActionsAvailable() && available)
+      .accessibilityText(title).onClick(() => {
+        if (this.menuActionsAvailable() && available) { this.closeComposerMenus(); action(); }
+      })
   }
 
   @Builder
@@ -1650,17 +1665,20 @@ export struct AiWorkspace {
       Column() {
         Column({ space: 6 }) {
           Row({ space: 12 }) {
-            Text('墨客').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
+            IconButton({ icon: $r('app.media.ic_history'), label: '对话记录', selected: this.historyOpen,
+              onAction: () => this.onToggleHistory() })
             Blank().layoutWeight(1)
-            IconButton({ icon: $r('app.media.ic_plus'), label: '新建对话', available: this.menuActionsAvailable(), onAction: () => this.startNewChat() })
+            IconButton({ icon: $r('app.media.ic_plus'), label: '新建对话',
+              available: !this.historyBusy && !this.sessionLoadBusy && !this.attachmentBusy && !this.modelSwitchBusy && !this.applyingProposal,
+              onAction: () => this.startNewChat() })
             Button({ type: ButtonType.Normal }) {
               AppIcon({ source: $r('app.media.ic_more'), tint: this.palette().inkSecondary })
             }.width(44).height(44).padding(0).borderRadius(12).backgroundColor(this.conversationMenuOpen ? this.palette().accentSoft : Color.Transparent)
               .enabled(this.menuActionsAvailable()).accessibilityText('对话操作')
-              .bindMenu(() => { this.conversationActionMenu(); }, {
+              .onClick(() => this.toggleComposerMenu('conversation'))
+              .bindMenu(this.conversationMenuOpen, this.conversationActionMenu, {
                 placement: Placement.BottomRight, backgroundColor: this.palette().surface,
-                aboutToAppear: () => { this.conversationMenuOpen = true; },
-                aboutToDisappear: () => { this.conversationMenuOpen = false; }
+                onDisappear: () => { this.conversationMenuOpen = false; }
               })
           }.width('100%').height(44)
           if (REMOTE_AI_ENABLED && this.assistantMode === 'remote') {
@@ -1679,7 +1697,17 @@ export struct AiWorkspace {
           .backgroundColor(this.palette().surface)
           .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
       // 2. 消息流与欢迎看板
-      if (this.messages.length === 0 && !this.isLoading) {
+      if (this.sessionLoadBusy || this.sessionLoadError) {
+        Column({ space: 12 }) {
+          Text(this.sessionLoadBusy ? '正在读取对话…' : this.sessionLoadError)
+            .fontSize(14).fontColor(this.palette().inkSecondary).textAlign(TextAlign.Center)
+          if (this.sessionLoadError) {
+            Button('重新读取').height(44).type(ButtonType.Normal).borderRadius(10)
+              .backgroundColor(this.palette().accentSoft).fontColor(this.palette().accent)
+              .onClick(() => this.loadSessionById(this.activeSessionId))
+          }
+        }.width('100%').layoutWeight(1).padding(24).justifyContent(FlexAlign.Center)
+      } else if (this.messages.length === 0 && !this.isLoading) {
         Scroll() {
         Column({ space: 16 }) {
           Image($r('app.media.ic_sparkle')).width(32).height(32).fillColor(this.palette().accent)
@@ -1838,10 +1866,10 @@ export struct AiWorkspace {
               AppIcon({ source: $r('app.media.ic_plus'), tint: this.palette().inkSecondary })
             }.width(44).height(44).padding(0).borderRadius(12).backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : Color.Transparent)
               .enabled(this.menuActionsAvailable()).accessibilityText('添加资料与任务')
-              .bindMenu(() => { this.plusActionMenu(); }, {
+              .onClick(() => this.toggleComposerMenu('plus'))
+              .bindMenu(this.plusMenuOpen, this.plusActionMenu, {
                 placement: Placement.TopLeft, backgroundColor: this.palette().surface,
-                aboutToAppear: () => { this.plusMenuOpen = true; },
-                aboutToDisappear: () => { this.plusMenuOpen = false; }
+                onDisappear: () => { this.plusMenuOpen = false; }
               })
             Button({ type: ButtonType.Normal }) {
               Row({ space: 6 }) {
@@ -1853,10 +1881,10 @@ export struct AiWorkspace {
             }.layoutWeight(1).height(44).padding({ left: 8, right: 8 }).borderRadius(8)
               .backgroundColor(this.modelMenuOpen ? this.palette().accentSoft : Color.Transparent)
               .enabled(this.menuActionsAvailable()).accessibilityText(`选择助手与模型，当前${this.modelLabel}`)
-              .bindMenu(() => { this.modelSelectMenu(); }, {
+              .onClick(() => this.toggleComposerMenu('model'))
+              .bindMenu(this.modelMenuOpen, this.modelSelectMenu, {
                 placement: Placement.TopRight, backgroundColor: this.palette().surface,
-                aboutToAppear: () => { this.modelMenuOpen = true; },
-                aboutToDisappear: () => { this.modelMenuOpen = false; }
+                onDisappear: () => { this.modelMenuOpen = false; }
               })
             if (this.isLoading) {
               IconButton({ icon: $r('app.media.ic_stop'), label: '停止生成', destructive: true, onAction: () => this.cancelStream() })
