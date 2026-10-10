@@ -33,11 +33,12 @@ function load(relative, mocks, cache = new Map()) {
   }).outputText;
   const localRequire = specifier => {
     if (mocks[specifier]) return mocks[specifier];
+    if (specifier === 'BuildProfile') return { default: { DEBUG: true } };
     if (specifier.startsWith('.')) return load(path.resolve(path.dirname(filename), `${specifier}.ets`), mocks, cache);
     throw Error(`Unmocked dependency: ${specifier}`);
   };
   vm.runInNewContext(output, { module, exports: module.exports, require: localRequire,
-    console, Date, Error, Promise, setTimeout, clearTimeout });
+    console, Date, Error, Promise, setTimeout, clearTimeout, canIUse: mocks.canIUse || (() => true) });
   return module.exports;
 }
 
@@ -57,7 +58,8 @@ function viewMethod(relative, name, globals = {}) {
 }
 
 function platform({ shortCopy = false, syncFails = false, renderFails = false, parseResult = 0,
-  pageCount = 2, selection = 'file://picked/course.pdf', writeFails = false } = {}) {
+  pageCount = 2, selection = 'file://picked/course.pdf', writeFails = false, flushFails = false,
+  nativeMissing = false, debug = true } = {}) {
   const calls = [];
   const files = new Map([['file://picked/course.pdf', Buffer.from(fixture)]]);
   const directories = new Set(['/sandbox']);
@@ -77,6 +79,7 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
     access: async file => directories.has(file) || files.has(file),
     mkdirSync: directory => directories.add(directory), mkdir: async directory => directories.add(directory),
     statSync: input => ({ size: files.get(filePath(input))?.length || 0 }),
+    readSync: (fd, buffer) => { const bytes = files.get(filePath(fd)); new Uint8Array(buffer).set(bytes); return bytes.length; },
     openSync: open, open: async (file, mode) => open(file, mode),
     closeSync: close, close: async file => close(file),
     copyFile: async (fd, dest) => { calls.push(['copy', dest]); const bytes = files.get(filePath(fd));
@@ -103,20 +106,91 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
   class DocumentViewPicker { async select() { return selection ? [selection] : []; } }
   const preferences = new Map();
   const mocks = {
+    canIUse: () => !nativeMissing,
+    BuildProfile: { default: { DEBUG: debug } },
+    '@kit.ImageKit': { image: { PixelMapFormat: { RGBA_8888: 1 }, createImageSource: bytes => {
+      assert.equal(Buffer.from(bytes).subarray(1, 4).toString(), 'PNG'); calls.push('debug-image-source');
+      return { getImageInfoSync: () => ({ size: { width: 1200, height: 1698 } }),
+        createPixelMapSync: () => ({ release: async () => calls.push('debug-bitmap-release') }),
+        release: async () => calls.push('debug-image-release') };
+    } } },
     '@kit.CoreFileKit': { fileIo, picker: { DocumentViewPicker, DocumentSelectOptions: class {} } },
-    '@kit.PDFKit': { pdfService: { PdfDocument, PdfMatrix: class {},
+    '@kit.PDFKit': nativeMissing ? {} : { pdfService: { PdfDocument, PdfMatrix: class {},
       ParseResult: { PARSE_SUCCESS: 0, PARSE_ERROR_PASSWORD: 3 } } },
     '@kit.ArkTS': { util: { TextEncoder: class { encodeInto(text) { return Buffer.from(text); } } } },
     '@kit.ArkData': { preferences: { getPreferences: async () => ({
       get: async (key, fallback) => preferences.get(key) ?? fallback,
-      put: async (key, value) => preferences.set(key, value), flush: async () => {} }) } },
+      put: async (key, value) => preferences.set(key, value), flush: async () => { if (flushFails) throw Error('disk full'); } }) } },
     [path.resolve(root, `${base}services/ocr/OcrService.ets`)]: { OcrService: {} }
   };
   const cache = new Map();
+  const Storage = load(`${base}services/NoteStorageService.ets`, mocks, cache).NoteStorageService;
   return { calls, files, descriptors, preferences,
+    bundledContext: { filesDir: '/sandbox', resourceManager: {
+      getRawFileContent: async name => Buffer.from(fs.readFileSync(path.join(root, 'entry/src/main/resources/rawfile', name))),
+      getRawFileContentSync: name => Buffer.from(fs.readFileSync(path.join(root, 'entry/src/main/resources/rawfile', name)))
+    } },
     pdf: load(pdfFile, mocks, cache).PdfDocumentService.getInstance(),
-    storage: new (load(`${base}services/NoteStorageService.ets`, mocks, cache).NoteStorageService)() };
+    storage: new Storage(), restartStorage: () => new Storage() };
 }
+
+test('debug emulator can validate and render only byte-identical bundled PDF pages without PDF Kit', async () => {
+  const p = platform({ nativeMissing: true });
+  const result = await p.storage.importExamplePdf(p.bundledContext);
+  assert.equal(result.status, 'imported'); assert.equal(result.pageCount, 2);
+  const second = p.pdf.renderPage(result.sourceUri, 1); await second.pixelMap.release();
+  assert.equal(second.aspectRatio, 1200 / 1698); assert.equal(p.descriptors.size, 0);
+  assert.ok(p.calls.includes('debug-image-release')); assert.ok(!p.calls.includes('native-load'));
+  assert.throws(() => p.pdf.renderPage(result.sourceUri, 2), /页码/);
+  const different = Buffer.from(p.files.get(result.sourceUri)); different[different.length - 1] ^= 1;
+  p.files.set(result.sourceUri, different);
+  await assert.rejects(p.pdf.getPdfInfo(result.sourceUri), /未提供 PDF 阅读组件/);
+  assert.throws(() => p.pdf.renderPage(result.sourceUri, 0), /未提供 PDF 阅读组件/);
+  p.files.set('/sandbox/other.pdf', fixture);
+  await assert.rejects(p.pdf.getPdfInfo('/sandbox/other.pdf'), /未提供 PDF 阅读组件/);
+  assert.equal(p.descriptors.size, 0);
+});
+
+test('debug bootstrap preserves existing notes and persists exactly one real PDF across restarts', async () => {
+  const p = platform({ nativeMissing: true }); const existing = note({ id: 'user-note' });
+  await p.storage.load(p.bundledContext, [existing]);
+  const first = await p.storage.ensureDebugPdf(p.bundledContext, [existing]);
+  assert.equal(first.length, 2); assert.equal(first[0].id, 'debug-pdf-demo-v1');
+  assert.equal(first[0].category, '示例资料'); assert.equal(first[0].pageCount, 2);
+  assert.ok(p.files.get(first[0].sourceUri).equals(fixture)); assert.deepEqual(first[1], existing);
+  const reloaded = await p.restartStorage().load(p.bundledContext, []);
+  const second = await p.restartStorage().ensureDebugPdf(p.bundledContext, reloaded);
+  assert.equal(second.length, 2); assert.equal(second[0].sourceUri, first[0].sourceUri);
+  const writes = p.calls.filter(call => Array.isArray(call) && call[0] === 'open' && call[1].endsWith('example-course.pdf')).length;
+  await p.storage.save([existing]); await p.storage.delete(p.bundledContext, first[0].id, first[0].sourceUri);
+  assert.equal((await p.storage.ensureDebugPdf(p.bundledContext, [existing])).length, 1);
+  assert.equal(p.calls.filter(call => Array.isArray(call) && call[0] === 'open' && call[1].endsWith('example-course.pdf')).length, writes);
+});
+
+test('a preexisting example in the recycle bin is not recreated when its install marker is absent', async () => {
+  const p = platform(); await p.storage.load(context, []);
+  p.preferences.set('trash', JSON.stringify([note({ id: 'debug-pdf-demo-v1' })]));
+  assert.equal((await p.storage.ensureDebugPdf(context, [])).length, 0);
+  assert.equal(p.preferences.get('debug_pdf_demo_v1'), true);
+  assert.ok(!p.calls.some(call => Array.isArray(call) && call[0] === 'copy'));
+});
+
+test('failed example snapshot leaves the existing library intact and cleans only the uncommitted example', async () => {
+  const p = platform({ flushFails: true });
+  await assert.rejects(p.storage.ensureDebugPdf(p.bundledContext, [note({ id: 'user-note' })]));
+  assert.ok(!p.files.has('/sandbox/notes/debug-pdf-demo-v1.md'));
+  assert.ok(![...p.files.keys()].some(key => key.startsWith('/sandbox/documents/')));
+  assert.ok(p.files.has('file://picked/course.pdf'));
+});
+
+test('release neither seeds nor permits bundled preview imports or rendering', async () => {
+  const p = platform({ nativeMissing: true, debug: false }); const notes = [note()];
+  assert.equal(await p.storage.ensureDebugPdf(p.bundledContext, notes), notes);
+  assert.equal((await p.storage.importExamplePdf(p.bundledContext)).status, 'unsupported');
+  p.files.set('/sandbox/documents/example-course.pdf', fixture); p.pdf.bindContext(p.bundledContext);
+  await assert.rejects(p.pdf.getPdfInfo('/sandbox/documents/example-course.pdf'), /未提供 PDF 阅读组件/);
+  assert.ok(!p.calls.includes('debug-image-source')); assert.equal(p.descriptors.size, 0);
+});
 
 const context = { filesDir: '/sandbox' };
 const note = changes => ({ id: 'existing-pdf', title: '课程原件', category: '课程', type: 'PDF',
@@ -158,10 +232,103 @@ test('a native parse success alone cannot publish an unrenderable imported PDF',
 test('import then snapshot reload retains the actual PDF source bytes and page count', async () => {
   const p = platform(); const result = await p.storage.importDocument(context);
   assert.equal(result.status, 'imported'); assert.equal(result.pageCount, 2); assert.ok(p.calls.includes('bitmap-release'));
-  const saved = note({ id: result.document.id, sourceUri: result.sourceUri, contentDetail: result.document.content });
-  await p.storage.save([saved]); const reloaded = await p.storage.load(context, []);
+  const saved = note({ id: result.document.id, sourceUri: result.sourceUri, sourceFileName: result.sourceFileName, contentDetail: result.document.content });
+  await p.storage.save([saved]); p.files.delete('file://picked/course.pdf');
+  const reloaded = await p.restartStorage().load(context, []);
   assert.equal(reloaded[0].sourceUri, result.sourceUri); assert.ok(p.files.get(reloaded[0].sourceUri).equals(fixture));
   assert.equal((await p.pdf.validateImport(reloaded[0].sourceUri)).pageCount, 2);
+});
+
+test('a restarted sandbox resolves its imported PDF by the saved local filename', async () => {
+  const p = platform(); const result = await p.storage.importDocument(context);
+  const saved = note({ id: result.document.id, sourceUri: result.sourceUri, sourceFileName: result.sourceFileName, contentDetail: result.document.content });
+  await p.storage.save([saved]);
+  const current = { filesDir: '/new-sandbox/files' };
+  const newSource = `${current.filesDir}/documents/${result.sourceFileName}`;
+  p.files.set(newSource, p.files.get(result.sourceUri)); p.files.delete(result.sourceUri);
+  p.files.set(`${current.filesDir}/notes/${saved.id}.md`, Buffer.from(saved.contentDetail));
+  p.files.delete('file://picked/course.pdf');
+  const reloaded = await p.restartStorage().load(current, []);
+  assert.equal(reloaded[0].sourceUri, newSource); assert.equal(reloaded[0].pageAnnotations, saved.pageAnnotations);
+  assert.equal((await p.pdf.validateImport(newSource)).pageCount, 2);
+  assert.equal(JSON.parse(p.preferences.get('notes'))[0].sourceUri, newSource);
+});
+
+test('legacy sandbox paths are recovered for both library notes and the recycle bin', async () => {
+  const p = platform(); const legacy = note({ sourceUri: '/old-sandbox/files/documents/original.pdf' });
+  p.preferences.set('notes', JSON.stringify([legacy]));
+  p.preferences.set('trash', JSON.stringify([{ ...legacy, id: 'trashed', deletedAt: 1 }]));
+  p.files.set('/sandbox/documents/original.pdf', Buffer.from(fixture));
+  p.files.set('/sandbox/notes/existing-pdf.md', Buffer.from(legacy.contentDetail));
+  const storage = p.restartStorage();
+  const reloaded = await storage.load(context, []); const trash = await storage.loadTrash(context);
+  for (const recovered of [reloaded[0], trash[0]]) {
+    assert.equal(recovered.sourceUri, '/sandbox/documents/original.pdf'); assert.equal(recovered.sourceFileName, 'original.pdf');
+    assert.equal(recovered.pageAnnotations, legacy.pageAnnotations);
+  }
+  assert.equal(JSON.parse(p.preferences.get('trash'))[0].sourceFileName, 'original.pdf');
+});
+
+test('legacy picker references get independent owned copies and survive revocation after migration', async () => {
+  const p = platform(); const legacy = note({ sourceUri: 'file://picked/course.pdf' });
+  p.preferences.set('notes', JSON.stringify([legacy, { ...legacy, id: 'same-source' }]));
+  const reloaded = await p.storage.load(context, []);
+  assert.match(reloaded[0].sourceUri, /^\/sandbox\/documents\//);
+  assert.notEqual(reloaded[1].sourceUri, reloaded[0].sourceUri);
+  assert.equal(p.calls.filter(call => call[0] === 'copy').length, 2);
+  assert.ok(p.files.has(legacy.sourceUri)); p.files.delete(legacy.sourceUri);
+  const restarted = await p.restartStorage().load(context, []);
+  assert.ok(p.files.get(restarted[0].sourceUri).equals(fixture));
+  await p.storage.delete(context, restarted[0].id, restarted[0].sourceUri);
+  assert.ok(p.files.get(restarted[1].sourceUri).equals(fixture));
+});
+
+test('unavailable or invalid legacy originals retain their records and annotations without leaking copies', async () => {
+  for (const unavailable of [true, false]) {
+    const p = platform({ renderFails: !unavailable }); const legacy = note({ sourceUri: 'file://picked/course.pdf' });
+    if (unavailable) p.files.delete(legacy.sourceUri);
+    p.preferences.set('notes', JSON.stringify([legacy]));
+    const reloaded = await p.storage.load(context, []);
+    assert.equal(reloaded[0].sourceUri, legacy.sourceUri); assert.equal(reloaded[0].pageAnnotations, legacy.pageAnnotations);
+    assert.ok(![...p.files.keys()].some(file => file.startsWith('/sandbox/documents/')));
+    assert.equal(p.descriptors.size, 0);
+  }
+});
+
+test('failed migration metadata persistence removes only its newly created copy', async () => {
+  const p = platform({ flushFails: true }); const legacy = note({ sourceUri: 'file://picked/course.pdf' });
+  const raw = JSON.stringify([legacy]); p.preferences.set('notes', raw);
+  p.files.set('/sandbox/notes/existing-pdf.md', Buffer.from(legacy.contentDetail));
+  await assert.rejects(p.storage.load(context, []), /保存/);
+  assert.equal(p.preferences.get('notes'), raw); assert.ok(p.files.has(legacy.sourceUri));
+  assert.ok(![...p.files.keys()].some(file => file.startsWith('/sandbox/documents/')));
+});
+
+test('malformed local filenames never redirect a PDF into a different directory', async () => {
+  for (const name of ['../private.pdf', 'sub/file.pdf', '..\\private.pdf', '.']) {
+    const p = platform(); const legacy = note({ sourceUri: '/original.pdf', sourceFileName: name });
+    p.preferences.set('notes', JSON.stringify([legacy]));
+    p.files.set('/sandbox/notes/existing-pdf.md', Buffer.from(legacy.contentDetail));
+    const reloaded = await p.storage.load(context, []);
+    assert.equal(reloaded[0].sourceUri, legacy.sourceUri); assert.ok(!p.calls.some(call => call[0] === 'copy'));
+  }
+});
+
+test('a 600-page textbook import parses metadata and renders only the first page before publishing', async () => {
+  const p = platform({ pageCount: 600 }); const result = await p.storage.importDocument(context);
+  assert.equal(result.status, 'imported'); assert.equal(result.pageCount, 600);
+  assert.deepEqual(p.calls.filter(call => call[0] === 'native-page').map(call => call[1]), [0]);
+  assert.equal(p.descriptors.size, 0); assert.ok(p.files.get(result.sourceUri).equals(fixture));
+});
+
+test('restoring metadata without its PDF attachment preserves the reference and annotations without fabricating a replacement', async () => {
+  const p = platform(); const result = await p.storage.importDocument(context);
+  const saved = note({ id: result.document.id, sourceUri: result.sourceUri, contentDetail: result.document.content });
+  await p.storage.save([saved]); p.files.delete(result.sourceUri);
+  const restored = await p.storage.load(context, []);
+  assert.equal(restored[0].sourceUri, saved.sourceUri); assert.equal(restored[0].pageAnnotations, saved.pageAnnotations);
+  await assert.rejects(p.pdf.validateImport(restored[0].sourceUri), /原文件|原件/);
+  assert.equal(p.files.has(saved.sourceUri), false); assert.equal(p.descriptors.size, 0);
 });
 
 test('a note write failure does not leave a phantom PDF import', async () => {
@@ -280,9 +447,19 @@ test('inactive PDF page disposal cannot clear active contact or dirty state on a
   contact.call(view, 2, false); assert.equal(view.inkContact, false); assert.deepEqual(calls, [false]);
 });
 
+test('tool updates that recopy the current page model keep its loaded bitmap writable', () => {
+  const changed = viewMethod(canvasFile, 'onSourceChanged'); const calls = [];
+  const view = { sourceUri: '/book.pdf', pageModel: { pageIndex: 0 }, loadedSourceUri: '/book.pdf', loadedPageIndex: 0,
+    sourceReady: true, pageAspectRatio: 1.5, resetInput: () => calls.push('reset'), onSourceReady: ready => calls.push(ready) };
+  changed.call(view); assert.equal(view.sourceReady, true); assert.equal(view.pageAspectRatio, 1.5); assert.deepEqual(calls, []);
+  view.pageModel = { pageIndex: 1 }; changed.call(view);
+  assert.equal(view.sourceReady, false); assert.deepEqual(calls, ['reset', false]);
+  view.sourceReady = true; view.sourceUri = '/replacement.pdf'; changed.call(view); assert.equal(view.sourceReady, false);
+});
+
 test('changing PDF page finishes the previous page ink before moving the current page index', () => {
   const changePage = viewMethod(annotatorFile, 'onCurrentPageChanged', { ScrollAlign: { START: 'start' } });
-  const calls = []; const view = { pages: [{}, {}, {}], currentPage: 3, currentPageIdx: 0, readyPages: { 2: true },
+  const calls = []; const view = { pages: [{}, {}, {}], currentPage: 3, currentPageIdx: 0, isContinuousScroll: true, readyPages: { 2: true },
     finishActiveInput: () => calls.push(['finish', view.currentPageIdx]),
     onSourceReady: ready => calls.push(['ready', ready, view.currentPageIdx]),
     scroller: { scrollToIndex: index => calls.push(['scroll', index]) } };
@@ -294,6 +471,33 @@ test('PDF page changes during initial empty-page setup do not scroll to an inval
   const view = { pages: [], currentPage: 99, currentPageIdx: 0,
     finishActiveInput: () => { throw Error('unexpected active ink'); } };
   changePage.call(view); assert.equal(view.currentPageIdx, 0);
+});
+
+test('single-page jumps update the pager without scrolling the inactive continuous list', () => {
+  const changePage = viewMethod(annotatorFile, 'onCurrentPageChanged');
+  const view = { pages: [{}, {}, {}], currentPage: 3, currentPageIdx: 0, isContinuousScroll: false,
+    readyPages: { 2: true }, finishActiveInput() {}, onSourceReady() {},
+    scroller: { scrollToIndex() { throw Error('inactive list must not scroll'); } } };
+  changePage.call(view); assert.equal(view.currentPageIdx, 2);
+});
+
+test('whole-page fitting respects portrait phone, landscape tablet and actual PDF page proportions', () => {
+  const fit = viewMethod(annotatorFile, 'fittedPageWidth');
+  for (const [width, height, ratio] of [[360, 700, 0.707], [1440, 840, 0.707], [360, 700, 1.5], [1440, 840, 1.5]]) {
+    const view = { viewportWidth: width, viewportHeight: height, pageRatios: { 0: ratio }, zoomScale: 1 };
+    const fitted = fit.call(view, { pageIndex: 0 });
+    assert.ok(fitted <= width - 16); assert.ok(fitted / ratio <= height - 16 + 0.001);
+    view.zoomScale = 2; assert.equal(fit.call(view, { pageIndex: 0 }), fitted * 2);
+  }
+});
+
+test('swipe page changes finish active ink before publishing the new page and its source readiness', () => {
+  const select = viewMethod(annotatorFile, 'selectVisiblePage'); const calls = [];
+  const view = { pages: [{}, {}], currentPageIdx: 0, readyPages: { 1: false }, annotationError: '',
+    finishActiveInput: () => calls.push(['finish', view.currentPageIdx]),
+    onPageChanged: page => calls.push(['page', page]), onSourceReady: ready => calls.push(['ready', ready]) };
+  select.call(view, 99); assert.equal(view.currentPageIdx, 1);
+  assert.deepEqual(calls, [['finish', 0], ['page', 2], ['ready', false]]);
 });
 
 test('PDF exit-save finalizes ink first and reports the initiating note and save token', async () => {

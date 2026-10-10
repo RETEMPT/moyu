@@ -14,7 +14,7 @@ FlowMind（墨语）是一款面向高校学生的 HarmonyOS 本地课程研读�
 - **支持设备**：Tablet 平板、Phone 手机（自适应布局）
 - **数据策略**：Local-First 本地优先，笔记与工作区数据留存在端侧沙箱
 - **当前产物**：`entry/build/default/outputs/default/entry-default-unsigned.hap`
-- **GitHub 发行**：[v1.0.3](https://github.com/RETEMPT/moyu/releases/tag/v1.0.3)，源码与未签名开发包，详见 [发行说明](docs/RELEASE_1.0.3.md)
+- **GitHub 发行**：[v1.0.4](https://github.com/RETEMPT/moyu/releases/tag/v1.0.4)，源码与未签名开发包，详见 [发行说明](docs/RELEASE_1.0.4.md)
 - **本轮整改**：离线助手与可选 API、独立设置页、统一封面/居中菜单、只读阅读与工具标签、白板平移、PDF 持久导入、农历及节假日。227 项工作流与 11 项发布规则检查、干净 release APP 构建通过；正式签名与真机验收待补齐。详见 [整改方案](docs/REVIEW_FIXES_2026-10-08.md)
 - **上架准备材料**：[提交资料与验收](release/README.md)，提供同源隐私页面、审核路径和严格发布检查
 - **开源仓库**：[RETEMPT/moyu](https://github.com/RETEMPT/moyu)

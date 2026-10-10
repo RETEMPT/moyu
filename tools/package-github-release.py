@@ -68,6 +68,8 @@ def main():
     if not required or any(c['status'] != 'PASS' for c in required):
         raise ValueError('Project and actual-package preflight must pass')
     for item in package['modules']:
+        if item.get('debugResources'):
+            raise ValueError('Release includes debug PDF resources')
         metadata = item['app']
         if (metadata['bundleName'], metadata['versionName'], metadata['versionCode'],
             metadata['buildMode'], metadata['debug']) != (

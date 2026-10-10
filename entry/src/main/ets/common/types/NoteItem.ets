@@ -26,8 +26,10 @@ export interface NoteItem {
   updatedAt?: number;
   /** 是否置顶在主页网格顶部。true 表示置顶。 */
   isPinned?: boolean;
-  /** 真实文档文件在沙箱或系统中的 URI */
+  /** 当前运行环境中应用本机副本的完整路径；旧数据可能仍为外部 URI。 */
   sourceUri?: string;
+  /** documents 目录中的副本文件名，启动时据此恢复当前沙箱路径。 */
+  sourceFileName?: string;
   /** 文档原始来源类型 ('pdf' | 'doc' | 'image' | 'markdown') */
   sourceType?: string;
   /** 真实文档总页数 */

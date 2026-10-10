@@ -26,6 +26,7 @@ import {
 } from '../../../common/types/PdfAnnotationTypes';
 import { PdfPageCanvas } from './PdfPageCanvas';
 import { PdfDocumentService } from '../../../services/document/PdfDocumentService';
+import { PdfPageDataSource } from '../../../services/document/PdfPageDataSource';
 import { PdfAnnotationPolicy } from '../../../services/document/PdfAnnotationPolicy';
 import { InkRenderer } from '../../../services/ink/InkRenderer';
 import { CanvasStroke, CanvasPoint } from '../../../common/types/CanvasStroke';
@@ -46,7 +47,7 @@ export struct PdfAnnotatorView {
   onCommitForExit: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onExitSaveFinished: (ok: boolean, noteId: string, saveToken: number) => void = () => {};
   @Prop barsVisible: boolean = true;
-  @Prop @Watch('finishActiveInput') isContinuousScroll: boolean = true;
+  @Prop @Watch('onReadingModeChanged') isContinuousScroll: boolean = true;
   onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onSaveStateChange: (state: string) => void = () => {};
   onDirtyChange: (dirty: boolean) => void = () => {};
@@ -79,6 +80,8 @@ export struct PdfAnnotatorView {
   @State zoomScale: number = 1.0;
   @State currentPageIdx: number = 0;
   @State viewportWidth: number = 360;
+  @State viewportHeight: number = 640;
+  @State private pageRatios: Record<number, number> = {};
 
   // 滚动控制器
   private scroller: Scroller = new Scroller();
@@ -86,6 +89,7 @@ export struct PdfAnnotatorView {
 
   // 批注数据集（按页）
   @State pageStrokes: Record<number, PageAnnotationStroke[]> = {};
+  private pageDataSource: PdfPageDataSource = new PdfPageDataSource();
   // 撤销历史栈
   private undoStack: InkHistoryFrame[] = [];
   private redoStack: InkHistoryFrame[] = [];
@@ -114,13 +118,32 @@ export struct PdfAnnotatorView {
     this.currentPageIdx = idx;
     this.onSourceReady(this.readyPages[idx] === true && !this.annotationError);
     try {
-      this.scroller.scrollToIndex(idx, true, ScrollAlign.START);
+      if (this.isContinuousScroll) { this.scroller.scrollToIndex(idx, true, ScrollAlign.START); }
     } catch (e) {
       // ignore
     }
   }
 
   @State pages: PdfPageModel[] = [];
+
+  private onReadingModeChanged(): void {
+    this.finishActiveInput(); this.zoomScale = 1;
+    this.panScroller.scrollTo({ xOffset: 0, yOffset: 0 });
+  }
+
+  private selectVisiblePage(index: number): void {
+    const next = Math.max(0, Math.min(this.pages.length - 1, index));
+    if (next !== this.currentPageIdx) { this.finishActiveInput(); }
+    this.currentPageIdx = next;
+    this.onPageChanged(next + 1);
+    this.onSourceReady(this.readyPages[next] === true && !this.annotationError);
+  }
+
+  private fittedPageWidth(page: PdfPageModel): number {
+    const ratio = this.pageRatios[page.pageIndex] || 0.707;
+    const height = Math.max(1, this.viewportHeight - 16);
+    return Math.max(1, Math.min(this.viewportWidth - 16, height * ratio)) * this.zoomScale;
+  }
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
@@ -171,6 +194,8 @@ export struct PdfAnnotatorView {
   private initPages(): void {
     const total = this.note.pageCount && this.note.pageCount > 0 ? this.note.pageCount : 1;
     this.pages = PdfDocumentService.getInstance().generatePageModels(total, this.note.title);
+    this.pageDataSource.setPages(this.pages);
+    this.pageRatios = {};
   }
 
   /** 从笔记中加载归一化矢量批注 */
@@ -342,49 +367,55 @@ export struct PdfAnnotatorView {
       ? GestureJudgeResult.REJECT : GestureJudgeResult.CONTINUE;
   }
 
+  @Builder
+  annotationPage(pm: PdfPageModel) {
+    PdfPageCanvas({
+      pageModel: pm,
+      sourceUri: this.note.sourceUri || '',
+      useRealPdf: true,
+      strokes: this.pageStrokes[pm.pageIndex] || [],
+      isAnnotateMode: this.isAnnotateMode && !this.annotationError,
+      tool: this.currentTool,
+      eraserMode: this.eraserMode,
+      eraserWidth: this.eraserWidth,
+      selectedColor: this.selectedColor,
+      selectedWidth: this.selectedWidth,
+      isDarkMode: this.isDarkMode,
+      onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
+      fingerDrawing: this.fingerDrawing,
+      onPenActive: (pen: boolean) => { this.penContact = pen; this.shortcuts.claim(); this.onFocused(); },
+      onActiveFinisherChange: (finish: (() => void) | null) => this.setActiveInputFinisher(pm.pageIndex, finish),
+      onSourceReady: (ready: boolean) => this.setPageSourceReady(pm.pageIndex, ready),
+      onPageAspectRatio: (ratio: number) => { if (Number.isFinite(ratio) && ratio > 0) { this.pageRatios[pm.pageIndex] = ratio; } },
+      onRestoreSource: () => this.onRestoreSource(),
+      onInkContactChange: (active: boolean) => this.setPageInkContact(pm.pageIndex, active),
+      onEraseStarted: () => this.beginErase(pm.pageIndex),
+      onEraseFinished: (commit: boolean) => this.finishErase(commit),
+      onEraseAtPoint: (u: number, v: number, width: number, height: number) => this.handleEraseAtPoint(pm.pageIndex, u, v, width, height)
+    })
+    .width(this.isContinuousScroll ? '100%' : this.fittedPageWidth(pm))
+  }
+
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
       if (this.isContinuousScroll) {
         // 连续列表按实际页面高度定位，位图由可见页管理。
         Scroll(this.panScroller) {
-        List({ space: 24, scroller: this.scroller }) {
-          ForEach(this.pages, (pm: PdfPageModel) => {
+        List({ space: 12, scroller: this.scroller, initialIndex: this.currentPageIdx }) {
+          LazyForEach(this.pageDataSource, (pm: PdfPageModel) => {
             ListItem() {
-              PdfPageCanvas({
-                pageModel: pm,
-                sourceUri: this.note.sourceUri || '',
-                useRealPdf: true,
-                strokes: this.pageStrokes[pm.pageIndex] || [],
-                isAnnotateMode: this.isAnnotateMode && !this.annotationError,
-                tool: this.currentTool,
-                eraserMode: this.eraserMode,
-                eraserWidth: this.eraserWidth,
-                selectedColor: this.selectedColor,
-                selectedWidth: this.selectedWidth,
-                isDarkMode: this.isDarkMode,
-                onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
-                fingerDrawing: this.fingerDrawing,
-                onPenActive: (pen: boolean) => { this.penContact = pen; this.shortcuts.claim(); this.onFocused(); },
-                onActiveFinisherChange: (finish: (() => void) | null) => this.setActiveInputFinisher(pm.pageIndex, finish),
-                onSourceReady: (ready: boolean) => this.setPageSourceReady(pm.pageIndex, ready),
-                onRestoreSource: () => this.onRestoreSource(),
-                onInkContactChange: (active: boolean) => this.setPageInkContact(pm.pageIndex, active),
-                onEraseStarted: () => this.beginErase(pm.pageIndex),
-                onEraseFinished: (commit: boolean) => this.finishErase(commit),
-                onEraseAtPoint: (u: number, v: number, width: number, height: number) => this.handleEraseAtPoint(pm.pageIndex, u, v, width, height)
-              })
-              .width('100%')
+              this.annotationPage(pm)
             }
           }, (pm: PdfPageModel) => `page_${pm.pageIndex}`)
         }
         .width(this.viewportWidth * this.zoomScale)
-        .padding({ left: 32, right: 32, top: 24, bottom: 96 })
+        .padding({ left: 8, right: 8, top: 8, bottom: 56 })
         .height('100%')
+        .cachedCount(1)
         .scrollBar(BarState.Auto)
         .onScroll((offset: number) => { if (!this.inkContact && !this.isAnnotateMode) { this.onReadingScroll(offset); } })
         .onScrollIndex((start: number) => {
-          this.currentPageIdx = Math.max(0, start); this.onPageChanged(this.currentPageIdx + 1);
-          this.onSourceReady(this.readyPages[this.currentPageIdx] === true && !this.annotationError);
+          this.selectVisiblePage(start);
         })
         .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
         .backgroundColor(this.palette().canvas)
@@ -394,58 +425,28 @@ export struct PdfAnnotatorView {
             .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
         )
         }
-        .width('100%').height('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto)
+        .width('100%').height('100%').scrollable(this.zoomScale > 1 ? ScrollDirection.Horizontal : ScrollDirection.None).scrollBar(BarState.Auto)
         .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
       } else {
-        // ---- 单页排版视口 (单页居中、翻页聚焦) ----
-        Scroll(this.panScroller) {
-        Column() {
-          if (this.pages[this.currentPageIdx]) {
-            PdfPageCanvas({
-              pageModel: this.pages[this.currentPageIdx],
-              sourceUri: this.note.sourceUri || '',
-              useRealPdf: true,
-              strokes: this.pageStrokes[this.currentPageIdx] || [],
-              isAnnotateMode: this.isAnnotateMode && !this.annotationError,
-              tool: this.currentTool,
-              eraserMode: this.eraserMode,
-              eraserWidth: this.eraserWidth,
-              selectedColor: this.selectedColor,
-              selectedWidth: this.selectedWidth,
-              isDarkMode: this.isDarkMode,
-              onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
-              fingerDrawing: this.fingerDrawing,
-              onPenActive: (pen: boolean) => { this.penContact = pen; this.shortcuts.claim(); this.onFocused(); },
-              onActiveFinisherChange: (finish: (() => void) | null) => this.setActiveInputFinisher(this.currentPageIdx, finish),
-              onSourceReady: (ready: boolean) => this.setPageSourceReady(this.currentPageIdx, ready),
-              onRestoreSource: () => this.onRestoreSource(),
-              onInkContactChange: (active: boolean) => this.setPageInkContact(this.currentPageIdx, active),
-              onEraseStarted: () => this.beginErase(this.currentPageIdx),
-              onEraseFinished: (commit: boolean) => this.finishErase(commit),
-              onEraseAtPoint: (u: number, v: number, width: number, height: number) => this.handleEraseAtPoint(this.currentPageIdx, u, v, width, height)
-            })
-            .width('100%')
-            .transition(
-              TransitionEffect.OPACITY
-                .combine(TransitionEffect.scale({ x: 0.98, y: 0.98 }))
-                .animation({ duration: AnimationTokens.DURATION_PAGE_TRANSITION, curve: AnimationTokens.CURVE_STANDARD })
-            )
-          }
-        }
-        .width(this.viewportWidth * this.zoomScale)
-        .justifyContent(FlexAlign.Center)
-        .alignItems(HorizontalAlign.Center)
-        .padding({ top: 16, bottom: 80 })
-        .backgroundColor(this.palette().canvas)
-        .transition(
-          TransitionEffect.OPACITY
-            .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
-        )
-        }
-        .width('100%').height('100%').scrollable(ScrollDirection.Free).scrollBar(BarState.Auto)
-        .onScroll((_x: number, y: number) => { if (!this.inkContact && !this.isAnnotateMode) { this.onReadingScroll(y); } })
-        .onClick(() => { if (!this.inkContact && !this.isAnnotateMode) { this.onBlankTap(); } })
-        .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
+        // 整页按可用宽高缩放；未放大时上下滑动切页，放大后在页内平移。
+        Swiper() {
+          LazyForEach(this.pageDataSource, (pm: PdfPageModel) => {
+            Scroll() {
+              Column() { this.annotationPage(pm) }
+                .width(Math.max(this.viewportWidth, this.fittedPageWidth(pm) + 16))
+                .constraintSize({ minHeight: this.viewportHeight })
+                .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center).padding(8)
+            }.width('100%').height('100%')
+              .scrollable(this.zoomScale > 1 ? ScrollDirection.Free : ScrollDirection.None).scrollBar(BarState.Off)
+              .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
+          }, (pm: PdfPageModel) => `page_${pm.pageIndex}`)
+        }.width('100%').height('100%').vertical(true).loop(false).indicator(false).cachedCount(1)
+          .index(this.currentPageIdx)
+          .disableSwipe(this.zoomScale > 1 || (this.isAnnotateMode && this.fingerDrawing && this.currentTool !== 'pan'))
+          .onChange((index: number) => this.selectVisiblePage(index))
+          .onGestureJudgeBegin((_info: GestureInfo, event: BaseGestureEvent) => this.judgeNavigation(event))
+          .onClick(() => { if (!this.inkContact && !this.isAnnotateMode) { this.onBlankTap(); } })
+          .backgroundColor(this.palette().canvas)
       }
       if (this.annotationError.length > 0) {
         Text(this.annotationError).fontSize(13).fontColor(this.palette().inkPrimary)
@@ -455,7 +456,9 @@ export struct PdfAnnotatorView {
     }
     .width('100%')
     .height('100%')
-    .onAreaChange((_oldArea, area) => { this.viewportWidth = Math.max(1, Number(area.width)); })
+    .onAreaChange((_oldArea, area) => {
+      this.viewportWidth = Math.max(1, Number(area.width)); this.viewportHeight = Math.max(1, Number(area.height));
+    })
     .parallelGesture(PinchGesture({ fingers: 2 }).onActionStart(() => { this.zoomStart = this.zoomScale; })
       .onActionUpdate((event: GestureEvent) => {
         if (!this.inkContact && event.sourceTool !== SourceTool.Pen) { this.zoomScale = Math.max(1, Math.min(2.5, this.zoomStart * event.scale)); }

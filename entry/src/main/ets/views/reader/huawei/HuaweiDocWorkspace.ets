@@ -1,22 +1,4 @@
-/**
- * 华为风独立全屏文档与稿纸工作台 (HuaweiDocWorkspace)
- *
- * 核心设计：
- *   1. 沉浸全屏阅读体验：
- *      - 顶栏与底栏支持平滑隐藏与呼出，释放 100% 屏幕空间。
- *      - 触控边缘感知（顶部/底部相近区域滑动或点击即刻呼出）。
- *      - 非笔触防误触（严格过滤手写笔 Pen 触控，避免书写涂画时意外弹出工具栏）。
- *   2. 华为自带 PDF 风格与高级极简质感：
- *      - 告别单调图标占位：全部控件采用胶囊药丸、图文联动与微排版。
- *      - 顶栏：退出全屏药丸、文档标题与格式勋章、居中分屏胶囊（全屏/AI伴读/稿纸）、撤销重做、检索分享、沉浸切换。
- *      - 二级 Tab：文件 (蓝) / 查看 (青) / 播放 (橙) / 签批 (红) / AI 助学 (紫)。
- *      - 功能区 Action Ribbon：丰富生动的操作卡片，带有清晰功能指示与说明。
- *   3. 浮动翻页与阅读控制台 (HUD Console)：
- *      - ◀ 上一页 / 下一页 ▶
- *      - 页面进度滑块 (Slider) 与百分比指示
- *      - 快捷页码跳转与连续/单页排版模式切换
- *   4. 双模分屏与统一模态弹窗。
- */
+/** 单行阅读顶栏、紧凑批注工具与左下角页码；手机分屏使用全宽抽屉。 */
 import { promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { SystemShareService } from '../../../services/SystemShareService';
@@ -98,7 +80,7 @@ export struct HuaweiDocWorkspace {
   @State documentMenuOpen: boolean = false;
   @State undoTrigger: number = 0;
   @State redoTrigger: number = 0;
-  @State fingerDrawing: boolean = false;
+  @State fingerDrawing: boolean = true;
   private previousInkTool: AnnotationTool = 'pen';
   @State clearTrigger: number = 0;
   @State exitDialogOpen: boolean = false;
@@ -131,6 +113,7 @@ export struct HuaweiDocWorkspace {
   @State shareBusy: boolean = false;
   @State isPresentationMode: boolean = false;
   @State jumpDialogOpen: boolean = false;
+  @State jumpPageInput: string = '';
 
   // 稿纸底纹状态
   @State paperBackground: string = 'grid'; // 'grid' | 'ruled' | 'blank'
@@ -208,7 +191,8 @@ export struct HuaweiDocWorkspace {
     if (!this.isHandwritingNote() && !this.pdfSourceReady) {
       this.showToast(this.note.sourceUri ? '请等待页面读取；读取失败时请重新关联原 PDF' : '请先重新关联这份资料的原 PDF'); return;
     }
-    this.inkTarget = this.splitMode === 'scratchpad' ? 'scratchpad' : 'document';
+    this.inkTarget = 'document';
+    if (!this.isHandwritingNote() && this.currentTool === 'pan') { this.selectPdfTool('pen'); }
     this.isAnnotateMode = true; this.barsVisible = true;
     this.isPenPaletteExpanded = true;
   }
@@ -370,20 +354,6 @@ export struct HuaweiDocWorkspace {
   // 顶栏构建：退出、标题勋章、模式分段（阅读/批注）、分屏胶囊、更多
   // ------------------------------------------------------------------
 
-  @Builder
-  readerModeButton(icon: Resource, label: string, annotate: boolean) {
-    Button({ type: ButtonType.Normal }) {
-      Column({ space: 3 }) {
-      AppIcon({ source: icon, iconSize: 22, tint: this.isAnnotateMode === annotate ? this.palette().accent : this.palette().inkSecondary })
-      Text(label).fontSize(10).fontColor(this.palette().inkPrimary)
-      }
-    }.width(56).height(56).padding(0).borderRadius(12)
-      .backgroundColor(this.isAnnotateMode === annotate ? this.palette().accentSoft : Color.Transparent)
-      .accessibilityText(label).bindTips(label)
-      .enabled(!this.exitSaving && !this.restoreSourceBusy)
-      .onClick(() => this.setAnnotationMode(annotate))
-  }
-
   private handleReadingScroll(offset: number): void {
     if (this.isAnnotateMode || this.documentDirty || this.scratchpadDirty) { return; }
     this.scrollTravel = offset > 0 ? this.scrollTravel + offset : 0;
@@ -394,53 +364,23 @@ export struct HuaweiDocWorkspace {
   topNavigationBar() {
     Column({ space: 2 }) {
       Row({ space: 4 }) {
-        IconButton({ icon: $r('app.media.ic_back'), label: this.isAnnotateMode ? '返回阅读并保存批注' : '返回', caption: '返回', compact: true, destructive: this.isAnnotateMode, onAction: () => this.handleBackRequest() })
-        Text(this.note.title).fontSize(16).fontWeight(FontWeight.Medium)
+        IconButton({ icon: $r('app.media.ic_back'), label: this.isAnnotateMode ? '返回阅读并保存批注' : '返回', compact: true, destructive: this.isAnnotateMode, onAction: () => this.handleBackRequest() })
+        Text(this.note.title).fontSize(this.isPhone ? 14 : 16).fontWeight(FontWeight.Medium)
           .fontColor(this.palette().inkPrimary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
-        IconButton({ icon: $r('app.media.ic_star'), label: this.note.favorite ? '取消收藏' : '收藏',
-          caption: '收藏', selected: this.note.favorite === true, onAction: () => this.onToggleFavorite(this.note) })
-        IconButton({ icon: $r('app.media.ic_fullscreen'), label: '沉浸阅读', caption: '沉浸',
+        if (!this.isAnnotateMode) {
+          IconButton({ icon: $r('app.media.ic_pen'), label: '批注', onAction: () => this.setAnnotationMode(true) })
+        }
+        IconButton({ icon: $r('app.media.ic_fullscreen'), label: '沉浸阅读',
           onAction: () => { this.toggleBars(false); this.showToast('轻触屏幕边缘显示工具栏'); } })
         Button({ type: ButtonType.Normal }) {
-          Column({ space: 3 }) {
-            AppIcon({ source: $r('app.media.ic_more'), tint: this.palette().inkSecondary })
-            Text('更多').fontSize(10).fontColor(this.palette().inkSecondary)
-          }
-        }.width(44).height(56).padding(0).borderRadius(12).backgroundColor(Color.Transparent).accessibilityText('更多文档操作')
+          AppIcon({ source: $r('app.media.ic_more'), tint: this.palette().inkSecondary })
+        }.width(44).height(44).padding(0).borderRadius(12).backgroundColor(Color.Transparent).accessibilityText('更多文档操作')
           .enabled(!this.exitSaving && !this.restoreSourceBusy).onClick(() => { this.documentMenuOpen = !this.documentMenuOpen; })
           .bindMenu(this.documentMenuOpen, this.documentMenu, { onDisappear: () => { this.documentMenuOpen = false; } })
-      }.width('100%').height(60)
+      }.width('100%').height(48)
       if (this.isAnnotateMode) { this.annotationToolbar() }
-      else {
-      Scroll() {
-        Row({ space: 4 }) {
-          this.readerModeButton($r('app.media.ic_read'), '阅读', false)
-          this.readerModeButton(this.isAnnotateMode ? this.activeToolIcon() : $r('app.media.ic_pen'), this.isAnnotateMode ? InkToolPolicy.label(this.activeTool()) : '批注', true)
-          Divider().vertical(true).height(24).color(this.palette().border).margin({ left: 4, right: 4 })
-          this.splitSegmentItem($r('app.media.ic_page'), '单页', 'none')
-          this.splitSegmentItem($r('app.media.ic_sparkle'), '墨客', 'ai')
-          this.splitSegmentItem($r('app.media.ic_canvas'), '稿纸', 'scratchpad')
-        }
-      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
-      }
     }.width('100%').padding({ left: 8, right: 8, bottom: 4 }).backgroundColor(this.palette().surface)
       .border({ width: { bottom: 1 }, color: this.palette().borderSubtle })
-  }
-
-  @Builder
-  splitSegmentItem(icon: Resource, label: string, mode: SplitModeType) {
-    Button({ type: ButtonType.Normal }) {
-      Column({ space: 3 }) {
-      AppIcon({ source: icon, iconSize: 22, tint: this.splitMode === mode ? this.palette().accent : this.palette().inkSecondary })
-      Text(label).fontSize(10).fontColor(this.palette().inkPrimary)
-      }
-    }.width(56).height(56).padding(0).borderRadius(12)
-      .backgroundColor(this.splitMode === mode ? this.palette().accentSoft : Color.Transparent)
-      .accessibilityText(mode === 'none' ? '仅显示文档' : `打开${label}分屏`)
-      .bindTips(mode === 'none' ? '仅显示文档' : `打开${label}分屏`)
-      .onClick(() => {
-        this.switchSplitMode(mode);
-      })
   }
 
   // ------------------------------------------------------------------
@@ -513,13 +453,16 @@ export struct HuaweiDocWorkspace {
               .accessibilityText('操作随堂稿纸').onClick(() => { this.inkTarget = 'scratchpad'; })
             Divider().vertical(true).height(24).color(this.palette().border)
           }
-          IconButton({ icon: $r('app.media.ic_pen'), caption: '笔', compact: true, label: '普通笔', selected: this.activeTool() === 'pen', onAction: () => this.selectInkTool('pen') })
-          IconButton({ icon: $r('app.media.ic_highlighter'), caption: '荧光', compact: true, label: '荧光笔', selected: this.activeTool() === 'highlighter', onAction: () => this.selectInkTool('highlighter') })
-          IconButton({ icon: $r('app.media.ic_eraser'), caption: '橡皮', compact: true, label: '橡皮', selected: this.activeTool() === 'eraser', onAction: () => this.selectInkTool('eraser') })
+          IconButton({ icon: $r('app.media.ic_pen'), compact: true, label: '普通笔', selected: this.activeTool() === 'pen', onAction: () => this.selectInkTool('pen') })
+          IconButton({ icon: $r('app.media.ic_highlighter'), compact: true, label: '荧光笔', selected: this.activeTool() === 'highlighter', onAction: () => this.selectInkTool('highlighter') })
+          IconButton({ icon: $r('app.media.ic_eraser'), compact: true, label: '橡皮', selected: this.activeTool() === 'eraser', onAction: () => this.selectInkTool('eraser') })
+          if (!this.usesCanvasTools()) {
+            IconButton({ icon: $r('app.media.ic_hand'), compact: true, label: '拖动页面', selected: this.activeTool() === 'pan', onAction: () => this.selectInkTool('pan') })
+          }
           IconButton({ icon: $r('app.media.ic_undo'), label: '撤销当前批注', compact: true, onAction: () => this.undoInk() })
           IconButton({ icon: $r('app.media.ic_redo'), label: '重做当前批注', compact: true, onAction: () => this.redoInk() })
           IconButton({ icon: $r('app.media.ic_settings'), label: '更多笔设置', compact: true, selected: this.penOptionsOpen, onAction: () => { this.penOptionsOpen = !this.penOptionsOpen; } })
-        }.constraintSize({ minWidth: this.splitMode === 'scratchpad' ? 460 : 312 })
+        }.constraintSize({ minWidth: this.splitMode === 'scratchpad' ? 460 : 320 })
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
       if (this.penOptionsOpen) {
         Column({ space: 2 }) {
@@ -558,11 +501,10 @@ export struct HuaweiDocWorkspace {
 
   @Builder
   floatingBall() {
-    Row({ space: 6 }) {
+    Button({ type: ButtonType.Normal }) {
       AppIcon({ source: this.isAnnotateMode ? this.activeToolIcon() : $r('app.media.ic_pen'), tint: this.palette().onAccent })
     }
-    .padding(this.isAnnotateMode ? 12 : { left: 14, right: 16, top: 10, bottom: 10 })
-    .constraintSize({ minWidth: 44, minHeight: 44 })
+    .width(44).height(44).padding(0)
     .accessibilityText(this.isAnnotateMode ? `当前${InkToolPolicy.label(this.activeTool())}，打开批注工具` : '打开批注工具')
     .borderRadius(24)
     .backgroundColor(this.palette().accent)
@@ -572,7 +514,8 @@ export struct HuaweiDocWorkspace {
       offsetY: 6
     })
     .hoverEffect(HoverEffect.Highlight)
-    .margin({ right: 24, bottom: 24 })
+    .position({ x: '100%', y: '100%' })
+    .translate({ x: this.isPhone ? -56 : -64, y: -56 })
     .zIndex(60)
     .onClick(() => {
       animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
@@ -604,6 +547,8 @@ export struct HuaweiDocWorkspace {
   @Builder
   documentMenu() {
     Menu() {
+      MenuItem({ content: this.note.favorite ? '取消收藏' : '收藏资料', startIcon: $r('app.media.ic_star') })
+        .onClick(() => { this.documentMenuOpen = false; this.onToggleFavorite(this.note); })
       MenuItem({ content: '打开随堂稿纸', startIcon: $r('app.media.ic_canvas') })
         .onClick(() => { this.documentMenuOpen = false; this.switchSplitMode('scratchpad'); })
       MenuItem({ content: '打开 AI 伴读', startIcon: $r('app.media.ic_sparkle') })
@@ -617,7 +562,7 @@ export struct HuaweiDocWorkspace {
       if (this.note.sourceType === 'pdf' && this.note.sourceUri) {
         MenuItem({ content: '分享原 PDF' }).enabled(!this.shareBusy).onClick(() => { this.documentMenuOpen = false; this.shareOriginalPdf(); })
         MenuItem({ content: '提取页面文字' }).onClick(() => { this.documentMenuOpen = false; this.onExtractPdfText(this.currentPage); })
-        MenuItem({ content: '跳转页码' }).onClick(() => { this.documentMenuOpen = false; this.jumpDialogOpen = true; })
+        MenuItem({ content: '跳转页码' }).onClick(() => { this.documentMenuOpen = false; this.openPageJump(); })
         MenuItem({ content: this.isContinuousScroll ? '切换单页阅读' : '切换连续阅读' })
           .onClick(() => { this.documentMenuOpen = false; this.isContinuousScroll = !this.isContinuousScroll; })
         MenuItem({ content: '清空本页笔迹，可撤销' }).enabled(this.isAnnotateMode && !this.exitSaving)
@@ -636,37 +581,20 @@ export struct HuaweiDocWorkspace {
 
   @Builder
   bottomReadingConsole() {
-    Column({ space: 4 }) {
-      Row({ space: 4 }) {
-        IconButton({ icon: $r('app.media.ic_chevron_left'), label: '上一页', available: this.currentPage > 1,
-          onAction: () => this.prevPage() })
-        Button(`${this.currentPage} / ${this.totalPages}`, { type: ButtonType.Normal })
-          .height(44).layoutWeight(1).constraintSize({ minWidth: 44 })
-          .fontSize(14).fontColor(this.palette().inkPrimary).backgroundColor(Color.Transparent)
-          .accessibilityText(`当前第 ${this.currentPage} 页，共 ${this.totalPages} 页，点击跳转`)
-          .onClick(() => { this.jumpDialogOpen = true; })
-        IconButton({ icon: $r('app.media.ic_chevron_right'), label: '下一页', available: this.currentPage < this.totalPages,
-          onAction: () => this.nextPage() })
-        IconButton({ icon: this.isContinuousScroll ? $r('app.media.ic_menu') : $r('app.media.ic_page'),
-          label: this.isContinuousScroll ? '切换单页阅读' : '切换连续阅读',
-          onAction: () => { this.isContinuousScroll = !this.isContinuousScroll; } })
-        IconButton({ icon: $r('app.media.ic_chevron_down'), label: '隐藏阅读工具栏',
-          onAction: () => this.toggleBars(false) })
-      }.width('100%')
-      if (!this.isPhone && this.totalPages > 1) {
-        Slider({ value: this.currentPage, min: 1, max: this.totalPages, step: 1, style: SliderStyle.OutSet })
-          .width('100%').height(28).trackColor(this.palette().surfaceSubtle).selectedColor(this.palette().accent)
-          .accessibilityText('翻页进度').onChange((value: number) => { this.currentPage = Math.round(value); })
-      }
-    }.width('96%').constraintSize({ maxWidth: 600 })
-      .padding({ left: 8, right: 8, top: 4, bottom: 4 }).borderRadius(18)
-      .backgroundColor(this.palette().surface).border({ width: 1, color: this.palette().border })
-      .shadow({ radius: 12, color: this.isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(36,32,51,0.12)', offsetY: 3 })
-      .margin({ bottom: 12 }).translate({ y: this.barsVisible ? 0 : 96 })
-      .opacity(this.barsVisible ? 1 : 0).enabled(this.barsVisible)
-      .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
+    Button(`${this.currentPage} / ${this.totalPages}`, { type: ButtonType.Normal })
+      .height(44).constraintSize({ minWidth: 64 }).padding({ left: 12, right: 12 })
+      .fontSize(13).fontColor(this.palette().inkSecondary).backgroundColor(this.palette().surface)
+      .borderRadius(10).border({ width: 1, color: this.palette().borderSubtle })
+      .accessibilityText(`当前第 ${this.currentPage} 页，共 ${this.totalPages} 页，点击跳转`)
+      .onClick(() => this.openPageJump())
+      .bindPopup(this.jumpDialogOpen, {
+        builder: this.quickJumpDialog, placement: Placement.TopLeft,
+        popupColor: this.palette().surface,
+        onStateChange: (event) => { if (!event.isVisible) { this.jumpDialogOpen = false; } }
+      })
+      .position({ x: 8, y: '100%' }).translate({ y: -52 })
+      .opacity(this.barsVisible ? 1 : 0).enabled(this.barsVisible && !this.exitSaving)
   }
-
   // ------------------------------------------------------------------
   // 隐藏态下的触控呼出热区与极简浮动手柄（非笔触触发）
   // ------------------------------------------------------------------
@@ -761,72 +689,35 @@ export struct HuaweiDocWorkspace {
   // 快速页码跳转弹窗
   // ------------------------------------------------------------------
 
-  @Builder
-  quickJumpDialog() {
-    Column() {
-      // 弹窗卡片
-      Column({ space: 16 }) {
-        Row() {
-          Text('快速跳转至指定页')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.palette().inkPrimary)
-
-          Blank()
-
-          IconButton({ icon: $r('app.media.ic_close'), label: '关闭页码跳转', onAction: () => { this.jumpDialogOpen = false; } })
-        }
-        .width('100%')
-
-        // 快速单选页码药丸
-        Flex({ wrap: FlexWrap.Wrap }) {
-          ForEach(this.pageNumbersList(), (pNum: number) => {
-            Text(`第 ${pNum} 页`)
-              .fontSize(TypographyTokens.CAPTION)
-              .fontWeight(this.currentPage === pNum ? FontWeight.Bold : FontWeight.Normal)
-              .fontColor(this.currentPage === pNum ? '#FFFFFF' : this.palette().inkPrimary)
-              .padding({ left: 12, right: 12, top: 7, bottom: 7 })
-              .margin(4)
-              .borderRadius(14)
-              .backgroundColor(this.currentPage === pNum ? this.palette().accent : this.palette().surfaceSubtle)
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => this.jumpToPage(pNum))
-          }, (pNum: number) => `jump_page_${pNum}`)
-        }
-        .width('100%')
-      }
-      .width(320)
-      .padding(20)
-      .borderRadius(16)
-      .backgroundColor(this.palette().surface)
-      .shadow({ radius: 16, color: this.isDarkMode ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.12)', offsetY: 4 })
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .onClick(() => {
-        // 消费卡片点击，防止冒泡到遮罩关闭
-      })
-      .transition(
-        TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
-          .combine(TransitionEffect.OPACITY)
-          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
-      )
-    }
-    .width('100%')
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.65)' : 'rgba(0,0,0,0.45)')
-    .zIndex(200)
-    .transition(
-      TransitionEffect.OPACITY
-        .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
-    )
-    .onClick(() => {
-      animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
-        this.jumpDialogOpen = false;
-      });
-    })
+  private openPageJump(): void {
+    this.jumpPageInput = String(this.currentPage);
+    this.barsVisible = true;
+    this.jumpDialogOpen = true;
   }
 
+  private submitPageJump(): void {
+    const page = Number(this.jumpPageInput);
+    if (!Number.isInteger(page) || page < 1 || page > this.totalPages) {
+      this.showToast(`请输入 1 到 ${this.totalPages} 之间的页码`); return;
+    }
+    this.jumpToPage(page);
+  }
+
+  @Builder
+  quickJumpDialog() {
+    Column({ space: 8 }) {
+      Text(`跳转页码 · 共 ${this.totalPages} 页`).fontSize(13).fontColor(this.palette().inkSecondary)
+      Row({ space: 8 }) {
+        TextInput({ text: this.jumpPageInput, placeholder: '页码' }).type(InputType.Number)
+          .height(44).layoutWeight(1).fontSize(16).fontColor(this.palette().inkPrimary)
+          .backgroundColor(this.palette().surfaceSubtle).accessibilityText('输入跳转页码')
+          .onChange((value: string) => { this.jumpPageInput = value; })
+          .onSubmit(() => this.submitPageJump())
+        Button('跳转').height(44).fontSize(14).backgroundColor(this.palette().accent)
+          .fontColor(this.palette().onAccent).onClick(() => this.submitPageJump())
+      }
+    }.width(this.isPhone ? 220 : 260).padding(12)
+  }
   // ------------------------------------------------------------------
   // 退出阅读器确认弹窗 (Obsidian 简约高级模态弹窗)
   // ------------------------------------------------------------------
@@ -943,14 +834,6 @@ export struct HuaweiDocWorkspace {
       Column() {
         // ---- 1. 顶部极简导航栏 (单行 48vp)，支持平滑上滑隐藏 ----
         if (this.barsVisible) { this.topNavigationBar() }
-        else {
-          Button({ type: ButtonType.Normal }) {
-            Row({ space: 8 }) {
-              AppIcon({ source: $r('app.media.ic_chevron_down'), iconSize: 14, tint: this.palette().inkSecondary })
-              Text(this.note.title).fontSize(12).fontColor(this.palette().inkSecondary).maxLines(1)
-            }
-          }.width('100%').height(28).backgroundColor(this.palette().surface).onClick(() => this.toggleBars(true))
-        }
 
         // ---- 2. 主视口区（左文档 + 右分屏）----
         Row() {
@@ -1015,8 +898,8 @@ export struct HuaweiDocWorkspace {
               })
             }
 
-            // 批注模式下展示灵动悬浮笔盘；阅读模式下展示浮动翻页控制台
-            if (!this.isAnnotateMode) {
+            // 页码固定在正文左下角，书写时也可快速跳页。
+            if (!this.isHandwritingNote()) {
               this.bottomReadingConsole()
             }
           }
@@ -1083,12 +966,7 @@ export struct HuaweiDocWorkspace {
 
       // ---- 3. 灵动悬浮球（在批注模式折叠态或阅读模式下提供一键唤起）----
       if (!this.isAnnotateMode) {
-        Stack({ alignContent: Alignment.BottomEnd }) {
-          this.floatingBall()
-        }
-        .width('100%')
-        .height('100%')
-        .hitTestBehavior(HitTestMode.Transparent)
+        this.floatingBall()
       }
 
       // ---- 4. 隐藏状态下的顶部/底部感应呼出区域（过滤笔触）----
@@ -1097,10 +975,6 @@ export struct HuaweiDocWorkspace {
         this.bottomProximityZone()
       }
 
-      // ---- 5. 快速页码跳转弹窗 ----
-      if (this.jumpDialogOpen) {
-        this.quickJumpDialog()
-      }
 
       // ---- 6. 统一顶层操作模态弹窗（另存为、格式转换、长图输出、打印）----
       if (this.activeModal.length > 0) {

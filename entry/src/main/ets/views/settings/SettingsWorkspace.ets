@@ -1,4 +1,5 @@
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
+import BuildProfile from 'BuildProfile';
 import { ThemeManager } from '../../common/theme/ThemeManager';
 import { THEME_MODE_OPTIONS, ThemeModeOption, ThemeMode } from '../../common/theme/ThemeMode';
 import { THEME_STYLE_OPTIONS, ThemeStyleOption, paletteForStyle } from '../../common/theme/ThemeStyle';
@@ -238,7 +239,7 @@ export struct SettingsWorkspace {
       this.heading('与系统能力协作')
       this.paragraph('手机保留底部导航；Pad 使用同一组图标。布局跟随窗口宽度，分屏或小窗口会收为单页。')
       this.heading('系统分享与文件')
-      this.paragraph('使用系统文件选择器导入 PDF，通过系统分享选择接收方。分享原 PDF 不包含应用内笔迹，完整笔迹可通过资料备份传递。')
+      this.paragraph('导入 PDF 会复制到本机资料库，保留外部原文件，重启后可继续阅读。墨客和智能提取导入的资料在“外部参考”中查看。系统分享可选择接收方；分享原 PDF 不包含应用内笔迹，完整笔迹可通过资料备份传递。')
       this.heading('手写笔')
       this.paragraph('笔在系统中配对。应用处理笔/手指分流、压力、撤销与重做；双击与轻捏依赖 Penkit、笔型号和设备支持，需在支持设备上验收。')
       this.heading('文字识别与密钥')
@@ -252,8 +253,9 @@ export struct SettingsWorkspace {
         Column({ space: 8 }) { this.heading(step.title); this.paragraph(step.text) }
           .padding(16).borderRadius(12).backgroundColor(this.palette().surface).width('100%')
       })
+      if (BuildProfile.DEBUG) {
       this.heading('阅读测试资料')
-      this.paragraph('包含中文、英文和符号的两页 PDF，仅在主动导入后加入资料库，适合检查阅读与批注。')
+      this.paragraph('已自动加入一份两页 PDF，在「示例资料」打开即可检查阅读与批注。下面可另行导入一份副本。')
       this.action(this.sampleBusy ? '正在导入…' : '导入阅读测试 PDF', async () => {
         this.sampleBusy = true;
         try { await this.onImportExample(); } finally { if (this.alive) { this.sampleBusy = false; } }
@@ -264,6 +266,7 @@ export struct SettingsWorkspace {
         this.sampleBusy = true;
         try { await this.onImportSnapshot(); } finally { if (this.alive) { this.sampleBusy = false; } }
       }, false, !this.sampleBusy)
+      }
     } else if (name === 'legal') {
       this.heading('默认本地，联网由你选择')
       this.paragraph('离线助手按原文检索和摘录；图片识别与本地整理无需模型服务。自配 API 需要配置和授权，选用后相关输入才发送至你指定的服务商。')

@@ -1,4 +1,4 @@
-import { SMART_INPUT_LIMIT } from './SmartExtractService';
+import { SMART_INPUT_LIMIT } from '../../common/constants/ContentLimits';
 
 interface MarkerMarkdownResponse { success?: boolean; format?: string; output?: string; markdown?: string; error?: string; }
 

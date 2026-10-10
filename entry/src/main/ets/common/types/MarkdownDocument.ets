@@ -26,6 +26,7 @@ export interface DocumentTransferResult {
    */
   noteType?: string;
   sourceUri?: string;
+  sourceFileName?: string;
   pageCount?: number;
   message: string;
 }

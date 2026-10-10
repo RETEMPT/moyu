@@ -10,6 +10,13 @@
   "buildOptionSet": [
     {
       "name": "release",
+      "resOptions": {
+        "ignoreResourcePattern": [
+          "**/debug-pdf-preview/**",
+          "**/example-course.pdf",
+          "**/example-snapshot.pdf"
+        ]
+      },
       "arkOptions": {
         "obfuscation": {
           "ruleOptions": {

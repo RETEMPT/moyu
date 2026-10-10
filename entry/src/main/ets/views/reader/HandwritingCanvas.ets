@@ -15,7 +15,8 @@ import { NoteItem } from '../../common/types/NoteItem';
 import { ReaderSaveKind } from '../../common/types/ReaderSaveKind';
 import { CanvasPoint, CanvasStroke } from '../../common/types/CanvasStroke';
 import { InkInputService, InkSample } from '../../services/ink/InkInputService';
-import { InkRenderer, InkStyle } from '../../services/ink/InkRenderer';
+import { InkRenderer, InkStyle, InkContext } from '../../services/ink/InkRenderer';
+import { InkFrameComposer } from '../../services/ink/InkFrameComposer';
 import { StylusShortcutService } from '../../services/ink/StylusShortcutService';
 import { CanvasViewport, InkBounds } from '../../services/ink/CanvasViewport';
 import { CanvasPaperGuides } from '../../services/ink/CanvasPaperGuides';
@@ -117,6 +118,7 @@ export struct HandwritingCanvas {
   private drawTimer: number = -1;
   private savedRevision: number = 0;
   private boundsCache: Map<CanvasStroke, InkBounds> = new Map();
+  private inkFrame: InkFrameComposer = new InkFrameComposer();
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
@@ -155,6 +157,7 @@ export struct HandwritingCanvas {
     if (this.isScratchpad || this.persistOnDisappear) { this.finishStroke(); }
     this.shortcuts.stop(); this.input.reset();
     if (this.drawTimer !== -1) { clearTimeout(this.drawTimer); this.drawTimer = -1; }
+    this.inkFrame.release();
     if (this.saveTimer !== -1) {
       clearTimeout(this.saveTimer);
       this.saveTimer = -1;
@@ -235,19 +238,16 @@ export struct HandwritingCanvas {
     if (!this.context || this.canvasWidth <= 0 || this.canvasHeight <= 0) {
       return;
     }
+    if (this.drawTimer !== -1) { clearTimeout(this.drawTimer); this.drawTimer = -1; }
     this.drawPaperBackground();
-    this.context.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
-
-    // 绘制全部历史笔迹
-    for (let i = 0; i < this.strokes.length; i++) {
-      this.drawSingleStroke(this.strokes[i]);
-    }
-    // A queued viewport redraw must not bring ink back under an active eraser.
-    const active = this.currentStroke;
-    if (active && active.isEraser && !this.eraseBefore && active.points.length) {
-      this.context.save(); this.context.translate(this.panX, this.panY); this.context.scale(this.zoomScale, this.zoomScale);
-      InkRenderer.stroke(this.context, active.points, this.style(active)); this.context.restore();
-    }
+    this.inkFrame.render(this.context, this.canvasWidth, this.canvasHeight, (context: OffscreenCanvasRenderingContext2D) => {
+      for (const stroke of this.strokes) { this.drawSingleStroke(stroke, context); }
+      const active = this.currentStroke;
+      if (active && active.isEraser && !this.eraseBefore && active.points.length) {
+        context.save(); context.translate(this.panX, this.panY); context.scale(this.zoomScale, this.zoomScale);
+        InkRenderer.stroke(context, active.points, this.style(active)); context.restore();
+      }
+    });
   }
 
   private style(stroke: CanvasStroke): InkStyle {
@@ -267,13 +267,13 @@ export struct HandwritingCanvas {
     this.paperContext.stroke(); this.paperContext.restore();
   }
 
-  private drawSingleStroke(stroke: CanvasStroke): void {
+  private drawSingleStroke(stroke: CanvasStroke, context: InkContext = this.context): void {
     let bounds = this.boundsCache.get(stroke);
     if (!bounds) { bounds = CanvasViewport.bounds(stroke); this.boundsCache.set(stroke, bounds); }
     if (!CanvasViewport.visible(bounds, this.canvasWidth, this.canvasHeight, this.zoomScale, this.panX, this.panY)) { return; }
     const scale = CanvasViewport.scale(stroke) * this.zoomScale;
-    this.context.save(); this.context.translate(this.panX, this.panY); this.context.scale(scale, scale);
-    InkRenderer.stroke(this.context, stroke.points, this.style(stroke)); this.context.restore();
+    context.save(); context.translate(this.panX, this.panY); context.scale(scale, scale);
+    InkRenderer.stroke(context, stroke.points, this.style(stroke)); context.restore();
   }
 
   private remember(): void {
@@ -338,6 +338,7 @@ export struct HandwritingCanvas {
     if (!stroke) { return; }
     const target = stroke.isEraser ? this.context : this.liveContext;
     const style = this.style(stroke);
+    let erased = false;
     target.save(); target.translate(this.panX, this.panY); target.scale(this.zoomScale, this.zoomScale);
     for (const point of batch.samples) {
       const world = CanvasViewport.world(point.x, point.y, this.zoomScale, this.panX, this.panY);
@@ -345,11 +346,12 @@ export struct HandwritingCanvas {
       if (last && Math.hypot(last.x - world.x, last.y - world.y) * this.zoomScale < 0.35 && Math.abs((last.pressure || 0) - point.pressure) < 0.04) { continue; }
       stroke.points.push({ x: world.x, y: world.y, pressure: point.pressure });
       if (this.eraseBefore) {
-        this.strokes = this.strokes.filter((saved: CanvasStroke) => !CanvasStrokeEraser.hit(saved, last || world, world, stroke.width / 2));
+        const remaining = this.strokes.filter((saved: CanvasStroke) => !CanvasStrokeEraser.hit(saved, last || world, world, stroke.width / 2));
+        if (remaining.length !== this.strokes.length) { this.strokes = remaining; erased = true; }
       } else { InkRenderer.segment(target, stroke.points, stroke.points.length - 1, style); }
     }
     target.restore();
-    if (this.eraseBefore) { this.redrawAll(); }
+    if (erased) { this.requestRedraw(); }
     if (batch.phase === 'end') {
       this.finishStroke();
       if (!stroke.isEraser && !this.isScratchpad) { this.revealWritingSpace(); }

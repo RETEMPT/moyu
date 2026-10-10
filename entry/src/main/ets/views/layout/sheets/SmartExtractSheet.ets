@@ -36,6 +36,7 @@ interface SmartExtractDraft {
 export struct SmartExtractSheet {
   onClose: () => void = () => {};
   onCommit: (content: SmartContent, selectedTasks: SmartTask[]) => Promise<void> = async () => {};
+  onImportSource: (uri: string) => Promise<string> = async () => { throw new Error('资料库尚未就绪，请稍后重试'); };
   onOpenModelSettings: () => void = () => {};
   @Prop @Watch('requestClose') closeToken: number = 0;
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
@@ -117,20 +118,25 @@ export struct SmartExtractSheet {
 
   private async pickDocument(): Promise<void> {
     if (this.busy()) { return; }
-    const id = ++this.requestId; this.step = 'importing'; this.errorMsg = ''; this.importProgress = '选择文档…';
+    const id = ++this.requestId; this.step = 'importing'; this.errorMsg = ''; this.sourceNotice = ''; this.importProgress = '选择文档…';
     try {
       const options = new picker.DocumentSelectOptions(); options.maxSelectNumber = 1;
       options.fileSuffixFilters = ['文档与 Marker 结果|.pdf,.md,.txt,.json'];
       const selected = await new picker.DocumentViewPicker().select(options);
       if (!this.alive || id !== this.requestId || !selected.length) { return; }
-      this.importProgress = '正在读取文档…';
-      const result = await DocumentExtractService.read(getContext(this) as common.UIAbilityContext, selected[0],
+      DocumentExtractService.validateInput(selected[0]);
+      this.importProgress = '正在保存到本机资料库…';
+      const localPath = await this.onImportSource(selected[0]);
+      if (!this.alive || id !== this.requestId) { return; }
+      this.sourceNotice = '资料已保存到本机资料库「外部参考」，可离线重新打开。';
+      this.importProgress = '正在读取本机副本…';
+      const result = await DocumentExtractService.read(getContext(this) as common.UIAbilityContext, localPath,
         Number(this.pdfStart), Number(this.pdfEnd), () => !this.alive || id !== this.requestId,
         (page: number) => { if (this.alive && id === this.requestId) { this.importProgress = `正在提取第 ${page} 页…`; } });
       if (!this.alive || id !== this.requestId) { return; }
       const appended = this.inputText.trim() ? `${this.inputText}\n\n${result.text}` : result.text;
       if (appended.length > SMART_INPUT_LIMIT) { throw new Error('追加后文字超过上限，请先整理当前内容或缩小导入范围'); }
-      this.inputText = appended; this.sourceNotice = result.notice; AppStorage.setOrCreate('smartExtractDraft', appended);
+      this.inputText = appended; this.sourceNotice += '\n' + result.notice; AppStorage.setOrCreate('smartExtractDraft', appended);
     } catch (error) {
       if (this.alive && id === this.requestId) { this.errorMsg = error instanceof Error ? error.message : '文档提取未成功，原输入已保留'; }
     } finally { if (this.alive && id === this.requestId) { this.step = 'input'; this.importProgress = ''; } }
@@ -303,7 +309,7 @@ export struct SmartExtractSheet {
         TextInput({ text: this.pdfEnd, placeholder: '结束页' }).layoutWeight(1).height(44)
           .onChange((value: string) => { this.pdfEnd = value; })
       }.width('100%')
-      this.hint('PDF 每次最多 5 页，本机识别；Marker 可导入 .md 或 markdown 响应 JSON，无需服务器。')
+      this.hint('导入会保存到本机资料库「外部参考」。PDF 每次提取最多 5 页；支持 Marker Markdown 和响应 JSON。')
       if (this.imageUri.length > 0) {
         Image(this.imageUri).width('100%').height(100).objectFit(ImageFit.Contain).borderRadius(8)
       }

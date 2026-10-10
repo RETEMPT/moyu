@@ -16,7 +16,8 @@ export class InkInputService {
     const ignored: InkInputBatch = { phase: 'ignore', samples: [], pen: false };
     const pen = event.sourceTool === SourceTool.Pen;
     if (!pen && this.pen) { return ignored; }
-    if (!pen && (!fingerEnabled || event.sourceTool !== SourceTool.Finger || Date.now() < this.palmUntil)) { return ignored; }
+    const pointer = event.sourceTool === SourceTool.Finger || event.sourceTool === SourceTool.MOUSE || event.sourceTool === SourceTool.TOUCHPAD;
+    if (!pen && (!fingerEnabled || !pointer || Date.now() < this.palmUntil)) { return ignored; }
     if (!pen && event.touches.length > 1) {
       const active = this.pointerId !== -1; this.reset();
       return { phase: active ? 'cancel' : 'ignore', samples: [], pen: false };

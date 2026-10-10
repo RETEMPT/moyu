@@ -37,7 +37,7 @@ export class ReaderCommitService {
     if (kind === 'markdown') { result.title = input.title; result.contentDetail = input.contentDetail; result.previewText = input.previewText; }
     else if (kind === 'pdf') { result.pageAnnotations = input.pageAnnotations; }
     else if (kind === 'pdf-source') {
-      result.sourceUri = input.sourceUri; result.sourceType = input.sourceType;
+      result.sourceUri = input.sourceUri; result.sourceFileName = input.sourceFileName; result.sourceType = input.sourceType;
       result.pageCount = input.pageCount; result.type = input.type; result.pdfTextJson = input.pdfTextJson;
       result.pageInfo = input.pageInfo; result.documentMeta = input.documentMeta;
     }

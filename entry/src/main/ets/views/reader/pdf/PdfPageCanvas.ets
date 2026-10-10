@@ -13,7 +13,8 @@ import { ColorPalette, TypographyTokens } from '../../../common/constants/Design
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { CanvasPoint } from '../../../common/types/CanvasStroke';
 import { InkInputService } from '../../../services/ink/InkInputService';
-import { InkRenderer, InkStyle } from '../../../services/ink/InkRenderer';
+import { InkRenderer, InkStyle, InkContext } from '../../../services/ink/InkRenderer';
+import { InkFrameComposer } from '../../../services/ink/InkFrameComposer';
 import { PdfPageBackground } from './PdfPageBackground';
 import {
   AnnotationTool,
@@ -47,9 +48,12 @@ export struct PdfPageCanvas {
   onInkContactChange: (active: boolean) => void = () => {};
   onPenActive: (pen: boolean) => void = () => {};
   onSourceReady: (ready: boolean) => void = () => {};
+  onPageAspectRatio: (ratio: number) => void = () => {};
   onRestoreSource: () => void = () => {};
   onActiveFinisherChange: (finish: (() => void) | null) => void = () => {};
   @State private sourceReady: boolean = false;
+  private loadedSourceUri: string = '';
+  private loadedPageIndex: number = -1;
   private input: InkInputService = new InkInputService();
   private erasing: boolean = false;
 
@@ -61,6 +65,7 @@ export struct PdfPageCanvas {
   @State pageWidth: number = 0;
   @State pageHeight: number = 0;
   private currentStroke: PageAnnotationStroke | null = null;
+  private inkFrame: InkFrameComposer = new InkFrameComposer();
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
@@ -75,14 +80,10 @@ export struct PdfPageCanvas {
     if (!this.context || this.pageWidth <= 0 || this.pageHeight <= 0) {
       return;
     }
-    this.context.clearRect(0, 0, this.pageWidth, this.pageHeight);
-
-    // 绘制该页全部历史笔画
-    for (let i = 0; i < this.strokes.length; i++) {
-      this.renderStroke(this.strokes[i]);
-    }
-    if (this.currentStroke && this.currentStroke.isEraser) { this.renderStroke(this.currentStroke); }
-
+    this.inkFrame.render(this.context, this.pageWidth, this.pageHeight, (context: OffscreenCanvasRenderingContext2D) => {
+      for (const stroke of this.strokes) { this.renderStroke(stroke, context); }
+      if (this.currentStroke && this.currentStroke.isEraser) { this.renderStroke(this.currentStroke, context); }
+    });
   }
 
   private mapped(stroke: PageAnnotationStroke): CanvasPoint[] {
@@ -97,8 +98,8 @@ export struct PdfPageCanvas {
       highlighter: stroke.isHighlighter, eraser: stroke.isEraser };
   }
 
-  private renderStroke(stroke: PageAnnotationStroke): void {
-    InkRenderer.stroke(this.context, this.mapped(stroke), this.style(stroke));
+  private renderStroke(stroke: PageAnnotationStroke, context: InkContext = this.context): void {
+    InkRenderer.stroke(context, this.mapped(stroke), this.style(stroke));
   }
 
   private resetInput(): void {
@@ -117,20 +118,26 @@ export struct PdfPageCanvas {
     this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight);
     this.onActiveFinisherChange(null);
     this.onInkContactChange(false);
-    if (stroke && stroke.isEraser) { this.redrawAll(); }
+    // Keep the completed area preview until the parent publishes its new stroke array.
+    // Replaying old @Prop data here briefly resurrects the erased ink.
+    if (stroke && stroke.isEraser && !commit) { this.redrawAll(); }
   }
 
   private onSourceChanged(): void {
+    // @Prop pageModel is copied again when tools change; only a different source/page invalidates its bitmap.
+    if (this.loadedSourceUri === this.sourceUri && this.loadedPageIndex === this.pageModel.pageIndex) { return; }
+    this.loadedSourceUri = this.sourceUri; this.loadedPageIndex = this.pageModel.pageIndex;
     this.resetInput(); this.sourceReady = false; this.onSourceReady(false);
     this.pageAspectRatio = 0.707;
   }
 
   private setSourceReady(ready: boolean): void {
+    this.loadedSourceUri = this.sourceUri; this.loadedPageIndex = this.pageModel.pageIndex;
     if (!ready) { this.resetInput(); }
     this.sourceReady = ready; this.onSourceReady(ready);
   }
 
-  aboutToDisappear(): void { this.resetInput(); }
+  aboutToDisappear(): void { this.resetInput(); this.inkFrame.release(); }
 
   private handleTouch(event: TouchEvent): void {
     if (!this.sourceReady || !this.isAnnotateMode || this.tool === 'pan' || this.pageWidth <= 0 || this.pageHeight <= 0) { return; }
@@ -177,7 +184,7 @@ export struct PdfPageCanvas {
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       PdfPageBackground({ sourceUri: this.sourceUri, pageIndex: this.pageModel.pageIndex,
-        onAspectRatio: (ratio: number) => { this.pageAspectRatio = ratio; },
+        onAspectRatio: (ratio: number) => { this.pageAspectRatio = ratio; this.onPageAspectRatio(ratio); },
         onSourceReady: (ready: boolean) => this.setSourceReady(ready),
         onRestoreSource: () => this.onRestoreSource() })
 
@@ -191,10 +198,11 @@ export struct PdfPageCanvas {
         .opacity(this.sourceReady ? (this.tool === 'highlighter' ? 0.35 : 1) : 0)
         .hitTestBehavior(!this.sourceReady || !this.isAnnotateMode || this.tool === 'pan' ? HitTestMode.None : HitTestMode.Transparent)
         .onReady(() => this.redrawAll())
-        .onTouch((event: TouchEvent) => this.handleTouch(event))
     }
     .width('100%')
+    .onTouch((event: TouchEvent) => this.handleTouch(event))
     .aspectRatio(this.pageAspectRatio)
+    .onVisibleAreaChange([0], (visible: boolean) => { if (!visible) { this.inkFrame.release(); } })
     .borderRadius(8)
     .shadow({
       radius: 16,

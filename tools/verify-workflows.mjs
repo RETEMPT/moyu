@@ -31,7 +31,7 @@ function load(relative, mocks = {}, cache = new Map()) {
   }).outputText;
   const localRequire = specifier => {
     if (mocks[specifier]) return mocks[specifier];
-    if (specifier === 'BuildProfile') return { DEBUG: true };
+    if (specifier === 'BuildProfile') return { DEBUG: true, default: { DEBUG: true } };
     if (specifier.startsWith('.')) {
       return load(path.resolve(path.dirname(filename), `${specifier}.ets`), mocks, cache);
     }
@@ -40,7 +40,8 @@ function load(relative, mocks = {}, cache = new Map()) {
   vm.runInNewContext(output, { module, exports: module.exports, require: localRequire,
     console, Date, Error, Promise, setTimeout: mocks.setTimeout || setTimeout, clearTimeout: mocks.clearTimeout || clearTimeout,
     canIUse: mocks.canIUse || (() => true), AppStorage: mocks.AppStorage,
-    SourceTool: mocks.SourceTool, TouchType: mocks.TouchType, Curve: mocks.Curve || { EaseInOut: 'ease' } }, { filename });
+    SourceTool: mocks.SourceTool, TouchType: mocks.TouchType, Curve: mocks.Curve || { EaseInOut: 'ease' },
+    OffscreenCanvas: mocks.OffscreenCanvas, RenderingContextSettings: mocks.RenderingContextSettings }, { filename });
   return module.exports;
 }
 
@@ -527,6 +528,7 @@ function pdfService({ status = 0, pageCount = 3, renderFails = false, copyFails 
   }
   class PdfMatrix {}
   const mocks = {
+    '@kit.ImageKit': { image: {} },
     '@kit.PDFKit': { pdfService: { PdfDocument, PdfMatrix, ParseResult: { PARSE_SUCCESS: 0, PARSE_ERROR_PASSWORD: 3 } } },
     [path.resolve(root, `${base}services/ocr/OcrService.ets`)]: { OcrService: { getInstance: () => ({ recognizePixelMap: async () => {
       calls.push('ocr'); if (ocrFails) throw Error('ocr'); return '扫描页真实文字';
@@ -580,7 +582,8 @@ test('failed PDF copy removes partial file and closes handle, never returns temp
   assert.deepEqual(calls.slice(-2), ['partial-copy-removed', 'file-close']);
 });
 
-function importService(uri, { pdfFails = false, writeFails = false, unlinkFails = false, missing = false, initial = '', readFails = false } = {}) {
+function importService(uri, { pdfFails = false, writeFails = false, unlinkFails = false, missing = false, initial = '', readFails = false,
+  textContent = '# 资料\n\n全文' } = {}) {
   const calls = [];
   let raw = initial;
   const prefs = { get: async () => raw, put: async (key, value) => { raw = value; calls.push(['snapshot', key]); }, flush: async () => {} };
@@ -592,7 +595,7 @@ function importService(uri, { pdfFails = false, writeFails = false, unlinkFails 
     '@kit.CoreFileKit': { picker: { DocumentViewPicker, DocumentSelectOptions },
       fileIo: { OpenMode: { WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 }, access: async () => !missing,
         mkdir: async () => {},
-        readText: async () => { calls.push('read-text'); if (readFails) throw Error('I/O'); return '# 资料\n\n全文'; },
+        readText: async () => { calls.push('read-text'); if (readFails) throw Error('I/O'); return textContent; },
         open: async () => ({ fd: 1 }), write: async (fd, content) => {
           if (writeFails) throw Error('disk full');
           calls.push(['write', content]);
@@ -618,6 +621,23 @@ test('PDF import returns durable original path and actual page count', async () 
   assert.equal(result.noteType, 'PDF');
   assert.ok(!result.document.content.includes('银行家算法'));
   assert.ok(calls.some(c => Array.isArray(c) && c[0] === 'write'));
+});
+
+test('a preselected text source uses the shared import path and materializes a local document', async () => {
+  const text = importService(''); const result = await text.service.importDocumentUri({ filesDir: '/sandbox' }, 'file://picked/course.txt');
+  assert.equal(result.status, 'imported'); assert.equal(result.noteType, 'Markdown');
+  assert.match(result.document.filePath, /^\/sandbox\/notes\//); assert.equal(result.document.content, '# 资料\n\n全文');
+});
+
+test('preselected Marker results are stored as readable Markdown and invalid JSON never creates a note', async () => {
+  const text = '# 课程\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n$$x^2+y^2=1$$';
+  const success = importService('', { textContent: JSON.stringify({ success: true, format: 'markdown', output: text }) });
+  const result = await success.service.importDocumentUri({ filesDir: '/sandbox' }, 'file://picked/marker.json');
+  assert.equal(result.status, 'imported'); assert.equal(result.document.content, text); assert.equal(result.document.title, 'marker');
+  assert.ok(success.calls.some(call => Array.isArray(call) && call[0] === 'write' && call[1] === text));
+  const invalid = importService('', { textContent: '{broken' });
+  assert.equal((await invalid.service.importDocumentUri({ filesDir: '/sandbox' }, 'file://picked/marker.json')).status, 'failed');
+  assert.ok(!invalid.calls.some(call => Array.isArray(call) && call[0] === 'write'));
 });
 
 test('broken PDF import cleans its sandbox copy and returns failure', async () => {
@@ -1645,8 +1665,18 @@ test('local mode is the persisted default and a failed switch never enables remo
   await service.setMode('local');assert.equal(values.get('mode'),'local');
 });
 
-const penEnums = { SourceTool:{Unknown:0,Finger:1,Pen:2},TouchType:{Down:0,Up:1,Move:2,Cancel:3} };
+const penEnums = { SourceTool:{Unknown:0,Finger:1,Pen:2,MOUSE:3,TOUCHPAD:4},TouchType:{Down:0,Up:1,Move:2,Cancel:3} };
 const { InkInputService } = load(`${base}services/ink/InkInputService.ets`,penEnums);
+
+test('enabled pointer ink accepts emulator mouse and touchpad while the stylus-only switch still blocks them', () => {
+  for (const sourceTool of [penEnums.SourceTool.MOUSE, penEnums.SourceTool.TOUCHPAD]) {
+    const event = { type: 0, sourceTool, touches: [{ id: 1, x: 10, y: 20 }], changedTouches: [{ id: 1, x: 10, y: 20 }] };
+    assert.equal(new InkInputService().read(event, false).phase, 'ignore');
+    const input = new InkInputService(); assert.equal(input.read(event, true).phase, 'begin');
+    assert.equal(input.read({ ...event, type: 1 }, true).phase, 'end');
+    assert.equal(new InkInputService().read({ ...event, sourceTool: 0 }, true).phase, 'ignore');
+  }
+});
 function touchEvent(type, id=7, sourceTool=2, overrides={}) {
   const point={id,x:10,y:20,pressure:32768};
   return {type,sourceTool,pressure:0.5,changedTouches:[point],touches:type===1?[]:[point],getHistoricalPoints:()=>[],...overrides};
@@ -1679,7 +1709,7 @@ test('ink pressure has a bounded fallback and rejects invalid coordinates', () =
 const { InkRenderer } = load(`${base}services/ink/InkRenderer.ets`);
 function inkRecorder() {
   const calls=[];const stack=[];
-  const ctx={save(){stack.push({width:this.lineWidth,alpha:this.globalAlpha,mode:this.globalCompositeOperation});},restore(){Object.assign(this,stack.pop());},
+  const ctx={save(){stack.push({lineWidth:this.lineWidth,globalAlpha:this.globalAlpha,globalCompositeOperation:this.globalCompositeOperation});},restore(){Object.assign(this,stack.pop());},
     beginPath(){calls.push(['begin']);},moveTo(...args){calls.push(['move',...args]);},lineTo(...args){calls.push(['line',...args]);},
     quadraticCurveTo(...args){calls.push(['curve',...args]);},arc(...args){calls.push(['arc',...args]);},
     fill(){calls.push(['fill',this.lineWidth,this.globalAlpha,this.globalCompositeOperation]);},stroke(){calls.push(['stroke',this.lineWidth,this.globalAlpha,this.globalCompositeOperation]);}};
@@ -2118,7 +2148,7 @@ test('Marker Markdown and official success JSON preserve formulas, tables and or
   assert.throws(() => MarkerImportPolicy.parse('x'.repeat(12001), false), /分段/);
 });
 
-function documentImportHarness({ fail = false, cancelled = () => false, text = '真实扫描文字', pdf = true } = {}) {
+function documentImportHarness({ fail = false, cancelled = () => false, text = '真实扫描文字', pdf = true, managed = false } = {}) {
   const calls = [], fsAdapter = { OpenMode: { READ_ONLY: 0 }, openSync: () => ({ fd: 1 }), closeSync: () => calls.push('closed'),
     statSync: () => ({ size: 300 }), readSync: (_, buffer) => { new Uint8Array(buffer).set(Buffer.from(pdf ? '%PDF-' : '# MD\n')); return 5; },
     readText: async () => text };
@@ -2131,7 +2161,8 @@ function documentImportHarness({ fail = false, cancelled = () => false, text = '
     '@kit.CoreFileKit': { fileIo: fsAdapter }, '@kit.AbilityKit': {},
     [path.resolve(root, `${base}services/smart/SmartExtractService.ets`)]: { SMART_INPUT_LIMIT: 12000 },
     [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: { PdfDocumentService: { getInstance: () => service } } });
-  return { calls, read: (start = 1, end = 1) => DocumentExtractService.read({ filesDir: '/sandbox' }, pdf ? 'file://source.pdf' : 'file://result.md', start, end, cancelled, () => {}) };
+  const uri = managed ? '/sandbox/documents/original.pdf' : (pdf ? 'file://source.pdf' : 'file://result.md');
+  return { calls, read: (start = 1, end = 1) => DocumentExtractService.read({ filesDir: '/sandbox' }, uri, start, end, cancelled, () => {}) };
 }
 
 test('local PDF extraction releases the source handle and temporary copy on success, error and cancellation', async () => {
@@ -2149,16 +2180,57 @@ test('document extraction rejects oversized results and excessive page ranges wi
   const large = documentImportHarness({ text: 'x'.repeat(12001) }); await assert.rejects(large.read(), /页范围/); assert.equal(large.calls.at(-1)[0], 'removed');
 });
 
+test('extraction retains the library PDF on success, failure and cancellation without another copy', async () => {
+  const success = documentImportHarness({ managed: true }); assert.match((await success.read()).text, /真实扫描文字/);
+  const failure = documentImportHarness({ managed: true, fail: true }); await assert.rejects(failure.read());
+  let checks = 0; const cancelled = documentImportHarness({ managed: true, cancelled: () => ++checks > 1 });
+  await assert.rejects(cancelled.read(), /取消/);
+  for (const result of [success, failure, cancelled]) {
+    assert.ok(!result.calls.includes('copied')); assert.ok(!result.calls.some(call => Array.isArray(call) && call[0] === 'removed'));
+    assert.ok(result.calls.includes('closed'));
+  }
+});
+
 test('late document import cannot append into a closed or superseded extraction sheet; repeated taps use one picker', async () => {
   let release, picks = 0;
   class DocumentSelectOptions {}
   class DocumentViewPicker { async select() { picks++; return ['file://source.pdf']; } }
   const pick = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'pickDocument', {
     picker: { DocumentSelectOptions, DocumentViewPicker }, SMART_INPUT_LIMIT: 12000, AppStorage: { setOrCreate() {} },
-    DocumentExtractService: { read: () => new Promise(resolve => { release = resolve; }) } });
-  const v = { alive: true, requestId: 0, step: 'input', inputText: '保留草稿', pdfStart: '1', pdfEnd: '1', busy() { return this.step !== 'input'; } };
-  const pending = pick.call(v); await Promise.resolve(); await pick.call(v); assert.equal(picks, 1);
+    DocumentExtractService: { validateInput() {}, read: () => new Promise(resolve => { release = resolve; }) } });
+  const v = { alive: true, requestId: 0, step: 'input', inputText: '保留草稿', pdfStart: '1', pdfEnd: '1',
+    onImportSource: async () => '/sandbox/documents/original.pdf', busy() { return this.step !== 'input'; } };
+  const pending = pick.call(v); await new Promise(resolve => setTimeout(resolve, 0)); await pick.call(v); assert.equal(picks, 1);
   v.requestId++; v.alive = false; release({ text: '晚到结果', notice: '' }); await pending; assert.equal(v.inputText, '保留草稿');
+});
+
+test('the extraction sheet waits for library persistence and reads only the saved local source', async () => {
+  let saved; const reads = []; const drafts = [];
+  const pick = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'pickDocument', {
+    Error,
+    picker: { DocumentSelectOptions: class {}, DocumentViewPicker: class { async select() { return ['file://source.pdf']; } } },
+    SMART_INPUT_LIMIT: 12000, AppStorage: { setOrCreate: (_, text) => drafts.push(text) },
+    DocumentExtractService: { validateInput() {}, read: async (_, uri) => { reads.push(uri); return { text: '本机文字', notice: '请校对' }; } } });
+  const view = { alive: true, requestId: 0, step: 'input', inputText: '', pdfStart: '1', pdfEnd: '1', busy() { return this.step !== 'input'; },
+    onImportSource: () => new Promise(resolve => { saved = resolve; }) };
+  const pending = pick.call(view); await new Promise(resolve => setTimeout(resolve, 0)); assert.deepEqual(reads, []);
+  saved('/sandbox/documents/original.pdf'); await pending;
+  assert.deepEqual(reads, ['/sandbox/documents/original.pdf']); assert.equal(view.inputText, '本机文字');
+  assert.match(view.sourceNotice, /已保存/); assert.deepEqual(drafts, ['本机文字']);
+  view.onImportSource = async () => { throw Error('存储空间不足'); }; view.inputText = '保留原稿'; reads.length = 0;
+  await pick.call(view); assert.deepEqual(reads, []); assert.equal(view.inputText, '保留原稿'); assert.match(view.errorMsg, /空间不足/);
+});
+
+test('closing during a durable file import suppresses late extraction and leaves the library save to finish', async () => {
+  let finish; let reads = 0;
+  const pick = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'pickDocument', {
+    picker: { DocumentSelectOptions: class {}, DocumentViewPicker: class { async select() { return ['file://source.pdf']; } } },
+    DocumentExtractService: { validateInput() {}, read: async () => { reads++; } } });
+  const view = { alive: true, requestId: 0, step: 'input', inputText: '原稿', pdfStart: '1', pdfEnd: '1', busy() { return this.step !== 'input'; },
+    onImportSource: () => new Promise(resolve => { finish = resolve; }) };
+  const pending = pick.call(view); await new Promise(resolve => setTimeout(resolve, 0)); view.alive = false; view.requestId++;
+  finish('/sandbox/documents/original.pdf'); await pending;
+  assert.equal(reads, 0); assert.equal(view.inputText, '原稿');
 });
 
 test('AI extraction toggle requires a valid consented profile and ignores readiness results after closing', async () => {
@@ -2351,7 +2423,7 @@ test('leaving a scratchpad or global canvas commits its last stroke and pending 
   const disappear=viewMethod('views/reader/HandwritingCanvas.ets','aboutToDisappear',{clearTimeout:()=>{}});
   for(const [isScratchpad,persistOnDisappear] of [[true,false],[false,true],[false,false]]) {
     const calls=[];const view={isScratchpad,persistOnDisappear,saveTimer:1,
-      finishStroke:()=>calls.push('stroke'),flushSave:()=>calls.push('save'),shortcuts:{stop(){}},input:{reset(){}}};
+      finishStroke:()=>calls.push('stroke'),flushSave:()=>calls.push('save'),shortcuts:{stop(){}},input:{reset(){}},inkFrame:{release(){}}};
     disappear.call(view);assert.deepEqual(calls,isScratchpad||persistOnDisappear?['stroke','save']:[]);assert.equal(view.saveTimer,-1);
   }
 });
@@ -2549,7 +2621,7 @@ test('PDF area erasing draws a reversible transparent mask and cancellation remo
     for (const method of ['handleTouch', 'finishInput', 'resetInput', 'style']) v[method] = viewMethod('views/reader/pdf/PdfPageCanvas.ets', method, { ...penEnums, InkRenderer });
     const event = type => ({ ...touchEvent(type), stopPropagation() {} });
     v.handleTouch(event(0)); v.handleTouch(event(2)); v.handleTouch(event(commit ? 1 : 3));
-    assert.equal(wholeErase, 0); assert.equal(saved.length, commit ? 1 : 0); assert.equal(redraws, 1);
+    assert.equal(wholeErase, 0); assert.equal(saved.length, commit ? 1 : 0); assert.equal(redraws, commit ? 0 : 1);
     assert.ok(ink.calls.some(call => call[0] === 'fill' && call[3] === 'destination-out'));
     assert.equal(live.calls.length, 0);
     if (commit) { assert.equal(saved[0].isEraser, true); assert.equal(saved[0].width, 24); }
@@ -2714,13 +2786,26 @@ test('PDF toolbar does not collapse while annotating or while a save is outstand
 });
 test('external PDF import persists library metadata before exposing the reference and ignores duplicate import taps', async () => {
   const method=viewMethod('pages/Index.ets','importDocument');let write;const calls=[];
-  const transfer={status:'imported',noteType:'PDF',sourceUri:'/sandbox/copy.pdf',pageCount:2,document:{id:'pdf',title:'测试',fileName:'测试.pdf',content:'# 测试'}};
+  const transfer={status:'imported',noteType:'PDF',sourceUri:'/sandbox/copy.pdf',sourceFileName:'copy.pdf',pageCount:2,document:{id:'pdf',title:'测试',fileName:'测试.pdf',content:'# 测试'}};
   const v={documentImportBusy:false,notes:[],getAbilityContext:()=>({}),storage:{importDocument:async()=>transfer,save:()=>new Promise(r=>write=r)},
     formatTime:()=>'',rebuildSpaces:()=>calls.push('library'),refreshGraph:()=>{},notify:()=>{}};
   const pending=method.call(v,'外部参考');await new Promise(r=>setTimeout(r,0));assert.equal(v.notes.length,0);
   assert.equal(await method.call(v),null);write();const imported=await pending;assert.equal(v.notes[0],imported);assert.equal(imported.sourceUri,transfer.sourceUri);
-  assert.equal(imported.category,'外部参考');assert.equal(v.documentImportBusy,false);assert.deepEqual(calls,['library']);
+  assert.equal(imported.category,'外部参考');assert.equal(imported.sourceFileName,'copy.pdf');assert.equal(v.documentImportBusy,false);assert.deepEqual(calls,['library']);
+  v.storage.delete=async(_,id,source)=>calls.push(['cleanup',id,source]);
   v.storage.save=async()=>{throw Error('disk');};const original=v.notes;assert.equal(await method.call(v),null);assert.equal(v.notes,original);assert.equal(v.documentImportBusy,false);
+  assert.deepEqual(calls.at(-1),['cleanup','pdf','/sandbox/copy.pdf']);
+});
+
+test('the extraction import adapter returns library PDF and text paths and propagates failed imports', async () => {
+  const method = viewMethod('pages/Index.ets', 'importExtractSource'); const calls = [];
+  const view = { importDocument: async (...args) => { calls.push(args); return { id: 'pdf', sourceType: 'pdf', sourceUri: '/sandbox/documents/original.pdf' }; } };
+  assert.equal(await method.call(view, 'file://source.pdf'), '/sandbox/documents/original.pdf');
+  assert.deepEqual(calls[0], ['外部参考', false, false, 'file://source.pdf']);
+  view.importDocument = async () => ({ id: 'text', sourceType: 'document' }); view.getAbilityContext = () => ({});
+  view.storage = { read: async () => ({ filePath: '/sandbox/notes/text.md' }) };
+  assert.equal(await method.call(view, 'file://result.md'), '/sandbox/notes/text.md');
+  view.importDocument = async () => null; await assert.rejects(method.call(view, 'file://source.pdf'), /保存/);
 });
 test('AI external import waits for persistence and never pins into a different or closed conversation', async () => {
   const method=viewMethod('views/ai/AiWorkspace.ets','importExternalFile',{promptAction:{showToast:()=>{}}});
@@ -2741,7 +2826,7 @@ test('bundled example PDF is explicitly imported with durable source and rejects
 test('bundled PDF short writes and invalid resource bytes cannot leave a phantom source', async () => {
   for(const mode of ['ok','short','invalid']) {
     const calls=[];const bytes=Buffer.from(mode==='invalid'?'wrong':'%PDF-real-test');
-    const {PdfDocumentService}=load(`${base}services/document/PdfDocumentService.ets`,{'@kit.PDFKit':{pdfService:{}},
+    const {PdfDocumentService}=load(`${base}services/document/PdfDocumentService.ets`,{'@kit.PDFKit':{pdfService:{}},'@kit.ImageKit':{image:{}},
       '@kit.CoreFileKit':{fileIo:{OpenMode:{CREATE:1,WRITE_ONLY:2,TRUNC:4},accessSync:()=>true,openSync:()=>({fd:1}),
         writeSync:(_,buffer)=>{calls.push('write');assert.equal(Buffer.from(buffer).toString(),bytes.toString());return mode==='short'?1:buffer.byteLength;},
         fsyncSync:()=>calls.push('sync'),unlinkSync:()=>calls.push('remove'),closeSync:()=>calls.push('close')}},
@@ -3202,11 +3287,96 @@ test('viewport redraw preserves an active eraser path instead of restoring ink u
   Object.assign(recorder.ctx, { clearRect() { clears++; }, translate() {}, scale() {} });
   const active = { points: [{ x: 20, y: 30 }, { x: 30, y: 40 }], isEraser: true };
   redraw.call({ context: recorder.ctx, canvasWidth: 360, canvasHeight: 700, zoomScale: 0.3,
-    panX: 4, panY: -8, strokes: [{}], currentStroke: active,
+    panX: 4, panY: -8, strokes: [{}], currentStroke: active, drawTimer: -1,
+    inkFrame: { render: (_, w, h, paint) => { recorder.ctx.clearRect(0, 0, w, h); paint(recorder.ctx); } },
     drawPaperBackground() {}, drawSingleStroke: () => historical++, style: () => ({ color: '#000', width: 18, highlighter: false, eraser: true }) });
   assert.equal(clears, 1); assert.equal(historical, 1);
   assert.ok(recorder.calls.filter(call => ['stroke', 'fill'].includes(call[0])).every(call => call[3] === 'destination-out'));
   assert.ok(recorder.calls.some(call => call[0] === 'line'));
+});
+
+function inkFrameHarness() {
+  const surfaces = [], frames = [], closed = [];
+  class OffscreenCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height; this.ink = inkRecorder(); surfaces.push(this);
+      Object.assign(this.ink.ctx, { clearRect: () => { this.ink.calls.length = 0; }, translate() {}, scale() {} });
+    }
+    getContext() { return this.ink.ctx; }
+    transferToImageBitmap() { const frame = { calls: plain(this.ink.calls), close: () => closed.push(frame) }; return frame; }
+  }
+  const { InkFrameComposer } = load(`${base}services/ink/InkFrameComposer.ets`, { OffscreenCanvas, RenderingContextSettings: class {} });
+  const target = { clearRect() { throw Error('visible layer must not expose a cleared or partially replayed frame'); },
+    transferFromImageBitmap(frame) { frames.push(frame.calls); } };
+  return { composer: new InkFrameComposer(), target, surfaces, frames, closed };
+}
+
+test('mixed area and stroke erase replay publishes only finished chronological ink frames, including undo and reload', () => {
+  const h = inkFrameHarness(), relative = 'views/reader/HandwritingCanvas.ets';
+  const pen = { color: '#000', width: 3, isEraser: false, isHighlighter: false, points: [{ x: 5, y: 50 }, { x: 100, y: 50 }], referenceWidth: 1200 };
+  const mask = { ...pen, width: 30, isEraser: true, points: [{ x: 30, y: 50 }] };
+  const later = { ...pen, points: [{ x: 30, y: 50 }] };
+  const v = { context: h.target, inkFrame: h.composer, canvasWidth: 1200, canvasHeight: 700, zoomScale: 1,
+    panX: 0, panY: 0, drawTimer: -1, boundsCache: new Map(), currentStroke: null, strokes: [pen, mask, later], drawPaperBackground() {} };
+  for (const name of ['redrawAll', 'drawSingleStroke', 'style']) v[name] = viewMethod(relative, name, { InkRenderer, CanvasViewport });
+  const modes = frame => frame.filter(row => ['fill', 'stroke'].includes(row[0])).map(row => row[3]);
+  v.redrawAll(); assert.deepEqual(modes(h.frames[0]).slice(-2), ['destination-out', 'source-over']);
+  v.strokes = v.strokes.filter(stroke => !CanvasStrokeEraser.hit(stroke, { x: 5, y: 50 }, { x: 5, y: 50 }, 2));
+  assert.deepEqual(v.strokes, [mask, later]); v.redrawAll();
+  assert.deepEqual(modes(h.frames[1]), ['destination-out', 'source-over']);
+  v.strokes = JSON.parse(JSON.stringify([pen, mask, later])); v.redrawAll();
+  assert.deepEqual(modes(h.frames[2]), modes(h.frames[0])); assert.equal(h.closed.length, h.frames.length);
+});
+
+test('PDF page replay composites saved masks and active area preview without clearing the visible layer', () => {
+  const h = inkFrameHarness(), relative = 'views/reader/pdf/PdfPageCanvas.ets';
+  const pen = { id: 'p', color: '#000', width: 3, isHighlighter: false, isEraser: false, points: [{ u: .1, v: .2 }] };
+  const mask = { ...pen, id: 'mask', width: 20, isEraser: true };
+  const active = { ...mask, id: 'active' };
+  const v = { context: h.target, inkFrame: h.composer, pageWidth: 720, pageHeight: 1000, strokes: [pen, mask], currentStroke: active };
+  for (const name of ['redrawAll', 'renderStroke', 'mapped', 'style']) v[name] = viewMethod(relative, name, { InkRenderer });
+  v.redrawAll(); assert.equal(h.frames.length, 1);
+  assert.deepEqual(h.frames[0].filter(row => row[0] === 'fill').map(row => row[3]), ['source-over', 'destination-out', 'destination-out']);
+  v.currentStroke = null; v.strokes = [mask]; v.redrawAll();
+  assert.deepEqual(h.frames[1].filter(row => row[0] === 'fill').map(row => row[3]), ['destination-out']);
+});
+
+test('ink frame resources are reused, resized and released; failed rendering never publishes half a frame', () => {
+  const h = inkFrameHarness(); h.composer.render(h.target, 360, 700, () => {}); h.composer.render(h.target, 360, 700, () => {});
+  assert.equal(h.surfaces.length, 1); h.composer.render(h.target, 700, 360, () => {});
+  assert.equal(h.surfaces.length, 2); assert.equal(h.surfaces[0].width, 0); assert.equal(h.closed.length, 3);
+  assert.throws(() => h.composer.render(h.target, 700, 360, () => { throw Error('paint'); })); assert.equal(h.frames.length, 3);
+  assert.throws(() => h.composer.render({ transferFromImageBitmap() { throw Error('publish'); } }, 700, 360, () => {}));
+  assert.equal(h.closed.length, 4); h.composer.release(); assert.equal(h.surfaces[1].height, 0);
+});
+
+test('whiteboard stroke erase ignores empty movement and schedules at most one redraw per touch batch', () => {
+  const relative = 'views/reader/HandwritingCanvas.ets', batches = []; let redraws = 0;
+  const pen = { color: '#000', width: 2, referenceWidth: 1200, points: [{ x: 10, y: 50 }, { x: 100, y: 50 }] };
+  const mask = { ...pen, isEraser: true };
+  const v = { strokes: [pen, mask], eraseBefore: null, currentStroke: null, isEraser: true, eraserMode: 'stroke',
+    eraserWidth: 18, selectedColor: '#000', zoomScale: 1, panX: 0, panY: 0, fingerDrawing: true,
+    context: { save() {}, restore() {}, translate() {}, scale() {} }, liveContext: { clearRect() {} },
+    input: { read: () => batches.shift(), isActive: () => false }, shortcuts: { claim() {} },
+    navigateTouch: () => false, onFocused() {}, onDirtyChange() {}, requestRedraw: () => redraws++ };
+  const touch = viewMethod(relative, 'handleTouch', { CanvasViewport, CanvasStrokeEraser, InkRenderer, SourceTool: { Pen: 2 }, TouchType: { Down: 0 } });
+  v.style = viewMethod(relative, 'style');
+  const event = { sourceTool: 1, type: 0, stopPropagation() {} };
+  batches.push({ phase: 'begin', samples: [{ x: 10, y: 200, pressure: .5 }] }); touch.call(v, event);
+  const original = v.strokes; assert.equal(redraws, 0);
+  batches.push({ phase: 'move', samples: [{ x: 20, y: 200, pressure: .5 }] }); touch.call(v, event);
+  assert.equal(v.strokes, original); assert.equal(redraws, 0);
+  batches.push({ phase: 'move', samples: [{ x: 20, y: 50, pressure: .5 }, { x: 60, y: 50, pressure: .5 }] }); touch.call(v, event);
+  assert.equal(redraws, 1); assert.deepEqual(v.strokes, [mask]);
+});
+
+const { PdfPageDataSource } = load(`${base}services/document/PdfPageDataSource.ets`);
+test('a 600-page PDF data source keeps every page addressable and reloads only registered lazy listeners', () => {
+  const pages = Array.from({ length: 600 }, (_, pageIndex) => ({ pageIndex, sections: [] })), source = new PdfPageDataSource();
+  let reloads = 0; const listener = { onDataReloaded: () => reloads++ };
+  source.registerDataChangeListener(listener); source.registerDataChangeListener(listener); source.setPages(pages);
+  assert.equal(source.totalCount(), 600); assert.equal(source.getData(599), pages[599]); assert.equal(reloads, 1);
+  source.unregisterDataChangeListener(listener); source.setPages([]); assert.equal(reloads, 1); assert.equal(source.totalCount(), 0);
 });
 
 test('whiteboard title and preview persist while scratchpad saves preserve all main and library fields', async () => {

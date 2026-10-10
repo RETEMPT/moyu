@@ -1,4 +1,4 @@
-"""Create the explicit, two-page reading fixture; no first-launch library injection."""
+"""Create the two-page reading fixture bundled only in debug builds."""
 import argparse
 from pathlib import Path
 from reportlab.pdfgen import canvas
@@ -9,7 +9,7 @@ from pypdf import PdfReader
 ROOT = Path(__file__).resolve().parent.parent
 PAGES = [
     ('墨语阅读测试', '01 / READ', [
-        ('中文与英文', ['这是一份真实的 PDF，供手动导入、阅读、批注和文字提取测试。',
+        ('中文与英文', ['这是一份真实的 PDF，供阅读、批注和文字提取测试。',
                        '中文段落、English text、数字 1234567890 均应清楚显示。',
                        '保留原 PDF 后，关闭应用再打开，页面与页数应保持一致。']),
         ('课程记录', ['课程：微积分入门', '任务：2026 年 10 月 12 日前提交课程练习。',
@@ -17,13 +17,13 @@ PAGES = [
         ('符号与表达式', ['α + β = γ     x² + y² = 1', '∫ f(x) dx = F(x) + C',
                        '标点示例：中文，句号。括号（说明）与英文 "quotes"。'])]),
     ('阅读与书写检查', '02 / WRITE', [
-        ('检查顺序', ['1. 在设置 - 使用指南主动导入，再到“示例资料”中打开。',
+        ('检查顺序', ['1. 在“示例资料”打开本文件，使用指引可导入额外副本。',
                     '2. 默认只读；点击批注，使用画笔、荧光笔和橡皮擦。',
                     '3. 批注中返回应先回到只读，再次返回才关闭资料。',
                     '4. 提取并校对文字，然后在墨客引用此文件检索原文。']),
         ('空白练习区域', ['在下方书写一段笔记，测试缩放、撤销与重做。']),
         ('说明', ['此文档为墨语原创测试资料，不包含试卷、私人信息或模型密钥。',
-                '它不会自动加入首次启动的资料库。'])])]
+                '调试版自动加入一份，发布版不附带阅读测试资料。'])])]
 
 def main():
     parser = argparse.ArgumentParser()

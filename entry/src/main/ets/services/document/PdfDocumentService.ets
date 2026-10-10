@@ -14,6 +14,7 @@ import { image } from '@kit.ImageKit';
 import { PdfPageModel } from '../../common/types/PdfAnnotationTypes';
 import { PdfTextPage } from '../../common/types/StudyTypes';
 import { OcrService } from '../ocr/OcrService';
+import { DebugPdfPreviewService } from './DebugPdfPreviewService';
 
 export interface PdfDocumentInfo {
   filePath: string;
@@ -29,6 +30,20 @@ export interface RenderedPdfPage {
 
 export class PdfDocumentService {
   private static instance: PdfDocumentService | null = null;
+  private debugPreview: DebugPdfPreviewService = new DebugPdfPreviewService();
+
+  bindContext(context: Context): void { this.debugPreview.bindContext(context); }
+
+  private nativeAvailable(): boolean {
+    return canIUse('SystemCapability.OfficeService.PDFService.Core');
+  }
+
+  private createDocument(): pdfService.PdfDocument {
+    if (!this.nativeAvailable()) {
+      throw new Error('当前设备未提供 PDF 阅读组件，请在支持 PDF Kit 的设备上打开此文件。');
+    }
+    return new pdfService.PdfDocument();
+  }
 
   static getInstance(): PdfDocumentService {
     if (PdfDocumentService.instance === null) {
@@ -67,9 +82,10 @@ export class PdfDocumentService {
   }
 
   /**
-   * 显式导入内置阅读测试文件，不在首次启动时创建笔记
+   * 保存内置阅读测试文件；调试版启动时会自动加入一份
    */
   async saveBundledExample(context: Context, snapshot: boolean = false): Promise<string> {
+    this.bindContext(context);
     const name = snapshot ? 'example-snapshot.pdf' : 'example-course.pdf';
     const data = await context.resourceManager.getRawFileContent(name);
     if (data.length < 5 || data[0] !== 37 || data[1] !== 80 || data[2] !== 68 || data[3] !== 70) { throw new Error('测试 PDF 资源不可读'); }
@@ -91,7 +107,13 @@ export class PdfDocumentService {
     this.requireSource(filePath);
     const size = fs.statSync(filePath).size;
 
-    const document = new pdfService.PdfDocument();
+    if (!this.nativeAvailable()) {
+      const count = this.debugPreview.pageCount(filePath);
+      if (count > 0) {
+        return { filePath: filePath, fileName: filePath.split('/').pop() || 'document.pdf', fileSize: size, pageCount: count };
+      }
+    }
+    const document = this.createDocument();
     try {
       this.loadDocument(document, filePath);
       const count = document.getPageCount();
@@ -104,7 +126,12 @@ export class PdfDocumentService {
   }
 
   renderPage(filePath: string, pageIndex: number): RenderedPdfPage {
-    const document = new pdfService.PdfDocument();
+    this.requireSource(filePath);
+    if (!this.nativeAvailable()) {
+      const preview = this.debugPreview.renderPage(filePath, pageIndex);
+      if (preview !== null) { return preview; }
+    }
+    const document = this.createDocument();
     let page: pdfService.PdfPage | null = null;
     try {
       this.loadDocument(document, filePath);
@@ -171,7 +198,7 @@ export class PdfDocumentService {
     if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end - start >= 30) {
       throw new Error('每次请选择 1～30 页');
     }
-    const document = new pdfService.PdfDocument();
+    const document = this.createDocument();
     const result: PdfTextPage[] = [];
     try {
       this.loadDocument(document, filePath);

@@ -305,11 +305,17 @@ struct Index {
 
   private async bootstrap(): Promise<void> {
     const context: common.UIAbilityContext = this.getAbilityContext();
+    PdfDocumentService.getInstance().bindContext(context);
     try { this.privacyWelcome = !await this.privacyNotice.shown(context); }
     catch { this.privacyWelcome = true; }
     try {
       const loaded: NoteItem[] = await this.storage.load(context, []);
       this.notes = loaded;
+      try { this.notes = await this.storage.ensureDebugPdf(context, loaded); }
+      catch (error) {
+        console.warn(`内置阅读示例加载失败: ${JSON.stringify(error)}`);
+        this.notify('内置阅读示例未能加入，可在使用指引中重试导入');
+      }
     } catch (error) {
       console.error(`本地笔记加载失败: ${JSON.stringify(error)}`);
       this.notes = [];
@@ -1766,12 +1772,14 @@ struct Index {
    * 通过系统文件选择器导入文档。
    * @param targetCategory 导入后归入的项目名，默认「未分类」
    */
-  private async importDocument(targetCategory: string = '未分类', example: boolean = false, snapshot: boolean = false): Promise<NoteItem | null> {
+  private async importDocument(targetCategory: string = '未分类', example: boolean = false, snapshot: boolean = false,
+    selectedUri: string = ''): Promise<NoteItem | null> {
     if (this.documentImportBusy) { return null; }
     this.documentImportBusy = true;
     const context: common.UIAbilityContext = this.getAbilityContext();
     try {
-      const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context, snapshot) : await this.storage.importDocument(context);
+      const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context, snapshot) :
+        (selectedUri ? await this.storage.importDocumentUri(context, selectedUri) : await this.storage.importDocument(context));
       if (result.status === 'imported' && result.document !== undefined) {
         const document: MarkdownDocument = result.document;
         const now: Date = new Date();
@@ -1783,6 +1791,7 @@ struct Index {
           type: result.noteType !== undefined ? result.noteType : (isPdf ? 'PDF' : 'Markdown'),
           sourceType: isPdf ? 'pdf' : 'document',
           sourceUri: result.sourceUri,
+          sourceFileName: result.sourceFileName,
           pageCount: result.pageCount || 1,
           pageInfo: isPdf ? (result.pageCount || 1) + ' 页' : '',
           previewText: document.content.length > 48 ? `${document.content.substring(0, 48)}…` : document.content,
@@ -1795,11 +1804,15 @@ struct Index {
           updatedAt: now.getTime()
         };
         const nextNotes = [note].concat(this.notes);
-        await this.storage.save(nextNotes);
+        try { await this.storage.save(nextNotes); }
+        catch (error) {
+          try { await this.storage.delete(context, note.id, note.sourceUri || ''); } catch { /* Keep the original failure available for retry. */ }
+          throw new Error(error instanceof Error ? error.message : '本机资料保存失败，请重试');
+        }
         this.notes = nextNotes;
         this.rebuildSpaces();
         this.refreshGraph();
-        this.notify(`已导入 ${document.fileName}`);
+        this.notify(`已保存到本机资料库：${result.fileName || document.title}`);
         return note;
       } else if (result.status !== 'cancelled') {
         this.notify(result.message);
@@ -1848,6 +1861,14 @@ struct Index {
       try { await PdfDocumentService.getInstance().removeManagedPdf(context, previousSource); }
       catch { console.warn('旧 PDF 副本清理失败'); }
     }
+  }
+
+  /** Extraction uses the exact persisted source and never relies on a picker grant after import. */
+  private async importExtractSource(uri: string): Promise<string> {
+    const note = await this.importDocument('外部参考', false, false, uri);
+    if (!note) { throw new Error('资料未能保存到本机资料库，请重试'); }
+    if (note.sourceType === 'pdf' && note.sourceUri) { return note.sourceUri; }
+    return (await this.storage.read(this.getAbilityContext(), note)).filePath;
   }
 
   private formatTime(date: Date): string {
@@ -2433,6 +2454,7 @@ struct Index {
 
       if (this.smartExtractVisible) {
         SmartExtractSheet({
+          onImportSource: (uri: string) => this.importExtractSource(uri),
           onClose: () => {
             animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.smartExtractVisible = false;
