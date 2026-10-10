@@ -20,6 +20,7 @@ export struct StudySheet {
   onSave: (cards: ReviewCard[]) => Promise<void> = async () => {};
   onSource: (noteId: string, pageNumber?: number) => void = () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
   @State noteId: string = '';
   @State tab: number = 0;
@@ -45,7 +46,7 @@ export struct StudySheet {
     if (this.generating) { this.alive = false; this.cancelGeneration?.(); this.streamHandle?.abort(); this.onClose(); }
     else if (!this.busy) { this.onClose(); }
   }
-  private palette() { return ThemeHelper.paletteOfDark(this.dark); }
+  private palette() { return ThemeHelper.paletteOfDark(this.dark, this.themeStyle); }
   private availableNotes(): NoteItem[] { return this.notes.filter((note: NoteItem) => !this.course || (note.category || '未分类') === this.course); }
   private filteredNotes(): NoteItem[] { return this.availableNotes().filter((note: NoteItem) => note.title.toLowerCase().includes(this.noteFilter.toLowerCase())); }
   private activeCards(): ReviewCard[] {
@@ -162,7 +163,7 @@ export struct StudySheet {
       Row({ space: 6 }) {
         ForEach(this.filteredNotes().slice(this.notePage * 20, (this.notePage + 1) * 20), (note: NoteItem) => {
           Button(note.title).height(44).backgroundColor(this.noteId === note.id ? this.palette().accent : this.palette().surfaceSubtle)
-            .fontColor(this.noteId === note.id ? Color.White : this.palette().inkPrimary).enabled(!this.busy)
+            .fontColor(this.noteId === note.id ? this.palette().onAccent : this.palette().inkPrimary).enabled(!this.busy)
             .onClick(() => { this.noteId = note.id; this.drafts = []; })
         }, (note: NoteItem) => note.id)
       }

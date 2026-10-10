@@ -1,9 +1,9 @@
 /**
- * 墨语 (FlowMind) 极简设计系统 Token (UI/UX Pro Max 升级版)
+ * 墨语 (FlowMind) 语义颜色、布局与交互 Token
  *
- * 设计智能准则对标：
- *   1. WCAG AA 4.5:1+ 文本对比度标准，杜绝低可见度灰底灰字
- *   2. 人体工学触控：MIN_TOUCH_TARGET = 44vp，相邻间隙 >= 8vp
+ * 设计准则：
+ *   1. 正文/次级/提示文字与基础界面背景按 4.5:1 检查，设备字形与其他组合另行验收
+ *   2. 触控目标 MIN_TOUCH_TARGET = 44vp，相邻控件保留间距
  *   3. 物理弹性微交互：150-300ms 阻尼过渡，按压回弹 0.97
  *   4. Bento Grid 容器与立体层级阴影系统
  * 纯血鸿蒙 ArkTS 强类型约束
@@ -49,7 +49,7 @@ export const LightColors: ColorPalette = {
   borderSubtle: '#E9E6EF',
   inkPrimary: '#242033',
   inkSecondary: '#575267',
-  inkMuted: '#716A80',
+  inkMuted: '#625C70',
   hoverBg: '#EAE5F4',
   activeBg: '#E9E1FC',
   link: '#6342D9',

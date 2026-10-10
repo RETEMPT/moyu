@@ -11,7 +11,7 @@
 import { curves, promptAction } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
-import { ColorPalette, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import {
   ChatSession,
@@ -22,6 +22,7 @@ import {
 } from '../../common/types/ChatSession';
 import { ModelProfile } from '../../common/types/ModelConfig';
 import { WorkspaceToolExecutor } from '../../services/ai/WorkspaceToolExecutor';
+import { ToolArgumentValidator } from '../../services/ai/ToolArgumentValidator';
 import { ModelProfilePolicy } from '../../services/ai/ModelProfilePolicy';
 import { RemoteAiPolicy } from '../../services/ai/RemoteAiPolicy';
 import { NoteToolReader } from '../../services/ai/NoteToolReader';
@@ -42,11 +43,12 @@ import { RetrievalHit } from '../../common/types/RagTypes';
 import { AgentToolExecutor, AgentToolResult } from '../../common/types/AgentTypes';
 import { AGENT_TOOLS, toolDisplayName } from '../../services/ai/ToolRegistry';
 import { AssistantModeService, ASSISTANT_MODE_KEY } from '../../services/ai/AssistantModeService';
+import { AiReferenceSearch } from '../../services/ai/AiReferenceSearch';
 import { LocalAssistantService } from '../../services/ai/LocalAssistantService';
 import { REMOTE_AI_ENABLED } from '../../common/constants/RuntimeCapabilities';
 import { AssistantText } from '../common/AssistantText';
 import { IconButton } from '../common/IconButton';
-import { SheetOverlay, SheetCancelButton } from '../layout/sheets/SheetScaffold';
+import { AppIcon } from '../common/AppIcon';
 
 interface QuickPrompt {
   title: string;
@@ -140,11 +142,11 @@ const LOCAL_PROMPTS: QuickPrompt[] = [
 
 @Component
 export struct AiWorkspace {
-  currentNote: NoteItem | null = null;
-  allNotes: NoteItem[] = [];
-  todos: TodoItem[] = [];
-  reviewCards: ReviewCard[] = [];
-  stats: WorkspaceStats = { noteCount: 0, linkCount: 0, unresolvedCount: 0, tagCount: 0 };
+  @Prop currentNote: NoteItem | null = null;
+  @Prop allNotes: NoteItem[] = [];
+  @Prop todos: TodoItem[] = [];
+  @Prop reviewCards: ReviewCard[] = [];
+  @Prop stats: WorkspaceStats = { noteCount: 0, linkCount: 0, unresolvedCount: 0, tagCount: 0 };
 
   @Prop @Watch('onActiveSessionIdChanged') activeSessionId: string = '';
   @Prop @Watch('onExternalPinnedNotesChanged') externalPinnedNotes: NoteItem[] = [];
@@ -153,10 +155,13 @@ export struct AiWorkspace {
   @Prop contextPanelOpen: boolean = false;
   @Prop @Watch('handleBackRequest') backRequestToken: number = 0;
   onNavigateBack: () => void = () => {};
+  onNewSession: () => void = () => {};
+  @Prop historyOpen: boolean = false;
+  onToggleHistory: () => void = () => {};
   onDeleteSession: (id: string) => void = () => {};
   onImportExternal: () => Promise<NoteItem | null> = async () => null;
 
-  onSessionSaved: (session: ChatSession) => void = () => {};
+  onSessionSaved: (session: ChatSession, activate?: boolean) => void = () => {};
   onContextChange: (citations: ChatCitation[], pinned: NoteItem[], layerLabel: string, modelLabel: string) => void =
     () => {};
   onPinnedNotesChange: (pinned: NoteItem[]) => void = () => {};
@@ -167,11 +172,14 @@ export struct AiWorkspace {
   onCreateLinkBetweenNotes: (sourceIdentifier: string, targetTitle: string) => Promise<void> = async () => {};
   onCategorizeNote: (identifier: string, category: string) => Promise<void> = async () => {};
   onCreateNewNote: (title: string, category: string, tag: string, content: string) => Promise<void> = async () => {};
+  onManageNote: (operation: string, identifier: string, value: string, expectedUpdatedAt: number) => Promise<string> = async () => { throw new Error('资料管理未连接'); };
+  onSetTodoStatus: (identifier: string, status: string) => Promise<string> = async () => { throw new Error('待办管理未连接'); };
   onOpenSearch: () => void = () => {};
   onSmartExtract: () => void = () => {};
   onOpenCitation: (citation: ChatCitation) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp(ACTIVE_STORAGE_KEY) @Watch('onActiveProfileChanged') activeProfileId: string = '';
   @StorageProp('flowmindModelRevision') @Watch('onActiveProfileChanged') modelRevision: number = 0;
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
@@ -196,9 +204,14 @@ export struct AiWorkspace {
   @State profiles: ModelProfile[] = [];
   @State modelMenuOpen: boolean = false;
   @State plusMenuOpen: boolean = false;
-  @State workspaceHeight: number = 640;
+  @State conversationMenuOpen: boolean = false;
+  @State attachmentBusy: boolean = false;
+  @State modelSwitchBusy: boolean = false;
+  @State workspaceWidth: number = 360;
   @State showAllPrompts: boolean = false;
   @State historyBusy: boolean = false;
+  @State sessionLoadBusy: boolean = false;
+  @State sessionLoadError: string = '';
   @State selectedThinkingBudget: number = 16384;
   @State applyingProposal: string = '';
   @State proposalFeedback: string = '';
@@ -214,6 +227,12 @@ export struct AiWorkspace {
   private blinkTimer: number = -1;
   private alive: boolean = true;
   private requestId: number = 0;
+  private attachmentRequestId: number = 0;
+  private modelSwitchRequestId: number = 0;
+  private contextRevision: number = 0;
+  private sessionLoadRequestId: number = 0;
+  private persistQueue: Promise<void> = Promise.resolve();
+  private unsavedSessions: Map<string, ChatSession> = new Map();
 
   aboutToAppear(): void {
     this.alive = true;
@@ -231,6 +250,12 @@ export struct AiWorkspace {
 
   aboutToDisappear(): void {
     this.alive = false;
+    this.closeComposerMenus(); this.pickerOpen = false;
+    this.attachmentRequestId++;
+    this.modelSwitchRequestId++;
+    this.contextRevision++; this.sessionLoadRequestId++;
+    this.attachmentBusy = false;
+    this.modelSwitchBusy = false;
     this.cancelStream();
     if (this.blinkTimer !== -1) {
       clearInterval(this.blinkTimer);
@@ -269,7 +294,11 @@ export struct AiWorkspace {
     if (this.activeSessionId === this.loadedSessionId) {
       return;
     }
+    this.closeComposerMenus(); this.pickerOpen = false;
+    this.attachmentRequestId++;
+    this.attachmentBusy = false;
     this.cancelStream();
+    this.inputText = ''; this.pinnedNotes = []; this.onPinnedNotesChange([]);
     this.loadSessionById(this.activeSessionId);
   }
 
@@ -301,38 +330,80 @@ export struct AiWorkspace {
   }
 
   private async switchActiveProfile(profileId: string): Promise<void> {
-    if (this.isLoading || this.applyingProposal.length > 0) { return; }
+    if (!this.menuActionsAvailable()) { return; }
     this.modelMenuOpen = false;
+    this.modelSwitchBusy = true;
+    const request = ++this.modelSwitchRequestId;
     try {
       await ModelConfigService.getInstance().setActiveProfileId(profileId);
+      if (!this.alive || request !== this.modelSwitchRequestId) { return; }
       const profile = await ModelConfigService.getInstance().getActiveProfile();
-      if (ModelProfilePolicy.validate(profile) || !RemoteAiPolicy.consented(profile)) {
+      if (!this.alive || request !== this.modelSwitchRequestId) { return; }
+      if (ModelProfilePolicy.validate(profile) || profile.credentialUnavailable || !RemoteAiPolicy.consented(profile)) {
         promptAction.showToast({ message: '请先配置模型并确认发送授权' });
         this.onOpenModelSettings();
         return;
       }
       await AssistantModeService.getInstance().setMode('remote');
+      if (!this.alive || request !== this.modelSwitchRequestId) { return; }
       await this.loadModelLabel();
+      if (!this.alive || request !== this.modelSwitchRequestId) { return; }
       promptAction.showToast({ message: `已切换至 ${this.modelLabel}` });
     } catch {
-      promptAction.showToast({ message: '切换模型失败' });
-    }
+      if (this.alive && request === this.modelSwitchRequestId) { promptAction.showToast({ message: '切换模型失败' }); }
+    } finally { if (this.alive && request === this.modelSwitchRequestId) { this.modelSwitchBusy = false; } }
   }
 
+  private async switchLocalAssistant(): Promise<void> {
+    if (!this.menuActionsAvailable()) { return; }
+    this.modelMenuOpen = false;
+    this.modelSwitchBusy = true;
+    const request = ++this.modelSwitchRequestId;
+    try {
+      await AssistantModeService.getInstance().setMode('local');
+      if (!this.alive || request !== this.modelSwitchRequestId) { return; }
+      await this.loadModelLabel();
+    } catch {
+      if (this.alive && request === this.modelSwitchRequestId) { promptAction.showToast({ message: '助手设置保存失败，请重试' }); }
+    } finally { if (this.alive && request === this.modelSwitchRequestId) { this.modelSwitchBusy = false; } }
+  }
+
+  private menuActionsAvailable(): boolean {
+    return this.alive && !this.isLoading && !this.historyBusy && !this.sessionLoadBusy && !this.sessionLoadError && !this.attachmentBusy && !this.modelSwitchBusy && !this.applyingProposal;
+  }
+
+  private closeComposerMenus(): void {
+    this.plusMenuOpen = false;
+    this.modelMenuOpen = false;
+    this.conversationMenuOpen = false;
+  }
+
+  private toggleComposerMenu(menu: string): void {
+    if (!this.menuActionsAvailable()) { return; }
+    const wasOpen = menu === 'plus' ? this.plusMenuOpen : menu === 'model' ? this.modelMenuOpen : this.conversationMenuOpen;
+    this.closeComposerMenus();
+    this.pickerOpen = false;
+    if (menu === 'plus') { this.plusMenuOpen = !wasOpen; }
+    else if (menu === 'model') { this.modelMenuOpen = !wasOpen; }
+    else if (menu === 'conversation') { this.conversationMenuOpen = !wasOpen; }
+  }
+
+  private menuWidth(): number { return Math.max(128, Math.min(300, this.workspaceWidth - 32)); }
+
   private emitContext(): void {
-    const citations: ChatCitation[] = this.lastCitations;
-    const pinned: NoteItem[] = this.pinnedNotes;
-    const layer: string = this.layerTitle(this.runningLayer);
-    const model: string = this.modelLabel;
+    const revision = ++this.contextRevision;
     setTimeout(() => {
-      this.onContextChange(citations, pinned, layer, model);
+      if (this.alive && revision === this.contextRevision) {
+        this.onContextChange(this.lastCitations, this.pinnedNotes, this.layerTitle(this.runningLayer), this.modelLabel);
+      }
     }, 0);
   }
 
   private async loadSessionById(id: string): Promise<void> {
-    if (this.isLoading) {
-      return;
-    }
+    if (!this.alive || this.isLoading) { return; }
+    const request = ++this.sessionLoadRequestId;
+    this.sessionLoadBusy = id.length > 0;
+    this.sessionLoadError = '';
     if (id.length === 0) {
       this.loadedSessionId = '';
       this.messages = [];
@@ -343,8 +414,11 @@ export struct AiWorkspace {
       this.emitContext();
       return;
     }
+    this.loadedSessionId = id; this.messages = []; this.lastCitations = [];
+    this.streamingText = ''; this.streamingReasoning = ''; this.inputText = ''; this.emitContext();
     try {
       const sessions: ChatSession[] = await this.sessionService.loadSessions();
+      if (!this.alive || request !== this.sessionLoadRequestId || id !== this.activeSessionId) { return; }
       for (const s of sessions) {
         if (s && s.id === id) {
           this.loadedSessionId = id;
@@ -376,7 +450,7 @@ export struct AiWorkspace {
           }
           this.messages = safeMessages;
           this.currentAgentMode = s.agentMode || 'auto';
-          this.lastCitations = [];
+          this.lastCitations = safeMessages.slice().reverse().find((message: StoredMessage) => message.role === 'assistant')?.citations || [];
           this.streamingText = '';
           this.streamingReasoning = '';
           this.emitContext();
@@ -384,13 +458,14 @@ export struct AiWorkspace {
           return;
         }
       }
+      this.sessionLoadError = '这段对话已不存在，请从记录中重新选择';
     } catch (error) {
-      console.error(`会话装载失败: ${JSON.stringify(error)}`);
-    }
+      if (this.alive && request === this.sessionLoadRequestId) { this.sessionLoadError = '对话读取失败，请重试，原记录已保留'; }
+    } finally { if (this.alive && request === this.sessionLoadRequestId) { this.sessionLoadBusy = false; } }
   }
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private layerTitle(layer: AgentLayer | undefined): string {
@@ -466,7 +541,8 @@ export struct AiWorkspace {
 
   private async sendMessage(): Promise<void> {
     const query = this.inputText.trim();
-    if (!query || this.isLoading || this.historyBusy || this.applyingProposal.length > 0) { return; }
+    if (!query || !this.menuActionsAvailable()) { return; }
+    this.closeComposerMenus();
     const request = ++this.requestId;
     const session = this.loadedSessionId;
     this.cancelled = false; this.isLoading = true; this.toolStatus = '准备上下文…';
@@ -536,16 +612,18 @@ export struct AiWorkspace {
   private buildExecutor(): WorkspaceToolExecutor {
     return new WorkspaceToolExecutor({
       search: (query: string, limit: number) => this.toolSearchNotes(query, limit),
-      list: (category: string) => this.toolListNotes(category),
-      read: (identifier: string) => this.toolReadNote(identifier),
+      list: (category: string, offset?: number, limit?: number) => this.toolListNotes(category, offset, limit),
+      read: (identifier: string, offset?: number, limit?: number) => this.toolReadNote(identifier, offset, limit),
       summarize: () => this.toolSummarizeVault(),
       outline: (identifier: string) => this.toolNoteOutline(identifier),
-      todos: (date: string, status: string) => this.toolListTodos(date, status),
+      todos: (date: string, status: string, offset?: number, limit?: number) => this.toolListTodos(date, status, offset, limit),
       createTodo: (date: string, title: string) => this.toolCreateTodo(date, title),
       addTag: (identifier: string, tags: string) => this.toolAddTagToNote(identifier, tags),
       createLink: (source: string, target: string, reason?: string) => this.toolCreateLink(source, target, reason),
       categorize: (identifier: string, category: string) => this.toolCategorizeNote(identifier, category),
       createNote: (title: string, category: string, tag: string, content: string) => this.toolCreateNote(title, category, tag, content),
+      manageNote: (operation: string, identifier: string, value: string, expectedUpdatedAt: number) => this.onManageNote(operation, identifier, value, expectedUpdatedAt),
+      setTodoStatus: (identifier: string, status: string) => this.onSetTodoStatus(identifier, status),
       progress: (text: string) => { if (this.alive) { this.toolStatus = text; } }
     });
   }
@@ -564,7 +642,7 @@ export struct AiWorkspace {
     return out;
   }
 
-  private toolListNotes(category: string): string {
+  private toolListNotes(category: string, offset: number = 0, limit: number = 20): string {
     const filtered: NoteItem[] = [];
     for (const n of this.allNotes) {
       if (category.length === 0 || n.category === category) {
@@ -575,25 +653,29 @@ export struct AiWorkspace {
       return category.length > 0 ? `项目「${category}」下无笔记。` : '资料库暂无笔记。';
     }
     let out: string = `知识库笔记清单（共 ${filtered.length} 篇）：\n`;
-    for (const n of filtered.slice(0, 40)) {
-      out += `- ${n.title} | 分类: ${n.category || '未分类'} | 标签: ${n.tag || '无'} | 更新于: ${n.updateTime}\n`;
+    for (const n of filtered.slice(offset, offset + limit)) {
+      out += `- ID: ${n.id} | ${n.title} | 分类: ${n.category || '未分类'} | 标签: ${n.tag || '无'} | updatedAt: ${n.updatedAt || 0}\n`;
     }
+    out += offset + limit < filtered.length ? `下一起点 offset=${offset + limit}` : '已到清单末尾';
     return out;
   }
 
-  private toolReadNote(identifier: string): string {
+  private toolReadNote(identifier: string, offset: number = 0, limit: number = 12000): string {
     const note = NoteToolReader.resolve(this.allNotes, identifier);
-    const body = StudySourceService.context(note, 24000);
-    return `【${note.title}】 ID: ${note.id}\n分类: ${note.category || '未分类'}\n标签: ${note.tag || '无'}\n正文:\n${body || '（空文档）'}${body.length < note.contentDetail.length ? '\n（内容较长，已截取前 24000 字符）' : ''}`;
+    const source = StudySourceService.context(note, offset + limit + 1);
+    const body = source.slice(offset, offset + limit);
+    return `【${note.title}】 ID: ${note.id} · updatedAt: ${note.updatedAt || 0}\n分类: ${note.category || '未分类'}\n标签: ${note.tag || '无'}\n正文（起点 ${offset}）:\n${body || '（此范围无文字）'}\n${source.length > offset + limit ? `下一起点 offset=${offset + limit}` : '已到正文末尾'}`;
   }
 
   private toolNoteOutline(identifier: string): string { return NoteToolReader.outline(NoteToolReader.resolve(this.allNotes, identifier)); }
 
-  private toolListTodos(date: string, status: string): string {
+  private toolListTodos(date: string, status: string, offset: number = 0, limit: number = 50): string {
     const tasks = this.todos.filter((todo: TodoItem) => (!date || todo.date === date) &&
       (status === 'all' || (status === 'done' ? todo.done : !todo.done)));
-    return tasks.length ? tasks.slice(0, 50).map((todo: TodoItem) =>
-      `${todo.done ? '[x]' : '[ ]'} ${todo.date} · ${todo.title}`).join('\n') : '没有符合条件的待办';
+    if (!tasks.length) { return '没有符合条件的待办'; }
+    const body = tasks.slice(offset, offset + limit).map((todo: TodoItem) =>
+      `${todo.done ? '[x]' : '[ ]'} ID: ${todo.id} · ${todo.date} · ${todo.title}`).join('\n');
+    return `待办清单（共 ${tasks.length} 项）：\n${body}\n${offset + limit < tasks.length ? `下一起点 offset=${offset + limit}` : '已到待办末尾'}`;
   }
   private toolSummarizeVault(): string {
     const catMap: Map<string, number> = new Map();
@@ -653,6 +735,14 @@ export struct AiWorkspace {
   }
 
   private describeToolArgs(toolName: string, argsJson: string): string {
+    if (['rename_note', 'update_note', 'set_note_flag', 'set_todo_status'].includes(toolName)) {
+      try {
+        const args = ToolArgumentValidator.parse(toolName, argsJson);
+        return `目标：${args.identifier || ''}\n${toolName === 'rename_note' ? `新标题：${args.title}` :
+          toolName === 'update_note' ? `读取版本：${args.expectedUpdatedAt}\n新正文：\n${args.content}` :
+          toolName === 'set_todo_status' ? `状态：${args.status}` : `${args.flag}：${args.value}`}`;
+      } catch { return '参数无效，操作不会执行'; }
+    }
     if (toolName === 'create_todo') {
       try {
         const args: CreateTodoArgs = JSON.parse(argsJson) as CreateTodoArgs;
@@ -842,40 +932,36 @@ export struct AiWorkspace {
   }
 
   private async persistSession(strict: boolean = false): Promise<void> {
-    if (!this.servicesReady) {
-      return;
+    if (!this.servicesReady) { if (strict) { throw new Error('对话存储尚未准备好，请稍后重试'); } return; }
+    if (!this.loadedSessionId) {
+      const created = createEmptySession(); this.loadedSessionId = created.id;
+      this.unsavedSessions.set(created.id, created);
     }
+    const targetId = this.loadedSessionId;
+    const generation = this.sessionLoadRequestId;
+    const snapshot = JSON.parse(JSON.stringify(this.messages)) as StoredMessage[];
+    const mode = this.currentAgentMode;
+    const fallback = this.unsavedSessions.get(targetId);
+    const updatedAt = Date.now();
+    let saved: ChatSession | null = null;
+    // Capture before awaiting. A late write must never read another conversation's messages.
+    const pending = this.persistQueue.then(async () => {
+      const sessions = await this.sessionService.loadSessions();
+      const original = sessions.find((session: ChatSession) => session.id === targetId) || fallback;
+      if (!original) { throw new Error('这段对话已被删除，保存未覆盖其他记录'); }
+      const next: ChatSession = { id: targetId, title: original.title, pinned: original.pinned,
+        createdAt: original.createdAt, updatedAt, agentMode: mode, messages: snapshot };
+      if ((!next.title || next.title === '新对话') && snapshot[0]?.role === 'user') { next.title = snapshot[0].text.slice(0, 30); }
+      await this.sessionService.saveSession(next); this.unsavedSessions.delete(targetId); saved = next;
+    });
+    this.persistQueue = pending.catch(() => {});
     try {
-      if (this.loadedSessionId.length === 0) {
-        const session: ChatSession = createEmptySession();
-        session.messages = this.messages;
-        session.agentMode = this.currentAgentMode;
-        if (this.messages.length > 0 && this.messages[0].role === 'user') {
-          session.title = this.messages[0].text.slice(0, 30);
-        }
-        await this.sessionService.saveSession(session);
-        this.loadedSessionId = session.id;
-        this.onSessionSaved(session);
-      } else {
-        const sessions: ChatSession[] = await this.sessionService.loadSessions();
-        for (const s of sessions) {
-          if (s.id === this.loadedSessionId) {
-            s.messages = this.messages;
-            s.agentMode = this.currentAgentMode;
-            s.updatedAt = Date.now();
-            if (s.title.length === 0 && this.messages.length > 0 && this.messages[0].role === 'user') {
-              s.title = this.messages[0].text.slice(0, 30);
-            }
-            await this.sessionService.saveSession(s);
-            this.onSessionSaved(s);
-            return;
-          }
-        }
-      }
+      await pending;
+      if (saved !== null) { this.onSessionSaved(saved, this.alive && generation === this.sessionLoadRequestId && targetId === this.loadedSessionId); }
     } catch (error) {
       console.error(`会话保存失败: ${JSON.stringify(error)}`);
       if (strict) { throw new Error('变更已完成，但执行记录未能保存，请勿重复创建'); }
-      if (this.alive) { promptAction.showToast({ message: '对话未能保存，请检查存储后重试' }); }
+      if (this.alive && generation === this.sessionLoadRequestId) { promptAction.showToast({ message: '对话未能保存，请检查存储后重试' }); }
     }
   }
 
@@ -909,27 +995,32 @@ export struct AiWorkspace {
   }
 
   private pickerCandidates(): NoteItem[] {
-    const keyword: string = this.pickerKeyword.trim().toLowerCase();
-    const pickedIds: Set<string> = new Set(this.pinnedNotes.map((n: NoteItem) => n.id));
-    const result: NoteItem[] = [];
-    for (const n of this.allNotes) {
-      if (pickedIds.has(n.id)) {
-        continue;
-      }
-      if (keyword.length > 0) {
-        const hit: boolean = n.title.toLowerCase().includes(keyword)
-          || n.tag.toLowerCase().includes(keyword)
-          || n.category.toLowerCase().includes(keyword);
-        if (!hit) {
-          continue;
-        }
-      }
-      result.push(n);
-      if (result.length >= 30) {
-        break;
-      }
-    }
-    return result;
+    return AiReferenceSearch.find(this.allNotes, this.pickerKeyword, this.pinnedNotes.map((n: NoteItem) => n.id));
+  }
+
+  private openReferencePicker(): void {
+    if (!this.menuActionsAvailable()) { return; }
+    this.closeComposerMenus(); this.pickerKeyword = ''; this.pickerOpen = true;
+  }
+
+  private async prepareLocalTask(query: string): Promise<void> {
+    if (!this.menuActionsAvailable()) { return; }
+    const sessionId = this.loadedSessionId;
+    const activeSessionId = this.activeSessionId;
+    const draft = this.inputText;
+    this.closeComposerMenus();
+    if (this.assistantMode !== 'local') { await this.switchLocalAssistant(); }
+    if (this.alive && sessionId === this.loadedSessionId && activeSessionId === this.activeSessionId &&
+      draft === this.inputText && this.assistantMode === 'local' && this.menuActionsAvailable()) { this.inputText = query; }
+  }
+
+  private remoteTaskAvailable(): boolean {
+    return REMOTE_AI_ENABLED && this.assistantMode === 'remote' && this.modelReady && this.menuActionsAvailable();
+  }
+
+  private prepareModelTask(query: string): void {
+    if (!this.remoteTaskAvailable()) { return; }
+    this.closeComposerMenus(); this.inputText = query;
   }
 
   private copyToClipboard(text: string): void {
@@ -969,12 +1060,15 @@ export struct AiWorkspace {
   }
 
   private startNewChat(): void {
-    if (this.applyingProposal.length > 0) { return; }
+    if (this.historyBusy || this.sessionLoadBusy || this.attachmentBusy || this.modelSwitchBusy || this.applyingProposal.length > 0) { return; }
     if (this.isLoading) {
       this.cancelStream();
     }
+    this.sessionLoadRequestId++; this.sessionLoadBusy = false; this.sessionLoadError = '';
     this.loadedSessionId = '';
-    this.modelMenuOpen = false; this.plusMenuOpen = false; this.inputText = '';
+    this.onNewSession();
+    this.pickerOpen = false; this.pickerKeyword = '';
+    this.closeComposerMenus(); this.inputText = '';
     this.messages = [];
     this.lastCitations = [];
     this.streamingText = '';
@@ -1039,7 +1133,7 @@ export struct AiWorkspace {
         Blank()
         Text(msg.text ?? '')
           .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontColor(Color.White)
+          .fontColor(this.palette().onAccent)
           .padding({ left: 14, right: 14, top: 10, bottom: 10 })
           .borderRadius(14)
           .backgroundColor(this.palette().accent)
@@ -1339,123 +1433,38 @@ export struct AiWorkspace {
 
   @Builder
   modelSelectMenu() {
-    Column({ space: 6 }) {
-      Button('本地助手 · 离线可用').height(44).width('100%').fontSize(13)
-        .onClick(async () => {
-          try { await AssistantModeService.getInstance().setMode('local'); this.modelMenuOpen = false; }
-          catch { promptAction.showToast({ message: '助手设置保存失败，请重试' }); }
-        })
-      Row({ space: 6 }) {
-        Text(REMOTE_AI_ENABLED ? '已配置模型' : '助手')
-          .fontSize(TypographyTokens.TINY)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.palette().inkMuted)
-          .layoutWeight(1)
-        Text('✕')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .width(44).height(44)
-          .textAlign(TextAlign.Center)
-          .borderRadius(4)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.modelMenuOpen = false;
-          })
-      }
-      .width('100%')
-      .padding({ bottom: 4 })
-
-      if (REMOTE_AI_ENABLED) {
-      Scroll() {
-        Column({ space: 4 }) {
+    Menu() {
+      MenuItem({ content: '本地助手 · 离线可用' })
+        .selected(this.assistantMode === 'local' || !REMOTE_AI_ENABLED).selectIcon(true)
+        .constraintSize({ minHeight: 48 }).onClick(() => this.switchLocalAssistant())
+      if (REMOTE_AI_ENABLED && this.profiles.length > 0) {
+        MenuItemGroup({ header: '已配置模型' }) {
           ForEach(this.profiles, (p: ModelProfile) => {
-            Row({ space: 8 }) {
-              Circle({ width: 6, height: 6 })
-                .fill(p.id === this.activeProfileId ? this.palette().accent : '#9CA3AF')
-
-              Column({ space: 1 }) {
-                Row({ space: 4 }) {
-                  Text(p.label)
-                    .fontSize(TypographyTokens.TINY)
-                    .fontWeight(p.id === this.activeProfileId ? FontWeight.Bold : FontWeight.Normal)
-                    .fontColor(this.palette().inkPrimary)
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  if (p.isReasoningModel) {
-                    Text('推理')
-                      .fontSize(TypographyTokens.TINY)
-                  }
-                }
-                Text(p.modelId)
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor(this.palette().inkMuted)
-                  .maxLines(1)
-                  .fontFamily('monospace')
-              }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
-
-              if (p.id === this.activeProfileId) {
-                Text('✓')
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontColor(this.palette().accent)
-                  .fontWeight(FontWeight.Bold)
-              }
-            }
-            .width('100%')
-            .constraintSize({ minHeight: 52 })
-            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-            .borderRadius(8)
-            .backgroundColor(p.id === this.activeProfileId ? this.palette().accentSoft : Color.Transparent)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => {
-              this.switchActiveProfile(p.id);
-            })
+            MenuItem({ content: p.label, labelInfo: p.id === this.activeProfileId && this.assistantMode === 'remote' ? '当前' : '' })
+              .selected(p.id === this.activeProfileId && this.assistantMode === 'remote').selectIcon(true)
+              .constraintSize({ minHeight: 48 }).onClick(() => this.switchActiveProfile(p.id))
           }, (p: ModelProfile) => p.id)
         }
-        .width('100%')
       }
-      .constraintSize({ maxHeight: 240 })
-      .scrollBar(BarState.Auto)
-      }
-
-      Divider().color(this.palette().borderSubtle).margin({ top: 4, bottom: 4 })
-
       if (REMOTE_AI_ENABLED && this.isModelReasoningType) {
-        Text('推理强度').fontSize(12).fontColor(this.palette().inkSecondary).width('100%')
-        Row({ space: 6 }) {
+        MenuItemGroup({ header: '推理强度' }) {
           ForEach(THINKING_BUDGETS.slice(0, 3), (item: ThinkingBudgetPreset, index: number) => {
-            Button(index === 0 ? '轻量' : index === 1 ? '均衡' : '深入').height(44).layoutWeight(1).fontSize(12)
-              .type(ButtonType.Normal).borderRadius(8)
-              .backgroundColor(this.getBudgetShortLabel(this.selectedThinkingBudget) === item.label ? this.palette().accentSoft : this.palette().surfaceSubtle)
-              .fontColor(this.palette().inkPrimary).onClick(() => { this.selectedThinkingBudget = item.val; })
+            MenuItem({ content: index === 0 ? '轻量' : index === 1 ? '均衡' : '深入' })
+              .selected(this.getBudgetShortLabel(this.selectedThinkingBudget) === item.label).selectIcon(true)
+              .constraintSize({ minHeight: 48 }).onClick(() => {
+                this.modelMenuOpen = false;
+                if (this.menuActionsAvailable()) { this.selectedThinkingBudget = item.val; }
+              })
           }, (item: ThinkingBudgetPreset) => item.key)
-        }.width('100%')
-        Text('仅对已配置且支持 reasoning_effort 的兼容模型生效。').fontSize(11).fontColor(this.palette().inkSecondary).width('100%')
+        }
       }
-
-      Row({ space: 6 }) {
-        Image($r('app.media.ic_sparkle')).width(18).height(18).fillColor(this.palette().inkSecondary)
-        Text('助手设置')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().accent)
+      MenuItemGroup({ header: '设置' }) {
+        this.menuAction('助手与模型设置', $r('app.media.ic_settings'), () => {
+          this.modelMenuOpen = false; this.onOpenModelSettings();
+        })
       }
-      .width('100%')
-      .constraintSize({ minHeight: 44 })
-      .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-      .borderRadius(6)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.modelMenuOpen = false;
-        this.onOpenModelSettings();
-      })
-    }
-    .width('100%')
-    .padding(10)
-    .borderRadius(12)
-    .backgroundColor(this.palette().surface)
-    .border({ width: 1, color: this.palette().border })
-    .shadow({ radius: 24, color: 'rgba(0,0,0,0.18)' })
+    }.width(this.menuWidth()).fontSize(14).fontColor(this.palette().inkPrimary)
+      .backgroundColor(this.palette().surface).enabled(this.menuActionsAvailable())
   }
 
   private getBudgetShortLabel(budget: number): string {
@@ -1482,11 +1491,15 @@ export struct AiWorkspace {
   }
 
   private async importExternalFile(): Promise<void> {
+    if (!this.menuActionsAvailable()) { return; }
     this.plusMenuOpen = false;
+    this.attachmentBusy = true;
+    const request = ++this.attachmentRequestId;
     const sessionId = this.loadedSessionId;
+    const activeSessionId = this.activeSessionId;
     try {
       const note = await this.onImportExternal();
-      if (!this.alive || sessionId !== this.loadedSessionId) { return; }
+      if (!this.alive || request !== this.attachmentRequestId || sessionId !== this.loadedSessionId || activeSessionId !== this.activeSessionId) { return; }
       if (note !== null) {
         if (!this.pinnedNotes.some((n: NoteItem) => n.id === note.id)) {
           this.pinnedNotes = [...this.pinnedNotes, note];
@@ -1498,20 +1511,21 @@ export struct AiWorkspace {
         }
       }
     } catch (err) {
+      if (!this.alive || request !== this.attachmentRequestId || sessionId !== this.loadedSessionId || activeSessionId !== this.activeSessionId) { return; }
       console.error(`导入外部文件异常: ${JSON.stringify(err)}`);
       promptAction.showToast({ message: '导入外部文件取消或失败' });
-    }
+    } finally { if (this.alive && request === this.attachmentRequestId) { this.attachmentBusy = false; } }
   }
 
   private async rewindLastMessage(): Promise<void> {
-    if (this.isLoading || this.historyBusy || this.applyingProposal || !this.servicesReady) { return; }
+    if (!this.menuActionsAvailable() || !this.servicesReady) { return; }
     if (!this.loadedSessionId) { promptAction.showToast({ message: '正在保存对话，请稍后重试' }); return; }
     if (this.messages.length === 0) {
       promptAction.showToast({ message: '暂无消息可撤销' });
       return;
     }
     const sessionId = this.loadedSessionId;
-    if (!await this.confirmMessageRemoval() || !this.alive || this.loadedSessionId !== sessionId || this.isLoading || this.historyBusy) { return; }
+    if (!await this.confirmMessageRemoval() || this.loadedSessionId !== sessionId || !this.menuActionsAvailable()) { return; }
     const original = this.messages.slice();
     if (this.messages[this.messages.length - 1].role === 'assistant') {
       this.messages.pop();
@@ -1537,8 +1551,10 @@ export struct AiWorkspace {
   }
 
   private handleBackRequest(): void {
-    if (this.plusMenuOpen) { this.plusMenuOpen = false; }
+    if (this.pickerOpen) { this.pickerOpen = false; }
+    else if (this.plusMenuOpen) { this.plusMenuOpen = false; }
     else if (this.modelMenuOpen) { this.modelMenuOpen = false; }
+    else if (this.conversationMenuOpen) { this.conversationMenuOpen = false; }
     else { this.onNavigateBack(); }
   }
 
@@ -1551,57 +1567,114 @@ export struct AiWorkspace {
   }
 
   private async clearPinnedReferences(): Promise<void> {
-    if (this.isLoading || this.historyBusy || this.applyingProposal) { return; }
+    if (!this.menuActionsAvailable()) { return; }
     this.plusMenuOpen = false;
     const sessionId = this.loadedSessionId;
+    const activeSessionId = this.activeSessionId;
+    const pinned = this.pinnedNotes;
     try {
       const result = await promptAction.showDialog({ title: '移除全部引用？', message: '原文件和对话会保留。',
         buttons: [{ text: '取消', color: this.palette().inkSecondary }, { text: '移除', color: this.palette().danger }] });
-      if (result.index === 1 && this.alive && sessionId === this.loadedSessionId && !this.isLoading && !this.historyBusy && !this.applyingProposal) {
-        this.pinnedNotes = []; this.onPinnedNotesChange([]);
+      if (result.index === 1 && sessionId === this.loadedSessionId && activeSessionId === this.activeSessionId && pinned === this.pinnedNotes && this.menuActionsAvailable()) {
+        this.pinnedNotes = []; this.onPinnedNotesChange([]); this.emitContext();
       }
     } catch { /* 取消确认 */ }
   }
 
   @Builder
-  attachmentAction(title: string, icon: Resource, action: () => void) {
-    Row({ space: 10 }) {
-      Image(icon).width(18).height(18).fillColor(this.palette().inkSecondary)
-      Text(title).fontSize(14).fontColor(this.palette().inkPrimary).layoutWeight(1)
-    }.width('100%').height(48).padding({ left: 12, right: 12 }).borderRadius(8)
-      .hoverEffect(HoverEffect.Highlight).onClick(action)
+  menuAction(title: string, icon: Resource, action: () => void, destructive: boolean = false, available: boolean = true) {
+    MenuItem({ content: title, startIcon: icon })
+      .contentFontColor(destructive ? this.palette().danger : this.palette().inkPrimary)
+      .constraintSize({ minHeight: 48 }).enabled(this.menuActionsAvailable() && available)
+      .accessibilityText(title).onClick(() => {
+        if (this.menuActionsAvailable() && available) { this.closeComposerMenus(); action(); }
+      })
   }
 
   @Builder
   plusActionMenu() {
-    SheetOverlay({ onDismiss: () => { this.plusMenuOpen = false; } }) {
-      Column({ space: 10 }) {
-        Text('对话与资料').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).width('100%')
-        Scroll() {
-          Column({ space: 4 }) {
-            this.attachmentAction('新建对话', $r('app.media.ic_plus'), () => { this.startNewChat(); })
-            this.attachmentAction('引用库内资料', $r('app.media.ic_note'), () => { this.plusMenuOpen = false; this.onToggleContextPanel(); })
-            this.attachmentAction('导入外部文件', $r('app.media.ic_import'), () => { this.plusMenuOpen = false; this.importExternalFile(); })
-            if (this.pinnedNotes.length > 0) {
-              this.attachmentAction('移除全部引用', $r('app.media.ic_close'), () => { this.clearPinnedReferences(); })
-            }
-            this.attachmentAction('图片识别与整理', $r('app.media.ic_sparkle'), () => { this.plusMenuOpen = false; this.onSmartExtract(); })
-            this.attachmentAction('AI 配置', $r('app.media.ic_settings'), () => { this.plusMenuOpen = false; this.onOpenModelSettings(); })
-            if (this.profiles.length > 0) {
-              this.attachmentAction('切换本次模型', $r('app.media.ic_sparkle'), () => { this.plusMenuOpen = false; this.modelMenuOpen = true; })
-            }
-            if (this.messages.length > 0) {
-              Divider().color(this.palette().borderSubtle)
-              this.attachmentAction('撤回上一轮消息', $r('app.media.ic_undo'), () => { this.plusMenuOpen = false; this.rewindLastMessage(); })
-              if (this.loadedSessionId) {
-                this.attachmentAction('删除当前对话', $r('app.media.ic_trash'), () => { this.plusMenuOpen = false; this.onDeleteSession(this.loadedSessionId); })
-              }
-            }
-          }.width('100%')
-        }.width('100%').height(Math.min(430, Math.max(120, this.workspaceHeight - 170))).scrollBar(BarState.Auto)
-        SheetCancelButton({ label: '关闭', onCancel: () => { this.plusMenuOpen = false; } })
-      }.width('100%').enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal)
-    }
+    Menu() {
+      MenuItemGroup({ header: '添加资料' }) {
+        this.menuAction('引用库内资料', $r('app.media.ic_note'), () => {
+          this.openReferencePicker();
+        })
+        this.menuAction('导入文件到资料库', $r('app.media.ic_import'), () => this.importExternalFile())
+        this.menuAction('识别图片与整理文字', $r('app.media.ic_sparkle'), () => {
+          this.plusMenuOpen = false; this.onSmartExtract();
+        })
+      }
+      MenuItemGroup({ header: '离线任务' }) {
+        this.menuAction('提取原文要点', $r('app.media.ic_read'), () => this.prepareLocalTask('提取要点'))
+        this.menuAction('整理原文明示待办', $r('app.media.ic_check'), () => this.prepareLocalTask('整理待办'))
+        this.menuAction('资料库概览', $r('app.media.ic_folder'), () => this.prepareLocalTask('资料概览'))
+      }
+      MenuItemGroup({ header: this.remoteTaskAvailable() ? '模型任务' : '模型任务 · 需选择已配置并授权的模型' }) {
+        this.menuAction('讲解引用资料', $r('app.media.ic_sparkle'), () => this.prepareModelTask('请依据引用资料，解释核心概念并标注原文来源。'), false, this.remoteTaskAvailable())
+        this.menuAction('生成自测题', $r('app.media.ic_note'), () => this.prepareModelTask('依据引用资料生成自测题，给出答案与来源。'), false, this.remoteTaskAvailable())
+        this.menuAction('比较资料观点', $r('app.media.ic_link'), () => this.prepareModelTask('比较引用资料的观点与证据，区分一致点和差异并给出来源。'), false, this.remoteTaskAvailable())
+      }
+      if (this.pinnedNotes.length > 0) {
+        MenuItemGroup({ header: `已引用 ${this.pinnedNotes.length} 篇资料` }) {
+          this.menuAction('移除全部引用', $r('app.media.ic_close'), () => this.clearPinnedReferences())
+        }
+      }
+    }.width(this.menuWidth()).fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surface)
+      .enabled(this.menuActionsAvailable())
+  }
+
+  @Builder
+  conversationActionMenu() {
+    Menu() {
+      this.menuAction('搜索并引用资料', $r('app.media.ic_search'), () => this.openReferencePicker())
+      this.menuAction('助手与模型设置', $r('app.media.ic_settings'), () => { this.conversationMenuOpen = false; this.onOpenModelSettings(); })
+      if (this.messages.length > 0) {
+        this.menuAction('复制当前对话', $r('app.media.ic_copy'), () => this.copyToClipboard(this.messages.map((m: StoredMessage) => `${m.role === 'user' ? '我' : '墨客'}：${m.text}`).join('\n\n')))
+        this.menuAction('重新回答上一问', $r('app.media.ic_redo'), () => { this.conversationMenuOpen = false; this.regenerateLastResponse(); })
+        this.menuAction('撤回上一轮消息', $r('app.media.ic_undo'), () => {
+          this.conversationMenuOpen = false; this.rewindLastMessage();
+        })
+        if (this.loadedSessionId) {
+          this.menuAction('删除当前对话', $r('app.media.ic_trash'), () => {
+            this.conversationMenuOpen = false; this.onDeleteSession(this.loadedSessionId);
+          }, true)
+        }
+      }
+    }.width(this.menuWidth()).fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surface)
+      .enabled(this.menuActionsAvailable())
+  }
+  @Builder
+  referencePicker() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('搜索并引用资料').fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).layoutWeight(1)
+        IconButton({ icon: $r('app.media.ic_close'), label: '关闭资料选择', onAction: () => { this.pickerOpen = false; } })
+      }.width('100%')
+      TextInput({ text: this.pickerKeyword, placeholder: '课程名、标签或正文关键词' }).height(44)
+        .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary)
+        .onChange((v: string) => { this.pickerKeyword = v; })
+      List({ space: 4 }) {
+        ForEach(this.pickerCandidates(), (n: NoteItem) => {
+          ListItem() {
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 8 }) {
+                AppIcon({ source: $r('app.media.ic_note'), tint: this.palette().inkSecondary })
+                Column({ space: 2 }) {
+                  Text(n.title).fontSize(14).fontColor(this.palette().inkPrimary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(`${n.category || '未分类'} · ${n.type}`).fontSize(11).fontColor(this.palette().inkMuted)
+                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                Text('引用').fontSize(12).fontColor(this.palette().accent)
+              }.width('100%')
+            }.width('100%').height(52).backgroundColor(this.palette().surfaceSubtle).borderRadius(8)
+              .enabled(this.menuActionsAvailable()).accessibilityText(`引用${n.title}`).onClick(() => {
+                if (this.menuActionsAvailable()) { this.togglePin(n); }
+              })
+          }
+        }, (n: NoteItem) => n.id)
+      }.width('100%').height(this.isPhone ? 140 : 180).scrollBar(BarState.Auto)
+      Text(this.pickerCandidates().length ? '显示最多 40 项；扫描 PDF 的正文须先提取并校对。' : '没有匹配资料，可缩短关键词或先导入文件。')
+        .fontSize(11).fontColor(this.palette().inkMuted).width('100%')
+    }.width('100%').padding(12).borderRadius(12).backgroundColor(this.palette().surface)
+      .border({ width: 1, color: this.palette().border })
   }
 
   build() {
@@ -1609,9 +1682,21 @@ export struct AiWorkspace {
       Column() {
         Column({ space: 6 }) {
           Row({ space: 12 }) {
-            Text('墨客').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
-            Text(this.modelLabel).fontSize(12).fontColor(this.palette().inkMuted).maxLines(1)
-              .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1).textAlign(TextAlign.End)
+            IconButton({ icon: $r('app.media.ic_history'), label: '对话记录', selected: this.historyOpen,
+              onAction: () => this.onToggleHistory() })
+            Blank().layoutWeight(1)
+            IconButton({ icon: $r('app.media.ic_plus'), label: '新建对话',
+              available: !this.historyBusy && !this.sessionLoadBusy && !this.attachmentBusy && !this.modelSwitchBusy && !this.applyingProposal,
+              onAction: () => this.startNewChat() })
+            Button({ type: ButtonType.Normal }) {
+              AppIcon({ source: $r('app.media.ic_more'), tint: this.palette().inkSecondary })
+            }.width(44).height(44).padding(0).borderRadius(12).backgroundColor(this.conversationMenuOpen ? this.palette().accentSoft : Color.Transparent)
+              .enabled(this.menuActionsAvailable()).accessibilityText('对话操作')
+              .onClick(() => this.toggleComposerMenu('conversation'))
+              .bindMenu(this.conversationMenuOpen, this.conversationActionMenu, {
+                placement: Placement.BottomRight, backgroundColor: this.palette().surface,
+                onDisappear: () => { this.conversationMenuOpen = false; }
+              })
           }.width('100%').height(44)
           if (REMOTE_AI_ENABLED && this.assistantMode === 'remote') {
           Row({ space: 4 }) {
@@ -1629,7 +1714,17 @@ export struct AiWorkspace {
           .backgroundColor(this.palette().surface)
           .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
       // 2. 消息流与欢迎看板
-      if (this.messages.length === 0 && !this.isLoading) {
+      if (this.sessionLoadBusy || this.sessionLoadError) {
+        Column({ space: 12 }) {
+          Text(this.sessionLoadBusy ? '正在读取对话…' : this.sessionLoadError)
+            .fontSize(14).fontColor(this.palette().inkSecondary).textAlign(TextAlign.Center)
+          if (this.sessionLoadError) {
+            Button('重新读取').height(44).type(ButtonType.Normal).borderRadius(10)
+              .backgroundColor(this.palette().accentSoft).fontColor(this.palette().accent)
+              .onClick(() => this.loadSessionById(this.activeSessionId))
+          }
+        }.width('100%').layoutWeight(1).padding(24).justifyContent(FlexAlign.Center)
+      } else if (this.messages.length === 0 && !this.isLoading) {
         Scroll() {
         Column({ space: 16 }) {
           Image($r('app.media.ic_sparkle')).width(32).height(32).fillColor(this.palette().accent)
@@ -1758,6 +1853,7 @@ export struct AiWorkspace {
       }
 
       Column({ space: 8 }) {
+        if (this.pickerOpen) { this.referencePicker() }
         if (this.pinnedNotes.length > 0) {
           Row({ space: 8 }) {
             Scroll() {
@@ -1766,12 +1862,11 @@ export struct AiWorkspace {
                   Row({ space: 4 }) {
                     Text(n.title).fontSize(12).fontColor(this.palette().inkPrimary).maxLines(1)
                       .textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: 130 })
-                    Text('×').fontSize(18).fontColor(this.palette().inkSecondary).width(44).height(44).textAlign(TextAlign.Center)
-                      .enabled(!this.isLoading && !this.historyBusy && !this.applyingProposal).accessibilityText(`移除引用资料：${n.title}`)
-                      .onClick(() => {
+                    IconButton({ icon: $r('app.media.ic_close'), label: `移除引用资料：${n.title}`,
+                      available: this.menuActionsAvailable(), onAction: () => {
                         this.pinnedNotes = this.pinnedNotes.filter((p: NoteItem) => p.id !== n.id);
-                        this.onPinnedNotesChange(this.pinnedNotes);
-                      })
+                        this.onPinnedNotesChange(this.pinnedNotes); this.emitContext();
+                      } })
                   }.padding({ left: 10 }).borderRadius(8).backgroundColor(this.palette().accentSoft)
                 }, (n: NoteItem) => `cockpit-pin-${n.id}`)
               }
@@ -1784,20 +1879,40 @@ export struct AiWorkspace {
             .fontColor(this.palette().inkPrimary).placeholderColor(this.palette().inkMuted)
             .backgroundColor(Color.Transparent).onChange((v: string) => { this.inputText = v; })
           Row({ space: 8 }) {
-            IconButton({ icon: this.plusMenuOpen ? $r('app.media.ic_close') : $r('app.media.ic_plus'), label: '添加资料与对话操作',
-              selected: this.plusMenuOpen, available: !this.isLoading && !this.historyBusy && !this.applyingProposal, onAction: () => {
-                this.modelMenuOpen = false;
-                animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => { this.plusMenuOpen = !this.plusMenuOpen; });
-              } })
-            Text(this.pinnedNotes.length > 0 ? `已引用 ${this.pinnedNotes.length} 篇资料` : '资料可选')
-              .fontSize(12).fontColor(this.palette().inkMuted).layoutWeight(1)
+            Button({ type: ButtonType.Normal }) {
+              AppIcon({ source: $r('app.media.ic_plus'), tint: this.palette().inkSecondary })
+            }.width(44).height(44).padding(0).borderRadius(12).backgroundColor(this.plusMenuOpen ? this.palette().accentSoft : Color.Transparent)
+              .enabled(this.menuActionsAvailable()).accessibilityText('添加资料与任务')
+              .onClick(() => this.toggleComposerMenu('plus'))
+              .bindMenu(this.plusMenuOpen, this.plusActionMenu, {
+                placement: Placement.TopLeft, backgroundColor: this.palette().surface,
+                onDisappear: () => { this.plusMenuOpen = false; }
+              })
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 6 }) {
+                Text(this.modelSwitchBusy ? '切换中…' : this.assistantMode === 'local' ? '选择模型' : this.modelLabel || '选择模型')
+                  .fontSize(12).fontColor(this.palette().inkSecondary).maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+                AppIcon({ source: $r('app.media.ic_chevron_down'), tint: this.palette().inkSecondary, iconSize: 16 })
+              }.width('100%')
+            }.layoutWeight(1).height(44).padding({ left: 8, right: 8 }).borderRadius(8)
+              .backgroundColor(this.modelMenuOpen ? this.palette().accentSoft : Color.Transparent)
+              .enabled(this.menuActionsAvailable()).accessibilityText(`选择助手与模型，当前${this.modelLabel}`)
+              .onClick(() => this.toggleComposerMenu('model'))
+              .bindMenu(this.modelMenuOpen, this.modelSelectMenu, {
+                placement: Placement.TopRight, backgroundColor: this.palette().surface,
+                onDisappear: () => { this.modelMenuOpen = false; }
+              })
             if (this.isLoading) {
               IconButton({ icon: $r('app.media.ic_stop'), label: '停止生成', destructive: true, onAction: () => this.cancelStream() })
             } else {
               IconButton({ icon: $r('app.media.ic_send'), label: '发送提问', selected: true,
-                available: this.inputText.trim().length > 0 && !this.historyBusy && !this.applyingProposal, onAction: () => this.sendMessage() })
+                available: this.inputText.trim().length > 0 && this.menuActionsAvailable(), onAction: () => this.sendMessage() })
             }
           }.width('100%')
+          if (this.attachmentBusy) {
+            Text('正在导入资料…').fontSize(12).fontColor(this.palette().inkSecondary).width('100%')
+          }
         }.width('100%').padding(10).borderRadius(14).backgroundColor(this.palette().surface)
           .border({ width: 1, color: this.palette().border })
       }.width('100%').constraintSize({ maxWidth: 800 }).alignSelf(ItemAlign.Center)
@@ -1807,18 +1922,10 @@ export struct AiWorkspace {
     .height('100%')
     .backgroundColor(this.palette().canvas)
 
-    if (this.plusMenuOpen) { this.plusActionMenu() }
-
-    // Model selection uses the same centered overlay as other secondary menus.
-    if (this.modelMenuOpen) {
-      SheetOverlay({ onDismiss: () => { this.modelMenuOpen = false; } }) {
-        Scroll() { this.modelSelectMenu() }.height(this.workspaceHeight * 0.7).width('100%').scrollBar(BarState.Auto)
-      }
-    }
   }
   .width('100%')
   .height('100%')
-  .onAreaChange((_old: Area, area: Area) => { this.workspaceHeight = Math.max(240, Number(area.height)); })
+  .onAreaChange((_old: Area, area: Area) => { this.workspaceWidth = Math.max(160, Number(area.width)); })
 }
 }
 

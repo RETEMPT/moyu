@@ -1,0 +1,2 @@
+# PDF offsets and image streams must keep their bytes across Windows and Linux checkouts.
+*.pdf binary

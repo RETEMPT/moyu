@@ -39,6 +39,8 @@ def inspect(app_path, java=None, signer=None):
                 item = {'name': name, 'sha256': hashlib.sha256(data).hexdigest(),
                         'app': metadata['app'], 'module': metadata['module'],
                         'nativeLibraries': [p for p in hap.namelist() if p.startswith('libs/') and p.endswith('.so')],
+                        'debugResources': [p for p in hap.namelist() if '/debug-pdf-preview/' in p or
+                                           Path(p).name in ('example-course.pdf', 'example-snapshot.pdf')],
                         'backup': json.loads(hap.read('resources/base/profile/backup_config.json')),
                         'signatureVerified': False}
             if java and signer:

@@ -17,7 +17,9 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     params: [{ name: 'identifier', jsonType: 'string', description: '笔记完整标题或 ID', required: true }] },
   { name: 'list_todos', description: '列出真实待办、日期与完成状态，便于规划复习。', permission: 'read',
     params: [{ name: 'date', jsonType: 'string', description: 'YYYY-MM-DD，留空查看全部日期', required: false },
-      { name: 'status', jsonType: 'string', description: 'all、pending 或 done', required: false }] },
+      { name: 'status', jsonType: 'string', description: 'all、pending 或 done', required: false },
+      { name: 'offset', jsonType: 'number', description: '从第几条开始，默认 0', required: false },
+      { name: 'limit', jsonType: 'number', description: '每次 1–50 条，默认 50，按下一起点继续查询', required: false }] },
   {
     name: 'search_notes',
     description: '在当前资料库中按关键词检索笔记片段，返回命中的笔记标题、章节与正文摘录。用于回答关于用户笔记内容的问题。',
@@ -32,7 +34,9 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     description: '列出资料库中的笔记清单（标题、所属项目、标签、更新时间）。用于了解用户有哪些笔记。',
     permission: 'read',
     params: [
-      { name: 'category', jsonType: 'string', description: '只看某个项目下的笔记，留空表示全部', required: false }
+      { name: 'category', jsonType: 'string', description: '只看某个项目下的笔记，留空表示全部', required: false },
+      { name: 'offset', jsonType: 'number', description: '从第几条开始，默认 0；用于遍历整个资料库', required: false },
+      { name: 'limit', jsonType: 'number', description: '每次 1–50 条，默认 20', required: false }
     ]
   },
   {
@@ -46,10 +50,12 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
   },
   {
     name: 'read_note',
-    description: '读取指定笔记的完整正文内容。可传入笔记标题 title 或唯一 ID。用于深入精读并全面回答问题。',
+    description: '分页读取指定笔记正文及 updatedAt；长文按下一起点继续读取到末尾。可传完整标题或唯一 ID。',
     permission: 'read',
     params: [
-      { name: 'identifier', jsonType: 'string', description: '笔记的完整标题或 ID', required: true }
+      { name: 'identifier', jsonType: 'string', description: '笔记的完整标题或 ID', required: true },
+      { name: 'offset', jsonType: 'number', description: '正文字符起点，默认 0；继续读取用响应里的下一起点', required: false },
+      { name: 'limit', jsonType: 'number', description: '每次 1–12000 字符，默认 12000', required: false }
     ]
   },
   {
@@ -69,7 +75,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
   },
   {
     name: 'create_link',
-    description: '在源笔记末尾追加 [[目标笔记或概念]] 双链语法，建立知识关联。',
+    description: '在文字笔记末尾追加 [[目标笔记或概念]] 双链语法，建立知识关联。PDF、手写及正在编辑的正文不接受覆盖。',
     permission: 'write',
     params: [
       { name: 'sourceIdentifier', jsonType: 'string', description: '源笔记标题或 ID', required: true },
@@ -96,7 +102,21 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
       { name: 'tag', jsonType: 'string', description: '笔记标签，多个用逗号分隔', required: false },
       { name: 'content', jsonType: 'string', description: '笔记 Markdown 正文内容', required: true }
     ]
-  }
+  },
+  { name: 'rename_note', description: '重命名现有笔记，确认后保存；不修改正文或笔迹。', permission: 'write',
+    params: [{ name: 'identifier', jsonType: 'string', description: '笔记 ID 或完整标题', required: true },
+      { name: 'title', jsonType: 'string', description: '新的完整标题', required: true }] },
+  { name: 'update_note', description: '更新 Markdown 笔记正文。先读取笔记取得 updatedAt，版本相同且用户确认后才能保存。PDF、手写、正在编辑的笔记不接受正文覆盖。', permission: 'write',
+    params: [{ name: 'identifier', jsonType: 'string', description: '笔记 ID', required: true },
+      { name: 'content', jsonType: 'string', description: '完整的新 Markdown 正文，不能省略未修改部分', required: true },
+      { name: 'expectedUpdatedAt', jsonType: 'number', description: '读取返回的 updatedAt；版本变化时拒绝覆盖', required: true }] },
+  { name: 'set_note_flag', description: '设置资料收藏或置顶，确认后更新。', permission: 'write',
+    params: [{ name: 'identifier', jsonType: 'string', description: '笔记 ID 或完整标题', required: true },
+      { name: 'flag', jsonType: 'string', description: 'favorite 或 pinned', required: true },
+      { name: 'value', jsonType: 'string', description: 'yes 或 no', required: true }] },
+  { name: 'set_todo_status', description: '按唯一待办 ID 设置完成状态，重复设置不会反转。', permission: 'write',
+    params: [{ name: 'identifier', jsonType: 'string', description: 'list_todos 返回的待办 ID', required: true },
+      { name: 'status', jsonType: 'string', description: 'pending 或 done', required: true }] }
 ];
 
 /** 按名称查工具定义 */
@@ -151,6 +171,10 @@ export function buildOpenAiToolsJson(tools: AgentToolSpec[]): string {
 export function toolDisplayName(name: string): string {
   if (name === 'note_outline') { return '读取章节大纲'; }
   if (name === 'list_todos') { return '查看待办日程'; }
+  if (name === 'rename_note') { return '重命名笔记'; }
+  if (name === 'update_note') { return '更新笔记正文'; }
+  if (name === 'set_note_flag') { return '设置收藏或置顶'; }
+  if (name === 'set_todo_status') { return '更新待办状态'; }
   if (name === 'search_notes') {
     return '检索笔记';
   }

@@ -14,7 +14,8 @@
  * 避免 ArkTS 枚举类型与 ArkUI 状态装饰器之间的类型不兼容问题。
  */
 import { ConfigurationConstant } from '@kit.AbilityKit';
-import { ColorPalette, DarkColors, LightColors } from '../constants/DesignTokens';
+import { ColorPalette } from '../constants/DesignTokens';
+import { paletteForStyle, THEME_STYLE_KEY } from './ThemeStyle';
 
 /**
  * AppStorage 中承载「是否深色模式」的键名。
@@ -35,8 +36,8 @@ export class ThemeHelper {
   }
 
   /** 布尔深色标记 -> 调色板（视图层的常用入口） */
-  static paletteOfDark(isDark: boolean): ColorPalette {
-    return isDark ? DarkColors : LightColors;
+  static paletteOfDark(isDark: boolean, style: string = AppStorage.get<string>(THEME_STYLE_KEY) || 'ink'): ColorPalette {
+    return paletteForStyle(isDark, style);
   }
 
   /** 由 Ability 层写入系统色彩模式，驱动全局视图重绘 */

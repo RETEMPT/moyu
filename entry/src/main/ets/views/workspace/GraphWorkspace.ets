@@ -69,7 +69,8 @@ export struct GraphWorkspace {
   onLinkNodes: (sourceIdentifier: string, targetTitle: string) => void = () => {};
   onCreateGalaxy: (galaxyName: string) => void = () => {};
 
-  @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindDarkMode') @Watch('onGraphChanged') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') @Watch('onGraphChanged') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -102,7 +103,7 @@ export struct GraphWorkspace {
   private touchDownTime: number = 0;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   onGraphChanged(): void {
@@ -135,7 +136,7 @@ export struct GraphWorkspace {
       id: 'all',
       name: '全部主题',
       count: this.allNotes.length,
-      color: '#4F46E5'
+      color: this.palette().accent
     });
 
     const colors: string[] = ['#3B82F6', '#8B5CF6', '#EC4899', '#10B981', '#F59E0B', '#06B6D4'];
@@ -426,17 +427,13 @@ export struct GraphWorkspace {
 
     // 2. 卡片底色 (纯白 / 极简浅灰)
     if (n.isRoot) {
-      c.fillStyle = isSelected
-        ? (this.isDarkMode ? '#312E81' : '#EEF2FF')
-        : (this.isDarkMode ? '#1E1B4B' : '#F5F3FF');
+      c.fillStyle = isSelected ? this.palette().activeBg : this.palette().accentSoft;
     } else if (n.unresolved) {
       c.fillStyle = isSelected
         ? (this.isDarkMode ? '#78350F' : '#FEF3C7')
         : (this.isDarkMode ? '#292524' : '#FFFDF5');
     } else {
-      c.fillStyle = isSelected
-        ? (this.isDarkMode ? '#1E293B' : '#F8FAFC')
-        : (this.isDarkMode ? '#1E293B' : '#FFFFFF');
+      c.fillStyle = isSelected ? this.palette().surfaceSubtle : this.palette().surface;
     }
     this.drawRoundRect(c, nx, ny, nw, nh, radius);
     c.fill();
@@ -444,16 +441,16 @@ export struct GraphWorkspace {
     // 3. 边框 (选中为靛蓝主色，根节点为淡紫，未物化为虚线金黄)
     if (isSelected) {
       c.lineWidth = 2.0;
-      c.strokeStyle = '#4F46E5';
+      c.strokeStyle = this.palette().accent;
     } else if (n.isRoot) {
       c.lineWidth = 1.6;
-      c.strokeStyle = '#6366F1';
+      c.strokeStyle = this.palette().accent;
     } else if (n.unresolved) {
       c.lineWidth = 1.2;
       c.strokeStyle = '#F59E0B';
     } else {
       c.lineWidth = 1.0;
-      c.strokeStyle = this.isDarkMode ? '#334155' : '#E2E8F0';
+      c.strokeStyle = this.palette().border;
     }
     this.drawRoundRect(c, nx, ny, nw, nh, radius);
     c.stroke();
@@ -466,7 +463,7 @@ export struct GraphWorkspace {
     const iconX: number = nx + 8 * this.zoom;
     const textY: number = ny + nh / 2 + fontSize * 0.35;
 
-    c.fillStyle = n.unresolved ? '#D97706' : (n.isRoot ? '#4F46E5' : (this.isDarkMode ? '#94A3B8' : '#64748B'));
+    c.fillStyle = n.unresolved ? this.palette().warning : (n.isRoot ? this.palette().accent : this.palette().inkMuted);
     c.fillText(icon, iconX, textY);
 
     // 文本标号截断
@@ -474,11 +471,7 @@ export struct GraphWorkspace {
     const maxChars: number = Math.max(5, Math.floor((nw - 48 * this.zoom) / (fontSize * 0.72)));
     const displayLabel: string = n.label.length > maxChars ? `${n.label.substring(0, maxChars)}…` : n.label;
 
-    c.fillStyle = isSelected
-      ? (this.isDarkMode ? '#FFFFFF' : '#1E1B4B')
-      : (isDimmed
-          ? (this.isDarkMode ? '#64748B' : '#94A3B8')
-          : (this.isDarkMode ? '#F8FAFC' : '#1E293B'));
+    c.fillStyle = isDimmed ? this.palette().inkMuted : this.palette().inkPrimary;
     c.fillText(displayLabel, labelX, textY);
 
     // 5. 右侧连接度徽章 Badge
@@ -488,12 +481,12 @@ export struct GraphWorkspace {
       const badgeX: number = nx + nw - badgeW - 6 * this.zoom;
       const badgeY: number = ny + (nh - badgeH) / 2;
 
-      c.fillStyle = this.isDarkMode ? '#334155' : '#F1F5F9';
+      c.fillStyle = this.palette().surfaceSubtle;
       this.drawRoundRect(c, badgeX, badgeY, badgeW, badgeH, 4 * this.zoom);
       c.fill();
 
       c.font = `bold ${Math.max(8, fontSize * 0.75)}vp sans-serif`;
-      c.fillStyle = this.isDarkMode ? '#CBD5E1' : '#64748B';
+      c.fillStyle = this.palette().inkSecondary;
       c.textAlign = 'center';
       c.fillText(`${n.degree}`, badgeX + badgeW / 2, badgeY + badgeH * 0.72);
       c.textAlign = 'left';
@@ -513,7 +506,7 @@ export struct GraphWorkspace {
 
     // 1. 纯白高质感画布底色 (暗色模式为优雅暗灰)
     c.clearRect(0, 0, w, h);
-    c.fillStyle = this.isDarkMode ? '#0F172A' : '#FFFFFF';
+    c.fillStyle = this.palette().canvas;
     c.fillRect(0, 0, w, h);
 
     const cx: number = w / 2 + this.panX;
@@ -589,7 +582,7 @@ export struct GraphWorkspace {
       if (isConnectedToSelected) {
         // 选中高亮能量线
         c.lineWidth = 2.4;
-        c.strokeStyle = '#4F46E5';
+        c.strokeStyle = this.palette().accent;
       } else if (selected !== null) {
         // 其余淡化
         c.lineWidth = 1.0;
@@ -597,14 +590,14 @@ export struct GraphWorkspace {
       } else {
         // 常态极简分支灰线
         c.lineWidth = 1.4;
-        c.strokeStyle = this.isDarkMode ? '#334155' : '#CBD5E1';
+        c.strokeStyle = this.palette().border;
       }
       c.stroke();
 
       // 在子节点接入点绘制微型连接圆点
       c.beginPath();
       c.arc(endX, endY, 2.5, 0, 6.2832);
-      c.fillStyle = isConnectedToSelected ? '#4F46E5' : (this.isDarkMode ? '#64748B' : '#94A3B8');
+      c.fillStyle = isConnectedToSelected ? this.palette().accent : this.palette().inkMuted;
       c.fill();
     }
 
@@ -731,7 +724,7 @@ export struct GraphWorkspace {
             Text(g.name)
               .fontSize(TypographyTokens.TINY)
               .fontWeight(this.activeGalaxy === g.id ? FontWeight.Bold : FontWeight.Normal)
-              .fontColor(this.activeGalaxy === g.id ? Color.White : this.palette().inkPrimary)
+              .fontColor(this.activeGalaxy === g.id ? this.palette().onAccent : this.palette().inkPrimary)
             Text(`${g.count}`)
               .fontSize(TypographyTokens.TINY)
               .fontColor(this.activeGalaxy === g.id ? 'rgba(255,255,255,0.85)' : this.palette().inkMuted)
@@ -875,7 +868,7 @@ export struct GraphWorkspace {
               Text('确定')
                 .fontSize(TypographyTokens.TINY)
                 .fontWeight(FontWeight.Bold)
-                .fontColor(Color.White)
+                .fontColor(this.palette().onAccent)
                 .padding({ left: 10, right: 10, top: 5, bottom: 5 })
                 .borderRadius(6)
                 .backgroundColor(this.palette().accent)
@@ -997,7 +990,7 @@ export struct GraphWorkspace {
               Row({ space: 8 }) {
                 Text('🔗')
                   .fontSize(13)
-                  .fontColor('#4F46E5')
+                  .fontColor(this.palette().accent)
                 Text(`已选「${this.linkSourceNode.label}」，点击任意节点建立链接`)
                   .fontSize(TypographyTokens.TINY)
                   .fontColor(this.palette().inkPrimary)
@@ -1038,7 +1031,7 @@ export struct GraphWorkspace {
                 Row({ space: 5 }) {
                   Text(this.selectedNode.unresolved ? '✦' : '📄')
                     .fontSize(14)
-                    .fontColor(this.selectedNode.unresolved ? '#D97706' : '#4F46E5')
+                    .fontColor(this.selectedNode.unresolved ? '#D97706' : this.palette().accent)
                   Text(this.selectedNode.label)
                     .fontSize(TypographyTokens.TINY)
                     .fontWeight(FontWeight.Bold)
@@ -1064,11 +1057,11 @@ export struct GraphWorkspace {
                   Text(this.selectedNode.unresolved ? '✦ 物化' : '进入笔记 →')
                     .fontSize(TypographyTokens.TINY)
                     .fontWeight(FontWeight.Medium)
-                    .fontColor(Color.White)
+                    .fontColor(this.selectedNode.unresolved ? this.palette().inkPrimary : this.palette().onAccent)
                 }
                 .padding({ left: 10, right: 10, top: 5, bottom: 5 })
                 .borderRadius(6)
-                .backgroundColor(this.selectedNode.unresolved ? '#D97706' : '#4F46E5')
+                .backgroundColor(this.selectedNode.unresolved ? this.palette().surfaceSubtle : this.palette().accent)
                 .hoverEffect(HoverEffect.Highlight)
                 .onClick(() => {
                   if (this.selectedNode !== null) {

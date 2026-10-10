@@ -1,10 +1,11 @@
 import { CanvasPoint } from '../../common/types/CanvasStroke';
 
 export interface InkStyle { color: string; width: number; highlighter: boolean; eraser: boolean; }
+export type InkContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 /** Identical midpoint curves for live ink and persisted replay; live draws only the newest segment. */
 export class InkRenderer {
-  static segment(ctx: CanvasRenderingContext2D, points: CanvasPoint[], index: number, style: InkStyle): void {
+  static segment(ctx: InkContext, points: CanvasPoint[], index: number, style: InkStyle): void {
     if (index < 0 || index >= points.length) { return; }
     const point = points[index];
     ctx.save();
@@ -26,7 +27,7 @@ export class InkRenderer {
     ctx.restore();
   }
 
-  static tail(ctx: CanvasRenderingContext2D, points: CanvasPoint[], style: InkStyle): void {
+  static tail(ctx: InkContext, points: CanvasPoint[], style: InkStyle): void {
     if (points.length < 2) { return; }
     const point = points[points.length - 1]; const previous = points[points.length - 2];
     ctx.save(); ctx.globalCompositeOperation = style.eraser ? 'destination-out' : 'source-over';
@@ -36,7 +37,7 @@ export class InkRenderer {
     ctx.lineTo(point.x, point.y); ctx.stroke(); ctx.restore();
   }
 
-  static stroke(ctx: CanvasRenderingContext2D, points: CanvasPoint[], style: InkStyle): void {
+  static stroke(ctx: InkContext, points: CanvasPoint[], style: InkStyle): void {
     if (!points.length) { return; }
     if (style.highlighter && !style.eraser) {
       ctx.save(); ctx.globalAlpha = 0.35; ctx.strokeStyle = style.color; ctx.fillStyle = style.color;

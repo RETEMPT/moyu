@@ -14,11 +14,12 @@ export struct RenameProjectSheet {
   onRenameProject: (oldName: string, newName: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   @State private draft: string = '';
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   aboutToAppear(): void {
@@ -67,7 +68,7 @@ export struct RenameProjectSheet {
             .layoutWeight(1)
             .height(28)
             .fontSize(TypographyTokens.CAPTION)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
             .backgroundColor(this.palette().accent)
             .borderRadius(6)
             .onClick(() => this.submit())

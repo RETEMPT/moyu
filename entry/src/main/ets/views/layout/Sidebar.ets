@@ -22,10 +22,11 @@ import {
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
-import { ChatSession, StoredMessage } from '../../common/types/ChatSession';
+import { ChatSession } from '../../common/types/ChatSession';
 import { NAV_AI, NAV_CANVAS, NAV_FAVORITE, NAV_GRAPH, NAV_HOME, NAV_SETTINGS, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
 import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
+import { ChatHistorySidebar } from '../ai/ChatHistorySidebar';
 import { documentIcon } from '../../common/utils/DocumentPresentation';
 import { noteRenderKey, spaceRenderKey } from '../../common/utils/ForEachKeys';
 import { BrandMark } from '../brand/BrandMark';
@@ -43,8 +44,6 @@ const ROW_HEIGHT: number = 44;
 const FILE_ROW_HEIGHT: number = 44;
 
 /** 侧栏中段模式：项目资料树 / 对话记录列表 */
-export const SIDEBAR_MODE_TREE: string = 'tree';
-export const SIDEBAR_MODE_SESSIONS: string = 'sessions';
 
 @Component
 export struct Sidebar {
@@ -58,7 +57,7 @@ export struct Sidebar {
   /** 全部未完成待办数，用于「待办」导航角标 */
   @Prop todoPendingCount: number = 0;
   /** 中段模式：'tree' 项目资料树 | 'sessions' 对话记录 */
-  @Prop sidebarMode: string = SIDEBAR_MODE_TREE;
+  @Prop historyOpen: boolean = false;
   /** 对话记录（sessions 模式渲染） */
   @Prop sessions: ChatSession[] = [];
   @Prop activeSessionId: string = '';
@@ -89,19 +88,21 @@ export struct Sidebar {
   /** 请求打开居中「新建项目」对话框 */
   onOpenCreateProject: () => void = () => {};
   /** 切换中段模式（资料树 ↔ 对话记录） */
-  onSidebarModeChange: (mode: string) => void = () => {};
+  onCloseHistory: () => void = () => {};
+  onNewSession: () => void = () => {};
   onSelectSession: (session: ChatSession) => void = () => {};
   onDeleteSession: (sessionId: string) => void = () => {};
   onTogglePinSession: (session: ChatSession) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
   @State pressedItemId: string = '';
   @State liftedItemId: string = '';
   private suppressRowClick: boolean = false;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   /** 抽屉宽度：手机窄屏按屏宽百分比，避免几乎盖满；宽屏用固定宽度。 */
@@ -438,204 +439,21 @@ export struct Sidebar {
   // 视图构建：对话记录列表（AI 墨客左栏第二模式）
   // ------------------------------------------------------------------
 
-  /** 会话列表条目的时间副标题：今天显示时刻，其余显示日期 */
-  private sessionTime(ts: number): string {
-    const d: Date = new Date(ts);
-    const now: Date = new Date();
-    const sameDay: boolean = d.getFullYear() === now.getFullYear()
-      && d.getMonth() === now.getMonth()
-      && d.getDate() === now.getDate();
-    if (sameDay) {
-      const hh: string = d.getHours() < 10 ? `0${d.getHours()}` : `${d.getHours()}`;
-      const mm: string = d.getMinutes() < 10 ? `0${d.getMinutes()}` : `${d.getMinutes()}`;
-      return `${hh}:${mm}`;
-    }
-    return `${d.getMonth() + 1}月${d.getDate()}日`;
-  }
-
-  /** 会话最后一条消息摘要 */
-  private sessionPreview(session: ChatSession): string {
-    if (!session || !session.messages || !Array.isArray(session.messages)) {
-      return '暂无消息';
-    }
-    for (let i = session.messages.length - 1; i >= 0; i--) {
-      const m: StoredMessage = session.messages[i];
-      if (m && m.text && typeof m.text === 'string' && m.text.length > 0) {
-        return m.text.replace(/\n/g, ' ').slice(0, 40);
-      }
-    }
-    return '暂无消息';
-  }
-
-  @Builder
-  sessionRow(session: ChatSession) {
-    Column({ space: 2 }) {
-      Row({ space: 6 }) {
-        Text(session.pinned ? '★' : '✦')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(session.pinned ? this.palette().accent : this.palette().inkMuted)
-          .width(14)
-          .textAlign(TextAlign.Center)
-
-        Text((session.title && session.title.length > 0) ? session.title : '新对话')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(session.id === this.activeSessionId ? this.palette().inkPrimary : this.palette().inkSecondary)
-          .fontWeight(session.id === this.activeSessionId ? FontWeight.Medium : FontWeight.Normal)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-
-        if (session.id === this.activeSessionId) {
-          IconButton({ icon: $r('app.media.ic_trash'), label: '删除这段对话', onAction: () => {
-              this.suppressRowClick = true;
-              this.onDeleteSession(session.id);
-            } })
-        }
-      }
-      .width('100%')
-
-      Row({ space: 6 }) {
-        Text(session.updatedAt ? this.sessionTime(session.updatedAt) : '')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-        Text(this.sessionPreview(session))
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-      }
-      .width('100%')
-      .padding({ left: 20 })
-    }
-    .width('100%')
-    .padding({ left: 8, right: 8, top: 6, bottom: 6 })
-    .borderRadius(8)
-    .backgroundColor(session.id === this.activeSessionId ? this.palette().activeBg : Color.Transparent)
-    .scale({
-      x: this.getItemScale(`session-${session.id}`),
-      y: this.getItemScale(`session-${session.id}`)
-    })
-    .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
-    .onTouch((event: TouchEvent) => {
-      if (event.type === TouchType.Down) {
-        this.pressedItemId = `session-${session.id}`;
-      } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-        this.pressedItemId = '';
-      }
-    })
-    .onClick(() => {
-      if (this.suppressRowClick) {
-        this.suppressRowClick = false;
-        return;
-      }
-      this.onSelectSession(session);
-    })
-    .gesture(
-      LongPressGesture({ repeat: false, duration: AnimationTokens.DURATION_FAST })
-        .onAction(() => {
-          this.onTogglePinSession(session);
-        })
-    )
-  }
-
-  /** 中段模式切换器：仅在 AI 墨客下出现，用于从会话列表切回资料树 */
-  @Builder
-  modeToggle() {
-    Row({ space: 1 }) {
-      Text('资料树')
-        .fontSize(TypographyTokens.TINY)
-        .fontColor(this.sidebarMode === SIDEBAR_MODE_TREE ? Color.White : this.palette().inkSecondary)
-        .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-        .borderRadius(5)
-        .backgroundColor(this.sidebarMode === SIDEBAR_MODE_TREE ? this.palette().accent : Color.Transparent)
-        .onClick(() => this.onSidebarModeChange(SIDEBAR_MODE_TREE))
-
-      Text('对话')
-        .fontSize(TypographyTokens.TINY)
-        .fontColor(this.sidebarMode === SIDEBAR_MODE_SESSIONS ? Color.White : this.palette().inkSecondary)
-        .padding({ left: 8, right: 8, top: 3, bottom: 3 })
-        .borderRadius(5)
-        .backgroundColor(this.sidebarMode === SIDEBAR_MODE_SESSIONS ? this.palette().accent : Color.Transparent)
-        .onClick(() => this.onSidebarModeChange(SIDEBAR_MODE_SESSIONS))
-    }
-    .padding(2)
-    .borderRadius(7)
-    .backgroundColor(this.palette().surfaceSubtle)
-  }
-
-  /** 对话记录区段头：新建对话 + 模式切换 */
-  @Builder
-  sessionSectionHeader() {
-    Row({ space: 4 }) {
-      Text('对话记录')
-        .fontSize(TypographyTokens.TINY)
-        .fontColor(this.palette().inkMuted)
-        .fontWeight(FontWeight.Medium)
-
-      Blank()
-
-
-      this.modeToggle()
-    }
-    .width('100%')
-    .height(28)
-    .padding({ left: 8, right: 4 })
-    .margin({ bottom: 4 })
-  }
-
   /** 项目资料区段头：收起全部 + 新建项目 + 模式切换 */
   @Builder
   treeSectionHeader() {
-    Row({ space: 4 }) {
-      Text('项目与资料')
-        .fontSize(TypographyTokens.TINY)
-        .fontColor(this.palette().inkMuted)
-        .fontWeight(FontWeight.Medium)
-
-      Blank()
-
-      // 全部折叠按钮（类 VSCode Collapse All）
-      Row({ space: 2 }) {
-        Text('⊟')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.palette().inkMuted)
-        Text('收起')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-      }
-      .padding({ left: 5, right: 5, top: 3, bottom: 3 })
-      .borderRadius(6)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.onCollapseAllSpaces();
-      })
-
-      // 新建项目按钮（无遮罩内联卡片，不遮蔽侧栏）
-      Row({ space: 2 }) {
-        Text('＋')
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.palette().accent)
-        Text('新建项目')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().accent)
-      }
-      .padding({ left: 6, right: 6, top: 3, bottom: 3 })
-      .borderRadius(6)
-      .backgroundColor(this.palette().accentSoft)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => {
-        this.onOpenCreateProject();
-      })
-
-      if (this.activeNav === NAV_AI) {
-        this.modeToggle()
-      }
-    }
-    .width('100%')
-    .height(28)
-    .padding({ left: 8, right: 4 })
-    .margin({ bottom: 4 })
+    Row({ space: 2 }) {
+      Text('项目与资料').fontSize(11).fontColor(this.palette().inkMuted).fontWeight(FontWeight.Medium)
+        .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      IconButton({ icon: $r('app.media.ic_chevron_up'), label: '收起所有项目', compact: true, onAction: this.onCollapseAllSpaces })
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 4 }) {
+          AppIcon({ source: $r('app.media.ic_plus'), iconSize: 14, tint: this.palette().accent })
+          Text('新建项目').fontSize(11).fontColor(this.palette().accent)
+        }
+      }.height(44).padding({ left: 6, right: 6 }).borderRadius(8).backgroundColor(this.palette().accentSoft)
+        .onClick(this.onOpenCreateProject)
+    }.width('100%').height(44).padding({ left: 8, right: 4 }).margin({ bottom: 4 })
   }
 
   // ------------------------------------------------------------------
@@ -649,6 +467,11 @@ export struct Sidebar {
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
+      if (this.historyOpen) {
+        ChatHistorySidebar({ sessions: this.sessions, activeSessionId: this.activeSessionId,
+          onClose: this.onCloseHistory, onNew: this.onNewSession, onSelect: this.onSelectSession,
+          onDelete: this.onDeleteSession, onPin: this.onTogglePinSession })
+      } else {
       Column() {
         // ---- 顶部工作区品牌 ----
         Row({ space: 8 }) {
@@ -714,35 +537,7 @@ export struct Sidebar {
         .width('100%')
         .margin({ bottom: 8 })
 
-        // ---- 中段：项目资料树 ↔ 对话记录（AI 墨客下自动切到对话） ----
-        if (this.sidebarMode === SIDEBAR_MODE_SESSIONS) {
-          this.sessionSectionHeader()
-
-          Scroll() {
-            Column({ space: 2 }) {
-              if (this.sessions.length === 0) {
-                Row({ space: 4 }) {
-                  Text('✦')
-                    .fontSize(TypographyTokens.TINY)
-                    .fontColor(this.palette().inkMuted)
-                  Text('在墨客点 ＋ → 新建对话')
-                    .fontSize(TypographyTokens.CAPTION)
-                    .fontColor(this.palette().inkMuted)
-                }
-                .width('100%')
-                .height(32)
-                .padding({ left: 12, right: 8 })
-              } else {
-                ForEach(this.sessions, (session: ChatSession) => {
-                  this.sessionRow(session)
-                }, (session: ChatSession) => session.id)
-              }
-            }
-            .width('100%')
-          }
-          .layoutWeight(1)
-          .scrollBar(BarState.Off)
-        } else {
+        // 项目资料树只放项目操作；历史入口在对话页左上角。
           this.treeSectionHeader()
 
           // 项目树滚动容器
@@ -756,7 +551,6 @@ export struct Sidebar {
           }
           .layoutWeight(1)
           .scrollBar(BarState.Off)
-        }
 
         // ---- 底部设置入口 ----
         Row({ space: 8 }) {
@@ -779,6 +573,7 @@ export struct Sidebar {
       .width('100%')
       .height('100%')
       .padding({ left: 8, right: 8, top: 8 })
+      }
 
     }
     .width(this.drawerWidth())

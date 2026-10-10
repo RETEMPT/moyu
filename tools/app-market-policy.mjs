@@ -50,6 +50,7 @@ export function packageErrors(report, expected, requireSignature = false) {
     if (JSON.stringify([...(module.module?.deviceTypes || [])].sort()) !== JSON.stringify([...expected.devices].sort())) errors.push('设备声明与工程不匹配');
     if (module.backup?.allowToBackupRestore !== false) errors.push('整包备份未关闭');
     if ((module.nativeLibraries || []).length) errors.push('出现未声明的原生库');
+    if ((module.debugResources || []).length) errors.push('发布包包含调试 PDF 或预览图片');
     const permissions = (module.module?.requestPermissions || []).map(p => p.name).sort();
     if (JSON.stringify(permissions) !== JSON.stringify([...expected.permissions].sort())) errors.push('打包权限与工程不匹配');
     if (requireSignature && module.signatureVerified !== true) errors.push('未通过 SDK 签名校验');

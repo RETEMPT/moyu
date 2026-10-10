@@ -95,8 +95,8 @@ export class StudyBackupService {
           await fs.fsync(file.fd);
         } finally { await fs.close(file); }
         if (asset.kind === 'pdf') {
-          note.pageCount = (await PdfDocumentService.getInstance().getPdfInfo(target)).pageCount;
-          note.sourceUri = target; note.sourceType = 'pdf';
+          note.pageCount = (await PdfDocumentService.getInstance().validateImport(target)).pageCount;
+          note.sourceUri = target; note.sourceFileName = target.split('/').pop(); note.sourceType = 'pdf';
         } else {
           const source = image.createImageSource(target);
           try { await source.getImageInfo(); } finally { await source.release(); }

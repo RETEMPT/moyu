@@ -32,10 +32,11 @@ export struct ContextDrawer {
   onClose: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   /** 面板宽度：手机窄屏铺满，宽屏用固定宽度。 */

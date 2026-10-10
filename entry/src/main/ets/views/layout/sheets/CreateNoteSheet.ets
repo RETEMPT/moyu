@@ -13,11 +13,12 @@ export struct CreateNoteSheet {
   onCreateNote: (title: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   @State private name: string = '未命名笔记';
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private submit(): void {
@@ -83,7 +84,7 @@ export struct CreateNoteSheet {
             .height(38)
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontWeight(FontWeight.Medium)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
             .backgroundColor(this.palette().accent)
             .borderRadius(10)
             .onClick(() => this.submit())

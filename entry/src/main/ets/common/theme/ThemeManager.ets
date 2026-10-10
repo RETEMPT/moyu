@@ -25,6 +25,7 @@ import { preferences } from '@kit.ArkData';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { DARK_MODE_KEY } from './ThemeHelper';
 import { normalizeThemeMode, ThemeMode } from './ThemeMode';
+import { normalizeThemeStyle, THEME_STYLE_KEY } from './ThemeStyle';
 
 /** Preferences 实例名与键名 */
 const PREFERENCES_NAME: string = 'flowmind_theme';
@@ -39,6 +40,8 @@ const ALTERNATE_ICON_MIN_API: number = 26;
 export class ThemeManager {
   /** 用户当前选择的模式，未 restore 前按「跟随系统」处理 */
   private static mode: ThemeMode = ThemeMode.SYSTEM;
+  private static style: string = 'ink';
+  private static writes: Promise<void> = Promise.resolve();
   /** 系统当前的深浅色，用于解析 ThemeMode.SYSTEM */
   private static systemIsDark: boolean = false;
   /** 持久化句柄，restore 成功后才可用 */
@@ -62,6 +65,8 @@ export class ThemeManager {
     return ThemeManager.mode;
   }
 
+  static currentStyle(): string { return ThemeManager.style; }
+
   /** 当前是否应当呈现深色 */
   static isDark(): boolean {
     return ThemeManager.resolveIsDark(ThemeManager.mode);
@@ -81,39 +86,61 @@ export class ThemeManager {
       ThemeManager.store = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
       const stored: number = await ThemeManager.store.get(THEME_MODE_KEY, ThemeMode.SYSTEM as number) as number;
       ThemeManager.mode = normalizeThemeMode(stored);
+      ThemeManager.style = normalizeThemeStyle(await ThemeManager.store.get('themeStyle', 'ink') as string);
       const reduce = await ThemeManager.store.get('reduceMotion', false);
       AppStorage.setOrCreate<boolean>('flowmindReduceMotion', reduce === true);
     } catch (error) {
       console.error(`主题偏好读取失败，回退为跟随系统: ${JSON.stringify(error)}`);
       ThemeManager.mode = ThemeMode.SYSTEM;
+      ThemeManager.style = 'ink';
+      AppStorage.setOrCreate<boolean>('flowmindReduceMotion', false);
     }
+    AppStorage.setOrCreate<string>(THEME_STYLE_KEY, ThemeManager.style);
     ThemeManager.apply(true);
   }
 
   /** 用户在设置里切换模式：立即生效并落盘。无需传 Context，restore 时已缓存。 */
   static async setMode(mode: ThemeMode): Promise<void> {
-    if (ThemeManager.mode === mode) {
-      return;
-    }
-    ThemeManager.mode = mode;
-    ThemeManager.apply(true);
-    if (ThemeManager.store === null) {
-      console.error('主题偏好尚未初始化，本次切换不会被持久化');
-      return;
-    }
-    try {
-      await ThemeManager.store.put(THEME_MODE_KEY, mode as number);
-      await ThemeManager.store.flush();
-    } catch (error) {
-      console.error(`主题偏好写入失败: ${JSON.stringify(error)}`);
-    }
+    await ThemeManager.enqueue(async () => {
+      const next = normalizeThemeMode(mode);
+      await ThemeManager.persist(THEME_MODE_KEY, next as number, ThemeManager.mode as number);
+      ThemeManager.mode = next;
+      ThemeManager.apply(true);
+    });
+  }
+
+  static async setStyle(style: string): Promise<void> {
+    await ThemeManager.enqueue(async () => {
+      const next = normalizeThemeStyle(style);
+      await ThemeManager.persist('themeStyle', next, ThemeManager.style);
+      ThemeManager.style = next;
+      AppStorage.setOrCreate<string>(THEME_STYLE_KEY, next);
+    });
   }
 
   static async setReduceMotion(value: boolean): Promise<void> {
+    await ThemeManager.enqueue(async () => {
+      await ThemeManager.persist('reduceMotion', value, AppStorage.get<boolean>('flowmindReduceMotion') === true);
+      AppStorage.setOrCreate<boolean>('flowmindReduceMotion', value);
+    });
+  }
+
+  private static enqueue(action: () => Promise<void>): Promise<void> {
+    const work = ThemeManager.writes.then(action);
+    ThemeManager.writes = work.catch(() => {});
+    return work;
+  }
+
+  private static async persist(key: string, value: preferences.ValueType, previous: preferences.ValueType): Promise<void> {
     if (ThemeManager.store === null) { throw new Error('外观设置尚未初始化'); }
-    await ThemeManager.store.put('reduceMotion', value);
-    await ThemeManager.store.flush();
-    AppStorage.setOrCreate<boolean>('flowmindReduceMotion', value);
+    try {
+      await ThemeManager.store.put(key, value);
+      await ThemeManager.store.flush();
+    } catch {
+      // 恢复 Preferences 的内存值，避免下一次 flush 把失败的设置一并落盘。
+      try { await ThemeManager.store.put(key, previous); } catch { /* 下一次成功写入仍可重试 */ }
+      throw new Error('外观设置保存失败，请重试');
+    }
   }
 
   /**

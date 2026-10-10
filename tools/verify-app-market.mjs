@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseJsonc, packageErrors, deviceEvidenceErrors, REQUIRED_CASES } from './app-market-policy.mjs';
 
-const expected = { bundleName:'com.retempt.flowmind', versionName:'1.0.3', versionCode:1001003,
+const expected = { bundleName:'com.retempt.flowmind', versionName:'1.0.4', versionCode:1001004,
   minApi:24,targetApi:26, devices:['phone','tablet'], permissions:['ohos.permission.INTERNET','ohos.permission.DISTRIBUTED_DATASYNC'],
   sourceCommit:'abcdef',appSha256:'artifact-sha' };
 const pack = () => ({ appSha256:'artifact-sha',pack:{ summary:{app:{bundleName:expected.bundleName,version:{code:expected.versionCode,name:expected.versionName}}}},
@@ -22,6 +22,8 @@ for (const [name,change] of [
   ['unverified signature',p=>{p.modules[0].signatureVerified=false;}],
   ['system backup',p=>{p.modules[0].backup.allowToBackupRestore=true;}],
   ['unexpected native code',p=>{p.modules[0].nativeLibraries=['libs/arm64-v8a/libentry.so'];}],
+  ['debug PDF samples',p=>{p.modules[0].debugResources=['resources/rawfile/example-course.pdf'];}],
+  ['debug preview images',p=>{p.modules[0].debugResources=['resources/rawfile/debug-pdf-preview/course-1.png'];}],
   ['device mismatch',p=>{p.modules[0].module.deviceTypes=['phone'];}],
   ['unexpected SDK',p=>{p.modules[0].app.targetAPIVersion=250000025;}]
 ]) test(`submission gate blocks ${name}`,()=>{const p=pack();change(p);assert.ok(packageErrors(p,expected,true).length);});

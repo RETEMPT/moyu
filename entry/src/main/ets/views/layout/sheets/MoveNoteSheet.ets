@@ -19,11 +19,12 @@ export struct MoveNoteSheet {
   onMoveNote: (note: NoteItem, category: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   @State private draft: string = '';
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private currentCategory(): string {
@@ -111,7 +112,7 @@ export struct MoveNoteSheet {
           Button('移动并新建')
             .height(32)
             .fontSize(TypographyTokens.CAPTION)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
             .backgroundColor(this.palette().accent)
             .borderRadius(6)
             .onClick(() => this.move_to(this.draft))

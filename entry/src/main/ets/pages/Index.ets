@@ -11,6 +11,8 @@ import { common } from '@kit.AbilityKit';
 import { curves, promptAction } from '@kit.ArkUI';
 import { NoteItem } from '../common/types/NoteItem';
 import { ReaderSaveKind } from '../common/types/ReaderSaveKind';
+import { SerialTaskQueue } from '../services/storage/SerialTaskQueue';
+import { WorkspaceNotePolicy } from '../services/ai/WorkspaceNotePolicy';
 import { SpaceFolder } from '../common/types/SpaceFolder';
 import { LinkGraph, Backlink, UnresolvedLink } from '../common/types/LinkGraph';
 import { MarkdownOutlineItem } from '../common/types/MarkdownOutlineItem';
@@ -37,6 +39,7 @@ import {
   TRASH_RETENTION_DAYS
 } from '../common/constants/WorkspaceConstants';
 import { NoteStorageService } from '../services/NoteStorageService';
+import { PdfDocumentService } from '../services/document/PdfDocumentService';
 import { NoteCoverService } from '../services/NoteCoverService';
 import { NoteSearchService } from '../services/NoteSearchService';
 import { TodoStorageService } from '../services/TodoStorageService';
@@ -48,7 +51,6 @@ import { AssistantModeService } from '../services/ai/AssistantModeService';
 import { UsageGuideSheet } from '../views/settings/UsageGuideSheet';
 import { REMOTE_AI_ENABLED } from '../common/constants/RuntimeCapabilities';
 import { AppShell } from '../views/layout/AppShell';
-import { SIDEBAR_MODE_SESSIONS, SIDEBAR_MODE_TREE } from '../views/layout/Sidebar';
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
 import { LibraryWorkspace } from '../views/workspace/LibraryWorkspace';
 import { GraphWorkspace } from '../views/workspace/GraphWorkspace';
@@ -120,6 +122,9 @@ struct Index {
   @State activeNav: string = NAV_HOME;
   @State settingsSection: string = 'overview';
   @State settingsBackToken: number = 0;
+  @State settingsExitToken: number = 0;
+  @State settingsOpenToken: number = 0;
+  private settingsExitAction: (() => void) | null = null;
   @State aiBackToken: number = 0;
   private sessionDeleteBusy: boolean = false;
   @State activeSpaceId: string = '';
@@ -147,7 +152,9 @@ struct Index {
   // ---- AI 会话（列表由 Index 持有，侧栏与工作台共用） ----
   @State sessions: ChatSession[] = [];
   @State activeSessionId: string = '';
-  @State sidebarMode: string = SIDEBAR_MODE_TREE;
+  @State chatHistoryOpen: boolean = false;
+  private historyRestoreCollapsed: boolean = false;
+  private aiMutationQueue: SerialTaskQueue = new SerialTaskQueue();
   /** AI 墨客右栏「来源与上下文」由工作台上报 */
   @State aiCitations: ChatCitation[] = [];
   @State aiPinnedNotes: NoteItem[] = [];
@@ -235,7 +242,20 @@ struct Index {
     return this.appContext;
   }
 
+  private toggleChatHistory(): void {
+    if (this.chatHistoryOpen) { this.closeChatHistory(); return; }
+    this.historyRestoreCollapsed = this.sidebarCollapsed;
+    this.chatHistoryOpen = true; this.sidebarCollapsed = false;
+    if (this.singleColumn) { this.contextPanelOpen = false; }
+  }
+
+  private closeChatHistory(): void {
+    if (!this.chatHistoryOpen) { return; }
+    this.chatHistoryOpen = false; this.sidebarCollapsed = this.historyRestoreCollapsed;
+  }
+
   private dismissNavigationOverlay(): void {
+    if (this.chatHistoryOpen) { this.closeChatHistory(); }
     if (this.singleColumn) { this.sidebarCollapsed = true; this.contextPanelOpen = false; }
   }
 
@@ -252,6 +272,7 @@ struct Index {
     if (this.smartExtractVisible) { this.smartExtractCloseToken++; return true; }
     if (this.searchVisible) { this.searchVisible = false; return true; }
     if (this.fullScreenDocOpen) { this.documentBackToken++; return true; }
+    if (this.chatHistoryOpen) { this.closeChatHistory(); return true; }
     if (this.singleColumn && this.contextPanelOpen) { this.contextPanelOpen = false; return true; }
     if (this.singleColumn && !this.sidebarCollapsed) { this.sidebarCollapsed = true; return true; }
     if (this.readingOpen) { this.closeReading(); return true; }
@@ -284,11 +305,17 @@ struct Index {
 
   private async bootstrap(): Promise<void> {
     const context: common.UIAbilityContext = this.getAbilityContext();
+    PdfDocumentService.getInstance().bindContext(context);
     try { this.privacyWelcome = !await this.privacyNotice.shown(context); }
     catch { this.privacyWelcome = true; }
     try {
       const loaded: NoteItem[] = await this.storage.load(context, []);
       this.notes = loaded;
+      try { this.notes = await this.storage.ensureDebugPdf(context, loaded); }
+      catch (error) {
+        console.warn(`内置阅读示例加载失败: ${JSON.stringify(error)}`);
+        this.notify('内置阅读示例未能加入，可在使用指引中重试导入');
+      }
     } catch (error) {
       console.error(`本地笔记加载失败: ${JSON.stringify(error)}`);
       this.notes = [];
@@ -340,7 +367,7 @@ struct Index {
   }
 
   /** AiWorkspace 新建或更新会话后回写列表，并同步 activeSessionId */
-  private handleSessionSaved(session: ChatSession): void {
+  private handleSessionSaved(session: ChatSession, activate: boolean = true): void {
     let replaced: boolean = false;
     const next: ChatSession[] = [];
     for (let i = 0; i < this.sessions.length; i++) {
@@ -355,7 +382,7 @@ struct Index {
       next.unshift(session);
     }
     this.sessions = this.sortSessions(next);
-    this.activeSessionId = session.id;
+    if (activate) { this.activeSessionId = session.id; }
   }
 
   private handleSelectSession(session: ChatSession): void {
@@ -375,6 +402,7 @@ struct Index {
     this.activeNav = NAV_AI;
     this.readingOpen = false;
     this.fullScreenDocOpen = false;
+    this.aiPinnedNotes = []; this.aiPrefilledPrompt = '';
     this.activeSessionId = '';
   }
 
@@ -692,7 +720,8 @@ struct Index {
         onClose: () => this.closeSheet(),
           onCreateNoteInProject: (title: string, projectName: string, type: string) => {
           this.closeSheet();
-          this.requestCreateNote(projectName, type, title);
+          if (type === 'Doc') { this.importDocument(projectName); }
+          else { this.requestCreateNote(projectName, type, title); }
         },
         onRequestRename: (project: SpaceFolder) => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
@@ -711,7 +740,8 @@ struct Index {
         onClose: () => this.closeSheet(),
         onCreateNoteInProject: (title: string, projectName: string, type: string) => {
           this.closeSheet();
-          this.requestCreateNote(projectName, type, title);
+          if (type === 'Doc') { this.importDocument(projectName); }
+          else { this.requestCreateNote(projectName, type, title); }
         },
         onImportIntoProject: (projectName: string) => {
           this.closeSheet();
@@ -777,6 +807,7 @@ struct Index {
 
   /** 点击面包屑：分类段 → 回到资料库并按分类筛选；标题段 → 打开文档切换搜索 */
   private onBreadcrumbClick(index: number, segment: string): void {
+    if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.onBreadcrumbClick(index, segment)); return; }
     if (this.readingOpen || this.fullScreenDocOpen) {
       if (index === 0) {
         // 点击分类名：关闭当前文档，回到资料库并选中该项目
@@ -876,6 +907,7 @@ struct Index {
   }
 
   private openNote(note: NoteItem): void {
+    if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.openNote(note)); return; }
     const current = this.notes.find((item: NoteItem) => item.id === note.id);
     if (!current) { this.notify('笔记已被移走'); return; }
     note = current;
@@ -949,7 +981,7 @@ struct Index {
     this.noteCreateError = '';
     const pending: PendingNoteCreate = {
       projectName: projectName,
-      type: type,
+      type: /^(canvas|handwriting)$/i.test(type) ? 'Handwriting' : 'Markdown',
       defaultName: defaultName
     };
     animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
@@ -958,13 +990,13 @@ struct Index {
   }
 
   /** 命名层确认：按意图分发到全局新建或项目内新建。 */
-  private async commitPendingCreate(name: string): Promise<void> {
+  private async commitPendingCreate(name: string, projectName?: string, tags: string[] = []): Promise<void> {
     if (this.noteCreateBusy) { return; }
     const pending: PendingNoteCreate | null = this.pendingCreate;
     if (pending === null) {
       return;
     }
-    const ok = await this.createNote(name, pending.type, pending.projectName || this.activeSpaceName());
+    const ok = await this.createNote(name, pending.type, projectName === undefined ? pending.projectName || this.activeSpaceName() : projectName, '', tags);
     if (ok) { this.pendingCreate = null; }
   }
 
@@ -974,7 +1006,7 @@ struct Index {
     return pending !== null ? pending.defaultName : '未命名笔记';
   }
 
-  private async createNote(title: string, type: string = 'Markdown', projectName: string = this.activeSpaceName(), body: string = ''): Promise<boolean> {
+  private async createNote(title: string, type: string = 'Markdown', projectName: string = this.activeSpaceName(), body: string = '', tags: string[] = []): Promise<boolean> {
     if (this.noteCreateBusy) { return false; }
     this.noteCreateBusy = true;
     this.noteCreateError = '';
@@ -989,12 +1021,12 @@ struct Index {
       category: category.length === 0 ? '未分类' : category,
       type: handwriting ? 'Handwriting' : 'Markdown',
       previewText: '空白笔记',
-      tag: '',
+      tag: tags[0] || '',
       tagColor: '',
       updateTime: this.formatTime(now),
       contentDetail: body || `# ${cleanTitle}\n\n`,
       strokes: handwriting ? '[]' : undefined,
-      tags: [],
+      tags: tags.slice(0, 12),
       createdAt: now.getTime(),
       updatedAt: now.getTime()
     };
@@ -1298,10 +1330,15 @@ struct Index {
     return matches[0];
   }
 
-  private async commitAiNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
+  private commitAiNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
+    return this.aiMutationQueue.run<void>(() => this.saveAiNote(note, writeBody));
+  }
+
+  private async saveAiNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
     const previous = this.notes.find((item: NoteItem) => item.id === note.id);
     const context = this.getAbilityContext();
-    if (writeBody && previous && this.readingOpen && this.readingNote.id === previous.id) {
+    if (writeBody && previous && ((this.readingOpen && this.readingNote.id === previous.id) ||
+      (this.fullScreenDocOpen && this.fullScreenDocNote.id === previous.id))) {
       throw new Error('请先结束当前笔记编辑并返回，再修改正文');
     }
     if (writeBody) { await this.storage.saveDocument(context, note, note.contentDetail); }
@@ -1321,36 +1358,42 @@ struct Index {
   }
 
   private async handleAiAddTag(identifier: string, tags: string): Promise<void> {
-    const note = this.requireAiNote(identifier);
-    const values = tags.split(/[,，]/).map((value: string) => value.trim()).filter((value: string) => value.length > 0);
-    if (!values.length) { throw new Error('标签不能为空'); }
-    const merged = note.tags ? note.tags.slice() : note.tag.split(',').filter((value: string) => value.trim().length > 0);
-    for (const value of values) { if (!merged.includes(value)) { merged.push(value); } }
-    const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
-    updated.tags = merged; updated.tag = merged.join(', '); updated.updatedAt = Date.now();
-    await this.commitAiNote(updated);
+    return this.aiMutationQueue.run<void>(async () => {
+      const note = this.requireAiNote(identifier);
+      const values = tags.split(/[,，]/).map((value: string) => value.trim()).filter((value: string) => value.length > 0);
+      if (!values.length) { throw new Error('标签不能为空'); }
+      const merged = note.tags ? note.tags.slice() : note.tag.split(',').filter((value: string) => value.trim().length > 0);
+      for (const value of values) { if (!merged.includes(value)) { merged.push(value); } }
+      const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
+      updated.tags = merged; updated.tag = merged.join(', '); updated.updatedAt = Math.max(Date.now(), (note.updatedAt || 0) + 1); updated.updateTime = '刚刚';
+      await this.saveAiNote(updated);
+    });
   }
 
   private async handleAiCreateLink(identifier: string, title: string): Promise<void> {
-    const note = this.requireAiNote(identifier);
-    const link = `[[${title}]]`;
-    if (note.contentDetail.includes(link)) { return; }
-    const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
-    updated.contentDetail = `${note.contentDetail}\n\n${link}\n`; updated.updatedAt = Date.now(); updated.updateTime = '刚刚';
-    await this.commitAiNote(updated, true);
+    return this.aiMutationQueue.run<void>(async () => {
+      const note = this.requireAiNote(identifier);
+      const link = `[[${title}]]`;
+      const updated = WorkspaceNotePolicy.mutate(note, 'update_note',
+        note.contentDetail.includes(link) ? note.contentDetail : `${note.contentDetail}\n\n${link}\n`, note.updatedAt || 0);
+      if (note.contentDetail.includes(link)) { return; }
+      await this.saveAiNote(updated, true);
+    });
   }
 
   private async handleAiCategorize(identifier: string, category: string): Promise<void> {
-    const note = this.requireAiNote(identifier);
-    const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
-    updated.category = category; updated.updatedAt = Date.now();
-    await this.commitAiNote(updated);
+    return this.aiMutationQueue.run<void>(async () => {
+      const note = this.requireAiNote(identifier);
+      const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
+      updated.category = category; updated.updatedAt = Math.max(Date.now(), (note.updatedAt || 0) + 1); updated.updateTime = '刚刚';
+      await this.saveAiNote(updated);
+    });
   }
 
   private async handleAiCreateNote(title: string, category: string, tag: string, content: string): Promise<void> {
     const now = Date.now();
     const tags = tag.trim() ? tag.split(/[,，]/).map((value: string) => value.trim()).filter((value: string) => !!value) : ['AI生成'];
-    const note: NoteItem = { id: `note-${now}-${this.notes.length}`, title, category: category || CATEGORY_UNFILED,
+    const note: NoteItem = { id: `note-${now}-${Math.floor(Math.random() * 1000000000)}`, title, category: category || CATEGORY_UNFILED,
       type: 'Markdown', previewText: content.slice(0, 100).replace(/[#*`\n]/g, ' ').trim(), tag: tags.join(', '), tags,
       tagColor: '', updateTime: '刚刚', contentDetail: content, createdAt: now, updatedAt: now };
     await this.commitAiNote(note, true);
@@ -1358,12 +1401,38 @@ struct Index {
   }
 
   private async handleAiCreateTodo(date: string, title: string): Promise<void> {
+    return this.aiMutationQueue.run<void>(() => this.saveAiTodo(date, title));
+  }
+
+  private async saveAiTodo(date: string, title: string): Promise<void> {
     const now = Date.now();
     const todo: TodoItem = { id: `todo-${now}-${this.todos.length}`, date, title, done: false,
       noteRefs: [], createdAt: now, updatedAt: now };
     const next = [todo].concat(this.todos);
     await this.todoStorage.saveTodos(this.getAbilityContext(), next);
     this.todos = next;
+  }
+
+  private handleAiManageNote(operation: string, identifier: string, value: string, expectedUpdatedAt: number): Promise<string> {
+    return this.aiMutationQueue.run<string>(async () => {
+      const current = this.requireAiNote(identifier);
+      const next = WorkspaceNotePolicy.mutate(current, operation, value, expectedUpdatedAt);
+      await this.saveAiNote(next, operation === 'update_note');
+      return `已保存《${next.title}》 · ID ${next.id} · updatedAt ${next.updatedAt}`;
+    });
+  }
+
+  private handleAiSetTodoStatus(identifier: string, status: string): Promise<string> {
+    return this.aiMutationQueue.run<string>(async () => {
+      const current = this.todos.find((todo: TodoItem) => todo.id === identifier);
+      if (!current) { throw new Error('待办已不存在，请重新查询 ID'); }
+      if (!['done', 'pending'].includes(status)) { throw new Error('待办状态无效'); }
+      const next = this.todos.map((todo: TodoItem) => todo.id === current.id ?
+        { id: todo.id, date: todo.date, title: todo.title, done: status === 'done', noteRefs: todo.noteRefs,
+          createdAt: todo.createdAt, updatedAt: Date.now() } as TodoItem : todo);
+      await this.todoStorage.saveTodos(this.getAbilityContext(), next); this.todos = next;
+      return `待办 ${identifier} 已设为${status === 'done' ? '完成' : '未完成'}`;
+    });
   }
   // ==================================================================
   // 重命名 / 移动分类
@@ -1703,12 +1772,14 @@ struct Index {
    * 通过系统文件选择器导入文档。
    * @param targetCategory 导入后归入的项目名，默认「未分类」
    */
-  private async importDocument(targetCategory: string = '未分类', example: boolean = false): Promise<NoteItem | null> {
+  private async importDocument(targetCategory: string = '未分类', example: boolean = false, snapshot: boolean = false,
+    selectedUri: string = ''): Promise<NoteItem | null> {
     if (this.documentImportBusy) { return null; }
     this.documentImportBusy = true;
     const context: common.UIAbilityContext = this.getAbilityContext();
     try {
-      const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context) : await this.storage.importDocument(context);
+      const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context, snapshot) :
+        (selectedUri ? await this.storage.importDocumentUri(context, selectedUri) : await this.storage.importDocument(context));
       if (result.status === 'imported' && result.document !== undefined) {
         const document: MarkdownDocument = result.document;
         const now: Date = new Date();
@@ -1720,6 +1791,7 @@ struct Index {
           type: result.noteType !== undefined ? result.noteType : (isPdf ? 'PDF' : 'Markdown'),
           sourceType: isPdf ? 'pdf' : 'document',
           sourceUri: result.sourceUri,
+          sourceFileName: result.sourceFileName,
           pageCount: result.pageCount || 1,
           pageInfo: isPdf ? (result.pageCount || 1) + ' 页' : '',
           previewText: document.content.length > 48 ? `${document.content.substring(0, 48)}…` : document.content,
@@ -1732,11 +1804,15 @@ struct Index {
           updatedAt: now.getTime()
         };
         const nextNotes = [note].concat(this.notes);
-        await this.storage.save(nextNotes);
+        try { await this.storage.save(nextNotes); }
+        catch (error) {
+          try { await this.storage.delete(context, note.id, note.sourceUri || ''); } catch { /* Keep the original failure available for retry. */ }
+          throw new Error(error instanceof Error ? error.message : '本机资料保存失败，请重试');
+        }
         this.notes = nextNotes;
         this.rebuildSpaces();
         this.refreshGraph();
-        this.notify(`已导入 ${document.fileName}`);
+        this.notify(`已保存到本机资料库：${result.fileName || document.title}`);
         return note;
       } else if (result.status !== 'cancelled') {
         this.notify(result.message);
@@ -1757,11 +1833,42 @@ struct Index {
       saveDocument: async (item: NoteItem, text: string) => { await this.storage.saveDocument(this.getAbilityContext(), item, text); },
       saveNotes: (items: NoteItem[]) => this.storage.save(items),
       publish: (items: NoteItem[], saved: NoteItem) => {
-        this.notes = items; this.readingNote = saved;
+        this.notes = items;
+        if (this.readingNote.id === saved.id) { this.readingNote = saved; }
         if (this.fullScreenDocNote.id === saved.id) { this.fullScreenDocNote = saved; }
         this.refreshGraph();
       }
-    }, true, kind);
+    }, kind !== 'pdf-source', kind);
+  }
+
+  private async restoreReaderPdfSource(): Promise<void> {
+    const context = this.getAbilityContext();
+    const originalId = this.fullScreenDocNote.id;
+    const previousSource = this.fullScreenDocNote.sourceUri || '';
+    const replacement = await this.storage.selectReplacementPdf(context, this.fullScreenDocNote);
+    if (!replacement) { return; }
+    try {
+      await this.handleSaved(replacement, replacement.contentDetail, 'pdf-source');
+    } catch (error) {
+      try { await PdfDocumentService.getInstance().removeManagedPdf(context, replacement.sourceUri || ''); }
+      catch { console.warn('关联失败后的 PDF 副本清理失败'); }
+      throw new Error(error instanceof Error ? error.message : '原 PDF 关联保存失败');
+    }
+    if (this.fullScreenDocOpen && this.fullScreenDocNote.id === originalId) {
+      this.notify('原 PDF 已关联，现有批注已保留');
+    }
+    if (previousSource !== replacement.sourceUri && !this.notes.concat(this.trash).some((item: NoteItem) => item.sourceUri === previousSource)) {
+      try { await PdfDocumentService.getInstance().removeManagedPdf(context, previousSource); }
+      catch { console.warn('旧 PDF 副本清理失败'); }
+    }
+  }
+
+  /** Extraction uses the exact persisted source and never relies on a picker grant after import. */
+  private async importExtractSource(uri: string): Promise<string> {
+    const note = await this.importDocument('外部参考', false, false, uri);
+    if (!note) { throw new Error('资料未能保存到本机资料库，请重试'); }
+    if (note.sourceType === 'pdf' && note.sourceUri) { return note.sourceUri; }
+    return (await this.storage.read(this.getAbilityContext(), note)).filePath;
   }
 
   private formatTime(date: Date): string {
@@ -1778,7 +1885,21 @@ struct Index {
     }
     this.readingOpen = false; this.fullScreenDocOpen = false; this.contextPanelOpen = false;
     this.activeSheet = ''; this.settingsSection = section;
+    this.settingsOpenToken++;
     this.activeNav = NAV_SETTINGS; if (this.singleColumn) { this.sidebarCollapsed = true; }
+  }
+
+  private afterSettingsExit(action: () => void): void {
+    if (this.activeNav !== NAV_SETTINGS) { action(); return; }
+    this.settingsExitAction = action;
+    this.settingsExitToken++;
+  }
+
+  private completeSettingsExit(): void {
+    const action = this.settingsExitAction;
+    this.settingsExitAction = null;
+    this.activeNav = NAV_HOME;
+    if (action !== null) { action(); }
   }
 
   // ==================================================================
@@ -1789,9 +1910,13 @@ struct Index {
   workspaceContent() {
     if (this.activeNav === NAV_SETTINGS) {
       SettingsWorkspace({ initialSection: this.settingsSection, noteCount: this.notes.length, projectCount: this.spaces.length,
+        openRequestToken: this.settingsOpenToken,
         backRequestToken: this.settingsBackToken, onExit: () => { this.activeNav = NAV_HOME; },
+        exitRequestToken: this.settingsExitToken, onExitConfirmed: () => this.completeSettingsExit(),
         onOpenLibrary: () => { this.activeNav = NAV_LIBRARY; },
         onImportExample: () => this.importDocument('示例资料', true),
+        onImportSnapshot: () => this.importDocument('示例资料', true, true),
+        onOpenCapture: () => { this.smartExtractVisible = true; },
         onOpenBackup: () => { this.backupVisible = true; }, onOpenPrivacy: () => { this.privacyVisible = true; } })
     } else if (this.readingOpen) {
       ReaderWorkspace({
@@ -1939,6 +2064,9 @@ struct Index {
         onImportExternal: () => this.importDocument('外部参考'),
         backRequestToken: this.aiBackToken,
         onNavigateBack: () => { this.activeNav = NAV_HOME; },
+        onNewSession: () => this.handleNewSession(),
+        historyOpen: this.chatHistoryOpen,
+        onToggleHistory: () => this.toggleChatHistory(),
         onDeleteSession: (id: string) => { this.handleDeleteSession(id); },
         currentNote: this.activeNoteId.length > 0
           ? this.notes.find((note: NoteItem) => note.id === this.activeNoteId) ?? null
@@ -1956,8 +2084,8 @@ struct Index {
         onPinnedNotesChange: (pinned: NoteItem[]) => {
           this.aiPinnedNotes = pinned;
         },
-        onSessionSaved: (session: ChatSession) => {
-          this.handleSessionSaved(session);
+        onSessionSaved: (session: ChatSession, activate?: boolean) => {
+          this.handleSessionSaved(session, activate !== false);
         },
         onContextChange: (citations: ChatCitation[], pinned: NoteItem[], layerLabel: string, modelLabel: string) => {
           this.aiCitations = citations;
@@ -1973,6 +2101,9 @@ struct Index {
         onCreateLinkBetweenNotes: (sourceIdentifier: string, targetTitle: string) => this.handleAiCreateLink(sourceIdentifier, targetTitle),
         onCategorizeNote: (identifier: string, category: string) => this.handleAiCategorize(identifier, category),
         onCreateNewNote: (title: string, category: string, tag: string, content: string) => this.handleAiCreateNote(title, category, tag, content),
+        onManageNote: (operation: string, identifier: string, value: string, expectedUpdatedAt: number) =>
+          this.handleAiManageNote(operation, identifier, value, expectedUpdatedAt),
+        onSetTodoStatus: (identifier: string, status: string) => this.handleAiSetTodoStatus(identifier, status),
         onOpenSearch: () => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.searchVisible = true;
@@ -2097,10 +2228,12 @@ struct Index {
           this.onBreadcrumbClick(index, segment);
         },
         onLayoutModeChange: (singleColumn: boolean, threeColumn: boolean) => {
+          this.closeChatHistory();
           this.sidebarCollapsed = singleColumn;
           this.contextPanelOpen = threeColumn;
         },
         onToggleSidebar: () => {
+          if (this.chatHistoryOpen) { this.closeChatHistory(); return; }
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.sidebarCollapsed = !this.sidebarCollapsed;
             if (this.singleColumn && !this.sidebarCollapsed) { this.contextPanelOpen = false; }
@@ -2118,14 +2251,13 @@ struct Index {
           });
         },
         onSelectNav: (navKey: string) => {
-          this.dismissNavigationOverlay();
-          this.activeNav = navKey;
-          this.readingOpen = false;
-          this.fullScreenDocOpen = false;
-          this.activeNoteId = '';
-          // 进入 AI 墨客自动切到对话列表；离开时切回资料树。
-          // 用户在 AI 里手动切回资料树后不会被强行拉回（只在导航变化时决策）。
-          this.sidebarMode = navKey === NAV_AI ? SIDEBAR_MODE_SESSIONS : SIDEBAR_MODE_TREE;
+          this.afterSettingsExit(() => {
+            this.dismissNavigationOverlay();
+            this.activeNav = navKey;
+            this.readingOpen = false;
+            this.fullScreenDocOpen = false;
+            this.activeNoteId = '';
+          });
         },
         onToggleSpace: (spaceId: string) => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
@@ -2147,17 +2279,20 @@ struct Index {
           });
         },
         onSelectSpace: (spaceId: string) => {
-          this.dismissNavigationOverlay();
-          this.activeSpaceId = this.activeSpaceId === spaceId ? '' : spaceId;
-          this.activeNav = NAV_LIBRARY;
-          this.readingOpen = false;
-          this.fullScreenDocOpen = false;
+          this.afterSettingsExit(() => {
+            this.dismissNavigationOverlay();
+            this.activeSpaceId = this.activeSpaceId === spaceId ? '' : spaceId;
+            this.activeNav = NAV_LIBRARY;
+            this.readingOpen = false;
+            this.fullScreenDocOpen = false;
+          });
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onCreateNoteInProject: (title: string, projectName: string, type: string) => {
-          // title 在这里作为命名层的默认标题（未命名笔记 / 未命名导图 / 未命名参考资料）
-            this.requestCreateNote(projectName, type, title);
+          // 文档导入需要真实源文件，不能创建空 PDF 占位。
+          if (type === 'Doc') { this.importDocument(projectName); }
+          else { this.requestCreateNote(projectName, type, title); }
         },
         onCreateFromTemplate: (templateName: string, projectName: string) => {
           this.createNoteFromTemplate(templateName, projectName);
@@ -2191,12 +2326,11 @@ struct Index {
         },
         trashCount: this.trash.length,
         todoPendingCount: this.todoPendingCount(),
-        sidebarMode: this.sidebarMode,
+        historyOpen: this.chatHistoryOpen,
         sessions: this.sessions,
         activeSessionId: this.activeSessionId,
-        onSidebarModeChange: (mode: string) => {
-          this.sidebarMode = mode;
-        },
+        onCloseHistory: () => this.closeChatHistory(),
+        onNewSession: () => this.handleNewSession(),
         onSelectSession: (session: ChatSession) => {
           this.handleSelectSession(session);
         },
@@ -2225,6 +2359,7 @@ struct Index {
       if (this.fullScreenDocOpen) {
         HuaweiDocWorkspace({
           note: this.fullScreenDocNote,
+          onRestorePdfSource: () => this.restoreReaderPdfSource(),
           onOpenModelSettings: () => this.openSettings('ai'),
           sourcePage: this.sourcePage,
           sourceJumpToken: this.sourceJumpToken,
@@ -2319,6 +2454,7 @@ struct Index {
 
       if (this.smartExtractVisible) {
         SmartExtractSheet({
+          onImportSource: (uri: string) => this.importExtractSource(uri),
           onClose: () => {
             animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.smartExtractVisible = false;
@@ -2336,6 +2472,8 @@ struct Index {
         NameNoteSheet({
           defaultName: this.pendingDefaultName(),
           noteType: this.pendingCreate?.type || 'Markdown',
+          defaultProject: this.pendingCreate?.projectName || this.activeSpaceName() || '未分类',
+          projects: this.customProjects.map((p: SpaceFolder) => p.name).concat(this.allCategories()),
           busy: this.noteCreateBusy,
           errorMessage: this.noteCreateError,
           onTypeChange: (type: string) => {
@@ -2350,8 +2488,8 @@ struct Index {
               this.pendingCreate = null;
             });
           },
-          onConfirm: (name: string) => {
-            this.commitPendingCreate(name);
+          onConfirm: (name: string, project: string, tags: string[]) => {
+            this.commitPendingCreate(name, project, tags);
           }
         })
       }

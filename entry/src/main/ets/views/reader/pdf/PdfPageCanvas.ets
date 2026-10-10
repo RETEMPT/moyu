@@ -13,7 +13,8 @@ import { ColorPalette, TypographyTokens } from '../../../common/constants/Design
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
 import { CanvasPoint } from '../../../common/types/CanvasStroke';
 import { InkInputService } from '../../../services/ink/InkInputService';
-import { InkRenderer, InkStyle } from '../../../services/ink/InkRenderer';
+import { InkRenderer, InkStyle, InkContext } from '../../../services/ink/InkRenderer';
+import { InkFrameComposer } from '../../../services/ink/InkFrameComposer';
 import { PdfPageBackground } from './PdfPageBackground';
 import {
   AnnotationTool,
@@ -25,24 +26,34 @@ import {
 
 @Component
 export struct PdfPageCanvas {
-  @Prop pageModel: PdfPageModel;
-  @Prop sourceUri: string = '';
+  @Prop @Watch('onSourceChanged') pageModel: PdfPageModel;
+  @Prop @Watch('onSourceChanged') sourceUri: string = '';
   @Prop useRealPdf: boolean = false;
   @State private pageAspectRatio: number = 0.707;
   @Prop @Watch('onStrokesChanged') strokes: PageAnnotationStroke[] = [];
-  @Prop @Watch('resetInput') isAnnotateMode: boolean = false;
-  @Prop @Watch('resetInput') tool: AnnotationTool = 'pen';
-  @Prop fingerDrawing: boolean = false;
-  @Prop selectedColor: string = '#DC2626';
-  @Prop selectedWidth: number = 3;
+  @Prop @Watch('finishInputForModeChange') isAnnotateMode: boolean = false;
+  @Prop @Watch('finishInputForModeChange') tool: AnnotationTool = 'pen';
+  @Prop @Watch('finishInputForModeChange') eraserMode: string = 'stroke';
+  @Prop @Watch('finishInputForModeChange') eraserWidth: number = 20;
+  @Prop @Watch('finishInputForModeChange') fingerDrawing: boolean = false;
+  @Prop @Watch('finishInputForModeChange') selectedColor: string = '#DC2626';
+  @Prop @Watch('finishInputForModeChange') selectedWidth: number = 3;
   @Prop isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   onStrokeAdded: (stroke: PageAnnotationStroke) => void = () => {};
   onEraseAtPoint: (u: number, v: number, width: number, height: number) => void = () => {};
   onEraseStarted: () => void = () => {};
   onEraseFinished: (commit: boolean) => void = () => {};
   onInkContactChange: (active: boolean) => void = () => {};
-  onPenActive: () => void = () => {};
+  onPenActive: (pen: boolean) => void = () => {};
+  onSourceReady: (ready: boolean) => void = () => {};
+  onPageAspectRatio: (ratio: number) => void = () => {};
+  onRestoreSource: () => void = () => {};
+  onActiveFinisherChange: (finish: (() => void) | null) => void = () => {};
+  @State private sourceReady: boolean = false;
+  private loadedSourceUri: string = '';
+  private loadedPageIndex: number = -1;
   private input: InkInputService = new InkInputService();
   private erasing: boolean = false;
 
@@ -54,9 +65,10 @@ export struct PdfPageCanvas {
   @State pageWidth: number = 0;
   @State pageHeight: number = 0;
   private currentStroke: PageAnnotationStroke | null = null;
+  private inkFrame: InkFrameComposer = new InkFrameComposer();
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   onStrokesChanged(): void {
@@ -68,13 +80,10 @@ export struct PdfPageCanvas {
     if (!this.context || this.pageWidth <= 0 || this.pageHeight <= 0) {
       return;
     }
-    this.context.clearRect(0, 0, this.pageWidth, this.pageHeight);
-
-    // 绘制该页全部历史笔画
-    for (let i = 0; i < this.strokes.length; i++) {
-      this.renderStroke(this.strokes[i]);
-    }
-
+    this.inkFrame.render(this.context, this.pageWidth, this.pageHeight, (context: OffscreenCanvasRenderingContext2D) => {
+      for (const stroke of this.strokes) { this.renderStroke(stroke, context); }
+      if (this.currentStroke && this.currentStroke.isEraser) { this.renderStroke(this.currentStroke, context); }
+    });
   }
 
   private mapped(stroke: PageAnnotationStroke): CanvasPoint[] {
@@ -89,33 +98,66 @@ export struct PdfPageCanvas {
       highlighter: stroke.isHighlighter, eraser: stroke.isEraser };
   }
 
-  private renderStroke(stroke: PageAnnotationStroke): void {
-    InkRenderer.stroke(this.context, this.mapped(stroke), this.style(stroke));
+  private renderStroke(stroke: PageAnnotationStroke, context: InkContext = this.context): void {
+    InkRenderer.stroke(context, this.mapped(stroke), this.style(stroke));
   }
 
   private resetInput(): void {
-    this.input.reset(); this.currentStroke = null;
-    this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight);
-    if (this.erasing) { this.onEraseFinished(false); this.erasing = false; }
-    this.onInkContactChange(false);
+    this.finishInput(false);
   }
 
-  aboutToDisappear(): void { this.resetInput(); }
+  private finishInputForModeChange(): void {
+    this.finishInput(true);
+  }
+
+  private finishInput(commit: boolean): void {
+    this.input.reset();
+    const stroke = this.currentStroke; this.currentStroke = null;
+    if (this.erasing) { this.erasing = false; this.onEraseFinished(commit); }
+    if (commit && stroke && stroke.points.length > 0) { this.onStrokeAdded(stroke); }
+    this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight);
+    this.onActiveFinisherChange(null);
+    this.onInkContactChange(false);
+    // Keep the completed area preview until the parent publishes its new stroke array.
+    // Replaying old @Prop data here briefly resurrects the erased ink.
+    if (stroke && stroke.isEraser && !commit) { this.redrawAll(); }
+  }
+
+  private onSourceChanged(): void {
+    // @Prop pageModel is copied again when tools change; only a different source/page invalidates its bitmap.
+    if (this.loadedSourceUri === this.sourceUri && this.loadedPageIndex === this.pageModel.pageIndex) { return; }
+    this.loadedSourceUri = this.sourceUri; this.loadedPageIndex = this.pageModel.pageIndex;
+    this.resetInput(); this.sourceReady = false; this.onSourceReady(false);
+    this.pageAspectRatio = 0.707;
+  }
+
+  private setSourceReady(ready: boolean): void {
+    this.loadedSourceUri = this.sourceUri; this.loadedPageIndex = this.pageModel.pageIndex;
+    if (!ready) { this.resetInput(); }
+    this.sourceReady = ready; this.onSourceReady(ready);
+  }
+
+  aboutToDisappear(): void { this.resetInput(); this.inkFrame.release(); }
 
   private handleTouch(event: TouchEvent): void {
-    if (!this.isAnnotateMode || this.tool === 'pan' || this.pageWidth <= 0 || this.pageHeight <= 0) { return; }
+    if (!this.sourceReady || !this.isAnnotateMode || this.tool === 'pan' || this.pageWidth <= 0 || this.pageHeight <= 0) { return; }
+    if (event.type === TouchType.Down && event.sourceTool === SourceTool.Pen && this.input.isActive() && !this.input.isPenActive()) {
+      this.finishInput(true);
+    }
     const batch = this.input.read(event, this.fingerDrawing);
     if (batch.phase === 'ignore') { return; }
     event.stopPropagation();
     if (batch.phase === 'cancel') { this.resetInput(); return; }
     if (batch.phase === 'begin') {
       this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight);
-      this.onPenActive(); this.onInkContactChange(true);
-      if (this.tool === 'eraser') { this.erasing = true; this.onEraseStarted(); }
+      this.onActiveFinisherChange(() => this.finishInput(true));
+      this.onPenActive(batch.pen);
+      this.onInkContactChange(true);
+      if (this.tool === 'eraser' && this.eraserMode !== 'area') { this.erasing = true; this.onEraseStarted(); }
       else {
         this.currentStroke = { id: 'stroke_' + Date.now() + '_' + Math.floor(Math.random() * 1000000),
-          pageIndex: this.pageModel.pageIndex, color: this.selectedColor, width: this.selectedWidth,
-          isHighlighter: this.tool === 'highlighter', isEraser: false, points: [] };
+          pageIndex: this.pageModel.pageIndex, color: this.selectedColor, width: this.tool === 'eraser' ? this.eraserWidth : this.selectedWidth,
+          isHighlighter: this.tool === 'highlighter', isEraser: this.tool === 'eraser', points: [] };
       }
     }
     const stroke = this.currentStroke;
@@ -132,36 +174,35 @@ export struct PdfPageCanvas {
         const point: CanvasPoint = { x: p.u * this.pageWidth, y: p.v * this.pageHeight, pressure: p.pressure };
         return point;
       });
-      InkRenderer.segment(this.liveContext, tail, tail.length - 1, this.style(stroke));
+      InkRenderer.segment(stroke.isEraser ? this.context : this.liveContext, tail, tail.length - 1, this.style(stroke));
     }
     if (batch.phase === 'end') {
-      if (this.erasing) { this.erasing = false; this.onEraseFinished(true); }
-      if (stroke && stroke.points.length) {
-        this.currentStroke = null; this.onStrokeAdded(stroke);
-      }
-      this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight);
-      this.onInkContactChange(false);
+      this.finishInput(true);
     }
   }
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
       PdfPageBackground({ sourceUri: this.sourceUri, pageIndex: this.pageModel.pageIndex,
-        onAspectRatio: (ratio: number) => { this.pageAspectRatio = ratio; } })
+        onAspectRatio: (ratio: number) => { this.pageAspectRatio = ratio; this.onPageAspectRatio(ratio); },
+        onSourceReady: (ready: boolean) => this.setSourceReady(ready),
+        onRestoreSource: () => this.onRestoreSource() })
 
       // ---- 第二层：归一化矢量批注 Canvas 图层 ----
       Canvas(this.context)
         .width('100%')
         .height('100%')
+        .opacity(this.sourceReady ? 1 : 0)
         .hitTestBehavior(HitTestMode.None)
       Canvas(this.liveContext).width('100%').height('100%')
-        .opacity(this.tool === 'highlighter' ? 0.35 : 1)
-        .hitTestBehavior(!this.isAnnotateMode || this.tool === 'pan' ? HitTestMode.None : HitTestMode.Transparent)
+        .opacity(this.sourceReady ? (this.tool === 'highlighter' ? 0.35 : 1) : 0)
+        .hitTestBehavior(!this.sourceReady || !this.isAnnotateMode || this.tool === 'pan' ? HitTestMode.None : HitTestMode.Transparent)
         .onReady(() => this.redrawAll())
-        .onTouch((event: TouchEvent) => this.handleTouch(event))
     }
     .width('100%')
+    .onTouch((event: TouchEvent) => this.handleTouch(event))
     .aspectRatio(this.pageAspectRatio)
+    .onVisibleAreaChange([0], (visible: boolean) => { if (!visible) { this.inkFrame.release(); } })
     .borderRadius(8)
     .shadow({
       radius: 16,

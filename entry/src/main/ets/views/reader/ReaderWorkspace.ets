@@ -41,6 +41,7 @@ export struct ReaderWorkspace {
   onOpenNoteByTitle: (title: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
   @State isSplitMode: boolean = false;
   @State activeDocMode: string = 'annotator'; // 'annotator' | 'split' | 'reader'
@@ -73,7 +74,7 @@ export struct ReaderWorkspace {
   }
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   /** 是否为纯白纸手写型笔记 */

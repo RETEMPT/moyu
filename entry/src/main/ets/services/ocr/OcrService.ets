@@ -17,6 +17,9 @@ export class OcrService {
     if (imageUri.trim().length === 0) {
       throw new Error('无效的图片路径');
     }
+    if (!canIUse('SystemCapability.AI.OCR.TextRecognition')) {
+      throw new Error('此设备未提供系统文字识别，可粘贴文字完成本地排版');
+    }
     let file: fs.File | null = null;
     let source: image.ImageSource | null = null;
     let pixelMap: image.PixelMap | null = null;
@@ -31,7 +34,7 @@ export class OcrService {
         desiredSize: { width: Math.max(1, Math.round(info.size.width * ratio)),
           height: Math.max(1, Math.round(info.size.height * ratio)) } });
       const result = await textRecognition.recognizeText({ pixelMap: pixelMap });
-      const text = result && typeof result.value === 'string' ? result.value.trim() : '';
+      const text = OcrService.resultText(result);
       if (text.length === 0) {
         throw new Error('未识别到文字，请选择清晰图片或手动粘贴文字');
       }
@@ -51,7 +54,17 @@ export class OcrService {
 
   /** Caller retains ownership of a rendered PDF page and must release it. */
   async recognizePixelMap(pixelMap: image.PixelMap): Promise<string> {
+    if (!canIUse('SystemCapability.AI.OCR.TextRecognition')) { throw new Error('此设备未提供系统文字识别'); }
     const result = await textRecognition.recognizeText({ pixelMap: pixelMap });
-    return result && typeof result.value === 'string' ? result.value.trim() : '';
+    return OcrService.resultText(result);
+  }
+
+  private static resultText(result: textRecognition.TextRecognitionResult): string {
+    const text = result && typeof result.value === 'string' ? result.value.trim() : '';
+    if (text.length === 0 || !Array.isArray(result.blocks)) { return text; }
+    const blocks = result.blocks.map((block: textRecognition.TextBlock) => block.value.trim())
+      .filter((value: string) => value.length > 0).join('\n\n');
+    // Keep the SDK's order. Use paragraph boundaries only if all recognized characters match.
+    return blocks.replace(/\s/g, '') === text.replace(/\s/g, '') ? blocks : text;
   }
 }

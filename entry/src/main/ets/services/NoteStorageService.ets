@@ -8,12 +8,16 @@ import { DocumentTransferResult, MarkdownDocument } from '../common/types/Markdo
 import { PdfDocumentService } from './document/PdfDocumentService';
 import { SnapshotStore } from './storage/SnapshotStore';
 import { AtomicTextFile } from './storage/AtomicTextFile';
+import { MarkerImportPolicy } from './smart/MarkerImportPolicy';
+import BuildProfile from 'BuildProfile';
 
 const PREFERENCES_NAME: string = 'flowmind_notes';
 const NOTES_KEY: string = 'notes';
 const PROJECTS_KEY: string = 'projects';
 const TRASH_KEY: string = 'trash';
 const NOTES_DIRECTORY_NAME: string = 'notes';
+const DEBUG_PDF_ID: string = 'debug-pdf-demo-v1';
+const DEBUG_PDF_INSTALLED_KEY: string = 'debug_pdf_demo_v1';
 
 export class NoteStorageService {
   private notePreferences: preferences.Preferences | null = null;
@@ -38,7 +42,7 @@ export class NoteStorageService {
     const prefs: preferences.Preferences = await this.ensureInitialized(context);
     const parsedNotes = await this.snapshots.read<NoteItem[]>(prefs, NOTES_KEY, (value: NoteItem[]) => this.isNoteItemArray(value));
     if (parsedNotes === null) {
-      // 首次启动为空工作区。测试资料只存在于开发测试夹具中。
+      // 发布版首次启动为空；调试示例由独立启动步骤加入。
       await this.reconcileFiles(fallbackNotes);
       await this.saveSnapshot(fallbackNotes);
       return fallbackNotes;
@@ -57,6 +61,7 @@ export class NoteStorageService {
         hydratedNotes.push(note);
       }
     }
+    await this.restorePdfSources(context, hydratedNotes, NOTES_KEY);
     return hydratedNotes;
   }
 
@@ -141,12 +146,21 @@ export class NoteStorageService {
       if (uris.length === 0) {
         return { status: 'cancelled', message: '未选择文件' };
       }
-      const uri: string = uris[0];
-      const fileName: string = this.fileNameFromUri(uri);
-      const id: string = `import_${Date.now()}`;
+      return await this.importDocumentUri(context, uris[0]);
+    } catch (error) {
+      return { status: 'failed', message: error instanceof Error ? error.message : '文件选择失败，请重试' };
+    }
+  }
 
-      if (this.isTextDocument(fileName)) {
-        const content: string = await fileIo.readText(uri);
+  /** All document entry points materialize a local source before publishing an import. */
+  async importDocumentUri(context: Context, uri: string): Promise<DocumentTransferResult> {
+    try {
+      const fileName: string = this.fileNameFromUri(uri);
+      const id: string = `import_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
+
+      if (this.isTextDocument(fileName) || /\.json$/i.test(fileName)) {
+        const raw: string = await fileIo.readText(uri);
+        const content: string = /\.json$/i.test(fileName) ? MarkerImportPolicy.parse(raw, true) : raw;
         const note: NoteItem = this.noteFromImportedFile(id, fileName, content);
         await this.ensureInitialized(context);
         await this.writeMarkdown(note.id, content);
@@ -155,7 +169,7 @@ export class NoteStorageService {
           document: this.documentFor(context, note, content),
           fileName,
           noteType: 'Markdown',
-          message: `已导入 ${fileName}`
+          message: `已保存到本机资料库：${fileName}`
         };
       }
 
@@ -175,15 +189,48 @@ export class NoteStorageService {
       };
     } catch (error) {
       console.error(`文件导入失败: ${JSON.stringify(error)}`);
-      return { status: 'failed', message: '文件导入失败，请检查文件权限或重试' };
+      return { status: 'failed', message: error instanceof Error ? error.message : '文件导入失败，请检查文件权限或重试' };
     }
   }
 
-  /** Imports a real bundled PDF only after an explicit user action. */
-  async importExamplePdf(context: Context): Promise<DocumentTransferResult> {
+  /** Debug builds add one real PDF once, including on upgrade; deletion is respected. */
+  async ensureDebugPdf(context: Context, notes: NoteItem[]): Promise<NoteItem[]> {
+    if (!BuildProfile.DEBUG) { return notes; }
+    const prefs = await this.ensureInitialized(context);
+    if (await prefs.get(DEBUG_PDF_INSTALLED_KEY, false) === true) { return notes; }
+    const trash = await this.snapshots.read<NoteItem[]>(prefs, TRASH_KEY, (value: NoteItem[]) => this.isNoteItemArray(value)) || [];
+    if (notes.concat(trash).some((note: NoteItem) => note.id === DEBUG_PDF_ID)) {
+      await prefs.put(DEBUG_PDF_INSTALLED_KEY, true); await prefs.flush();
+      return notes;
+    }
+    const path = await PdfDocumentService.getInstance().saveBundledExample(context);
+    const result = await this.importPdfCopy(context, path, '墨语阅读测试.pdf', DEBUG_PDF_ID);
+    if (result.status !== 'imported' || result.document === undefined) { throw new Error(result.message); }
+    const note: NoteItem = {
+      id: DEBUG_PDF_ID, title: '墨语阅读测试.pdf', category: '示例资料', type: 'PDF',
+      sourceType: 'pdf', sourceUri: result.sourceUri, sourceFileName: result.sourceFileName,
+      pageCount: result.pageCount, pageInfo: `${result.pageCount} 页`, previewText: '两页真实 PDF，打开即可测试阅读、翻页与批注。',
+      tag: '阅读示例', tagColor: '#7C3AED', updateTime: '刚刚', contentDetail: result.document.content,
+      createdAt: Date.now(), updatedAt: Date.now()
+    };
+    const next = [note].concat(notes);
+    try { await this.saveSnapshot(next); }
+    catch (error) {
+      try { await this.delete(context, note.id, path); } catch { /* Only the new example is uncommitted. */ }
+      throw new Error(error instanceof Error ? error.message : '阅读示例保存失败');
+    }
+    // A failed marker write must not roll back the already committed note. The stable ID prevents duplication.
+    try { await prefs.put(DEBUG_PDF_INSTALLED_KEY, true); await prefs.flush(); }
+    catch { console.warn('阅读示例标记保存失败，下次启动按资料 ID 检查'); }
+    return next;
+  }
+
+  /** Manual imports of real bundled PDFs are available in debug builds. */
+  async importExamplePdf(context: Context, snapshot: boolean = false): Promise<DocumentTransferResult> {
+    if (!BuildProfile.DEBUG) { return { status: 'unsupported', message: '阅读测试资料仅在调试版中提供' }; }
     try {
-      const path = await PdfDocumentService.getInstance().saveBundledExample(context);
-      return await this.importPdfCopy(context, path, '墨语阅读测试.pdf', `example_${Date.now()}_${Math.floor(Math.random() * 1000000)}`);
+      const path = await PdfDocumentService.getInstance().saveBundledExample(context, snapshot);
+      return await this.importPdfCopy(context, path, snapshot ? '墨语快照测试.pdf' : '墨语阅读测试.pdf', `example_${Date.now()}_${Math.floor(Math.random() * 1000000)}`);
     } catch (error) {
       return { status: 'failed', message: error instanceof Error ? error.message : '测试 PDF 导入失败' };
     }
@@ -192,7 +239,7 @@ export class NoteStorageService {
   private async importPdfCopy(context: Context, savedPath: string, fileName: string, id: string): Promise<DocumentTransferResult> {
     let count: number = 0;
     try {
-      count = (await PdfDocumentService.getInstance().getPdfInfo(savedPath)).pageCount;
+      count = (await PdfDocumentService.getInstance().validateImport(savedPath)).pageCount;
     } catch (error) {
       try { await fileIo.unlink(savedPath); } catch { /* 不残留失败导入文件 */ }
       return { status: 'failed', message: error instanceof Error ? error.message : 'PDF 读取失败' };
@@ -201,7 +248,7 @@ export class NoteStorageService {
       id: id, title: fileName.replace(/\.pdf$/i, ''), category: '未分类', type: 'PDF',
       previewText: 'PDF · ' + count + ' 页', tag: 'PDF', tagColor: '#E11D48', updateTime: '刚刚',
       contentDetail: '# ' + fileName + '\n\n来源：导入的 PDF，共 ' + count + ' 页。',
-      sourceUri: savedPath, sourceType: 'pdf', pageCount: count
+      sourceUri: savedPath, sourceFileName: savedPath.split('/').pop(), sourceType: 'pdf', pageCount: count
     };
     try {
       await this.ensureInitialized(context);
@@ -211,8 +258,35 @@ export class NoteStorageService {
       throw new Error('PDF 笔记保存失败，请检查存储空间或重试');
     }
     return { status: 'imported', document: this.documentFor(context, note, note.contentDetail),
-      fileName: fileName, noteType: 'PDF', sourceUri: savedPath, pageCount: count,
-      message: '已导入 PDF「' + fileName + '」' };
+      fileName: fileName, noteType: 'PDF', sourceUri: savedPath, sourceFileName: note.sourceFileName, pageCount: count,
+      message: '已保存到本机资料库：' + fileName };
+  }
+
+  /** Reattach a user-selected original without creating another note or changing saved annotations. */
+  async selectReplacementPdf(context: Context, note: NoteItem): Promise<NoteItem | null> {
+    const options = new picker.DocumentSelectOptions();
+    options.maxSelectNumber = 1; options.fileSuffixFilters = ['.pdf'];
+    const uris = await new picker.DocumentViewPicker(context).select(options);
+    if (!uris.length) { return null; }
+    const service = PdfDocumentService.getInstance();
+    const path = await service.savePdfToSandbox(context, uris[0], this.fileNameFromUri(uris[0]));
+    try {
+      const info = await service.validateImport(path);
+      const hasAnnotations = typeof note.pageAnnotations === 'string' && note.pageAnnotations.length > 0;
+      if (hasAnnotations && note.pageCount && info.pageCount !== note.pageCount) {
+        throw new Error(`所选 PDF 为 ${info.pageCount} 页，与现有 ${note.pageCount} 页批注不一致。请选择原文件；其他资料请单独导入。`);
+      }
+      const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
+      updated.sourceUri = path; updated.sourceFileName = path.split('/').pop(); updated.sourceType = 'pdf'; updated.type = 'PDF';
+      updated.pageCount = info.pageCount; updated.pageInfo = `${info.pageCount} 页`;
+      updated.documentMeta = JSON.stringify(info); updated.updatedAt = Date.now();
+      // Page count alone cannot prove this is the same content. Rebuild reviewed page text from the selected original.
+      updated.pdfTextJson = undefined;
+      return updated;
+    } catch (error) {
+      try { await service.removeManagedPdf(context, path); } catch { /* No existing source is deleted. */ }
+      throw new Error(error instanceof Error ? error.message : '原 PDF 未能关联');
+    }
   }
 
 
@@ -371,7 +445,54 @@ export class NoteStorageService {
 
   private async readTrash(context: Context): Promise<NoteItem[]> {
     const prefs: preferences.Preferences = await this.ensureInitialized(context);
-    return await this.snapshots.read<NoteItem[]>(prefs, TRASH_KEY, (value: NoteItem[]) => this.isNoteItemArray(value)) || [];
+    const notes = await this.snapshots.read<NoteItem[]>(prefs, TRASH_KEY, (value: NoteItem[]) => this.isNoteItemArray(value)) || [];
+    await this.restorePdfSources(context, notes, TRASH_KEY);
+    return notes;
+  }
+
+  /** Recover owned paths after a sandbox change and migrate readable legacy picker references. */
+  private async restorePdfSources(context: Context, notes: NoteItem[], key: string): Promise<void> {
+    let changed: boolean = false;
+    const created: string[] = [];
+    for (const note of notes) {
+      if (note.sourceType !== 'pdf' && (typeof note.type !== 'string' || note.type.toLowerCase() !== 'pdf')) { continue; }
+      const source: string = typeof note.sourceUri === 'string' ? note.sourceUri : '';
+      let name: string = typeof note.sourceFileName === 'string' ? note.sourceFileName : '';
+      if (!name) {
+        const prefix = `${context.filesDir}/documents/`;
+        const marker = '/files/documents/';
+        if (source.startsWith(prefix)) { name = source.substring(prefix.length); }
+        else if (source.startsWith('/') && source.includes(marker)) { name = source.substring(source.lastIndexOf(marker) + marker.length); }
+      }
+      if (name) {
+        if (name === '.' || name === '..' || /[\\/\u0000-\u001f]/.test(name)) { continue; }
+        const local = `${context.filesDir}/documents/${name}`;
+        if (note.sourceUri !== local || note.sourceFileName !== name || note.sourceType !== 'pdf') { changed = true; }
+        note.sourceUri = local; note.sourceFileName = name; note.sourceType = 'pdf';
+      } else if (source.startsWith('file://')) {
+        try {
+          const service = PdfDocumentService.getInstance();
+          const local = await service.savePdfToSandbox(context, source, this.fileNameFromUri(source));
+          created.push(local);
+          await service.validateImport(local);
+          note.sourceUri = local; note.sourceFileName = local.split('/').pop(); note.sourceType = 'pdf'; changed = true;
+        } catch { /* Keep unavailable legacy references and annotations for explicit reattachment. */ }
+      }
+    }
+    if (changed) {
+      try {
+        const prefs = await this.ensureInitialized(context);
+        await this.snapshots.write(prefs, key, JSON.stringify(notes));
+      }
+      catch (error) {
+        for (const path of created) { try { await fileIo.unlink(path); } catch {} }
+        throw new Error(error instanceof Error ? error.message : '本机 PDF 引用保存失败，请重试');
+      }
+    }
+    // Invalid legacy PDFs are never retained as unreferenced copies.
+    for (const path of created) {
+      if (!notes.some((note: NoteItem) => note.sourceUri === path)) { try { await fileIo.unlink(path); } catch {} }
+    }
   }
 
   /**
@@ -471,7 +592,7 @@ export class NoteStorageService {
   }
 
   private noteFromImportedFile(id: string, fileName: string, content: string): NoteItem {
-    const title: string = fileName.replace(/\.(md|markdown|txt)$/i, '');
+    const title: string = fileName.replace(/\.(md|markdown|txt|json)$/i, '');
     return {
       id,
       title,

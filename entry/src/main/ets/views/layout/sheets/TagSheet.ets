@@ -24,9 +24,10 @@ export struct TagSheet {
   private suggestions: string[] = ['重要', '待整理', '灵感', '读书', '工作', '归档'];
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   aboutToAppear(): void {
@@ -85,10 +86,10 @@ export struct TagSheet {
     Row({ space: 4 }) {
       Text(`#${tag}`)
         .fontSize(TypographyTokens.TINY)
-        .fontColor(Color.White)
+        .fontColor(this.palette().onAccent)
       Text('×')
         .fontSize(TypographyTokens.CAPTION)
-        .fontColor(Color.White)
+        .fontColor(this.palette().onAccent)
     }
     .padding({ left: 10, right: 8, top: 4, bottom: 4 })
     .borderRadius(10)
@@ -135,7 +136,7 @@ export struct TagSheet {
             })
           Text('添加')
             .fontSize(TypographyTokens.CAPTION)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
             .padding({ left: 12, right: 12, top: 7, bottom: 7 })
             .borderRadius(6)
             .backgroundColor(this.palette().accent)
@@ -202,7 +203,7 @@ export struct TagSheet {
             .layoutWeight(1)
             .height(28)
             .fontSize(TypographyTokens.CAPTION)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
             .backgroundColor(this.palette().accent)
             .borderRadius(6)
             .onClick(() => {

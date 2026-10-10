@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.retempt.flowmind",
     "vendor": "retempt",
-    "versionCode": 1001003,
-    "versionName": "1.0.3",
+    "versionCode": 1001004,
+    "versionName": "1.0.4",
     "buildVersion": "1",
     "icon": "$media:layered_image",
     "label": "$string:app_name",

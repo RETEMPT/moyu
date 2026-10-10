@@ -17,6 +17,7 @@ export struct BottomNavBar {
   onSelectNav: (navKey: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @State private keyboardVisible: boolean = false;
 
   private windowInstance: window.Window | undefined = undefined;
@@ -57,7 +58,7 @@ export struct BottomNavBar {
   }
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   @Builder

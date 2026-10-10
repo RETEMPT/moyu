@@ -24,9 +24,10 @@ export struct ProjectMenuSheet {
   onDeleteProject: (name: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   build() {
@@ -55,10 +56,10 @@ export struct ProjectMenuSheet {
         })
         SheetActionRow({
           label: '新建手写白板', icon: $r('app.media.ic_pen'),
-          onAction: () => this.onCreateNoteInProject('未命名导图', this.project.name, 'Canvas')
+          onAction: () => this.onCreateNoteInProject('未命名手写白板', this.project.name, 'Handwriting')
         })
         SheetActionRow({
-          label: '新建参考资料', icon: $r('app.media.ic_pdf'),
+          label: '导入参考资料', icon: $r('app.media.ic_pdf'),
           onAction: () => this.onCreateNoteInProject('未命名参考资料', this.project.name, 'Doc')
         })
         SheetActionRow({

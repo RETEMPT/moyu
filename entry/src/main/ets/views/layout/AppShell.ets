@@ -14,7 +14,7 @@ import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
 import { ChatSession } from '../../common/types/ChatSession';
-import { SAVE_IDLE } from '../../common/constants/WorkspaceConstants';
+import { SAVE_IDLE, NAV_SETTINGS } from '../../common/constants/WorkspaceConstants';
 import { GlobalTopBar } from './GlobalTopBar';
 import { Sidebar } from './Sidebar';
 import { BottomNavBar } from './BottomNavBar';
@@ -34,7 +34,7 @@ export struct AppShell {
   @Prop todoPendingCount: number = 0;
   @Prop favoriteCount: number = 0;
   /** 侧栏中段模式：'tree' 项目资料树 | 'sessions' 对话记录 */
-  @Prop sidebarMode: string = 'tree';
+  @Prop historyOpen: boolean = false;
   @Prop sessions: ChatSession[] = [];
   @Prop activeSessionId: string = '';
 
@@ -62,12 +62,14 @@ export struct AppShell {
   onBreadcrumbClick: (index: number, segment: string) => void = () => {};
   onOpenSheet: (type: string, project: SpaceFolder | null, note: NoteItem | null) => void = () => {};
   onOpenCreateProject: () => void = () => {};
-  onSidebarModeChange: (mode: string) => void = () => {};
+  onCloseHistory: () => void = () => {};
+  onNewSession: () => void = () => {};
   onSelectSession: (session: ChatSession) => void = () => {};
   onDeleteSession: (sessionId: string) => void = () => {};
   onTogglePinSession: (session: ChatSession) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   @State isThreeColumn: boolean = false;
   @State isTwoColumn: boolean = false;
@@ -100,7 +102,7 @@ export struct AppShell {
     if (changed) { this.onLayoutModeChange(!two, three); }
   }
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   /** 侧边栏是否常驻（双栏 / 三栏且未折叠） */
@@ -115,12 +117,12 @@ export struct AppShell {
 
   /** 上下文面板是否常驻（仅三栏） */
   private isContextDocked(): boolean {
-    return this.isThreeColumn && this.contextPanelOpen;
+    return this.activeNav !== NAV_SETTINGS && this.isThreeColumn && this.contextPanelOpen;
   }
 
   /** 上下文面板是否以浮层形式呈现（单栏 / 双栏） */
   private isContextOverlay(): boolean {
-    return !this.isThreeColumn && this.contextPanelOpen;
+    return this.activeNav !== NAV_SETTINGS && !this.isThreeColumn && this.contextPanelOpen;
   }
 
   @Builder
@@ -154,10 +156,11 @@ export struct AppShell {
       onOpenSettings: this.onOpenSettings,
       onOpenSheet: this.onOpenSheet,
       onOpenCreateProject: this.onOpenCreateProject,
-      sidebarMode: this.sidebarMode,
+      historyOpen: this.historyOpen,
       sessions: this.sessions,
       activeSessionId: this.activeSessionId,
-      onSidebarModeChange: this.onSidebarModeChange,
+      onCloseHistory: this.onCloseHistory,
+      onNewSession: this.onNewSession,
       onSelectSession: this.onSelectSession,
       onDeleteSession: this.onDeleteSession,
       onTogglePinSession: this.onTogglePinSession
@@ -185,7 +188,7 @@ export struct AppShell {
             breadcrumb: this.breadcrumb,
             saveState: this.saveState,
             contextPanelOpen: this.contextPanelOpen,
-            showContextToggle: this.isTwoColumn || this.isThreeColumn || this.isPhone,
+            showContextToggle: this.activeNav !== NAV_SETTINGS && (this.isTwoColumn || this.isThreeColumn || this.isPhone),
             onToggleSidebar: this.onToggleSidebar,
             onToggleContext: this.onToggleContext,
             onOpenSearch: this.onOpenSearch,
@@ -226,6 +229,15 @@ export struct AppShell {
       .height('100%')
       .backgroundColor(this.palette().canvas)
 
+      // A docked history page dismisses on outside touch without discarding the composer draft.
+      if (this.historyOpen && this.isSidebarDocked()) {
+        Row() {
+          Column().width(LayoutTokens.SIDEBAR_WIDTH).height('100%').hitTestBehavior(HitTestMode.None)
+          Column().layoutWeight(1).height('100%').backgroundColor('rgba(0,0,0,0.02)')
+            .accessibilityText('关闭对话记录').onClick(this.onCloseHistory)
+        }.width('100%').height('100%').hitTestBehavior(HitTestMode.Transparent)
+      }
+
       // ---- 单栏：侧边栏浮层 ----
       if (this.isSidebarOverlay()) {
         Row() {
@@ -245,7 +257,7 @@ export struct AppShell {
             .height('100%')
             .backgroundColor('rgba(0,0,0,0.25)')
             .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
-            .onClick(() => this.onToggleSidebar())
+            .onClick(() => { if (this.historyOpen) { this.onCloseHistory(); } else { this.onToggleSidebar(); } })
         }
         .width('100%')
         .height('100%')

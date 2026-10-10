@@ -31,7 +31,7 @@ function load(relative, mocks = {}, cache = new Map()) {
   }).outputText;
   const localRequire = specifier => {
     if (mocks[specifier]) return mocks[specifier];
-    if (specifier === 'BuildProfile') return { DEBUG: true };
+    if (specifier === 'BuildProfile') return { DEBUG: true, default: { DEBUG: true } };
     if (specifier.startsWith('.')) {
       return load(path.resolve(path.dirname(filename), `${specifier}.ets`), mocks, cache);
     }
@@ -40,7 +40,8 @@ function load(relative, mocks = {}, cache = new Map()) {
   vm.runInNewContext(output, { module, exports: module.exports, require: localRequire,
     console, Date, Error, Promise, setTimeout: mocks.setTimeout || setTimeout, clearTimeout: mocks.clearTimeout || clearTimeout,
     canIUse: mocks.canIUse || (() => true), AppStorage: mocks.AppStorage,
-    SourceTool: mocks.SourceTool, TouchType: mocks.TouchType }, { filename });
+    SourceTool: mocks.SourceTool, TouchType: mocks.TouchType, Curve: mocks.Curve || { EaseInOut: 'ease' },
+    OffscreenCanvas: mocks.OffscreenCanvas, RenderingContextSettings: mocks.RenderingContextSettings }, { filename });
   return module.exports;
 }
 
@@ -402,11 +403,11 @@ test('save without selected tasks never writes calendar or deletes unrelated rec
   assert.ok(!store.state.calls.includes('todos'));
 });
 
-function extractService({ key = '', response = '', fails = false } = {}) {
+function extractService({ key = '', response = '', fails = false, baseUrl = 'https://example.com/v1' } = {}) {
   const calls = [];
   const mocks = {
     [path.resolve(root, `${base}services/ai/ModelConfigService.ets`)]: {
-      ModelConfigService: { getInstance: () => ({ getActiveProfile: async () => ({ apiKey: key, protocol: 'openai-compat' }) }) }
+      ModelConfigService: { getInstance: () => ({ getActiveProfile: async () => ({ apiKey: key, protocol: 'openai-compat', baseUrl }) }) }
     },
     [path.resolve(root, `${base}services/ai/ModelProvider.ets`)]: {
       createProvider: () => ({ complete: async (profile, request) => {
@@ -439,7 +440,7 @@ test('AI formatting carries style instruction and preserves input instead of res
 for (const config of [{ fails: true }, { response: 'bad JSON' }, { response: '{"title":"标题"}' }]) {
   test(`AI failure falls back to original source (${JSON.stringify(config)})`, async () => {
     const { service } = extractService({ key: 'test', ...config });
-    const result = await service.extract(source);
+    const result = await service.extract(source, 'note', 'faithful', true);
     assert.equal(result.processingMode, 'local');
     assert.equal(result.rawMarkdown, source);
     assert.ok(result.processingNotice.includes('未成功'));
@@ -527,6 +528,7 @@ function pdfService({ status = 0, pageCount = 3, renderFails = false, copyFails 
   }
   class PdfMatrix {}
   const mocks = {
+    '@kit.ImageKit': { image: {} },
     '@kit.PDFKit': { pdfService: { PdfDocument, PdfMatrix, ParseResult: { PARSE_SUCCESS: 0, PARSE_ERROR_PASSWORD: 3 } } },
     [path.resolve(root, `${base}services/ocr/OcrService.ets`)]: { OcrService: { getInstance: () => ({ recognizePixelMap: async () => {
       calls.push('ocr'); if (ocrFails) throw Error('ocr'); return '扫描页真实文字';
@@ -534,6 +536,7 @@ function pdfService({ status = 0, pageCount = 3, renderFails = false, copyFails 
     '@kit.CoreFileKit': { fileIo: { OpenMode: { READ_ONLY: 0 }, accessSync: () => true,
       statSync: () => ({ size: 8000 }), openSync: () => ({ fd: 1 }), closeSync: () => calls.push('file-close'),
       copyFile: async () => { if (copyFails) throw Error('disk'); calls.push('copied'); },
+      fsync: async () => calls.push('file-sync'),
       unlinkSync: () => calls.push('partial-copy-removed') } }
   };
   return { calls, bitmap, service: load(`${base}services/document/PdfDocumentService.ets`, mocks).PdfDocumentService.getInstance() };
@@ -579,7 +582,8 @@ test('failed PDF copy removes partial file and closes handle, never returns temp
   assert.deepEqual(calls.slice(-2), ['partial-copy-removed', 'file-close']);
 });
 
-function importService(uri, { pdfFails = false, writeFails = false, unlinkFails = false, missing = false, initial = '', readFails = false } = {}) {
+function importService(uri, { pdfFails = false, writeFails = false, unlinkFails = false, missing = false, initial = '', readFails = false,
+  textContent = '# 资料\n\n全文' } = {}) {
   const calls = [];
   let raw = initial;
   const prefs = { get: async () => raw, put: async (key, value) => { raw = value; calls.push(['snapshot', key]); }, flush: async () => {} };
@@ -591,7 +595,7 @@ function importService(uri, { pdfFails = false, writeFails = false, unlinkFails 
     '@kit.CoreFileKit': { picker: { DocumentViewPicker, DocumentSelectOptions },
       fileIo: { OpenMode: { WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 }, access: async () => !missing,
         mkdir: async () => {},
-        readText: async () => { calls.push('read-text'); if (readFails) throw Error('I/O'); return '# 资料\n\n全文'; },
+        readText: async () => { calls.push('read-text'); if (readFails) throw Error('I/O'); return textContent; },
         open: async () => ({ fd: 1 }), write: async (fd, content) => {
           if (writeFails) throw Error('disk full');
           calls.push(['write', content]);
@@ -602,7 +606,7 @@ function importService(uri, { pdfFails = false, writeFails = false, unlinkFails 
         } } },
     [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: {
       PdfDocumentService: { getInstance: () => ({ savePdfToSandbox: async () => '/sandbox/copy.pdf', saveBundledExample: async () => '/sandbox/copy.pdf',
-        getPdfInfo: async () => { if (pdfFails) throw Error('PDF 损坏'); return { pageCount: 2 }; } }) }
+        validateImport: async () => { if (pdfFails) throw Error('PDF 损坏'); return { pageCount: 2 }; } }) }
     }
   };
   return { calls, raw: () => raw, service: new (load(`${base}services/NoteStorageService.ets`, mocks).NoteStorageService)() };
@@ -617,6 +621,23 @@ test('PDF import returns durable original path and actual page count', async () 
   assert.equal(result.noteType, 'PDF');
   assert.ok(!result.document.content.includes('银行家算法'));
   assert.ok(calls.some(c => Array.isArray(c) && c[0] === 'write'));
+});
+
+test('a preselected text source uses the shared import path and materializes a local document', async () => {
+  const text = importService(''); const result = await text.service.importDocumentUri({ filesDir: '/sandbox' }, 'file://picked/course.txt');
+  assert.equal(result.status, 'imported'); assert.equal(result.noteType, 'Markdown');
+  assert.match(result.document.filePath, /^\/sandbox\/notes\//); assert.equal(result.document.content, '# 资料\n\n全文');
+});
+
+test('preselected Marker results are stored as readable Markdown and invalid JSON never creates a note', async () => {
+  const text = '# 课程\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n$$x^2+y^2=1$$';
+  const success = importService('', { textContent: JSON.stringify({ success: true, format: 'markdown', output: text }) });
+  const result = await success.service.importDocumentUri({ filesDir: '/sandbox' }, 'file://picked/marker.json');
+  assert.equal(result.status, 'imported'); assert.equal(result.document.content, text); assert.equal(result.document.title, 'marker');
+  assert.ok(success.calls.some(call => Array.isArray(call) && call[0] === 'write' && call[1] === text));
+  const invalid = importService('', { textContent: '{broken' });
+  assert.equal((await invalid.service.importDocumentUri({ filesDir: '/sandbox' }, 'file://picked/marker.json')).status, 'failed');
+  assert.ok(!invalid.calls.some(call => Array.isArray(call) && call[0] === 'write'));
 });
 
 test('broken PDF import cleans its sandbox copy and returns failure', async () => {
@@ -860,7 +881,7 @@ function backupFileFixture({ selected = ['/picked/backup.json'], failPdf = false
       if (failImage) throw Error('broken image'); return { size: { width: 1, height: 1 } };
     }, release: async () => calls.push(['image-release', filename]) }) } },
     [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: { PdfDocumentService: { getInstance: () => ({
-      getPdfInfo: async filename => { if (failPdf) throw Error('broken pdf'); return { pageCount: 2 }; }
+      validateImport: async filename => { if (failPdf) throw Error('broken pdf'); return { pageCount: 2 }; }
     }) } }
   };
   const { StudyBackupService } = load(`${base}services/study/StudyBackupService.ets`, mocks);
@@ -1585,6 +1606,13 @@ test('compatible stream provider errors and cancellation close exactly once with
   cancelled.receive('data: {"choices":[{"delta":{"content":"late"}}]}\n');assert.equal(cancelled.chunks.length,0);assert.equal(cancelled.destroyed(),1);
 });
 
+test('explicit model formatting can use a keyless loopback service while the default still performs no model request', async () => {
+  const { service, calls } = extractService({ baseUrl: 'http://127.0.0.1:11434/v1', response: '{"title":"课程","formattedMarkdown":"# 课程\\n\\n正文"}' });
+  await service.extract(source); assert.equal(calls.length, 0);
+  const result = await service.extract(source, '课程', 'faithful', true);
+  assert.equal(result.processingMode, 'ai'); assert.equal(calls.length, 1);
+});
+
 const { LocalAssistantService } = load(`${base}services/ai/LocalAssistantService.ets`);
 const localContext = (notes = [], pinned = []) => ({ notes, pinned, todos: [] });
 test('offline assistant works with an empty workspace without any platform or network dependency', async () => {
@@ -1637,8 +1665,18 @@ test('local mode is the persisted default and a failed switch never enables remo
   await service.setMode('local');assert.equal(values.get('mode'),'local');
 });
 
-const penEnums = { SourceTool:{Unknown:0,Finger:1,Pen:2},TouchType:{Down:0,Up:1,Move:2,Cancel:3} };
+const penEnums = { SourceTool:{Unknown:0,Finger:1,Pen:2,MOUSE:3,TOUCHPAD:4},TouchType:{Down:0,Up:1,Move:2,Cancel:3} };
 const { InkInputService } = load(`${base}services/ink/InkInputService.ets`,penEnums);
+
+test('enabled pointer ink accepts emulator mouse and touchpad while the stylus-only switch still blocks them', () => {
+  for (const sourceTool of [penEnums.SourceTool.MOUSE, penEnums.SourceTool.TOUCHPAD]) {
+    const event = { type: 0, sourceTool, touches: [{ id: 1, x: 10, y: 20 }], changedTouches: [{ id: 1, x: 10, y: 20 }] };
+    assert.equal(new InkInputService().read(event, false).phase, 'ignore');
+    const input = new InkInputService(); assert.equal(input.read(event, true).phase, 'begin');
+    assert.equal(input.read({ ...event, type: 1 }, true).phase, 'end');
+    assert.equal(new InkInputService().read({ ...event, sourceTool: 0 }, true).phase, 'ignore');
+  }
+});
 function touchEvent(type, id=7, sourceTool=2, overrides={}) {
   const point={id,x:10,y:20,pressure:32768};
   return {type,sourceTool,pressure:0.5,changedTouches:[point],touches:type===1?[]:[point],getHistoricalPoints:()=>[],...overrides};
@@ -1671,7 +1709,7 @@ test('ink pressure has a bounded fallback and rejects invalid coordinates', () =
 const { InkRenderer } = load(`${base}services/ink/InkRenderer.ets`);
 function inkRecorder() {
   const calls=[];const stack=[];
-  const ctx={save(){stack.push({width:this.lineWidth,alpha:this.globalAlpha,mode:this.globalCompositeOperation});},restore(){Object.assign(this,stack.pop());},
+  const ctx={save(){stack.push({lineWidth:this.lineWidth,globalAlpha:this.globalAlpha,globalCompositeOperation:this.globalCompositeOperation});},restore(){Object.assign(this,stack.pop());},
     beginPath(){calls.push(['begin']);},moveTo(...args){calls.push(['move',...args]);},lineTo(...args){calls.push(['line',...args]);},
     quadraticCurveTo(...args){calls.push(['curve',...args]);},arc(...args){calls.push(['arc',...args]);},
     fill(){calls.push(['fill',this.lineWidth,this.globalAlpha,this.globalCompositeOperation]);},stroke(){calls.push(['stroke',this.lineWidth,this.globalAlpha,this.globalCompositeOperation]);}};
@@ -1804,11 +1842,552 @@ test('each nonstream adapter exposes cancellation before sending and destroys th
 
 function pdfHistoryView() {
   const relative='views/reader/pdf/PdfAnnotatorView.ets';let saved=0;
-  const view={pageStrokes:{0:[]},undoStack:[],redoStack:[],eraseBefore:null,erasePage:-1,currentPageIdx:0,scheduleSave:()=>saved++};
-  for(const method of ['remember','handleStrokeAdded','beginErase','finishErase','handleEraseAtPoint','handleUndo','onRedoTriggered','onClearTriggered'])
-    view[method]=viewMethod(relative,method,{InkRenderer});
+  const view={pageStrokes:{0:[]},undoStack:[],redoStack:[],eraseBefore:null,erasePage:-1,eraserWidth:20,currentPageIdx:0,scheduleSave:()=>saved++,activeInputFinisher:null,activeInputPage:-1};
+  for(const method of ['remember','handleStrokeAdded','beginErase','finishErase','handleEraseAtPoint','handleUndo','onRedoTriggered','onClearTriggered','finishActiveInput'])
+    view[method]=viewMethod(relative,method,{InkRenderer, CanvasStrokeEraser});
   return {view,saved:()=>saved};
 }
+
+const { CanvasStrokeEraser } = load(`${base}services/ink/CanvasStrokeEraser.ets`);
+const { InkToolPolicy } = load(`${base}services/ink/InkToolPolicy.ets`);
+const { AiReferenceSearch } = load(`${base}services/ai/AiReferenceSearch.ets`);
+const { CompanionSourcePolicy } = load(`${base}services/ai/CompanionSourcePolicy.ets`);
+
+test('tool size bounds clamp invalid input without confusing pen, highlighter and eraser', () => {
+  for (const [tool, min, max] of [['pen', 1, 16], ['highlighter', 6, 32], ['eraser', 8, 64]]) {
+    assert.equal(InkToolPolicy.width(tool, NaN), min);
+    assert.equal(InkToolPolicy.width(tool, -1), min);
+    assert.equal(InkToolPolicy.width(tool, 999), max);
+    assert.equal(InkToolPolicy.width(tool, max - 0.4), max);
+  }
+});
+
+function inkSelectionHarness() {
+  const selected = []; let finishes = 0;
+  const view = { readOnly: false, loadError: '', isEraser: false, isHighlighter: false,
+    selectedWidth: 3, selectedColor: '#123456', penWidth: 3, penColor: '#123456', highlighterWidth: 14,
+    highlighterColor: '#EAB308', eraserWidth: 18, shortcuts: { claim() {} },
+    eraserMode: 'area', onToolStateChange() {}, finishStroke: () => finishes++, onToolChange: tool => selected.push(tool) };
+  for (const method of ['activeTool', 'rememberInkSettings', 'selectPen', 'selectHighlighter', 'toggleEraser', 'changeWidth', 'changeColor', 'emitToolState']) {
+    view[method] = viewMethod('views/reader/HandwritingCanvas.ets', method, { InkToolPolicy });
+  }
+  return { view, selected, finishes: () => finishes };
+}
+
+test('whiteboard slider and color changes preserve the selected tool and remember each ink size', () => {
+  const { view: v, selected } = inkSelectionHarness();
+  v.changeWidth(7); v.selectHighlighter(); v.changeWidth(24); v.changeColor('#4ADE80');
+  assert.equal(v.activeTool(), 'highlighter'); assert.equal(v.selectedWidth, 24);
+  v.selectPen(); assert.equal(v.selectedWidth, 7); assert.equal(v.selectedColor, '#123456');
+  v.selectHighlighter(); assert.equal(v.selectedWidth, 24); assert.equal(v.selectedColor, '#4ADE80');
+  assert.deepEqual(selected, ['highlighter', 'pen', 'highlighter']);
+});
+
+test('stylus eraser shortcut restores highlighter and changing eraser size never selects the pen', () => {
+  const { view: v, selected, finishes } = inkSelectionHarness();
+  v.selectHighlighter(); v.changeWidth(20); v.toggleEraser(); v.changeWidth(48); v.changeColor('#FFFFFF');
+  assert.equal(v.activeTool(), 'eraser'); assert.equal(v.eraserWidth, 48); assert.equal(v.selectedColor, '#EAB308');
+  v.toggleEraser(); assert.equal(v.activeTool(), 'highlighter'); assert.equal(v.selectedWidth, 20);
+  assert.deepEqual(selected, ['highlighter', 'eraser', 'highlighter']); assert.ok(finishes() >= 4);
+});
+
+test('read-only and damaged canvases refuse slider, color and tool changes', () => {
+  for (const change of [{ readOnly: true }, { loadError: 'broken ink' }]) {
+    const { view: v, finishes } = inkSelectionHarness(); Object.assign(v, change);
+    v.selectHighlighter(); v.toggleEraser(); v.changeWidth(12); v.changeColor('blue');
+    assert.equal(v.activeTool(), 'pen'); assert.equal(v.selectedWidth, 3); assert.equal(finishes(), 0);
+  }
+});
+
+test('PDF tool selection remembers width and color and hardware eraser restores the previous ink', () => {
+  const select = viewMethod('views/reader/huawei/HuaweiDocWorkspace.ets', 'selectPdfTool');
+  const width = viewMethod('views/reader/huawei/HuaweiDocWorkspace.ets', 'changePdfWidth', { InkToolPolicy });
+  const v = { currentTool: 'pen', selectedWidth: 7, selectedColor: '#2563EB', penWidth: 3, penColor: '#DC2626',
+    highlighterWidth: 14, highlighterColor: '#FACC15', eraserWidth: 20 };
+  select.call(v, 'highlighter'); width.call(v, 26); v.selectedColor = '#4ADE80';
+  select.call(v, 'eraser'); width.call(v, 40); assert.equal(v.currentTool, 'eraser'); assert.equal(v.previousInkTool, 'highlighter');
+  select.call(v, v.previousInkTool); assert.equal(v.selectedWidth, 26); assert.equal(v.selectedColor, '#4ADE80');
+  select.call(v, 'pen'); assert.equal(v.selectedWidth, 7); assert.equal(v.selectedColor, '#2563EB');
+  select.call(v, 'pan'); assert.equal(v.currentTool, 'pan');
+});
+
+test('PDF eraser size scales with the displayed page and respects configured radius', () => {
+  for (const width of [360, 720, 1440]) {
+    for (const [size, erased] of [[8, false], [64, true]]) {
+      const v = pdfHistoryView().view; v.eraserWidth = size;
+      v.pageStrokes[0] = [{ id: 'a', width: 2, points: [{ u: 0.1, v: 0.5 }, { u: 0.9, v: 0.5 }] }];
+      v.beginErase(0); v.handleEraseAtPoint(0, 0.5, 0.5 + 20 / 1000, width, 1000 * width / 720); v.finishErase(true);
+      assert.equal(v.pageStrokes[0].length, erased ? 0 : 1);
+    }
+  }
+});
+
+test('reference search finds metadata and actual body text while excluding deleted and already selected notes', () => {
+  const notes = [studyNote({ id: 'a', title: '算法', category: '计算机', tags: ['复习'], contentDetail: '二分搜索的边界条件' }),
+    studyNote({ id: 'b', title: '算法练习', deletedAt: 1 }), studyNote({ id: 'c', title: '算法另一份' })];
+  assert.deepEqual(plain(AiReferenceSearch.find(notes, '边界')).map(n => n.id), ['a']);
+  assert.deepEqual(plain(AiReferenceSearch.find(notes, '计算机 复习')).map(n => n.id), ['a']);
+  assert.deepEqual(plain(AiReferenceSearch.find(notes, '算法', ['c'])).map(n => n.id), ['a']);
+});
+
+test('scanned PDF reference search never indexes placeholder descriptions but accepts reviewed page text', () => {
+  const note = studyNote({ id: 'pdf', type: 'PDF', sourceType: 'pdf', pageCount: 2,
+    contentDetail: 'placeholder-keyword', pdfTextJson: JSON.stringify([{ pageNumber: 2, text: '真实光学实验记录', method: 'ocr', extractedAt: 1 }]) });
+  assert.equal(AiReferenceSearch.find([note], 'placeholder').length, 0);
+  assert.equal(AiReferenceSearch.find([note], '光学').length, 1);
+  assert.equal(AiReferenceSearch.find([note], '不存在').length, 0);
+});
+
+test('companion page scope sends only the requested reviewed page and never mutates the source note', () => {
+  const original = studyNote({ type: 'PDF', sourceType: 'pdf', pageCount: 3, contentDetail: 'PDF metadata',
+    pdfTextJson: JSON.stringify([{ pageNumber: 1, text: '第一页', method: 'text', extractedAt: 1 }, { pageNumber: 3, text: '第三页', method: 'ocr', extractedAt: 2 }]) });
+  const before = JSON.stringify(original);
+  const page = CompanionSourcePolicy.snapshot(original, 3, true);
+  assert.equal(page.contentDetail, ''); assert.equal(JSON.parse(page.pdfTextJson).length, 1);
+  assert.equal(JSON.parse(page.pdfTextJson)[0].pageNumber, 3); assert.ok(CompanionSourcePolicy.readable(page));
+  assert.equal(CompanionSourcePolicy.readable(CompanionSourcePolicy.snapshot(original, 2, true)), false);
+  assert.equal(JSON.parse(CompanionSourcePolicy.snapshot(original, 2, false).pdfTextJson).length, 2);
+  assert.equal(JSON.stringify(original), before);
+});
+
+test('companion blank whiteboard metadata is not treated as transcribed handwriting', () => {
+  const note = studyNote({ type: 'Handwriting', contentDetail: '# 新建白板' });
+  assert.equal(CompanionSourcePolicy.readable(CompanionSourcePolicy.snapshot(note, 1, true)), false);
+  const markdown = studyNote({ type: 'Markdown', contentDetail: '# 学习笔记\n正文' });
+  assert.equal(CompanionSourcePolicy.snapshot(markdown, 1, true).contentDetail, markdown.contentDetail);
+});
+
+test('saving ink metadata does not cancel companion answers but changing documents resets the thread', () => {
+  const changed = viewMethod('views/reader/huawei/HuaweiAiSplitPanel.ets', 'onNoteChanged', { COMPANION_CACHE: new Map([['new', ['saved conversation']]]) });
+  let cancelled = 0; const v = { note: { id: 'old' }, loadedNoteId: 'old', inputQuestion: 'draft', messages: ['current'], cancelStream: () => cancelled++ };
+  changed.call(v); assert.equal(cancelled, 0); assert.equal(v.inputQuestion, 'draft');
+  v.note = { id: 'new' }; changed.call(v); assert.equal(cancelled, 1); assert.equal(v.inputQuestion, '');
+  assert.deepEqual(v.messages, ['saved conversation']);
+});
+
+test('companion remote follow-ups include earlier turns and the actual captured page text', async () => {
+  let context;
+  const run = viewMethod('views/reader/huawei/HuaweiAiSplitPanel.ets', 'runL1', { REMOTE_AI_ENABLED: true, StudySourceService });
+  const note = studyNote({ type: 'PDF', sourceType: 'pdf', pageCount: 2,
+    pdfTextJson: JSON.stringify([{ pageNumber: 2, text: '第二页实验数据', method: 'text', extractedAt: 1 }]) });
+  const view = { note, alive: true, requestId: 0, assistantMode: 'remote', isLoading: true, messages: [
+    { id: 'u1', sender: 'user', text: '解释实验', error: '' }, { id: 'a1', sender: 'assistant', text: '先核对数据', error: '' },
+    { id: 'failed', sender: 'assistant', text: '失败', error: 'network' }, { id: 'u2', sender: 'user', text: '再详细一点', error: '' }],
+    sourceSnapshot: () => CompanionSourcePolicy.snapshot(note, 2, true), scopeLabel: () => '第 2 页',
+    parseCard: text => ({ text, error: '', sender: 'assistant' }), persist() {}, scrollToBottom() {},
+    orchestrator: { run: async (_, ctx, delta) => { context = ctx; delta('解释结果', true); } } };
+  await run.call(view, '再详细一点');
+  assert.deepEqual(plain(context.history).map(m => m.text), ['解释实验', '先核对数据']);
+  assert.ok(context.currentDoc.content.includes('第二页实验数据')); assert.equal(view.messages.at(-1).scope, '第 2 页');
+  assert.equal(view.isLoading, false);
+});
+
+test('companion send readiness requires readable text plus authorization only for remote mode', () => {
+  const canAsk = viewMethod('views/reader/huawei/HuaweiAiSplitPanel.ets', 'canAsk', { REMOTE_AI_ENABLED: true });
+  const v = { ready: true, assistantMode: 'local', remoteReady: false, hasReadableSource: () => true };
+  assert.equal(canAsk.call(v), true); v.assistantMode = 'remote'; assert.equal(canAsk.call(v), false);
+  v.remoteReady = true; assert.equal(canAsk.call(v), true); v.hasReadableSource = () => false; assert.equal(canAsk.call(v), false);
+});
+
+test('AI model tasks stay disabled in local mode and during writes even if local assistant is ready', () => {
+  const available = viewMethod('views/ai/AiWorkspace.ets', 'remoteTaskAvailable', { REMOTE_AI_ENABLED: true });
+  const v = { assistantMode: 'local', modelReady: true, menuActionsAvailable: () => true };
+  assert.equal(available.call(v), false); v.assistantMode = 'remote'; assert.equal(available.call(v), true);
+  v.menuActionsAvailable = () => false; assert.equal(available.call(v), false);
+});
+
+test('switching companion pages cancels only a running current-page answer', () => {
+  const changed = viewMethod('views/reader/huawei/HuaweiAiSplitPanel.ets', 'onPageChanged');
+  let cancelled = 0; const v = { pageOnly: true, isLoading: true, cancelStream: () => cancelled++ };
+  changed.call(v); assert.equal(cancelled, 1); v.pageOnly = false; changed.call(v); assert.equal(cancelled, 1);
+});
+
+test('late companion task preparation cannot send into a different document or accept a repeated tap', async () => {
+  let release, changes = 0, sends = 0;
+  const prepare = viewMethod('views/reader/huawei/HuaweiAiSplitPanel.ets', 'prepareLocalPrompt', {
+    AssistantModeService: { getInstance: () => ({ setMode: () => { changes++; return new Promise(resolve => { release = resolve; }); } }) },
+    promptAction: { showToast() {} }
+  });
+  const v = { ready: true, alive: true, note: { id: 'old' }, localPromptId: 0, inputQuestion: 'new draft',
+    hasReadableSource: () => true, isLoading: false, modeSwitchBusy: false, sendQuestion: () => sends++ };
+  const pending = prepare.call(v, '提取要点'); await prepare.call(v, '整理待办'); assert.equal(changes, 1);
+  v.note = { id: 'new' }; v.localPromptId++; v.modeSwitchBusy = false; release(); await pending;
+  assert.equal(sends, 0); assert.equal(v.inputQuestion, 'new draft'); assert.equal(v.modeSwitchBusy, false);
+});
+
+test('AI model task preparation requires a ready selected model and preserves drafts when unavailable', () => {
+  const prepare = viewMethod('views/ai/AiWorkspace.ets', 'prepareModelTask');
+  let closed = 0; const v = { inputText: 'existing draft', remoteTaskAvailable: () => false, closeComposerMenus: () => closed++ };
+  prepare.call(v, 'generate'); assert.equal(v.inputText, 'existing draft'); assert.equal(closed, 0);
+  v.remoteTaskAvailable = () => true; prepare.call(v, 'generate'); assert.equal(v.inputText, 'generate'); assert.equal(closed, 1);
+});
+
+test('AI task preparation preserves a newer draft or session after asynchronous local-mode selection', async () => {
+  const prepare = viewMethod('views/ai/AiWorkspace.ets', 'prepareLocalTask');
+  for (const change of ['draft', 'session']) {
+    let release;
+    const v = { alive: true, assistantMode: 'remote', inputText: 'original', loadedSessionId: 'a', activeSessionId: 'a',
+      closeComposerMenus() {}, menuActionsAvailable: () => true,
+      switchLocalAssistant: () => new Promise(resolve => { release = () => { v.assistantMode = 'local'; resolve(); }; }) };
+    const pending = prepare.call(v, '提取要点');
+    if (change === 'draft') { v.inputText = 'newer draft'; } else { v.loadedSessionId = 'b'; v.activeSessionId = 'b'; }
+    release(); await pending; assert.equal(v.inputText, change === 'draft' ? 'newer draft' : 'original');
+  }
+});
+
+test('AI back closes reference selection before leaving the workspace', () => {
+  const back = viewMethod('views/ai/AiWorkspace.ets', 'handleBackRequest'); let navigated = 0;
+  const v = { pickerOpen: true, onNavigateBack: () => navigated++ }; back.call(v);
+  assert.equal(v.pickerOpen, false); assert.equal(navigated, 0); back.call(v); assert.equal(navigated, 1);
+});
+
+test('new note creation persists independent project destination and topic tags', async () => {
+  const create = viewMethod('pages/Index.ets', 'createNote'); let saved;
+  const v = { notes: [], noteCreateBusy: false, activeSpaceName: () => '', formatTime: () => '', notify() {},
+    storage: { create: async (_, note) => { saved = note; }, save: async () => {} }, rebuildSpaces() {}, refreshGraph() {}, openNote() {} };
+  assert.equal(await create.call(v, '微积分', 'Markdown', '数学课程', '', ['复习', '课堂']), true);
+  assert.equal(saved.category, '数学课程'); assert.equal(saved.tag, '复习'); assert.deepEqual(plain(saved.tags), ['复习', '课堂']);
+});
+
+test('new note submission honors an explicit unfiled destination and keeps the form on failure', async () => {
+  const commit = viewMethod('pages/Index.ets', 'commitPendingCreate'); const calls = [];
+  const v = { pendingCreate: { type: 'Markdown', projectName: '旧项目' }, activeSpaceName: () => '当前项目',
+    createNote: async (...args) => { calls.push(args); return false; } };
+  await commit.call(v, '标题', '未分类', ['课堂']); assert.equal(calls[0][2], '未分类'); assert.ok(v.pendingCreate);
+  v.createNote = async () => true; await commit.call(v, '标题', '课程'); assert.equal(v.pendingCreate, null);
+});
+
+test('composer menu state explicitly toggles, remains exclusive and refuses opening during an active operation', () => {
+  const v = { plusMenuOpen: false, modelMenuOpen: false, conversationMenuOpen: false, pickerOpen: true, alive: true };
+  for (const method of ['toggleComposerMenu', 'closeComposerMenus', 'menuActionsAvailable']) v[method] = viewMethod('views/ai/AiWorkspace.ets', method);
+  v.toggleComposerMenu('plus'); assert.equal(v.plusMenuOpen, true); assert.equal(v.pickerOpen, false);
+  v.toggleComposerMenu('plus'); assert.equal(v.plusMenuOpen, false);
+  v.toggleComposerMenu('conversation'); assert.equal(v.conversationMenuOpen, true);
+  v.toggleComposerMenu('model'); assert.equal(v.modelMenuOpen, true); assert.equal(v.conversationMenuOpen, false);
+  v.closeComposerMenus(); v.attachmentBusy = true; v.toggleComposerMenu('plus'); assert.equal(v.plusMenuOpen, false);
+});
+
+function chatLifecycleView() {
+  const v = { alive: true, isLoading: false, servicesReady: true, sessionLoadRequestId: 0,
+    activeSessionId: '', loadedSessionId: '', sessionLoadBusy: false, sessionLoadError: '',
+    messages: [], lastCitations: [], inputText: '', currentAgentMode: 'auto',
+    persistQueue: Promise.resolve(), unsavedSessions: new Map(), emitContext() {}, scrollToBottom() {},
+    onSessionSaved() {}, sessionService: { loadSessions: async () => [], saveSession: async () => {} } };
+  let created = 0;
+  for (const method of ['loadSessionById', 'persistSession', 'menuActionsAvailable']) {
+    v[method] = viewMethod('views/ai/AiWorkspace.ets', method, {
+      createEmptySession: () => ({ id: `created-${++created}`, title: '新对话', createdAt: 1, updatedAt: 1, messages: [] }),
+      promptAction: { showToast() {} } });
+  }
+  return v;
+}
+
+test('late conversation loads cannot overwrite the selected conversation or clear its loading state', async () => {
+  const v = chatLifecycleView(), pending = [];
+  v.sessionService.loadSessions = () => new Promise(resolve => pending.push(resolve));
+  v.activeSessionId = 'a'; const first = v.loadSessionById('a');
+  v.activeSessionId = 'b'; const second = v.loadSessionById('b');
+  pending[0]([{ id: 'a', messages: [{ id: 'a1', role: 'user', text: '旧记录' }] }]); await first;
+  assert.equal(v.loadedSessionId, 'b'); assert.equal(v.messages.length, 0); assert.equal(v.sessionLoadBusy, true);
+  pending[1]([{ id: 'b', messages: [{ id: 'b1', role: 'assistant', text: '新记录', citations: [{ noteId: 'b' }] }] }]); await second;
+  assert.equal(v.messages[0].text, '新记录'); assert.equal(v.sessionLoadBusy, false); assert.equal(v.lastCitations[0].noteId, 'b');
+  v.activeSessionId = 'a'; const after = v.loadSessionById('a'); v.alive = false;
+  pending[2]([{ id: 'a', messages: [{ text: '晚到' }] }]); await after; assert.equal(v.messages.length, 0);
+});
+
+test('a missing or unreadable conversation blocks actions until a successful retry without losing an initial draft', async () => {
+  const v = chatLifecycleView(); v.inputText = '从文档进入的提问'; await v.loadSessionById('');
+  assert.equal(v.inputText, '从文档进入的提问');
+  v.activeSessionId = 'a'; await v.loadSessionById('a'); assert.match(v.sessionLoadError, /不存在/); assert.equal(v.menuActionsAvailable(), false);
+  v.sessionService.loadSessions = async () => { throw Error('read'); };
+  await v.loadSessionById('a'); assert.match(v.sessionLoadError, /读取失败/); assert.equal(v.menuActionsAvailable(), false);
+  v.sessionService.loadSessions = async () => [{ id: 'a', messages: [] }];
+  await v.loadSessionById('a'); assert.equal(v.sessionLoadError, ''); assert.equal(v.menuActionsAvailable(), true);
+});
+
+test('a late save captures the original conversation and does not reactivate it after selection changes', async () => {
+  const v = chatLifecycleView(), saved = [], callbacks = []; let release;
+  v.loadedSessionId = 'a'; v.messages = [{ role: 'user', text: '保留 A' }];
+  v.sessionService.loadSessions = () => new Promise(resolve => { release = resolve; });
+  v.sessionService.saveSession = async session => saved.push(plain(session));
+  v.onSessionSaved = (session, activate) => callbacks.push([session.id, activate]);
+  const pending = v.persistSession(); await Promise.resolve();
+  v.loadedSessionId = 'b'; v.sessionLoadRequestId++; v.messages = [{ role: 'user', text: '新的 B' }];
+  release([{ id: 'a', title: 'A', createdAt: 1, pinned: true }]); await pending;
+  assert.equal(saved[0].id, 'a'); assert.equal(saved[0].messages[0].text, '保留 A'); assert.equal(saved[0].pinned, true);
+  assert.deepEqual(callbacks, [['a', false]]);
+  const publish = viewMethod('pages/Index.ets', 'handleSessionSaved');
+  const index = { sessions: [], activeSessionId: 'b', sortSessions: rows => rows };
+  publish.call(index, saved[0], false); assert.equal(index.activeSessionId, 'b'); assert.equal(index.sessions[0].id, 'a');
+});
+
+test('overlapping fresh conversation saves share one ID and preserve ordered snapshots through a failed retry', async () => {
+  const v = chatLifecycleView(), stored = new Map(), writes = []; let failures = 1;
+  v.sessionService.loadSessions = async () => [...stored.values()];
+  v.sessionService.saveSession = async session => {
+    if (failures-- > 0) throw Error('write');
+    stored.set(session.id, plain(session)); writes.push(plain(session));
+  };
+  v.messages = [{ role: 'user', text: '题目' }]; const first = v.persistSession();
+  const id = v.loadedSessionId; v.messages.push({ role: 'assistant', text: '答案' }); const second = v.persistSession();
+  await Promise.all([first, second]); assert.equal(v.loadedSessionId, id); assert.equal(stored.size, 1);
+  assert.equal(writes[0].messages.length, 2); assert.equal(writes[0].title, '题目'); assert.equal(v.unsavedSessions.size, 0);
+  v.messages.push({ role: 'assistant', text: '补充' }); await v.persistSession(); assert.equal(stored.get(id).messages.length, 3);
+});
+
+const { ChatHistoryPolicy } = load(`${base}services/ai/ChatHistoryPolicy.ets`);
+const { MarkerImportPolicy } = load(`${base}services/smart/MarkerImportPolicy.ets`, {
+  [path.resolve(root, `${base}services/smart/SmartExtractService.ets`)]: { SMART_INPUT_LIMIT: 12000 } });
+test('Marker Markdown and official success JSON preserve formulas, tables and order without treating raw structure as prose', () => {
+  const markdown = '# 课程\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n$$x^2+y^2=1$$';
+  assert.equal(MarkerImportPolicy.parse(markdown, false), markdown);
+  assert.equal(MarkerImportPolicy.parse(JSON.stringify({ success: true, format: 'markdown', output: markdown, images: { 'img.png': 'base64' } }), true), markdown);
+  for (const value of [{ success: false, error: 'engine' }, { success: 'false', output: markdown }, { format: 'json', output: '{}' }, { children: [] }, null, []]) {
+    assert.throws(() => MarkerImportPolicy.parse(JSON.stringify(value), true));
+  }
+  assert.throws(() => MarkerImportPolicy.parse('x'.repeat(12001), false), /分段/);
+});
+
+function documentImportHarness({ fail = false, cancelled = () => false, text = '真实扫描文字', pdf = true, managed = false } = {}) {
+  const calls = [], fsAdapter = { OpenMode: { READ_ONLY: 0 }, openSync: () => ({ fd: 1 }), closeSync: () => calls.push('closed'),
+    statSync: () => ({ size: 300 }), readSync: (_, buffer) => { new Uint8Array(buffer).set(Buffer.from(pdf ? '%PDF-' : '# MD\n')); return 5; },
+    readText: async () => text };
+  const service = { savePdfToSandbox: async () => { calls.push('copied'); return '/sandbox/documents/extract.pdf'; },
+    extractPages: async (_, start, end, scan, cancel, progress) => {
+      calls.push([start, end, scan]); if (fail) throw Error('OCR failed'); if (cancel()) throw Error('cancel'); progress(start);
+      return [{ pageNumber: start, text, method: 'ocr' }];
+    }, removeManagedPdf: async (_, uri) => calls.push(['removed', uri]) };
+  const { DocumentExtractService } = load(`${base}services/smart/DocumentExtractService.ets`, {
+    '@kit.CoreFileKit': { fileIo: fsAdapter }, '@kit.AbilityKit': {},
+    [path.resolve(root, `${base}services/smart/SmartExtractService.ets`)]: { SMART_INPUT_LIMIT: 12000 },
+    [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: { PdfDocumentService: { getInstance: () => service } } });
+  const uri = managed ? '/sandbox/documents/original.pdf' : (pdf ? 'file://source.pdf' : 'file://result.md');
+  return { calls, read: (start = 1, end = 1) => DocumentExtractService.read({ filesDir: '/sandbox' }, uri, start, end, cancelled, () => {}) };
+}
+
+test('local PDF extraction releases the source handle and temporary copy on success, error and cancellation', async () => {
+  const success = documentImportHarness(); const result = await success.read();
+  assert.match(result.text, /真实扫描文字/); assert.match(result.notice, /本机/); assert.equal(success.calls[0], 'closed');
+  assert.deepEqual(success.calls.at(-1), ['removed', '/sandbox/documents/extract.pdf']);
+  const failure = documentImportHarness({ fail: true }); await assert.rejects(failure.read()); assert.equal(failure.calls.at(-1)[0], 'removed');
+  let checks = 0; const cancel = documentImportHarness({ cancelled: () => ++checks > 1 });
+  await assert.rejects(cancel.read(), /取消/); assert.equal(cancel.calls.at(-1)[0], 'removed');
+});
+
+test('document extraction rejects oversized results and excessive page ranges without modifying a draft', async () => {
+  const text = documentImportHarness({ pdf: false, text: '# 原文\n\n保留内容' }); assert.equal((await text.read()).text, '# 原文\n\n保留内容');
+  const range = documentImportHarness(); await assert.rejects(range.read(1, 6), /1–5/); assert.ok(!range.calls.includes('copied'));
+  const large = documentImportHarness({ text: 'x'.repeat(12001) }); await assert.rejects(large.read(), /页范围/); assert.equal(large.calls.at(-1)[0], 'removed');
+});
+
+test('extraction retains the library PDF on success, failure and cancellation without another copy', async () => {
+  const success = documentImportHarness({ managed: true }); assert.match((await success.read()).text, /真实扫描文字/);
+  const failure = documentImportHarness({ managed: true, fail: true }); await assert.rejects(failure.read());
+  let checks = 0; const cancelled = documentImportHarness({ managed: true, cancelled: () => ++checks > 1 });
+  await assert.rejects(cancelled.read(), /取消/);
+  for (const result of [success, failure, cancelled]) {
+    assert.ok(!result.calls.includes('copied')); assert.ok(!result.calls.some(call => Array.isArray(call) && call[0] === 'removed'));
+    assert.ok(result.calls.includes('closed'));
+  }
+});
+
+test('late document import cannot append into a closed or superseded extraction sheet; repeated taps use one picker', async () => {
+  let release, picks = 0;
+  class DocumentSelectOptions {}
+  class DocumentViewPicker { async select() { picks++; return ['file://source.pdf']; } }
+  const pick = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'pickDocument', {
+    picker: { DocumentSelectOptions, DocumentViewPicker }, SMART_INPUT_LIMIT: 12000, AppStorage: { setOrCreate() {} },
+    DocumentExtractService: { validateInput() {}, read: () => new Promise(resolve => { release = resolve; }) } });
+  const v = { alive: true, requestId: 0, step: 'input', inputText: '保留草稿', pdfStart: '1', pdfEnd: '1',
+    onImportSource: async () => '/sandbox/documents/original.pdf', busy() { return this.step !== 'input'; } };
+  const pending = pick.call(v); await new Promise(resolve => setTimeout(resolve, 0)); await pick.call(v); assert.equal(picks, 1);
+  v.requestId++; v.alive = false; release({ text: '晚到结果', notice: '' }); await pending; assert.equal(v.inputText, '保留草稿');
+});
+
+test('the extraction sheet waits for library persistence and reads only the saved local source', async () => {
+  let saved; const reads = []; const drafts = [];
+  const pick = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'pickDocument', {
+    Error,
+    picker: { DocumentSelectOptions: class {}, DocumentViewPicker: class { async select() { return ['file://source.pdf']; } } },
+    SMART_INPUT_LIMIT: 12000, AppStorage: { setOrCreate: (_, text) => drafts.push(text) },
+    DocumentExtractService: { validateInput() {}, read: async (_, uri) => { reads.push(uri); return { text: '本机文字', notice: '请校对' }; } } });
+  const view = { alive: true, requestId: 0, step: 'input', inputText: '', pdfStart: '1', pdfEnd: '1', busy() { return this.step !== 'input'; },
+    onImportSource: () => new Promise(resolve => { saved = resolve; }) };
+  const pending = pick.call(view); await new Promise(resolve => setTimeout(resolve, 0)); assert.deepEqual(reads, []);
+  saved('/sandbox/documents/original.pdf'); await pending;
+  assert.deepEqual(reads, ['/sandbox/documents/original.pdf']); assert.equal(view.inputText, '本机文字');
+  assert.match(view.sourceNotice, /已保存/); assert.deepEqual(drafts, ['本机文字']);
+  view.onImportSource = async () => { throw Error('存储空间不足'); }; view.inputText = '保留原稿'; reads.length = 0;
+  await pick.call(view); assert.deepEqual(reads, []); assert.equal(view.inputText, '保留原稿'); assert.match(view.errorMsg, /空间不足/);
+});
+
+test('closing during a durable file import suppresses late extraction and leaves the library save to finish', async () => {
+  let finish; let reads = 0;
+  const pick = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'pickDocument', {
+    picker: { DocumentSelectOptions: class {}, DocumentViewPicker: class { async select() { return ['file://source.pdf']; } } },
+    DocumentExtractService: { validateInput() {}, read: async () => { reads++; } } });
+  const view = { alive: true, requestId: 0, step: 'input', inputText: '原稿', pdfStart: '1', pdfEnd: '1', busy() { return this.step !== 'input'; },
+    onImportSource: () => new Promise(resolve => { finish = resolve; }) };
+  const pending = pick.call(view); await new Promise(resolve => setTimeout(resolve, 0)); view.alive = false; view.requestId++;
+  finish('/sandbox/documents/original.pdf'); await pending;
+  assert.equal(reads, 0); assert.equal(view.inputText, '原稿');
+});
+
+test('AI extraction toggle requires a valid consented profile and ignores readiness results after closing', async () => {
+  for (const allowed of [false, true]) {
+    const ready = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'loadAiAvailability', {
+      REMOTE_AI_ENABLED: true, ModelConfigService: { getInstance: () => ({ getActiveProfile: async () => profile({}) }) },
+      ModelProfilePolicy: { validate: () => '' }, RemoteAiPolicy: { consented: () => allowed } });
+    const v = { alive: true, useAi: true, aiReady: false }; await ready.call(v);
+    assert.equal(v.aiReady, allowed); assert.equal(v.useAi, allowed);
+    v.alive = false; v.aiReady = false; await ready.call(v); assert.equal(v.aiReady, false);
+  }
+});
+
+test('a restored AI preference cannot send extraction before model readiness finishes', async () => {
+  const requests = [];
+  const extract = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'triggerExtraction', {
+    SMART_INPUT_LIMIT: 12000, SmartExtractService: { getInstance: () => ({ extract: async (...args) => {
+      requests.push(args); return { title: '资料', formattedMarkdown: '# 资料', tasks: [] };
+    } }) } });
+  const v = { alive: true, requestId: 0, busy: () => false, inputText: '原文', layoutStyle: 'faithful',
+    useAi: true, aiReady: false, mergeWrappedLines: false };
+  await extract.call(v); assert.equal(requests[0][3], false); assert.equal(v.step, 'result');
+  v.aiReady = true; await extract.call(v); assert.equal(requests[1][3], true);
+});
+
+const { WorkspaceNotePolicy } = load(`${base}services/ai/WorkspaceNotePolicy.ets`);
+test('AI content changes require the read version and preserve unrelated data while binary content is immutable', () => {
+  const original = studyNote({ type: 'Markdown', updatedAt: 10, favorite: true, scratchpadStrokes: 'ink', coverUrl: 'cover:mist' });
+  const before = JSON.stringify(original);
+  assert.throws(() => WorkspaceNotePolicy.mutate(original, 'update_note', '# 新正文', 9), /已变化/);
+  const changed = WorkspaceNotePolicy.mutate(original, 'update_note', '# 新正文', 10);
+  assert.equal(changed.contentDetail, '# 新正文'); assert.equal(changed.scratchpadStrokes, 'ink'); assert.equal(changed.coverUrl, 'cover:mist');
+  for (const type of ['PDF', 'Handwriting', 'Doc']) assert.throws(() => WorkspaceNotePolicy.mutate({ ...original, type }, 'update_note', '覆盖', 10), /文字笔记/);
+  assert.equal(WorkspaceNotePolicy.mutate(original, 'set_note_flag', 'pinned:yes', 0).isPinned, true);
+  assert.equal(WorkspaceNotePolicy.mutate(original, 'rename_note', '新标题', 0).title, '新标题');
+  const future = { ...original, updatedAt: Date.now() + 100000 };
+  assert.equal(WorkspaceNotePolicy.mutate(future, 'rename_note', '新标题', 0).updatedAt, future.updatedAt + 1);
+  assert.throws(() => WorkspaceNotePolicy.mutate(original, 'set_note_flag', 'secret:yes', 0)); assert.equal(JSON.stringify(original), before);
+});
+
+test('expanded function tools validate pagination, enum flags and revisions before dispatching write ports', async () => {
+  const requests = [];
+  const executor = new WorkspaceToolExecutor(toolPorts({ manageNote: async (...args) => { requests.push(args); return 'saved'; },
+    setTodoStatus: async (...args) => { requests.push(args); return 'saved'; } }));
+  assert.equal((await executor.execute('update_note', JSON.stringify({ identifier: 'a', content: '# 新', expectedUpdatedAt: 10 }))).ok, true);
+  assert.deepEqual(requests[0], ['update_note', 'a', '# 新', 10]);
+  assert.equal((await executor.execute('set_todo_status', '{"identifier":"todo-1","status":"done"}')).ok, true);
+  assert.equal((await executor.execute('set_note_flag', '{"identifier":"a","flag":"system","value":"yes"}')).ok, false);
+  assert.equal(requests.length, 2);
+  assert.throws(() => ToolArgumentValidator.parse('read_note', '{"identifier":"a","offset":-1}'));
+  assert.equal(ToolArgumentValidator.parse('list_notes', '{"offset":50,"limit":50}').limit, 50);
+  const todoExecutor = new WorkspaceToolExecutor(toolPorts({ todos: (...args) => { requests.push(args); return 'todo'; } }));
+  await todoExecutor.execute('list_todos', '{"offset":50,"limit":20,"status":"done"}');
+  assert.deepEqual(requests.at(-1), ['', 'done', 50, 20]);
+});
+
+test('paginated note listing and reading reach later content with IDs and versions instead of dropping the tail', () => {
+  const notes = Array.from({ length: 55 }, (_, i) => studyNote({ id: String(i), title: `笔记 ${i}`, contentDetail: 'abcdefghij'.repeat(3000), updatedAt: 123 }));
+  const listing = viewMethod('views/ai/AiWorkspace.ets', 'toolListNotes'); const reading = viewMethod('views/ai/AiWorkspace.ets', 'toolReadNote', { NoteToolReader, StudySourceService });
+  const v = { allNotes: notes }; assert.match(listing.call(v, '', 50, 20), /ID: 54/); assert.match(listing.call(v, '', 50, 20), /末尾/);
+  const text = reading.call(v, '54', 24000, 12000); assert.match(text, /updatedAt: 123/); assert.ok(text.includes('abcdefghij'.repeat(600))); assert.match(text, /末尾/);
+  const todos = Array.from({ length: 61 }, (_, i) => ({ id: `todo-${i}`, title: `任务 ${i}`, date: '2026-10-09', done: false }));
+  const listTodos = viewMethod('views/ai/AiWorkspace.ets', 'toolListTodos');
+  assert.match(listTodos.call({ todos }, '', 'all'), /offset=50/);
+  assert.match(listTodos.call({ todos }, '', 'all', 50, 50), /ID: todo-60/);
+  assert.match(listTodos.call({ todos }, '', 'all', 50, 50), /末尾/);
+});
+
+test('queued AI tag edits read the latest state and a failed task does not strand subsequent mutations', async () => {
+  const { SerialTaskQueue } = load(`${base}services/storage/SerialTaskQueue.ets`);
+  const change = viewMethod('pages/Index.ets', 'handleAiAddTag'); let release;
+  const v = { aiMutationQueue: new SerialTaskQueue(), note: studyNote({ tags: [], tag: '' }), requireAiNote() { return this.note; },
+    saveAiNote: async note => { if (note.tags.length === 1) await new Promise(resolve => { release = resolve; }); v.note = note; } };
+  const a = change.call(v, 'a', '数学'), b = change.call(v, 'a', '复习'); await Promise.resolve(); release(); await Promise.all([a, b]);
+  assert.deepEqual(plain(v.note.tags), ['数学', '复习']);
+  await assert.rejects(change.call(v, 'a', '')); await change.call(v, 'a', '考试'); assert.equal(v.note.tags.length, 3);
+});
+
+test('AI body writes preserve the original file and UI snapshot when metadata fails, including new-note cleanup', async () => {
+  const save = viewMethod('pages/Index.ets', 'saveAiNote', { Error });
+  const original = studyNote({ id: 'a', type: 'Markdown', contentDetail: '原文' }), changed = { ...original, contentDetail: '新文' };
+  const calls = [], v = { notes: [original], readingOpen: false, fullScreenDocOpen: false, readingNote: { id: '' },
+    getAbilityContext: () => ({}), storage: { saveDocument: async (_, note, text) => calls.push([note.id, text]),
+      save: async () => { throw Error('metadata'); }, delete: async (_, id) => calls.push(['delete', id]) },
+    rebuildSpaces() { calls.push('published'); }, refreshStats() {}, refreshGraph: async () => {} };
+  await assert.rejects(save.call(v, changed, true), /metadata/);
+  assert.deepEqual(calls, [['a', '新文'], ['a', '原文']]); assert.equal(v.notes[0], original);
+  calls.length = 0; await assert.rejects(save.call(v, { ...changed, id: 'b' }, true), /metadata/);
+  assert.deepEqual(calls, [['b', '新文'], ['delete', 'b']]); assert.equal(v.notes.length, 1);
+});
+
+test('AI body editing blocks both reader surfaces before file I/O and publishes only after durable success', async () => {
+  const save = viewMethod('pages/Index.ets', 'saveAiNote'), original = studyNote({ id: 'a' }); let writes = 0, release, reachedSave;
+  const waitingSave = new Promise(resolve => { reachedSave = resolve; });
+  const v = { notes: [original], readingNote: original, fullScreenDocNote: original, readingOpen: true, fullScreenDocOpen: false,
+    getAbilityContext: () => ({}), storage: { saveDocument: async () => { writes++; }, save: () => new Promise(resolve => { release = resolve; reachedSave(); }) },
+    rebuildSpaces() {}, refreshStats() {}, refreshGraph: async () => {} };
+  const changed = { ...original, contentDetail: '新文' };
+  await assert.rejects(save.call(v, changed, true), /结束/); assert.equal(writes, 0);
+  v.readingOpen = false; v.fullScreenDocOpen = true;
+  await assert.rejects(save.call(v, changed, true), /结束/); assert.equal(writes, 0);
+  v.fullScreenDocOpen = false; const pending = save.call(v, changed, true); await waitingSave;
+  assert.equal(v.notes[0], original); release(); await pending; assert.equal(v.notes[0], changed); assert.equal(v.readingNote, changed);
+});
+
+test('AI todo status is persisted before publishing and failed writes keep the previous state', async () => {
+  const { SerialTaskQueue } = load(`${base}services/storage/SerialTaskQueue.ets`);
+  const change = viewMethod('pages/Index.ets', 'handleAiSetTodoStatus'); let fail = true, release;
+  const todo = { id: 'todo-1', date: '2026-10-09', title: '复习', done: false, noteRefs: [], createdAt: 1, updatedAt: 1 };
+  const v = { aiMutationQueue: new SerialTaskQueue(), todos: [todo], getAbilityContext: () => ({}),
+    todoStorage: { saveTodos: async () => { if (fail) throw Error('disk'); await new Promise(resolve => { release = resolve; }); } } };
+  await assert.rejects(change.call(v, todo.id, 'done'), /disk/); assert.equal(v.todos[0], todo);
+  fail = false; const pending = change.call(v, todo.id, 'done'); await Promise.resolve();
+  assert.equal(v.todos[0].done, false); release(); await pending; assert.equal(v.todos[0].done, true);
+  await assert.rejects(change.call(v, todo.id, 'invalid'), /无效/); assert.equal(v.todos[0].done, true);
+});
+
+test('AI link creation refuses binary notes and appends once to the latest text note', async () => {
+  const { SerialTaskQueue } = load(`${base}services/storage/SerialTaskQueue.ets`);
+  const change = viewMethod('pages/Index.ets', 'handleAiCreateLink', { WorkspaceNotePolicy });
+  const v = { aiMutationQueue: new SerialTaskQueue(), note: studyNote({ type: 'PDF' }), writes: 0,
+    requireAiNote() { return this.note; }, saveAiNote: async note => { v.writes++; v.note = note; } };
+  await assert.rejects(change.call(v, 'a', '概念'), /文字笔记/); assert.equal(v.writes, 0);
+  v.note = studyNote({ type: 'Markdown' }); await change.call(v, 'a', '概念'); await change.call(v, 'a', '概念');
+  assert.equal(v.writes, 1); assert.ok(v.note.contentDetail.endsWith('[[概念]]\n'));
+});
+
+test('home shelf sorts once for the same source and filter, then refreshes when the immutable library snapshot changes', () => {
+  const display = viewMethod('views/workspace/HomeWorkspace.ets', 'displayNotes');
+  const v = { recentNotes: [studyNote({ updatedAt: 1 }), studyNote({ id: 'b', updatedAt: 2 })], activeShelfFilter: 'all', cachedShelfSource: null,
+    isPdfNote: n => n.type === 'PDF', isHandwritingNote: n => n.type === 'Handwriting' };
+  const sorted = display.call(v); assert.equal(display.call(v), sorted); assert.equal(sorted[0].id, 'b');
+  v.recentNotes = v.recentNotes.concat(studyNote({ id: 'c', updatedAt: 3 })); assert.equal(display.call(v)[0].id, 'c');
+  assert.equal(v.recentNotes[0].updatedAt, 1); v.activeShelfFilter = 'favorite'; assert.equal(display.call(v).length, 0);
+});
+test('history search groups pinned conversations once, ignores hidden tool output and orders newest first', () => {
+  const now = new Date(2026, 9, 9, 10).getTime();
+  const make = overrides => ({ id: 'a', title: '数学笔记', pinned: false, updatedAt: now, messages: [], ...overrides });
+  const rows = [make({ id: 'old', updatedAt: now - 10 * 86400000 }), make({ id: 'pin', pinned: true }),
+    make({ id: 'today', messages: [{ role: 'user', text: '复习  线性代数' }, { role: 'tool', text: 'hidden-secret' }] }),
+    make({ id: 'week', updatedAt: now - 86400000 })];
+  assert.deepEqual(plain(ChatHistoryPolicy.filter(rows, '数学 线性', '今天', now)).map(row => row.id), ['today']);
+  assert.equal(ChatHistoryPolicy.filter(rows, 'hidden-secret', '今天', now).length, 0);
+  assert.equal(ChatHistoryPolicy.group(rows[1], now), '置顶');
+  assert.deepEqual(['置顶', '今天', '最近七天', '更早'].flatMap(group => plain(ChatHistoryPolicy.filter(rows, '', group, now)).map(row => row.id)).sort(), ['old', 'pin', 'today', 'week']);
+});
+
+test('opening and closing history restores the existing sidebar state without changing the active session', () => {
+  for (const collapsed of [false, true]) {
+    const v = { sidebarCollapsed: collapsed, chatHistoryOpen: false, activeSessionId: 'draft', singleColumn: false };
+    v.closeChatHistory = viewMethod('pages/Index.ets', 'closeChatHistory');
+    const toggle = viewMethod('pages/Index.ets', 'toggleChatHistory');
+    toggle.call(v); assert.equal(v.chatHistoryOpen, true); assert.equal(v.sidebarCollapsed, false);
+    toggle.call(v); assert.equal(v.chatHistoryOpen, false); assert.equal(v.sidebarCollapsed, collapsed); assert.equal(v.activeSessionId, 'draft');
+  }
+});
+
 test('PDF erasing uses line segments and groups a gesture into one reversible operation', () => {
   const f=pdfHistoryView(),v=f.view;const a={id:'a',pageIndex:0,width:3,points:[{u:0,v:0.5},{u:1,v:0.5}]};
   const b={id:'b',pageIndex:0,width:3,points:[{u:0,v:0.8},{u:1,v:0.8}]};
@@ -1844,7 +2423,7 @@ test('leaving a scratchpad or global canvas commits its last stroke and pending 
   const disappear=viewMethod('views/reader/HandwritingCanvas.ets','aboutToDisappear',{clearTimeout:()=>{}});
   for(const [isScratchpad,persistOnDisappear] of [[true,false],[false,true],[false,false]]) {
     const calls=[];const view={isScratchpad,persistOnDisappear,saveTimer:1,
-      finishStroke:()=>calls.push('stroke'),flushSave:()=>calls.push('save'),shortcuts:{stop(){}},input:{reset(){}}};
+      finishStroke:()=>calls.push('stroke'),flushSave:()=>calls.push('save'),shortcuts:{stop(){}},input:{reset(){}},inkFrame:{release(){}}};
     disappear.call(view);assert.deepEqual(calls,isScratchpad||persistOnDisappear?['stroke','save']:[]);assert.equal(view.saveTimer,-1);
   }
 });
@@ -1941,6 +2520,113 @@ test('assistant inline formatting preserves plain text and literal markup that i
 });
 
 const { CanvasViewport } = load(`${base}services/ink/CanvasViewport.ets`);
+
+function canvasNavigationView() {
+  const v = { input: { isPenActive: () => false, reset() {} }, readOnly: false, inkContact: true,
+    fingerDrawing: true, currentStroke: { points: [{ x: 10, y: 10 }] }, strokes: [], eraseBefore: null,
+    navigating: false, pairIds: '', pairDistance: 0, zoomStart: 1, zoomScale: 1, panX: 0, panY: 0,
+    pairAnchor: { x: 0, y: 0 }, canvasWidth: 600, canvasHeight: 700, liveContext: { clearRect() {} },
+    onDirtyChange() {}, onFocused() {}, redrawAll() {}, requestRedraw() {} };
+  for (const method of ['navigateTouch', 'cancelContact', 'revealWritingSpace']) v[method] = viewMethod('views/reader/HandwritingCanvas.ets', method, { CanvasViewport, ...penEnums });
+  return v;
+}
+
+test('two fingers take over finger ink, pan and zoom around their moving center without an ink tail', () => {
+  const v = canvasNavigationView();
+  const event = (type, points, changed = points) => ({ type, sourceTool: penEnums.SourceTool.Finger, touches: points, changedTouches: changed });
+  const a = { id: 1, x: 100, y: 100 }, b = { id: 2, x: 200, y: 100 };
+  assert.equal(v.navigateTouch(event(0, [a, b])), true); assert.equal(v.currentStroke, null); assert.equal(v.inkContact, false);
+  v.navigateTouch(event(2, [{ ...a, x: 90, y: 130 }, { ...b, x: 290, y: 130 }]));
+  assert.equal(v.zoomScale, 2); assert.equal(v.panX, -110); assert.equal(v.panY, -70);
+  v.navigateTouch(event(1, [a], [b])); assert.equal(v.navigating, true);
+  v.navigateTouch(event(2, [{ ...a, x: 120 }])); assert.equal(v.currentStroke, null);
+  v.navigateTouch(event(1, [a], [a])); assert.equal(v.navigating, false);
+  assert.equal(v.navigateTouch(event(0, [a])), false);
+  v.navigateTouch(event(0, [a, b])); v.navigateTouch(event(3, [a, b])); assert.equal(v.navigating, false);
+});
+
+test('PDF navigation rejects a pen and its palm but allows two fingers to take over finger ink', () => {
+  const judge = viewMethod('views/reader/pdf/PdfAnnotatorView.ets', 'judgeNavigation', {
+    ...penEnums, GestureJudgeResult: { REJECT: 'reject', CONTINUE: 'continue' } });
+  const v = { penContact: false, inkContact: true, isAnnotateMode: true, fingerDrawing: true, currentTool: 'pen' };
+  const fingers = n => ({ sourceTool: penEnums.SourceTool.Finger, fingerList: Array(n).fill({}) });
+  assert.equal(judge.call(v, fingers(1)), 'reject'); assert.equal(judge.call(v, fingers(2)), 'continue');
+  v.penContact = true; assert.equal(judge.call(v, fingers(2)), 'reject');
+  assert.equal(judge.call(v, { sourceTool: penEnums.SourceTool.Pen, fingerList: [] }), 'reject');
+  Object.assign(v, { activeInputPage: 2, saveRevision: 1, savedRevision: 1, onDirtyChange() {} });
+  const change = viewMethod('views/reader/pdf/PdfAnnotatorView.ets', 'setPageInkContact');
+  change.call(v, 1, false); assert.equal(v.penContact, true);
+  change.call(v, 2, false); assert.equal(v.penContact, false); assert.equal(v.inkContact, false);
+});
+
+test('palm contacts cannot transform the whiteboard while a pen owns the pointer', () => {
+  const v = canvasNavigationView(); v.input.isPenActive = () => true;
+  assert.equal(v.navigateTouch({ sourceTool: penEnums.SourceTool.Finger, type: 0, touches: [{ id: 2, x: 1, y: 1 }, { id: 3, x: 2, y: 2 }] }), false);
+  assert.ok(v.currentStroke); assert.equal(v.zoomScale, 1); assert.equal(v.panX, 0);
+});
+
+test('writing near an edge reveals more whiteboard space only after lift and preserves stored coordinates', () => {
+  const v = canvasNavigationView(); v.strokes = [{ points: [{ x: 590, y: 690 }], isEraser: false }];
+  const before = JSON.stringify(v.strokes); v.revealWritingSpace();
+  assert.equal(v.panX, -150); assert.equal(v.panY, -210); assert.equal(JSON.stringify(v.strokes), before);
+  v.strokes = [{ points: [{ x: 590, y: 690 }], isEraser: true }]; v.revealWritingSpace(); assert.equal(v.panY, -210);
+});
+
+test('stroke erasing catches swept crossings and old reference widths without deleting area masks', () => {
+  const stroke = { points: [{ x: 50, y: 0 }, { x: 50, y: 100 }], color: '#000', width: 2, referenceWidth: 1200, isEraser: false };
+  assert.equal(CanvasStrokeEraser.hit(stroke, { x: 0, y: 50 }, { x: 100, y: 50 }, 4), true);
+  assert.equal(CanvasStrokeEraser.hit(stroke, { x: 0, y: 150 }, { x: 100, y: 150 }, 4), false);
+  assert.equal(CanvasStrokeEraser.hit({ ...stroke, referenceWidth: 600 }, { x: 100, y: 100 }, { x: 100, y: 100 }, 4), true);
+  assert.equal(CanvasStrokeEraser.hit({ ...stroke, isEraser: true }, { x: 50, y: 50 }, { x: 50, y: 50 }, 40), false);
+});
+
+test('a whiteboard stroke erase is one undo frame and cancellation restores the entire original snapshot', () => {
+  const before = [{ points: [{ x: 1, y: 1 }] }, { points: [{ x: 2, y: 2 }] }];
+  const v = canvasNavigationView(); let saved = 0;
+  Object.assign(v, { strokes: before.slice(1), eraseBefore: before, undoFrames: [], redoFrames: [before], currentStroke: null, scheduleSave: () => saved++ });
+  viewMethod('views/reader/HandwritingCanvas.ets', 'finishStroke').call(v);
+  assert.equal(v.undoFrames.length, 1); assert.equal(v.undoFrames[0], before); assert.equal(saved, 1); assert.equal(v.redoFrames.length, 0);
+  v.eraseBefore = before; v.strokes = []; v.cancelContact(); assert.equal(v.strokes, before); assert.equal(saved, 1);
+});
+
+test('topbar commands route only to the chosen canvas and remember each eraser mode', () => {
+  const v = inkSelectionHarness().view; const targets = [];
+  v.isScratchpad = true; v.toolCommand = { sequence: 1, target: 'document', action: 'eraser', value: '' };
+  v.selectEraser = () => targets.push('eraser'); v.changeEraserMode = viewMethod('views/reader/HandwritingCanvas.ets', 'changeEraserMode');
+  const command = viewMethod('views/reader/HandwritingCanvas.ets', 'handleToolCommand');
+  command.call(v); assert.equal(targets.length, 0);
+  v.toolCommand.target = 'scratchpad'; command.call(v); assert.deepEqual(targets, ['eraser']);
+  v.toolCommand = { sequence: 2, target: 'scratchpad', action: 'eraserMode', value: 'stroke' }; command.call(v);
+  assert.equal(v.eraserMode, 'stroke'); v.toolCommand.value = 'invalid'; command.call(v); assert.equal(v.eraserMode, 'stroke');
+});
+
+test('PDF swept stroke erase skips area eraser masks and can undo the complete gesture', () => {
+  const v = pdfHistoryView().view;
+  const stroke = { id: 'cross', pageIndex: 0, color: '#000', width: 2, isEraser: false, points: [{ u: .5, v: .1 }, { u: .5, v: .9 }] };
+  const mask = { ...stroke, id: 'mask', isEraser: true };
+  v.pageStrokes[0] = [stroke, mask]; v.beginErase(0);
+  v.handleEraseAtPoint(0, .1, .5, 720, 1000); v.handleEraseAtPoint(0, .9, .5, 720, 1000); v.finishErase(true);
+  assert.deepEqual(v.pageStrokes[0].map(item => item.id), ['mask']); v.handleUndo(); assert.equal(v.pageStrokes[0].length, 2);
+});
+
+test('PDF area erasing draws a reversible transparent mask and cancellation removes the preview without saving', () => {
+  for (const commit of [false, true]) {
+    const ink = inkRecorder(), live = inkRecorder(); ink.ctx.clearRect = () => {}; live.ctx.clearRect = () => {};
+    const saved = []; let wholeErase = 0, redraws = 0;
+    const v = { sourceReady: true, isAnnotateMode: true, tool: 'eraser', eraserMode: 'area', eraserWidth: 24,
+      pageWidth: 360, pageHeight: 500, pageModel: { pageIndex: 0 }, selectedColor: '#111', selectedWidth: 3,
+      input: new InkInputService(), fingerDrawing: true, context: ink.ctx, liveContext: live.ctx,
+      onPenActive() {}, onActiveFinisherChange() {}, onInkContactChange() {}, onEraseStarted: () => wholeErase++,
+      onStrokeAdded: stroke => saved.push(stroke), redrawAll: () => redraws++ };
+    for (const method of ['handleTouch', 'finishInput', 'resetInput', 'style']) v[method] = viewMethod('views/reader/pdf/PdfPageCanvas.ets', method, { ...penEnums, InkRenderer });
+    const event = type => ({ ...touchEvent(type), stopPropagation() {} });
+    v.handleTouch(event(0)); v.handleTouch(event(2)); v.handleTouch(event(commit ? 1 : 3));
+    assert.equal(wholeErase, 0); assert.equal(saved.length, commit ? 1 : 0); assert.equal(redraws, commit ? 0 : 1);
+    assert.ok(ink.calls.some(call => call[0] === 'fill' && call[3] === 'destination-out'));
+    assert.equal(live.calls.length, 0);
+    if (commit) { assert.equal(saved[0].isEraser, true); assert.equal(saved[0].width, 24); }
+  }
+});
 test('canvas screen and world coordinates round trip across pan, zoom and negative horizontal expansion', () => {
   for(const zoom of [.08,.3,1,8]) for(const [x,y,panX,panY] of [[0,0,320,-200],[420,780,-2000,1500]]) {
     const world=CanvasViewport.world(x,y,zoom,panX,panY);
@@ -1965,12 +2651,13 @@ test('canvas redraw scheduling coalesces moves without resizing the viewport', (
   queue[0][0]();assert.equal(draws,1);assert.equal(v.drawTimer,-1);assert.equal(v.canvasWidth,360);assert.equal(v.canvasHeight,700);
 });
 test('cancelled handwriting contacts discard live ink and preserve outstanding save state', () => {
-  const handle=viewMethod('views/reader/HandwritingCanvas.ets','handleTouch',{CanvasViewport});
+  const handle=viewMethod('views/reader/HandwritingCanvas.ets','handleTouch',{CanvasViewport,...penEnums});
   for(const pending of [false,true]) {
     const dirties=[];let clears=0,redraws=0;
-    const v={navigateTouch:()=>false,readOnly:false,input:{read:()=>({phase:'cancel'})},saveRevision:pending?2:1,savedRevision:1,
+    const v={navigateTouch:()=>false,readOnly:false,input:{read:()=>({phase:'cancel'}),reset(){}},saveRevision:pending?2:1,savedRevision:1,
       inkContact:true,currentStroke:{points:[{x:1,y:2}]},onDirtyChange:d=>dirties.push(d),
       liveContext:{clearRect:()=>clears++},redrawAll:()=>redraws++,strokes:[]};
+    v.cancelContact = viewMethod('views/reader/HandwritingCanvas.ets','cancelContact');
     handle.call(v,{stopPropagation(){}});assert.deepEqual(dirties,[pending]);assert.equal(v.currentStroke,null);assert.equal(v.inkContact,false);
     assert.equal(clears,1);assert.equal(redraws,1);assert.equal(v.strokes.length,0);
   }
@@ -2012,7 +2699,8 @@ test('read-only documents exit directly; only pending main or scratchpad changes
 test('exit waits for both main and scratchpad writes and keeps the reader open on failure', () => {
   const relative='views/reader/huawei/HuaweiDocWorkspace.ets';
   for(const success of [true,false]) {
-    let closed=0;const notices=[];const v={exitSaving:false,splitMode:'scratchpad',exitSaveToken:0,onClose:()=>closed++,showToast:m=>notices.push(m)};
+    let closed=0;const notices=[];const v={exitSaving:false,saveDestination:'close',splitMode:'scratchpad',exitSaveToken:0,onClose:()=>closed++,showToast:m=>notices.push(m),
+      beginReaderSave:viewMethod(relative,'beginReaderSave')};
     viewMethod(relative,'saveAndExit').call(v);assert.equal(v.exitPending,2);assert.equal(v.exitSaveToken,1);
     viewMethod(relative,'exitSaveFinished').call(v,true);assert.equal(closed,0);assert.equal(v.exitSaving,true);
     viewMethod(relative,'exitSaveFinished').call(v,success);assert.equal(closed,success?1:0);assert.equal(v.exitSaving,false);assert.equal(notices.length,success?0:1);
@@ -2053,7 +2741,7 @@ test('companion clearing requires confirmation and cannot clear a different docu
     const pending=clear.call(v);if(moved)v.loadedNoteId='b';resolve({index});await pending;assert.equal(clears,expected);assert.equal(v.clearConfirmBusy,false);
   }
 });
-test('AI back navigation first closes the centered action or model panel', () => {
+test('AI back navigation first closes the anchored action or model menu', () => {
   const back=viewMethod('views/ai/AiWorkspace.ets','handleBackRequest');let exits=0;
   const v={plusMenuOpen:true,modelMenuOpen:false,onNavigateBack:()=>exits++};back.call(v);assert.equal(v.plusMenuOpen,false);assert.equal(exits,0);
   v.modelMenuOpen=true;back.call(v);assert.equal(v.modelMenuOpen,false);assert.equal(exits,0);back.call(v);assert.equal(exits,1);
@@ -2098,18 +2786,32 @@ test('PDF toolbar does not collapse while annotating or while a save is outstand
 });
 test('external PDF import persists library metadata before exposing the reference and ignores duplicate import taps', async () => {
   const method=viewMethod('pages/Index.ets','importDocument');let write;const calls=[];
-  const transfer={status:'imported',noteType:'PDF',sourceUri:'/sandbox/copy.pdf',pageCount:2,document:{id:'pdf',title:'测试',fileName:'测试.pdf',content:'# 测试'}};
+  const transfer={status:'imported',noteType:'PDF',sourceUri:'/sandbox/copy.pdf',sourceFileName:'copy.pdf',pageCount:2,document:{id:'pdf',title:'测试',fileName:'测试.pdf',content:'# 测试'}};
   const v={documentImportBusy:false,notes:[],getAbilityContext:()=>({}),storage:{importDocument:async()=>transfer,save:()=>new Promise(r=>write=r)},
     formatTime:()=>'',rebuildSpaces:()=>calls.push('library'),refreshGraph:()=>{},notify:()=>{}};
   const pending=method.call(v,'外部参考');await new Promise(r=>setTimeout(r,0));assert.equal(v.notes.length,0);
   assert.equal(await method.call(v),null);write();const imported=await pending;assert.equal(v.notes[0],imported);assert.equal(imported.sourceUri,transfer.sourceUri);
-  assert.equal(imported.category,'外部参考');assert.equal(v.documentImportBusy,false);assert.deepEqual(calls,['library']);
+  assert.equal(imported.category,'外部参考');assert.equal(imported.sourceFileName,'copy.pdf');assert.equal(v.documentImportBusy,false);assert.deepEqual(calls,['library']);
+  v.storage.delete=async(_,id,source)=>calls.push(['cleanup',id,source]);
   v.storage.save=async()=>{throw Error('disk');};const original=v.notes;assert.equal(await method.call(v),null);assert.equal(v.notes,original);assert.equal(v.documentImportBusy,false);
+  assert.deepEqual(calls.at(-1),['cleanup','pdf','/sandbox/copy.pdf']);
+});
+
+test('the extraction import adapter returns library PDF and text paths and propagates failed imports', async () => {
+  const method = viewMethod('pages/Index.ets', 'importExtractSource'); const calls = [];
+  const view = { importDocument: async (...args) => { calls.push(args); return { id: 'pdf', sourceType: 'pdf', sourceUri: '/sandbox/documents/original.pdf' }; } };
+  assert.equal(await method.call(view, 'file://source.pdf'), '/sandbox/documents/original.pdf');
+  assert.deepEqual(calls[0], ['外部参考', false, false, 'file://source.pdf']);
+  view.importDocument = async () => ({ id: 'text', sourceType: 'document' }); view.getAbilityContext = () => ({});
+  view.storage = { read: async () => ({ filePath: '/sandbox/notes/text.md' }) };
+  assert.equal(await method.call(view, 'file://result.md'), '/sandbox/notes/text.md');
+  view.importDocument = async () => null; await assert.rejects(method.call(view, 'file://source.pdf'), /保存/);
 });
 test('AI external import waits for persistence and never pins into a different or closed conversation', async () => {
   const method=viewMethod('views/ai/AiWorkspace.ets','importExternalFile',{promptAction:{showToast:()=>{}}});
   for(const moved of [false,true]) {
-    let resolve;const v={alive:true,loadedSessionId:'a',pinnedNotes:[],onImportExternal:()=>new Promise(r=>resolve=r),emitContext:()=>{},onPinnedNotesChange:()=>{}};
+    let resolve;const v={alive:true,loadedSessionId:'a',activeSessionId:'a',attachmentRequestId:0,pinnedNotes:[],menuActionsAvailable:()=>true,
+      onImportExternal:()=>new Promise(r=>resolve=r),emitContext:()=>{},onPinnedNotesChange:()=>{}};
     const pending=method.call(v);assert.equal(v.pinnedNotes.length,0);if(moved)v.loadedSessionId='b';resolve({id:'pdf',title:'PDF'});await pending;
     assert.equal(v.pinnedNotes.length,moved?0:1);
   }
@@ -2124,13 +2826,733 @@ test('bundled example PDF is explicitly imported with durable source and rejects
 test('bundled PDF short writes and invalid resource bytes cannot leave a phantom source', async () => {
   for(const mode of ['ok','short','invalid']) {
     const calls=[];const bytes=Buffer.from(mode==='invalid'?'wrong':'%PDF-real-test');
-    const {PdfDocumentService}=load(`${base}services/document/PdfDocumentService.ets`,{'@kit.PDFKit':{pdfService:{}},
+    const {PdfDocumentService}=load(`${base}services/document/PdfDocumentService.ets`,{'@kit.PDFKit':{pdfService:{}},'@kit.ImageKit':{image:{}},
       '@kit.CoreFileKit':{fileIo:{OpenMode:{CREATE:1,WRITE_ONLY:2,TRUNC:4},accessSync:()=>true,openSync:()=>({fd:1}),
         writeSync:(_,buffer)=>{calls.push('write');assert.equal(Buffer.from(buffer).toString(),bytes.toString());return mode==='short'?1:buffer.byteLength;},
-        unlinkSync:()=>calls.push('remove'),closeSync:()=>calls.push('close')}},
+        fsyncSync:()=>calls.push('sync'),unlinkSync:()=>calls.push('remove'),closeSync:()=>calls.push('close')}},
       [path.resolve(root,`${base}services/ocr/OcrService.ets`)]:{OcrService:{}}});
     const pending=new PdfDocumentService().saveBundledExample({filesDir:'/sandbox',resourceManager:{getRawFileContent:async()=>bytes}});
-    if(mode==='ok'){assert.match(await pending,/^\/sandbox\/documents\/.*example-course\.pdf$/);assert.deepEqual(calls,['write','close']);}
+    if(mode==='ok'){assert.match(await pending,/^\/sandbox\/documents\/.*example-course\.pdf$/);assert.deepEqual(calls,['write','sync','close']);}
     else {await assert.rejects(pending);assert.deepEqual(calls,mode==='short'?['write','remove','close']:[]);}
   }
+});
+
+const { LocalTextFormatter } = load(`${base}services/smart/LocalTextFormatter.ets`);
+test('local formatting has distinct study layout without discarding code, tables, formulas or source', async () => {
+  const input = '【课程记录】\n一、基本概念\n• 第一条定义\n• 第二条定义\n\n二、例题\n```python\n    prepare = "提交代码示例"\n```\n\n| 名称 | 数量 |\n| --- | --- |\n| 实验 | 42 |\n\n$$\nx = 42\n$$\n\n$$\ny = 7\n$$';
+  const { service, calls } = extractService({ key: 'configured' });
+  const faithful = await service.extract(input, '课程', 'faithful');
+  const study = await service.extract(input, '课程', 'study');
+  assert.equal(calls.length, 0); assert.equal(study.rawMarkdown, input);
+  assert.ok(study.formattedMarkdown.includes('## 一、基本概念'));
+  assert.ok(study.formattedMarkdown.includes('- 第一条定义'));
+  assert.ok(!faithful.formattedMarkdown.includes('## 一、基本概念'));
+  assert.ok(faithful.formattedMarkdown.endsWith(input));
+  for (const fragment of ['    prepare = "提交代码示例"', '| 实验 | 42 |', '$$\nx = 42\n$$', '$$\ny = 7\n$$']) {
+    assert.ok(study.formattedMarkdown.includes(fragment), fragment);
+  }
+  assert.equal(study.tasks.length, 0);
+});
+
+test('OCR paragraph repair is opt-in and protects all structural boundaries and explicit hard breaks', () => {
+  const input = '这是一段从照片中识别出的课程内容\n继续说明具体要求。\n\nAn introduction to the subject\ncontinues here.\n\n一、学习要求\n- 完成练习\n| 课程 | 学分 |\n| 数学 | 4 |\n\n```text\n这是一段足够长的代码示例文字内容\n这里的代码不能被合并\n```\n$$\n这是足够长的公式中的说明文字\n这一行应保持独立\n$$\n这是一段指定了硬换行的普通文字  \n下一行保持独立';
+  const body = LocalTextFormatter.format(input, '记录', 'study', true);
+  assert.ok(body.includes('课程内容继续说明具体要求。'));
+  assert.ok(body.includes('subject continues here.'));
+  assert.ok(body.includes('## 一、学习要求\n- 完成练习\n| 课程 | 学分 |'));
+  assert.ok(body.includes('示例文字内容\n这里的代码不能被合并'));
+  assert.ok(body.includes('说明文字\n这一行应保持独立'));
+  assert.ok(body.includes('普通文字  \n下一行保持独立'));
+  assert.ok(LocalTextFormatter.format(input, '记录', 'faithful').endsWith(input));
+});
+
+test('unclosed code fences, matching fence lengths and indented code never become headings or tasks', () => {
+  const input = '```text\n一、提交报告\n``\n• 完成练习\n\n    二、提交材料';
+  const body = LocalTextFormatter.format(input, '笔记', 'study', true);
+  assert.ok(body.endsWith(input)); assert.equal(AiParser.fromSource(input).tasks.length, 0);
+});
+
+test('local extraction preserves leading code indentation and explicit trailing line breaks inside the original source', async () => {
+  const input = '    prepare = "提交代码示例"\n    total = 42\n\n正常正文  \n下一行';
+  const { service, calls } = extractService();
+  const result = await service.extract(input, '代码与正文', 'study', false, true);
+  assert.equal(result.rawMarkdown, input); assert.equal(result.tasks.length, 0); assert.equal(calls.length, 0);
+  assert.ok(result.formattedMarkdown.endsWith(input));
+});
+
+test('completed checkboxes, negative clauses and cancelled actions never become calendar suggestions', () => {
+  const input = '- [x] 完成课程报名\n- [X] 提交旧报告\n不需要准备材料，也不要提交重复报告。\n报名取消。\n明天提交新的实验报告。';
+  const tasks = AiParser.fromSource(input).tasks;
+  assert.equal(tasks.length, 1); assert.equal(tasks[0].title, '明天提交新的实验报告');
+});
+
+test('failed or unconfigured optional AI keeps the selected local study layout and OCR repair', async () => {
+  for (const config of [{}, { key: 'test', fails: true }]) {
+    const { service } = extractService(config);
+    const input = '一、课程介绍\n这是一段从照片中识别出的课程内容\n继续说明具体要求。';
+    const result = await service.extract(input, '课程', 'study', true, true);
+    assert.equal(result.processingMode, 'local'); assert.equal(result.rawMarkdown, input);
+    assert.ok(result.formattedMarkdown.includes('## 一、课程介绍'));
+    assert.ok(result.formattedMarkdown.includes('课程内容继续说明'));
+    assert.ok(result.processingNotice.includes('核对'));
+  }
+});
+
+test('system OCR uses block paragraphs only when all SDK characters and their order match', async () => {
+  for (const [value, blocks, expected] of [
+    ['课程介绍\n准备材料', [{ value: '课程介绍' }, { value: '准备材料' }], '课程介绍\n\n准备材料'],
+    ['课程介绍\n准备材料', [{ value: '课程介绍' }], '课程介绍\n准备材料'],
+    ['课程介绍\n准备材料', [{ value: '准备材料' }, { value: '课程介绍' }], '课程介绍\n准备材料']
+  ]) {
+    const { OcrService } = load(ocrFile, { '@kit.CoreFileKit': {}, '@kit.ImageKit': {},
+      '@kit.CoreVisionKit': { textRecognition: { recognizeText: async () => ({ value, blocks }) } } });
+    assert.equal(await OcrService.getInstance().recognizePixelMap({}), expected);
+  }
+});
+
+test('unsupported system OCR fails before file access and leaves caller-owned maps untouched', async () => {
+  const { OcrService } = load(ocrFile, { canIUse: () => false, '@kit.CoreFileKit': {}, '@kit.ImageKit': {}, '@kit.CoreVisionKit': {} });
+  await assert.rejects(OcrService.getInstance().recognizeTextFromUri('photo://image'), /可粘贴/);
+  await assert.rejects(OcrService.getInstance().recognizePixelMap({ release: () => assert.fail('caller-owned map') }), /未提供/);
+});
+
+const { paletteForStyle, normalizeThemeStyle, THEME_STYLE_OPTIONS } = load(`${base}common/theme/ThemeStyle.ets`);
+function contrastRatio(a, b) {
+  const luminance = hex => {
+    const channels = hex.slice(1).match(/../g).map(part => parseInt(part, 16) / 255)
+      .map(c => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+    return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
+  };
+  const first = luminance(a), second = luminance(b);
+  return (Math.max(first, second) + .05) / (Math.min(first, second) + .05);
+}
+for (const option of THEME_STYLE_OPTIONS) {
+  test(`${option.label} light and dark palettes have readable text and accent foregrounds`, () => {
+    for (const dark of [false, true]) {
+      const palette = paletteForStyle(dark, option.id);
+      for (const text of ['inkPrimary', 'inkSecondary', 'inkMuted']) {
+        for (const background of ['canvas', 'surface', 'surfaceSubtle', 'accentSoft', 'sidebar', 'activeBg', 'hoverBg']) {
+          assert.ok(contrastRatio(palette[text], palette[background]) >= 4.5,
+            `${option.id} ${dark} ${text}/${background}: ${contrastRatio(palette[text], palette[background])}`);
+        }
+      }
+      assert.ok(contrastRatio(palette.accent, palette.onAccent) >= 4.5);
+    }
+    assert.equal(normalizeThemeStyle(option.id), option.id);
+  });
+}
+test('legacy and corrupt theme style values resolve to the original brand palette', () => {
+  for (const value of ['', 'invalid', undefined, 42]) { assert.equal(normalizeThemeStyle(value), 'ink'); }
+});
+
+async function themeFixture(initial = {}) {
+  const values = new Map(Object.entries(initial)), app = new Map(), calls = [];
+  let fail = false;
+  const store = { get: async (key, fallback) => values.has(key) ? values.get(key) : fallback,
+    put: async (key, value) => { calls.push([key, value]); values.set(key, value); },
+    flush: async () => { calls.push('flush'); if (fail) throw Error('storage'); } };
+  const application = { setColorMode: () => {} };
+  const { ThemeManager } = load(`${base}common/theme/ThemeManager.ets`, {
+    '@kit.AbilityKit': { ConfigurationConstant: { ColorMode: { COLOR_MODE_DARK: 0, COLOR_MODE_LIGHT: 1, COLOR_MODE_NOT_SET: -1 } }, bundleManager: {} },
+    '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 24 } }, '@kit.ArkData': { preferences: { getPreferences: async () => store } },
+    AppStorage: { get: key => app.get(key), setOrCreate: (key, value) => app.set(key, value) }
+  });
+  await ThemeManager.restore({ getApplicationContext: () => application }, 1);
+  return { ThemeManager, values, app, calls, fail: value => { fail = value; } };
+}
+
+test('theme style and dark mode persist independently and restore before the first page', async () => {
+  const f = await themeFixture(); await f.ThemeManager.setStyle('blue'); await f.ThemeManager.setMode(2);
+  assert.equal(f.app.get('flowmindThemeStyle'), 'blue'); assert.equal(f.app.get('flowmindDarkMode'), true);
+  const restored = await themeFixture(Object.fromEntries(f.values));
+  assert.equal(restored.ThemeManager.currentStyle(), 'blue'); assert.equal(restored.ThemeManager.currentMode(), 2);
+  assert.equal(restored.app.get('flowmindDarkMode'), true);
+});
+
+test('failed appearance persistence rejects, restores preference cache, and does not change the published UI', async () => {
+  const f = await themeFixture(); f.fail(true);
+  await assert.rejects(f.ThemeManager.setStyle('mono')); await assert.rejects(f.ThemeManager.setMode(2));
+  await assert.rejects(f.ThemeManager.setReduceMotion(true));
+  assert.equal(f.ThemeManager.currentStyle(), 'ink'); assert.equal(f.ThemeManager.currentMode(), 0);
+  assert.equal(f.app.get('flowmindDarkMode'), false); assert.equal(f.app.get('flowmindReduceMotion'), false);
+  assert.equal(f.values.get('themeStyle'), 'ink'); assert.equal(f.values.get('themeMode'), 0);
+  f.fail(false); await f.ThemeManager.setStyle('mist'); assert.equal(f.app.get('flowmindThemeStyle'), 'mist');
+});
+
+test('rapid appearance changes commit in order and the last choice wins without mixing mode and style', async () => {
+  const f = await themeFixture();
+  await Promise.all([f.ThemeManager.setStyle('blue'), f.ThemeManager.setMode(2), f.ThemeManager.setStyle('mono'), f.ThemeManager.setReduceMotion(true)]);
+  assert.equal(f.ThemeManager.currentStyle(), 'mono'); assert.equal(f.ThemeManager.currentMode(), 2);
+  assert.equal(f.app.get('flowmindReduceMotion'), true);
+  assert.deepEqual(f.calls, [['themeStyle', 'blue'], 'flush', ['themeMode', 2], 'flush', ['themeStyle', 'mono'], 'flush', ['reduceMotion', true], 'flush']);
+});
+
+const { SettingsCatalog, SETTINGS_ENTRIES, SETTINGS_GROUPS } = load(`${base}common/constants/SettingsCatalog.ets`);
+test('settings search covers names and user vocabulary, preserves group boundaries and returns no fake matches', () => {
+  assert.equal(SettingsCatalog.search('OCR')[0].id, 'capture');
+  assert.equal(SettingsCatalog.search('浅蓝')[0].id, 'theme');
+  assert.equal(SettingsCatalog.search('deepseek API')[0].id, 'ai');
+  assert.equal(SettingsCatalog.search('恢复', 'connection')[0].id, 'backup');
+  assert.equal(SettingsCatalog.search('恢复', 'workspace').length, 0);
+  assert.equal(SettingsCatalog.search('不存在的选项').length, 0);
+  assert.equal(new Set(SETTINGS_ENTRIES.map(entry => entry.id)).size, SETTINGS_ENTRIES.length);
+  assert.ok(SETTINGS_ENTRIES.every(entry => SETTINGS_GROUPS.some(group => group.id === entry.group)));
+  assert.equal(SettingsCatalog.normalize('cloud'), 'backup'); assert.equal(SettingsCatalog.normalize('unknown'), 'overview');
+});
+
+test('settings categories and system back wait for the AI draft guard before modifying native page history', () => {
+  const navigate = viewMethod('views/settings/SettingsWorkspace.ets', 'navigate', { SettingsCatalog });
+  const applyNavigation = viewMethod('views/settings/SettingsWorkspace.ets', 'applyNavigation');
+  const calls = [], view = { section: 'ai', pendingSection: 'overview', modelCloseToken: 0, reduceMotion: true,
+    paths: { size: () => 1, replacePath: (...args) => calls.push(['replace', ...args]), clear: (...args) => calls.push(['clear', ...args]) } };
+  view.applyNavigation = () => applyNavigation.call(view);
+  navigate.call(view, 'theme'); assert.equal(view.modelCloseToken, 1); assert.equal(view.section, 'ai'); assert.equal(calls.length, 0);
+  // Only the guarded model's successful close callback allows navigation.
+  applyNavigation.call(view); assert.equal(view.section, 'theme'); assert.equal(calls[0][2], false);
+  navigate.call(view, 'overview'); assert.equal(view.section, 'overview'); assert.deepEqual(calls[1], ['clear', false]);
+});
+
+test('leaving settings through the main navigation waits for model draft confirmation and executes the selected action once', () => {
+  const requestExit = viewMethod('views/settings/SettingsWorkspace.ets', 'requestExit');
+  const applyNavigation = viewMethod('views/settings/SettingsWorkspace.ets', 'applyNavigation');
+  let confirmed = 0;
+  const view = { section: 'ai', leavePending: false, modelCloseToken: 0, onExitConfirmed: () => confirmed++ };
+  view.applyNavigation = () => applyNavigation.call(view);
+  requestExit.call(view); assert.equal(view.modelCloseToken, 1); assert.equal(confirmed, 0);
+  assert.equal(view.section, 'ai'); applyNavigation.call(view); assert.equal(confirmed, 1); assert.equal(view.leavePending, false);
+  const afterExit = viewMethod('pages/Index.ets', 'afterSettingsExit', { NAV_SETTINGS: 'settings' });
+  const complete = viewMethod('pages/Index.ets', 'completeSettingsExit', { NAV_HOME: 'home' });
+  const shell = { activeNav: 'settings', settingsExitToken: 0, settingsExitAction: null };
+  let opened = 0; afterExit.call(shell, () => opened++); assert.equal(opened, 0); assert.equal(shell.settingsExitToken, 1);
+  complete.call(shell); assert.equal(opened, 1); assert.equal(shell.activeNav, 'home'); assert.equal(shell.settingsExitAction, null);
+});
+
+test('recognition drafts retain layout choices, images and edited results while a save in progress cannot be dismissed', () => {
+  const app = new Map(), storage = { setOrCreate: (key, value) => app.set(key, value), get: key => app.get(key) };
+  const close = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'requestClose', { AppStorage: storage });
+  const appear = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'aboutToAppear', { AppStorage: storage,
+    REMOTE_AI_ENABLED: true, KeyboardAvoidMode: { RESIZE: 1 } });
+  let closed = 0;
+  const view = { step: 'result', inputText: '实际输入', imageUri: 'photo://selected', result: { id: 'actual-result' },
+    title: '校对标题', category: '课程', body: '校对正文', tasks: [], selectedTaskIds: [], includeRelations: false,
+    layoutStyle: 'study', mergeWrappedLines: true, useAi: false, requestId: 0, onClose: () => closed++ };
+  close.call(view); assert.equal(closed, 1);
+  const restored = { loadAiAvailability() {}, getUIContext: () => ({ getKeyboardAvoidMode: () => 0, setKeyboardAvoidMode: () => {} }) };
+  appear.call(restored); assert.equal(restored.layoutStyle, 'study'); assert.equal(restored.mergeWrappedLines, true);
+  assert.equal(restored.body, '校对正文'); assert.equal(restored.imageUri, 'photo://selected'); assert.equal(restored.step, 'result');
+  view.step = 'saving'; close.call(view); assert.equal(closed, 1);
+  app.set('smartExtractResultDraft', { input: '旧草稿', imageUri: '', result: null }); appear.call(restored);
+  assert.equal(restored.layoutStyle, 'faithful'); assert.equal(restored.mergeWrappedLines, false); assert.equal(restored.useAi, false);
+});
+
+const { AiProviderCatalog } = load(`${base}services/ai/AiProviderCatalog.ets`);
+test('provider catalog exposes the requested families without sharing mutable rows, keys or default consent', () => {
+  const entries = AiProviderCatalog.list();
+  for (const family of ['Seed', 'Qwen', 'DeepSeek', 'GLM']) { assert.ok(entries.some(entry => entry.label.includes(family))); }
+  for (const entry of entries) {
+    const draft = AiProviderCatalog.createDraft(entry.id, `draft-${entry.id}`);
+    assert.equal(draft.apiKey, ''); assert.equal(draft.remoteConsentVersion, undefined); assert.equal(draft.credentialRef, undefined);
+    assert.equal(draft.semanticSearch, false); assert.equal(draft.toolAccess, 'none'); assert.ok(draft.baseUrl.startsWith('https://'));
+  }
+  entries[0].baseUrl = 'https://changed.example.com'; assert.notEqual(AiProviderCatalog.list()[0].baseUrl, entries[0].baseUrl);
+  assert.equal(AiProviderCatalog.createDraft('unknown', 'new'), null);
+  assert.equal(AiProviderCatalog.createDraft('seed', ''), null);
+});
+
+test('choosing a service template creates a fresh draft and preserves the existing unsaved profile and active selection', () => {
+  const add = viewMethod('views/settings/ModelSettingsSheet.ets', 'addFromCatalog', { AiProviderCatalog });
+  const existing = profile({ id: 'existing', apiKey: 'test-existing-key' });
+  const view = { busy: false, currentId: 'existing', activeId: 'existing', profiles: [existing], drafts: new Map(), newProfiles: new Set(),
+    form: () => existing, fill(draft) { this.currentId = draft.id; }, report() {} };
+  add.call(view, AiProviderCatalog.list()[0]);
+  assert.equal(view.drafts.get('existing').apiKey, 'test-existing-key'); assert.equal(view.activeId, 'existing');
+  assert.equal(view.profiles.length, 2); assert.equal(view.profiles[1].apiKey, ''); assert.equal(view.newProfiles.size, 1);
+  assert.equal(view.sourceTab, 1); assert.equal(view.tab, 0);
+});
+
+function documentNavigationHarness(overrides = {}) {
+  const relative = 'views/reader/huawei/HuaweiDocWorkspace.ets';
+  const calls = [];
+  const view = { activeModal: '', jumpDialogOpen: false, exitDialogOpen: false, restoreSourceBusy: false,
+    isAnnotateMode: true, exitSaving: false, splitMode: 'none', isPhone: false, exitSaveToken: 0,
+    documentDirty: true, scratchpadDirty: false, barsVisible: false, penOptionsOpen: true, isPenPaletteExpanded: true,
+    scrollTravel: 50, onClose: () => calls.push('close'), showToast: message => calls.push(message),
+    ...overrides };
+  for (const method of ['handleBackRequest', 'returnToReading', 'beginReaderSave', 'exitSaveFinished', 'switchSplitMode']) {
+    view[method] = viewMethod(relative, method);
+  }
+  return { view, calls };
+}
+
+test('back leaves annotation in read-only mode and saves without closing the PDF or whiteboard', () => {
+  const { view, calls } = documentNavigationHarness();
+  view.handleBackRequest();
+  assert.equal(view.isAnnotateMode, false); assert.equal(view.barsVisible, true);
+  assert.equal(view.penOptionsOpen, false); assert.equal(view.scrollTravel, 0);
+  assert.equal(view.saveDestination, 'reading'); assert.equal(view.exitSaveToken, 1);
+  view.handleBackRequest(); assert.equal(view.exitSaveToken, 1); assert.deepEqual(calls, []);
+  view.documentDirty = false; view.exitSaveFinished(true);
+  assert.equal(view.exitSaving, false); assert.equal(view.exitDialogOpen, false);
+  assert.ok(!calls.includes('close'));
+  view.handleBackRequest(); assert.equal(calls.at(-1), 'close');
+});
+
+test('back closes a transient dialog first and never leaves the document during source recovery', () => {
+  const { view } = documentNavigationHarness({ jumpDialogOpen: true });
+  view.handleBackRequest(); assert.equal(view.jumpDialogOpen, false); assert.equal(view.isAnnotateMode, true);
+  view.restoreSourceBusy = true; view.handleBackRequest(); assert.equal(view.exitSaveToken, 0);
+});
+
+test('returning to reading waits for main and scratchpad, and failed persistence stays recoverable', () => {
+  const { view, calls } = documentNavigationHarness({ splitMode: 'scratchpad', scratchpadDirty: true });
+  view.handleBackRequest(); assert.equal(view.exitPending, 2);
+  view.exitSaveFinished(true); assert.equal(view.exitSaving, true);
+  view.exitSaveFinished(false); assert.equal(view.exitSaving, false); assert.equal(view.exitDialogOpen, true);
+  assert.ok(!calls.includes('close')); assert.equal(view.scratchpadDirty, true);
+  view.beginReaderSave(); assert.equal(view.exitPending, 2); assert.equal(view.exitSaveToken, 2);
+  view.documentDirty = false; view.scratchpadDirty = false;
+  view.exitSaveFinished(true); view.exitSaveFinished(true); assert.equal(view.exitDialogOpen, false);
+  assert.ok(!calls.includes('close'));
+});
+
+test('closing a dirty scratchpad waits for both saves and never unmounts it on failure', () => {
+  for (const success of [true, false]) {
+    const { view, calls } = documentNavigationHarness({ splitMode: 'scratchpad', scratchpadDirty: true });
+    view.switchSplitMode('none'); assert.equal(view.splitMode, 'scratchpad'); assert.equal(view.saveDestination, 'split');
+    view.exitSaveFinished(true); view.exitSaveFinished(success);
+    assert.equal(view.splitMode, success ? 'none' : 'scratchpad'); assert.ok(!calls.includes('close'));
+  }
+});
+
+test('unreadable PDFs cannot enter annotation, while whiteboards and readable PDFs can', () => {
+  const mode = viewMethod('views/reader/huawei/HuaweiDocWorkspace.ets', 'setAnnotationMode');
+  for (const [whiteboard, ready, expected] of [[false, false, false], [false, true, true], [true, false, true]]) {
+    const view = { exitSaving: false, restoreSourceBusy: false, isAnnotateMode: false, pdfSourceReady: ready, annotationError: '',
+      whiteboardReady: true,
+      note: {}, isHandwritingNote: () => whiteboard, showToast() {} };
+    mode.call(view, true); assert.equal(view.isAnnotateMode, expected);
+  }
+});
+
+test('source restoration is serialized with ink writes and preserves latest library and annotation fields', async () => {
+  const { ReaderCommitService } = load(`${base}services/document/ReaderCommitService.ets`);
+  const service = new ReaderCommitService();
+  let notes = [studyNote({ type: 'PDF', sourceUri: '/sandbox/old.pdf', pageAnnotations: 'old', pdfTextJson: 'old text', favorite: true })];
+  const ports = { notes: () => notes, saveNotes: async () => {}, saveDocument: async () => {}, publish: items => { notes = items; } };
+  const replacement = { ...notes[0], sourceUri: '/sandbox/new.pdf', pageCount: 2, pdfTextJson: undefined, favorite: false };
+  await Promise.all([service.commit({ ...notes[0], pageAnnotations: 'latest ink' }, '', ports, true, 'pdf'),
+    service.commit(replacement, '', ports, false, 'pdf-source'),
+    service.commit({ ...notes[0], scratchpadStrokes: 'new scratch' }, '', ports, true, 'scratchpad')]);
+  assert.equal(notes[0].sourceUri, '/sandbox/new.pdf'); assert.equal(notes[0].pageAnnotations, 'latest ink');
+  assert.equal(notes[0].favorite, true); assert.equal(notes[0].pdfTextJson, undefined);
+  assert.equal(notes[0].scratchpadStrokes, 'new scratch');
+});
+
+test('source restoration cleans only the new copy on save failure and keeps a referenced old source on success', async () => {
+  for (const fail of [true, false]) {
+    const removed = []; const old = '/sandbox/documents/old.pdf'; const fresh = '/sandbox/documents/new.pdf';
+    const restore = viewMethod('pages/Index.ets', 'restoreReaderPdfSource', {
+      Error,
+      PdfDocumentService: { getInstance: () => ({ removeManagedPdf: async (_, source) => removed.push(source) }) } });
+    const view = { getAbilityContext: () => ({}), fullScreenDocOpen: true, fullScreenDocNote: { id: 'a', sourceUri: old },
+      storage: { selectReplacementPdf: async () => ({ id: 'a', sourceUri: fresh, contentDetail: '' }) },
+      notes: [{ sourceUri: old }], trash: [], notify() {}, handleSaved: async () => { if (fail) throw Error('disk full'); } };
+    if (fail) { await assert.rejects(restore.call(view), /disk full/); assert.deepEqual(removed, [fresh]); }
+    else { await restore.call(view); assert.deepEqual(removed, []); }
+  }
+});
+
+test('source picker cancellation does not write or remove existing data', async () => {
+  const restore = viewMethod('pages/Index.ets', 'restoreReaderPdfSource'); let saved = 0;
+  const view = { getAbilityContext: () => ({}), fullScreenDocNote: { id: 'a', sourceUri: 'old' },
+    storage: { selectReplacementPdf: async () => null }, handleSaved: async () => saved++ };
+  await restore.call(view); assert.equal(saved, 0); assert.equal(view.fullScreenDocNote.sourceUri, 'old');
+});
+
+test('a previous document or save request cannot finish or close the current reader', () => {
+  const { view, calls } = documentNavigationHarness({ loadedNoteId: 'new', isAnnotateMode: false });
+  view.beginReaderSave(); view.saveDestination = 'close';
+  view.exitSaveFinished(true, 'old', view.exitSaveToken);
+  view.exitSaveFinished(true, 'new', view.exitSaveToken - 1);
+  assert.equal(view.exitPending, 1); assert.equal(view.exitSaving, true); assert.deepEqual(calls, []);
+  view.exitSaveFinished(true, 'new', view.exitSaveToken); assert.deepEqual(calls, ['close']);
+});
+
+test('late reader persistence publishes library data without replacing a different open document', async () => {
+  const save = viewMethod('pages/Index.ets', 'handleSaved');
+  for (const currentId of ['new', 'old']) {
+    const view = { formatTime: () => 'now', getAbilityContext: () => ({}), notes: [],
+      readingNote: { id: currentId, title: 'keep' }, fullScreenDocNote: { id: 'new', title: 'keep' }, refreshGraph() {},
+      storage: {}, readerCommits: { commit: async (note, content, ports) => ports.publish([note], { ...note, title: 'saved' }) } };
+    await save.call(view, { id: 'old' }, 'body', 'pdf');
+    assert.equal(view.readingNote.id, currentId); assert.equal(view.readingNote.title, currentId === 'old' ? 'saved' : 'keep');
+    assert.equal(view.fullScreenDocNote.id, 'new'); assert.equal(view.fullScreenDocNote.title, 'keep');
+    assert.equal(view.notes[0].id, 'old');
+  }
+});
+
+test('AI attachment import ignores repeated taps while awaiting durable import', async () => {
+  const importFile = viewMethod('views/ai/AiWorkspace.ets', 'importExternalFile', { promptAction: { showToast() {} } });
+  let release, imports = 0;
+  const view = { alive: true, loadedSessionId: 'a', activeSessionId: 'a', attachmentRequestId: 0, attachmentBusy: false,
+    menuActionsAvailable() { return !this.attachmentBusy; }, pinnedNotes: [], emitContext() {}, onPinnedNotesChange() {},
+    onImportExternal: () => { imports++; return new Promise(resolve => { release = resolve; }); } };
+  const pending = importFile.call(view); await importFile.call(view); assert.equal(imports, 1);
+  release(null); await pending; assert.equal(view.attachmentBusy, false); assert.deepEqual(view.pinnedNotes, []);
+});
+
+test('removing AI references respects newer selections and synchronizes confirmed context', async () => {
+  for (const changed of [false, true]) {
+    let answer, updates = 0;
+    const clear = viewMethod('views/ai/AiWorkspace.ets', 'clearPinnedReferences', {
+      promptAction: { showDialog: () => new Promise(resolve => { answer = resolve; }) } });
+    const view = { loadedSessionId: 'a', activeSessionId: 'a', pinnedNotes: [{ id: 'old' }], menuActionsAvailable: () => true,
+      palette: () => ({}), onPinnedNotesChange() { updates++; }, emitContext() { updates++; } };
+    const pending = clear.call(view); if (changed) { view.pinnedNotes = [{ id: 'new' }]; }
+    answer({ index: 1 }); await pending;
+    assert.deepEqual(plain(view.pinnedNotes), changed ? [{ id: 'new' }] : []); assert.equal(updates, changed ? 0 : 2);
+  }
+});
+
+test('AI context notifications coalesce latest state and cannot publish after leaving', () => {
+  const queued = [], published = [];
+  const emit = viewMethod('views/ai/AiWorkspace.ets', 'emitContext', { setTimeout: action => queued.push(action) });
+  const view = { alive: true, contextRevision: 0, lastCitations: ['old'], pinnedNotes: [{ id: 'old' }], runningLayer: 'L1',
+    layerTitle: layer => layer, modelLabel: 'local', onContextChange: (...args) => published.push(args) };
+  emit.call(view); view.pinnedNotes = [{ id: 'new' }]; view.lastCitations = ['new']; emit.call(view);
+  queued.splice(0).forEach(action => action()); assert.equal(published.length, 1);
+  assert.equal(published[0][1][0].id, 'new'); assert.equal(published[0][0][0], 'new');
+  emit.call(view); view.alive = false; queued[0](); assert.equal(published.length, 1);
+});
+test('pen contacts ignore repeated starts and unrelated cancellations without losing their initiating pointer', () => {
+  const input = new InkInputService();
+  assert.equal(input.read(touchEvent(0, 7, 2), true).phase, 'begin');
+  assert.equal(input.read(touchEvent(0, 7, 2), true).phase, 'ignore');
+  assert.equal(input.read(touchEvent(0, 9, 2), true).phase, 'ignore');
+  assert.equal(input.read(touchEvent(3, 9, 2), true).phase, 'ignore');
+  assert.equal(input.isActive(), true);
+  assert.equal(input.read(touchEvent(2, 7, 2), true).phase, 'move');
+  assert.equal(input.read(touchEvent(1, 7, 2), true).phase, 'end');
+  assert.equal(input.isActive(), false);
+});
+
+test('whiteboard finger input keeps a stable width and a stylus can take over without accepting palm release', () => {
+  const input = new InkInputService();
+  const first = input.read(touchEvent(0, 1, 1, { pressure: 0 }), true);
+  assert.equal(first.phase, 'begin'); assert.equal(first.samples[0].pressure, 0.5);
+  const move = input.read(touchEvent(2, 1, 1, { pressure: 0,
+    getHistoricalPoints: () => [{ touchObject: { id: 1, x: 7, y: 9 }, force: 0 }] }), true);
+  assert.deepEqual(plain(move.samples).map(point => point.pressure), [0.5, 0.5]);
+  assert.equal(input.read(touchEvent(0, 7, 2), true).phase, 'begin');
+  assert.equal(input.read(touchEvent(1, 1, 1), true).phase, 'ignore');
+  assert.equal(input.read(touchEvent(1, 7, 2), true).phase, 'end');
+});
+
+test('whiteboard exit persistence finalizes contact, waits for storage and only then clears current dirty state', async () => {
+  const save = viewMethod('views/reader/HandwritingCanvas.ets', 'saveForExit');
+  const dirty = [], states = [], finished = []; let release, finalized = 0;
+  const view = { saveTimer: -1, saveRevision: 4, savedRevision: 2, loadedNoteId: 'ink', isScratchpad: false,
+    finishStroke: () => finalized++, strokeSnapshot: () => ({ id: 'ink', contentDetail: 'body' }),
+    onCommitForExit: () => new Promise(resolve => { release = resolve; }),
+    onDirtyChange: value => dirty.push(value), onSaveStateChange: value => states.push(value),
+    onExitSaveFinished: ok => finished.push(ok) };
+  const pending = save.call(view); assert.equal(finalized, 1); assert.deepEqual(dirty, []); assert.deepEqual(finished, []);
+  release(); await pending;
+  assert.equal(view.savedRevision, 4); assert.deepEqual(dirty, [false]);
+  assert.deepEqual(states, ['已保存']); assert.deepEqual(finished, [true]);
+});
+
+test('failed or obsolete whiteboard exit saves preserve newer dirty state and do not publish a stale saved status', async () => {
+  const save = viewMethod('views/reader/HandwritingCanvas.ets', 'saveForExit');
+  for (const obsolete of ['revision', 'note', 'failure']) {
+    const dirty = [], states = [], finished = []; let release, reject;
+    const view = { saveTimer: -1, saveRevision: 4, savedRevision: 2, loadedNoteId: 'ink',
+      finishStroke() {}, strokeSnapshot: () => ({ id: 'ink', contentDetail: 'body' }),
+      onCommitForExit: () => new Promise((resolve, fail) => { release = resolve; reject = fail; }),
+      onDirtyChange: value => dirty.push(value), onSaveStateChange: value => states.push(value),
+      onExitSaveFinished: ok => finished.push(ok) };
+    const pending = save.call(view);
+    if (obsolete === 'revision') { view.saveRevision++; release(); }
+    else if (obsolete === 'note') { view.loadedNoteId = 'other'; release(); }
+    else { reject(Error('disk full')); }
+    await pending; assert.equal(view.savedRevision, 2); assert.deepEqual(dirty, []);
+    assert.deepEqual(states, obsolete === 'failure' ? ['保存失败'] : []);
+    assert.deepEqual(finished, [false]);
+  }
+});
+
+test('viewport redraw preserves an active eraser path instead of restoring ink underneath it', () => {
+  const redraw = viewMethod('views/reader/HandwritingCanvas.ets', 'redrawAll', { InkRenderer });
+  const recorder = inkRecorder(); let historical = 0, clears = 0;
+  Object.assign(recorder.ctx, { clearRect() { clears++; }, translate() {}, scale() {} });
+  const active = { points: [{ x: 20, y: 30 }, { x: 30, y: 40 }], isEraser: true };
+  redraw.call({ context: recorder.ctx, canvasWidth: 360, canvasHeight: 700, zoomScale: 0.3,
+    panX: 4, panY: -8, strokes: [{}], currentStroke: active, drawTimer: -1,
+    inkFrame: { render: (_, w, h, paint) => { recorder.ctx.clearRect(0, 0, w, h); paint(recorder.ctx); } },
+    drawPaperBackground() {}, drawSingleStroke: () => historical++, style: () => ({ color: '#000', width: 18, highlighter: false, eraser: true }) });
+  assert.equal(clears, 1); assert.equal(historical, 1);
+  assert.ok(recorder.calls.filter(call => ['stroke', 'fill'].includes(call[0])).every(call => call[3] === 'destination-out'));
+  assert.ok(recorder.calls.some(call => call[0] === 'line'));
+});
+
+function inkFrameHarness() {
+  const surfaces = [], frames = [], closed = [];
+  class OffscreenCanvas {
+    constructor(width, height) {
+      this.width = width; this.height = height; this.ink = inkRecorder(); surfaces.push(this);
+      Object.assign(this.ink.ctx, { clearRect: () => { this.ink.calls.length = 0; }, translate() {}, scale() {} });
+    }
+    getContext() { return this.ink.ctx; }
+    transferToImageBitmap() { const frame = { calls: plain(this.ink.calls), close: () => closed.push(frame) }; return frame; }
+  }
+  const { InkFrameComposer } = load(`${base}services/ink/InkFrameComposer.ets`, { OffscreenCanvas, RenderingContextSettings: class {} });
+  const target = { clearRect() { throw Error('visible layer must not expose a cleared or partially replayed frame'); },
+    transferFromImageBitmap(frame) { frames.push(frame.calls); } };
+  return { composer: new InkFrameComposer(), target, surfaces, frames, closed };
+}
+
+test('mixed area and stroke erase replay publishes only finished chronological ink frames, including undo and reload', () => {
+  const h = inkFrameHarness(), relative = 'views/reader/HandwritingCanvas.ets';
+  const pen = { color: '#000', width: 3, isEraser: false, isHighlighter: false, points: [{ x: 5, y: 50 }, { x: 100, y: 50 }], referenceWidth: 1200 };
+  const mask = { ...pen, width: 30, isEraser: true, points: [{ x: 30, y: 50 }] };
+  const later = { ...pen, points: [{ x: 30, y: 50 }] };
+  const v = { context: h.target, inkFrame: h.composer, canvasWidth: 1200, canvasHeight: 700, zoomScale: 1,
+    panX: 0, panY: 0, drawTimer: -1, boundsCache: new Map(), currentStroke: null, strokes: [pen, mask, later], drawPaperBackground() {} };
+  for (const name of ['redrawAll', 'drawSingleStroke', 'style']) v[name] = viewMethod(relative, name, { InkRenderer, CanvasViewport });
+  const modes = frame => frame.filter(row => ['fill', 'stroke'].includes(row[0])).map(row => row[3]);
+  v.redrawAll(); assert.deepEqual(modes(h.frames[0]).slice(-2), ['destination-out', 'source-over']);
+  v.strokes = v.strokes.filter(stroke => !CanvasStrokeEraser.hit(stroke, { x: 5, y: 50 }, { x: 5, y: 50 }, 2));
+  assert.deepEqual(v.strokes, [mask, later]); v.redrawAll();
+  assert.deepEqual(modes(h.frames[1]), ['destination-out', 'source-over']);
+  v.strokes = JSON.parse(JSON.stringify([pen, mask, later])); v.redrawAll();
+  assert.deepEqual(modes(h.frames[2]), modes(h.frames[0])); assert.equal(h.closed.length, h.frames.length);
+});
+
+test('PDF page replay composites saved masks and active area preview without clearing the visible layer', () => {
+  const h = inkFrameHarness(), relative = 'views/reader/pdf/PdfPageCanvas.ets';
+  const pen = { id: 'p', color: '#000', width: 3, isHighlighter: false, isEraser: false, points: [{ u: .1, v: .2 }] };
+  const mask = { ...pen, id: 'mask', width: 20, isEraser: true };
+  const active = { ...mask, id: 'active' };
+  const v = { context: h.target, inkFrame: h.composer, pageWidth: 720, pageHeight: 1000, strokes: [pen, mask], currentStroke: active };
+  for (const name of ['redrawAll', 'renderStroke', 'mapped', 'style']) v[name] = viewMethod(relative, name, { InkRenderer });
+  v.redrawAll(); assert.equal(h.frames.length, 1);
+  assert.deepEqual(h.frames[0].filter(row => row[0] === 'fill').map(row => row[3]), ['source-over', 'destination-out', 'destination-out']);
+  v.currentStroke = null; v.strokes = [mask]; v.redrawAll();
+  assert.deepEqual(h.frames[1].filter(row => row[0] === 'fill').map(row => row[3]), ['destination-out']);
+});
+
+test('ink frame resources are reused, resized and released; failed rendering never publishes half a frame', () => {
+  const h = inkFrameHarness(); h.composer.render(h.target, 360, 700, () => {}); h.composer.render(h.target, 360, 700, () => {});
+  assert.equal(h.surfaces.length, 1); h.composer.render(h.target, 700, 360, () => {});
+  assert.equal(h.surfaces.length, 2); assert.equal(h.surfaces[0].width, 0); assert.equal(h.closed.length, 3);
+  assert.throws(() => h.composer.render(h.target, 700, 360, () => { throw Error('paint'); })); assert.equal(h.frames.length, 3);
+  assert.throws(() => h.composer.render({ transferFromImageBitmap() { throw Error('publish'); } }, 700, 360, () => {}));
+  assert.equal(h.closed.length, 4); h.composer.release(); assert.equal(h.surfaces[1].height, 0);
+});
+
+test('whiteboard stroke erase ignores empty movement and schedules at most one redraw per touch batch', () => {
+  const relative = 'views/reader/HandwritingCanvas.ets', batches = []; let redraws = 0;
+  const pen = { color: '#000', width: 2, referenceWidth: 1200, points: [{ x: 10, y: 50 }, { x: 100, y: 50 }] };
+  const mask = { ...pen, isEraser: true };
+  const v = { strokes: [pen, mask], eraseBefore: null, currentStroke: null, isEraser: true, eraserMode: 'stroke',
+    eraserWidth: 18, selectedColor: '#000', zoomScale: 1, panX: 0, panY: 0, fingerDrawing: true,
+    context: { save() {}, restore() {}, translate() {}, scale() {} }, liveContext: { clearRect() {} },
+    input: { read: () => batches.shift(), isActive: () => false }, shortcuts: { claim() {} },
+    navigateTouch: () => false, onFocused() {}, onDirtyChange() {}, requestRedraw: () => redraws++ };
+  const touch = viewMethod(relative, 'handleTouch', { CanvasViewport, CanvasStrokeEraser, InkRenderer, SourceTool: { Pen: 2 }, TouchType: { Down: 0 } });
+  v.style = viewMethod(relative, 'style');
+  const event = { sourceTool: 1, type: 0, stopPropagation() {} };
+  batches.push({ phase: 'begin', samples: [{ x: 10, y: 200, pressure: .5 }] }); touch.call(v, event);
+  const original = v.strokes; assert.equal(redraws, 0);
+  batches.push({ phase: 'move', samples: [{ x: 20, y: 200, pressure: .5 }] }); touch.call(v, event);
+  assert.equal(v.strokes, original); assert.equal(redraws, 0);
+  batches.push({ phase: 'move', samples: [{ x: 20, y: 50, pressure: .5 }, { x: 60, y: 50, pressure: .5 }] }); touch.call(v, event);
+  assert.equal(redraws, 1); assert.deepEqual(v.strokes, [mask]);
+});
+
+const { PdfPageDataSource } = load(`${base}services/document/PdfPageDataSource.ets`);
+test('a 600-page PDF data source keeps every page addressable and reloads only registered lazy listeners', () => {
+  const pages = Array.from({ length: 600 }, (_, pageIndex) => ({ pageIndex, sections: [] })), source = new PdfPageDataSource();
+  let reloads = 0; const listener = { onDataReloaded: () => reloads++ };
+  source.registerDataChangeListener(listener); source.registerDataChangeListener(listener); source.setPages(pages);
+  assert.equal(source.totalCount(), 600); assert.equal(source.getData(599), pages[599]); assert.equal(reloads, 1);
+  source.unregisterDataChangeListener(listener); source.setPages([]); assert.equal(reloads, 1); assert.equal(source.totalCount(), 0);
+});
+
+test('whiteboard title and preview persist while scratchpad saves preserve all main and library fields', async () => {
+  const { ReaderCommitService } = load(`${base}services/document/ReaderCommitService.ets`);
+  const service = new ReaderCommitService();
+  const stale = studyNote({ type: '白板', favorite: false, category: 'old', strokes: 'old ink', scratchpadStrokes: 'old scratch' });
+  let notes = [studyNote({ type: '白板', favorite: true, category: 'new', coverUrl: 'cover:mist', tags: ['current'] })];
+  const ports = { notes: () => notes, saveDocument: async () => {}, saveNotes: async () => {}, publish: next => { notes = next; } };
+  await Promise.all([
+    service.commit({ ...stale, title: '课堂白板', previewText: '包含 1 条墨迹', strokes: 'new ink' }, '# 课堂白板', ports, true, 'handwriting'),
+    service.commit({ ...stale, title: '旧标题', scratchpadStrokes: 'new scratch' }, '旧正文', ports, true, 'scratchpad')
+  ]);
+  assert.equal(notes[0].title, '课堂白板'); assert.equal(notes[0].contentDetail, '# 课堂白板');
+  assert.equal(notes[0].previewText, '包含 1 条墨迹'); assert.equal(notes[0].strokes, 'new ink');
+  assert.equal(notes[0].scratchpadStrokes, 'new scratch'); assert.equal(notes[0].favorite, true);
+  assert.equal(notes[0].category, 'new'); assert.deepEqual(plain(notes[0].tags), ['current']);
+});
+
+test('re-attached PDF sources and concurrent annotation saves preserve each other and library metadata', async () => {
+  const { ReaderCommitService } = load(`${base}services/document/ReaderCommitService.ets`);
+  const service = new ReaderCommitService();
+  const stale = studyNote({ type: 'PDF', sourceUri: 'old.pdf', pageAnnotations: 'old ink', pdfTextJson: 'old page text' });
+  let notes = [studyNote({ type: 'PDF', favorite: true, tags: ['current'], pageAnnotations: 'current ink' })];
+  const ports = { notes: () => notes, saveDocument: async () => {}, saveNotes: async () => {}, publish: next => { notes = next; } };
+  await Promise.all([
+    service.commit({ ...stale, sourceUri: 'new.pdf', sourceType: 'pdf', pageCount: 3, pdfTextJson: undefined }, stale.contentDetail, ports, false, 'pdf-source'),
+    service.commit({ ...stale, pageAnnotations: 'new ink' }, stale.contentDetail, ports, false, 'pdf')
+  ]);
+  assert.equal(notes[0].sourceUri, 'new.pdf'); assert.equal(notes[0].sourceType, 'pdf'); assert.equal(notes[0].pageCount, 3);
+  assert.equal(notes[0].pdfTextJson, undefined); assert.equal(notes[0].pageAnnotations, 'new ink');
+  assert.equal(notes[0].favorite, true); assert.deepEqual(plain(notes[0].tags), ['current']);
+});
+
+test('late whiteboard clear confirmation cannot erase another note or a canvas returned to reading mode', async () => {
+  for (const changed of ['note', 'readOnly']) {
+    let confirm, mutations = 0;
+    const clear = viewMethod('views/reader/HandwritingCanvas.ets', 'handleClear', {
+      promptAction: { showDialog: () => new Promise(resolve => { confirm = resolve; }) }
+    });
+    const view = { readOnly: false, loadedNoteId: 'a', strokes: [{}], finishStroke() {},
+      remember: () => mutations++, redrawAll() {}, scheduleSave() {} };
+    const pending = clear.call(view);
+    if (changed === 'note') { view.loadedNoteId = 'b'; } else { view.readOnly = true; }
+    confirm({ index: 1 }); await pending;
+    assert.equal(mutations, 0); assert.equal(view.strokes.length, 1);
+  }
+});
+
+test('paper guides align with world movement, support ruled paper and cap visible work at tiny zoom', () => {
+  const { CanvasPaperGuides } = load(`${base}services/ink/CanvasPaperGuides.ets`);
+  const a = CanvasPaperGuides.lines(360, 700, 0.3, 0, 0, 'grid');
+  const b = CanvasPaperGuides.lines(360, 700, 0.3, 4, 8, 'grid');
+  const vertical = rows => rows.filter(line => line.x1 === line.x2);
+  const horizontal = rows => rows.filter(line => line.y1 === line.y2);
+  assert.ok(Math.abs(vertical(b)[0].x1 - vertical(a)[0].x1 - 4) < 1e-6);
+  assert.ok(Math.abs(horizontal(b)[0].y1 - horizontal(a)[0].y1 - 8) < 1e-6);
+  const ruled = CanvasPaperGuides.lines(360, 700, 0.3, -80, -500, 'ruled');
+  assert.ok(ruled.length); assert.equal(vertical(ruled).length, 0);
+  for (const zoom of [0.00001, 0.08, 0.3, 1, 8]) {
+    const lines = CanvasPaperGuides.lines(8000, 12000, zoom, -999, 881, 'grid');
+    assert.ok(lines.length <= 162); assert.ok(lines.length > 0);
+    assert.ok(lines.every(line => line.x1 >= 0 && line.x2 <= 8000 && line.y1 >= 0 && line.y2 <= 12000));
+  }
+  for (const style of ['blank', 'unknown']) { assert.equal(CanvasPaperGuides.lines(360, 700, 0.3, 0, 0, style).length, 0); }
+  assert.equal(CanvasPaperGuides.lines(NaN, 700, 0.3, 0, 0, 'grid').length, 0);
+});
+
+test('paper background renders to its own context and never becomes a stored or erasable stroke', () => {
+  const { CanvasPaperGuides } = load(`${base}services/ink/CanvasPaperGuides.ets`);
+  const render = viewMethod('views/reader/HandwritingCanvas.ets', 'drawPaperBackground', { CanvasPaperGuides });
+  const recorder = inkRecorder(); let clears = 0;
+  Object.assign(recorder.ctx, { clearRect() { clears++; } });
+  const strokes = [{ points: [{ x: 1, y: 2 }], isEraser: true }]; const before = JSON.stringify(strokes);
+  render.call({ paperContext: recorder.ctx, canvasWidth: 360, canvasHeight: 700, zoomScale: 0.3, panX: 0, panY: 0,
+    paperBackground: 'grid', strokes, palette: () => ({ border: '#ddd' }) });
+  assert.equal(clears, 1); assert.ok(recorder.calls.some(call => call[0] === 'stroke'));
+  assert.ok(recorder.calls.filter(call => call[0] === 'stroke').every(call => call[3] !== 'destination-out'));
+  assert.equal(JSON.stringify(strokes), before);
+});
+
+const { CanvasStrokePolicy } = load(`${base}services/ink/CanvasStrokePolicy.ets`);
+const validWhiteboardStroke = change => ({ points: [{ x: -42, y: 520, pressure: 0.5 }, { x: 100, y: 600 }],
+  color: '#2563EB', width: 18, referenceWidth: 1200, isHighlighter: false, isEraser: false, ...change });
+
+test('whiteboard snapshot validation preserves legacy optional fields, negative coordinates and the wide zoomed eraser', () => {
+  const legacy = { points: [{ x: -300, y: 400 }], color: 'black', width: 3 };
+  const rows = [legacy, validWhiteboardStroke({ width: 225, isEraser: true }), validWhiteboardStroke({ isHighlighter: true })];
+  assert.deepEqual(plain(CanvasStrokePolicy.parse(JSON.stringify(rows))), rows);
+  assert.equal(CanvasStrokePolicy.parse(undefined).length, 0); assert.equal(CanvasStrokePolicy.parse('').length, 0);
+  assert.equal(CanvasStrokePolicy.parse('[]').length, 0);
+});
+
+for (const [label, raw] of [
+  ['object instead of strokes', '{}'], ['null strokes', 'null'], ['broken JSON', '[{"points":'],
+  ...[null, {}, validWhiteboardStroke({ points: {} }), validWhiteboardStroke({ points: [null] }),
+    validWhiteboardStroke({ points: [{ x: '20', y: 30 }] }), validWhiteboardStroke({ points: [{ x: null, y: 30 }] }),
+    validWhiteboardStroke({ points: [{ x: 20, y: 30, pressure: 2 }] }), validWhiteboardStroke({ points: [{ x: 20, y: 30, pressure: null }] }),
+    validWhiteboardStroke({ points: [{ x: 1e10, y: 30 }] }), validWhiteboardStroke({ width: 0 }),
+    validWhiteboardStroke({ width: -1 }), validWhiteboardStroke({ width: '3' }), validWhiteboardStroke({ width: 4097 }),
+    validWhiteboardStroke({ referenceWidth: 0 }), validWhiteboardStroke({ referenceWidth: '1200' }),
+    validWhiteboardStroke({ isEraser: 'true' }), validWhiteboardStroke({ isHighlighter: null }),
+    validWhiteboardStroke({ color: '' }), validWhiteboardStroke({ color: {} })]
+    .map((row, index) => [`invalid row ${index}`, JSON.stringify([validWhiteboardStroke(), row])])
+]) {
+  test(`corrupted whiteboard snapshots reject the entire payload: ${label}`, () => {
+    assert.throws(() => CanvasStrokePolicy.parse(raw));
+  });
+}
+
+test('whiteboard loading failure reports unavailable content while keeping the exact original raw snapshot', () => {
+  const loadInk = viewMethod('views/reader/HandwritingCanvas.ets', 'loadStrokes', { CanvasStrokePolicy, CanvasViewport });
+  for (const scratchpad of [false, true]) {
+    const ready = [], dirty = []; const raw = '[{"points":null,"width":3,"color":"#000"}]';
+    const view = { note: { id: 'ink', strokes: raw, scratchpadStrokes: raw }, isScratchpad: scratchpad,
+      loadError: '', toolsVisible: true, boundsCache: new Map(), viewportReady: false,
+      onContentReady: value => ready.push(value), onDirtyChange: value => dirty.push(value) };
+    loadInk.call(view);
+    assert.equal(view.loadedRaw, raw); assert.equal(view.note.strokes, raw); assert.equal(view.note.scratchpadStrokes, raw);
+    assert.equal(view.strokes.length, 0); assert.ok(view.loadError); assert.equal(view.toolsVisible, false);
+    assert.equal(view.saveRevision, 0); assert.deepEqual(dirty, [false]); assert.deepEqual(ready, [false]);
+  }
+});
+
+test('damaged unchanged whiteboards and scratchpads allow reader return without writing empty data', async () => {
+  const save = viewMethod('views/reader/HandwritingCanvas.ets', 'saveForExit');
+  for (const scratchpad of [false, true]) {
+    let writes = 0; const finished = []; const raw = '{broken ink}';
+    const view = { isScratchpad: scratchpad, note: { id: 'ink', strokes: raw, scratchpadStrokes: raw }, loadedNoteId: 'ink',
+      exitSaveToken: 8, saveRevision: 0, saveTimer: -1, loadError: 'error', loadedRaw: raw,
+      finishStroke() {}, strokeSnapshot() { throw Error('must not generate empty snapshot'); },
+      onCommitForExit: async () => { writes++; }, onSaveStateChange() {},
+      onExitSaveFinished: (...args) => finished.push(args) };
+    await save.call(view); assert.equal(writes, 0); assert.deepEqual(finished, [[true, 'ink', 8]]);
+    assert.equal(view.note.strokes, raw); assert.equal(view.note.scratchpadStrokes, raw);
+  }
+});
+
+test('damaged whiteboard saves fail when revision or original raw has changed and never overwrite the source', async () => {
+  const save = viewMethod('views/reader/HandwritingCanvas.ets', 'saveForExit');
+  for (const changed of ['revision', 'raw']) {
+    let writes = 0; const states = [], finished = [];
+    const view = { note: { id: 'ink', strokes: changed === 'raw' ? '{new broken}' : '{broken}' }, loadedNoteId: 'ink',
+      exitSaveToken: 9, saveRevision: changed === 'revision' ? 1 : 0, saveTimer: -1, loadError: 'error', loadedRaw: '{broken}',
+      finishStroke() {}, strokeSnapshot() { throw Error('must not generate empty snapshot'); },
+      onCommitForExit: async () => { writes++; }, onSaveStateChange: value => states.push(value),
+      onExitSaveFinished: (...args) => finished.push(args) };
+    await save.call(view); assert.equal(writes, 0); assert.deepEqual(finished, [[false, 'ink', 9]]);
+    assert.ok(states[0].includes('恢复'));
+  }
+});
+
+test('damaged whiteboard snapshot and autosave preserve original metadata and refuse storage writes', async () => {
+  const snapshot = viewMethod('views/reader/HandwritingCanvas.ets', 'strokeSnapshot');
+  const flush = viewMethod('views/reader/HandwritingCanvas.ets', 'flushSave');
+  const original = { id: 'ink', title: '原标题', strokes: '{broken}', scratchpadStrokes: '{broken scratch}', contentDetail: '原正文' };
+  let writes = 0; const states = [];
+  const view = { editingNote: original, loadError: 'error', title: '误改标题', strokes: [], saveTimer: 1,
+    onSaved: async () => { writes++; }, onSaveStateChange: value => states.push(value),
+    strokeSnapshot() { throw Error('autosave must not create an empty snapshot'); } };
+  assert.deepEqual(plain(snapshot.call(view)), original);
+  await flush.call(view); assert.equal(writes, 0); assert.equal(view.saveTimer, -1); assert.ok(states[0].includes('恢复'));
+});
+
+test('restoring an unreadable whiteboard with the same note ID reloads and re-enables content without losing the original failure data', () => {
+  const changed = viewMethod('views/reader/HandwritingCanvas.ets', 'onNoteChanged');
+  const repaired = JSON.stringify([validWhiteboardStroke()]); let loads = 0, redraws = 0;
+  const view = { note: { id: 'ink', title: '恢复笔记', strokes: repaired }, loadedNoteId: 'ink', loadedRaw: '{broken}',
+    loadError: 'error', saveRevision: 0, loadStrokes: () => loads++, redrawAll: () => redraws++ };
+  changed.call(view); assert.equal(loads, 1); assert.equal(redraws, 1); assert.equal(view.editingNote.strokes, repaired);
+  assert.equal(view.title, '恢复笔记');
+});
+
+test('a stylus takeover completes finger ink before acquiring the new pen pointer', () => {
+  const handle = viewMethod('views/reader/HandwritingCanvas.ets', 'handleTouch', { ...penEnums, CanvasViewport });
+  const order = []; const view = { navigateTouch: () => false, readOnly: false, loadError: '',
+    input: { isActive: () => true, isPenActive: () => false, read: () => { order.push('read new pen'); return { phase: 'ignore' }; } },
+    finishStroke: () => order.push('finish old finger') };
+  handle.call(view, touchEvent(0, 7, 2)); assert.deepEqual(order, ['finish old finger', 'read new pen']);
 });

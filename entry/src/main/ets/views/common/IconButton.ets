@@ -11,21 +11,23 @@ export struct IconButton {
   @Prop destructive: boolean = false;
   @Prop available: boolean = true;
   @Prop caption: string = '';
+  @Prop compact: boolean = false;
   onAction: () => void = () => {};
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
-  private palette(): ColorPalette { return ThemeHelper.paletteOfDark(this.isDarkMode); }
+  private palette(): ColorPalette { return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle); }
 
   build() {
     Button({ type: ButtonType.Normal }) {
       Column({ space: 3 }) {
       AppIcon({ source: this.icon, tint: this.destructive ? this.palette().danger :
         (this.selected ? this.palette().accent : this.palette().inkSecondary) })
-      if (this.caption) { Text(this.caption).fontSize(10).maxLines(1).fontColor(this.palette().inkSecondary) }
+      if (this.caption) { Text(this.caption).fontSize(10).maxLines(1).fontColor(this.selected ? this.palette().accent : this.palette().inkSecondary).fontWeight(this.selected ? FontWeight.Bold : FontWeight.Normal) }
       }
     }
     .width(this.caption ? 56 : LayoutTokens.MIN_TOUCH_TARGET)
-    .height(this.caption ? 56 : LayoutTokens.MIN_TOUCH_TARGET)
+    .height(this.caption && !this.compact ? 56 : LayoutTokens.MIN_TOUCH_TARGET)
     .padding(0)
     .borderRadius(12)
     .backgroundColor(this.selected ? this.palette().accentSoft : Color.Transparent)

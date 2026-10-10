@@ -63,6 +63,7 @@ export struct AiSourcesPanel {
   onStartChatWithContext: (prefilledPrompt: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp(ASSISTANT_MODE_KEY) assistantMode: string = 'local';
 
   @State activeTab: string = 'explorer'; // 'explorer' | 'tools'
@@ -81,7 +82,7 @@ export struct AiSourcesPanel {
   @State folderOpenStates: Record<string, boolean> = {};
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private usesModel(): boolean { return REMOTE_AI_ENABLED && this.assistantMode === 'remote'; }
@@ -258,7 +259,7 @@ export struct AiSourcesPanel {
         if (this.pinnedNotes.length > 0) {
           Text(`${this.pinnedNotes.length}`)
             .fontSize(TypographyTokens.TINY)
-            .fontColor(Color.White)
+            .fontColor(this.palette().onAccent)
             .padding({ left: 4, right: 4, top: 1, bottom: 1 })
             .borderRadius(6)
             .backgroundColor(this.palette().accent)
@@ -480,7 +481,7 @@ export struct AiSourcesPanel {
               .type(ButtonType.Normal)
               .fontSize(TypographyTokens.TINY)
               .fontWeight(FontWeight.Medium)
-              .fontColor(Color.White)
+              .fontColor(this.palette().onAccent)
               .backgroundColor(this.palette().accent)
               .borderRadius(4)
               .height(26)
@@ -1013,31 +1014,6 @@ export struct AiSourcesPanel {
       .width('100%')
       .scrollBar(BarState.Auto)
 
-      // 4. 底栏：模型状态与配置直达
-      Row({ space: 6 }) {
-        Circle({ width: 6, height: 6 })
-          .fill(this.modelLabel.includes('未配') ? '#F59E0B' : '#22C55E')
-        Text(this.modelLabel.length > 0 ? this.modelLabel : '本地助手 · 离线')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-
-        Text('⚙ 设置')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().accent)
-          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-          .borderRadius(4)
-          .backgroundColor(this.palette().accentSoft)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => this.onOpenModelSettings())
-      }
-      .width('100%')
-      .height(34)
-      .padding({ left: 10, right: 10 })
-      .border({ width: { top: 1 }, color: { top: this.palette().borderSubtle } })
-      .backgroundColor(this.palette().surface)
     }
     .width(LayoutTokens.CONTEXT_PANEL_WIDTH)
     .height('100%')

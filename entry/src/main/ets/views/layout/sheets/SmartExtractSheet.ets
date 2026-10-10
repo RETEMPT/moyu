@@ -7,7 +7,15 @@ import { SmartTask } from '../../../common/types/SmartTask';
 import { SmartExtractService, SmartLayoutStyle, SMART_INPUT_LIMIT } from '../../../services/smart/SmartExtractService';
 import { SmartNoteBuilder } from '../../../services/smart/SmartNoteBuilder';
 import { OcrService } from '../../../services/ocr/OcrService';
+import { DocumentExtractService } from '../../../services/smart/DocumentExtractService';
+import { ModelConfigService } from '../../../services/ai/ModelConfigService';
+import { ModelProfilePolicy } from '../../../services/ai/ModelProfilePolicy';
+import { RemoteAiPolicy } from '../../../services/ai/RemoteAiPolicy';
+import { common } from '@kit.AbilityKit';
 import { REMOTE_AI_ENABLED } from '../../../common/constants/RuntimeCapabilities';
+import { IconButton } from '../../common/IconButton';
+import { AppIcon } from '../../common/AppIcon';
+import { AssistantText } from '../../common/AssistantText';
 
 interface SmartExtractDraft {
   input: string;
@@ -19,15 +27,20 @@ interface SmartExtractDraft {
   tasks: SmartTask[];
   selectedTaskIds: string[];
   includeRelations: boolean;
+  style?: SmartLayoutStyle;
+  mergeWrappedLines?: boolean;
+  useAi?: boolean;
 }
 
 @Component
 export struct SmartExtractSheet {
   onClose: () => void = () => {};
   onCommit: (content: SmartContent, selectedTasks: SmartTask[]) => Promise<void> = async () => {};
+  onImportSource: (uri: string) => Promise<string> = async () => { throw new Error('资料库尚未就绪，请稍后重试'); };
   onOpenModelSettings: () => void = () => {};
   @Prop @Watch('requestClose') closeToken: number = 0;
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
   @State private step: string = 'input';
   @State private inputText: string = '';
@@ -35,6 +48,11 @@ export struct SmartExtractSheet {
   @State private sourceNotice: string = '';
   @State private layoutStyle: SmartLayoutStyle = 'faithful';
   @State private useAi: boolean = false;
+  @State private aiReady: boolean = false;
+  @State private pdfStart: string = '1';
+  @State private pdfEnd: string = '1';
+  @State private importProgress: string = '';
+  @State private mergeWrappedLines: boolean = false;
   @State private result: SmartContent | null = null;
   @State private title: string = '';
   @State private category: string = '未分类';
@@ -52,6 +70,12 @@ export struct SmartExtractSheet {
     this.alive = true;
     this.inputText = AppStorage.get<string>('smartExtractDraft') || '';
     const draft = AppStorage.get<SmartExtractDraft>('smartExtractResultDraft');
+    if (draft) {
+      this.imageUri = draft.imageUri || '';
+      this.layoutStyle = draft.style === 'study' ? 'study' : 'faithful';
+      this.mergeWrappedLines = draft.mergeWrappedLines === true;
+      this.useAi = REMOTE_AI_ENABLED && draft.useAi === true;
+    }
     if (draft && draft.result !== null) {
       this.inputText = draft.input;
       this.imageUri = draft.imageUri;
@@ -66,6 +90,7 @@ export struct SmartExtractSheet {
     }
     this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
     this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
+    this.loadAiAvailability();
   }
 
   aboutToDisappear(): void {
@@ -75,11 +100,46 @@ export struct SmartExtractSheet {
   }
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   private busy(): boolean {
-    return this.step === 'ocr' || this.step === 'extracting' || this.step === 'saving';
+    return this.step === 'ocr' || this.step === 'importing' || this.step === 'extracting' || this.step === 'saving';
+  }
+
+  private async loadAiAvailability(): Promise<void> {
+    try {
+      const profile = await ModelConfigService.getInstance().getActiveProfile();
+      if (!this.alive) { return; }
+      this.aiReady = REMOTE_AI_ENABLED && !ModelProfilePolicy.validate(profile) && !profile.credentialUnavailable && RemoteAiPolicy.consented(profile);
+    } catch { if (this.alive) { this.aiReady = false; } }
+    if (this.alive && !this.aiReady) { this.useAi = false; }
+  }
+
+  private async pickDocument(): Promise<void> {
+    if (this.busy()) { return; }
+    const id = ++this.requestId; this.step = 'importing'; this.errorMsg = ''; this.sourceNotice = ''; this.importProgress = '选择文档…';
+    try {
+      const options = new picker.DocumentSelectOptions(); options.maxSelectNumber = 1;
+      options.fileSuffixFilters = ['文档与 Marker 结果|.pdf,.md,.txt,.json'];
+      const selected = await new picker.DocumentViewPicker().select(options);
+      if (!this.alive || id !== this.requestId || !selected.length) { return; }
+      DocumentExtractService.validateInput(selected[0]);
+      this.importProgress = '正在保存到本机资料库…';
+      const localPath = await this.onImportSource(selected[0]);
+      if (!this.alive || id !== this.requestId) { return; }
+      this.sourceNotice = '资料已保存到本机资料库「外部参考」，可离线重新打开。';
+      this.importProgress = '正在读取本机副本…';
+      const result = await DocumentExtractService.read(getContext(this) as common.UIAbilityContext, localPath,
+        Number(this.pdfStart), Number(this.pdfEnd), () => !this.alive || id !== this.requestId,
+        (page: number) => { if (this.alive && id === this.requestId) { this.importProgress = `正在提取第 ${page} 页…`; } });
+      if (!this.alive || id !== this.requestId) { return; }
+      const appended = this.inputText.trim() ? `${this.inputText}\n\n${result.text}` : result.text;
+      if (appended.length > SMART_INPUT_LIMIT) { throw new Error('追加后文字超过上限，请先整理当前内容或缩小导入范围'); }
+      this.inputText = appended; this.sourceNotice += '\n' + result.notice; AppStorage.setOrCreate('smartExtractDraft', appended);
+    } catch (error) {
+      if (this.alive && id === this.requestId) { this.errorMsg = error instanceof Error ? error.message : '文档提取未成功，原输入已保留'; }
+    } finally { if (this.alive && id === this.requestId) { this.step = 'input'; this.importProgress = ''; } }
   }
 
   private requestClose(): void {
@@ -90,7 +150,8 @@ export struct SmartExtractSheet {
     const draft: SmartExtractDraft = { input: this.inputText, imageUri: this.imageUri,
       result: this.step === 'result' ? this.result : null, title: this.title,
       category: this.category, body: this.body, tasks: this.tasks,
-      selectedTaskIds: this.selectedTaskIds, includeRelations: this.includeRelations };
+      selectedTaskIds: this.selectedTaskIds, includeRelations: this.includeRelations,
+      style: this.layoutStyle, mergeWrappedLines: this.mergeWrappedLines, useAi: this.useAi };
     AppStorage.setOrCreate('smartExtractResultDraft', draft);
     this.requestId++;
     this.onClose();
@@ -145,7 +206,7 @@ export struct SmartExtractSheet {
     this.errorMsg = '';
     this.step = 'extracting';
     try {
-      const extracted = await SmartExtractService.getInstance().extract(this.inputText, '整理笔记', this.layoutStyle, this.useAi);
+      const extracted = await SmartExtractService.getInstance().extract(this.inputText, '整理笔记', this.layoutStyle, this.useAi && this.aiReady, this.mergeWrappedLines);
       if (!this.alive || id !== this.requestId) {
         return;
       }
@@ -230,9 +291,25 @@ export struct SmartExtractSheet {
   inputPanel() {
     Column({ space: 12 }) {
       this.hint('1  导入或粘贴 → 2  校对文字 → 3  预览排版 → 4  保存笔记')
-      Button('▤  从图片识别文字').width('100%').height(44)
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 8 }) {
+          AppIcon({ source: $r('app.media.ic_sparkle'), tint: this.palette().accent })
+          Text('从图片识别文字').fontSize(14)
+        }.justifyContent(FlexAlign.Center).width('100%')
+      }.width('100%').height(48)
         .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle)
         .onClick(() => this.pickImageAndOcr())
+      Button('导入 PDF / 文字 / Marker 结果').width('100%').height(48)
+        .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle).onClick(() => this.pickDocument())
+      Row({ space: 8 }) {
+        Text('PDF 页范围').fontSize(12).fontColor(this.palette().inkSecondary)
+        TextInput({ text: this.pdfStart, placeholder: '起始页' }).layoutWeight(1).height(44)
+          .onChange((value: string) => { this.pdfStart = value; })
+        Text('–').fontColor(this.palette().inkMuted)
+        TextInput({ text: this.pdfEnd, placeholder: '结束页' }).layoutWeight(1).height(44)
+          .onChange((value: string) => { this.pdfEnd = value; })
+      }.width('100%')
+      this.hint('导入会保存到本机资料库「外部参考」。PDF 每次提取最多 5 页；支持 Marker Markdown 和响应 JSON。')
       if (this.imageUri.length > 0) {
         Image(this.imageUri).width('100%').height(100).objectFit(ImageFit.Contain).borderRadius(8)
       }
@@ -260,12 +337,21 @@ export struct SmartExtractSheet {
           .backgroundColor(this.layoutStyle === 'study' ? this.palette().accentSoft : this.palette().surfaceSubtle)
           .onClick(() => { this.layoutStyle = 'study'; })
       }.width('100%')
+      this.hint(this.layoutStyle === 'study' ? '按明确标题和项目符号整理层级，不改写或补充知识；无需大模型。' : '保留段落、原顺序、代码与公式，仅补笔记标题；无需大模型。')
+      Row({ space: 10 }) {
+        Text('合并图片断行').fontSize(14).layoutWeight(1).fontColor(this.palette().inkPrimary)
+        Toggle({ type: ToggleType.Switch, isOn: this.mergeWrappedLines }).selectedColor(this.palette().accent)
+          .onChange((value: boolean) => { this.mergeWrappedLines = value; })
+      }.width('100%').constraintSize({ minHeight: 48 })
+      if (this.mergeWrappedLines) { this.hint('尝试连接普通正文的断行，列表、空段、代码、表格与公式保留。请对照原文检查多栏内容和特殊换行。') }
       if (REMOTE_AI_ENABLED) {
       Row({ space: 8 }) {
-        Text('使用 AI 排版').layoutWeight(1).fontColor(this.palette().inkPrimary)
-        Toggle({ type: ToggleType.Switch, isOn: this.useAi }).onChange((value: boolean) => { this.useAi = value; })
+        Text('AI 整理').layoutWeight(1).fontColor(this.palette().inkPrimary)
+        Toggle({ type: ToggleType.Switch, isOn: this.useAi && this.aiReady }).enabled(this.aiReady).selectedColor(this.palette().accent)
+          .onChange((value: boolean) => { this.useAi = value && this.aiReady; })
       }.width('100%').constraintSize({ minHeight: 44 })
-      this.hint(this.useAi ? '校对后的文字将发送到你配置的模型服务，保存前可检查并编辑结果。' : '本地整理保留原文，不联网；开启 AI 可按所选方式重新组织排版。')
+      this.hint(this.useAi && this.aiReady ? '校对后的文字将发送到你配置并授权的模型服务，保存前可检查并编辑结果。' :
+        this.aiReady ? '关闭时使用本地规则，不联网。' : '未配置或未授权模型，AI 整理不可用；本机识别与离线排版仍可使用。')
       Button('模型设置').height(44).fontColor(this.palette().inkSecondary)
         .backgroundColor(this.palette().surfaceSubtle).onClick(() => {
           this.requestClose();
@@ -304,15 +390,7 @@ export struct SmartExtractSheet {
         Text(this.result?.rawMarkdown || '').width('100%').fontSize(TypographyTokens.BODY_REGULAR)
           .fontColor(this.palette().inkPrimary).lineHeight(24).copyOption(CopyOptions.InApp)
       } else {
-        Column({ space: 6 }) {
-          ForEach(this.previewBody().split('\n'), (line: string, index: number) => {
-            Text(line.replace(/^#{1,6}\s+/, '').replace(/^>\s?/, '│ '))
-              .width('100%').fontSize(/^#\s/.test(line) ? 24 : (/^##\s/.test(line) ? 18 : 14))
-              .fontWeight(/^#{1,6}\s/.test(line) ? FontWeight.Bold : FontWeight.Normal)
-              .fontColor(line.startsWith('>') ? this.palette().inkSecondary : this.palette().inkPrimary)
-              .lineHeight(24).copyOption(CopyOptions.InApp)
-          }, (line: string, index: number) => `${index}-${line}`)
-        }.width('100%').padding(12).borderRadius(10).backgroundColor(this.palette().surfaceSubtle)
+        AssistantText({ text: this.previewBody() }).width('100%').padding(12).borderRadius(10).backgroundColor(this.palette().surfaceSubtle)
       }
       Text(`添加到日历 · 已选 ${this.selectedTaskIds.length} 项`)
         .fontSize(TypographyTokens.BODY_REGULAR).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
@@ -350,9 +428,7 @@ export struct SmartExtractSheet {
         Row() {
           Text('文字识别与智能排版').layoutWeight(1).fontSize(TypographyTokens.TITLE_SUB)
             .fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
-          Button('×').width(44).height(44).fontSize(22).fontColor(this.palette().inkSecondary)
-            .backgroundColor(this.palette().surfaceSubtle).enabled(this.step !== 'saving')
-            .accessibilityText('关闭，保留输入草稿').onClick(() => this.requestClose())
+          IconButton({ icon: $r('app.media.ic_close'), label: '关闭，保留输入草稿', available: this.step !== 'saving', onAction: () => this.requestClose() })
         }.width('100%')
         Scroll() {
           Column({ space: 12 }) {
@@ -362,7 +438,7 @@ export struct SmartExtractSheet {
               this.resultPanel()
             } else {
               LoadingProgress().width(42).height(42).color(this.palette().accent)
-              this.hint(this.step === 'ocr' ? '正在识别图片文字…' : (this.step === 'saving' ? '正在保存笔记和待办…' : '正在整理排版，请稍候…'))
+              this.hint(this.step === 'importing' ? this.importProgress : this.step === 'ocr' ? '正在识别图片文字…' : (this.step === 'saving' ? '正在保存笔记和待办…' : '正在整理排版，请稍候…'))
             }
           }.width('100%')
         }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
@@ -370,15 +446,15 @@ export struct SmartExtractSheet {
           Text(this.errorMsg).width('100%').fontSize(14).fontColor(this.palette().danger)
         }
         if (this.step === 'input') {
-          Button(this.useAi ? '开始 AI 排版' : '开始本地整理').width('100%').height(48)
-            .fontColor(Color.White).backgroundColor(this.palette().accent)
+          Button(this.useAi && this.aiReady ? '开始 AI 排版' : '开始本地整理').width('100%').height(48)
+            .fontColor(this.palette().onAccent).backgroundColor(this.palette().accent)
             .enabled(this.inputText.trim().length > 0 && this.inputText.length <= SMART_INPUT_LIMIT)
             .onClick(() => this.triggerExtraction())
         } else if (this.step === 'result') {
           Row({ space: 8 }) {
             Button('返回校对').layoutWeight(1).height(48).fontColor(this.palette().inkPrimary)
               .backgroundColor(this.palette().surfaceSubtle).onClick(() => { this.step = 'input'; this.errorMsg = ''; })
-            Button('保存笔记').layoutWeight(1).height(48).fontColor(Color.White)
+            Button('保存笔记').layoutWeight(1).height(48).fontColor(this.palette().onAccent)
               .backgroundColor(this.palette().accent).onClick(() => this.commit())
           }.width('100%')
         } else if (this.step !== 'saving') {

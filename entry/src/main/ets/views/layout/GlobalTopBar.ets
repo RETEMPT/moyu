@@ -30,10 +30,11 @@ export struct GlobalTopBar {
   onBreadcrumbClick: (index: number, segment: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   /** 图标点击区：手机放大到接近最小触控目标，宽屏保持紧凑 */

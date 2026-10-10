@@ -40,7 +40,11 @@ for (const file of ['providers/OpenAiCompatProvider.ets', 'providers/GeminiProvi
 }
 record('stream_transport', 'project', read('entry/src/main/ets/services/ai/SseHttpClient.ets').includes('maxRedirects: 0'), '原生流式接收不跟随重定向');
 record('first_launch_empty', 'project', read('entry/src/main/ets/pages/Index.ets').includes('this.storage.load(context, [])') &&
-  !fs.existsSync(path.join(root,'entry/src/main/ets/common/seed/SeedContent.ets')), '首次启动为空，阅读测试 PDF 仅由用户手动导入');
+  !fs.existsSync(path.join(root,'entry/src/main/ets/common/seed/SeedContent.ets')), '发布版首次启动为空；调试版测试 PDF 不进入发布资料');
+record('release_debug_samples', 'project', ['**/debug-pdf-preview/**','**/example-course.pdf','**/example-snapshot.pdf'].every(pattern =>
+  release?.resOptions?.ignoreResourcePattern?.includes(pattern)) &&
+  read('entry/src/main/ets/services/NoteStorageService.ets').includes('if (!BuildProfile.DEBUG) { return notes; }'),
+  '测试原件与预览图片仅用于调试，发布版不自动注入');
 record('offline_default_optional_api', 'project', config.assistantMode === 'local-default-byok' &&
   read('entry/src/main/ets/common/constants/RuntimeCapabilities.ets').includes('CLOUD_AI_ENABLED: boolean = false') &&
   read('entry/src/main/ets/services/ai/AssistantModeService.ets').includes("prefs.get('mode', 'local')") &&

@@ -22,6 +22,8 @@ jobs:
         run: npm install --no-save --ignore-scripts typescript@4.9.5
       - name: Verify learning workflows, OCR, PDF, backups, persistence and AI
         run: node tools/verify-workflows.mjs
+      - name: Verify PDF source, snapshot import and annotation lifecycles
+        run: node tools/verify-pdf-chain.mjs
       - name: Verify app market gates and generated public materials
         run: |
           node tools/verify-app-market.mjs

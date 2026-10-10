@@ -23,6 +23,7 @@ export struct BrandMark {
   @Prop markSize: number = 22;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   build() {
     Image(this.isDarkMode ? $r('app.media.brand_mark_dark') : $r('app.media.brand_mark_light'))
@@ -45,9 +46,10 @@ export struct BrandLockup {
   @Prop showLabel: boolean = true;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode);
+    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
   build() {

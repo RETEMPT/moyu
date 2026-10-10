@@ -11,6 +11,7 @@ import { AgentToolSpec } from '../../common/types/AgentTypes';
 import { AssistantModeService, ASSISTANT_MODE_KEY } from '../../services/ai/AssistantModeService';
 import { REMOTE_AI_ENABLED } from '../../common/constants/RuntimeCapabilities';
 import { IconButton } from '../common/IconButton';
+import { AiProviderCatalog, AiCatalogEntry } from '../../services/ai/AiProviderCatalog';
 
 interface ProtocolOption { label: string; value: ProviderProtocol; }
 const PROTOCOLS: ProtocolOption[] = [
@@ -27,6 +28,7 @@ export struct ModelSettingsSheet {
   onClose: () => void = () => {};
   @Prop @Watch('requestClose') closeToken: number = 0;
   @StorageProp('flowmindDarkMode') dark: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
   @StorageProp(ASSISTANT_MODE_KEY) assistantMode: string = 'local';
   @State profiles: ModelProfile[] = [];
@@ -34,6 +36,7 @@ export struct ModelSettingsSheet {
   @State activeId: string = '';
   @State tab: number = 0;
   @State sourceTab: number = 0;
+  @State catalogOpen: boolean = false;
   @State advancedSection: number = -1;
   @State showConsentDetails: boolean = false;
   @State showToolList: boolean = false;
@@ -68,7 +71,7 @@ export struct ModelSettingsSheet {
 
   aboutToAppear(): void { this.alive = true; this.load(); }
   aboutToDisappear(): void { this.alive = false; }
-  private palette(): ColorPalette { return ThemeHelper.paletteOfDark(this.dark); }
+  private palette(): ColorPalette { return ThemeHelper.paletteOfDark(this.dark, this.themeStyle); }
   private report(message: string, error: boolean = false): void { this.feedback = message; this.feedbackError = error; }
   private changed(): void { this.feedback = ''; this.deleteWarning = false; this.closeWarning = false; }
 
@@ -144,6 +147,16 @@ export struct ModelSettingsSheet {
     this.report('新档案尚未保存，填写后点击“保存并启用”');
   }
 
+  private addFromCatalog(entry: AiCatalogEntry): void {
+    if (this.busy) { return; }
+    const draft = AiProviderCatalog.createDraft(entry.id, `profile_${Date.now()}_${this.profiles.length}`);
+    if (draft === null) { return; }
+    if (this.currentId) { this.drafts.set(this.currentId, this.form()); }
+    this.profiles = [...this.profiles, draft]; this.drafts.set(draft.id, draft); this.newProfiles.add(draft.id);
+    this.fill(draft); this.catalogOpen = false; this.sourceTab = 1; this.tab = 0;
+    this.report(`已新建配置草稿。${entry.hint} 尚未启用，请填写密钥、确认授权并测试。`);
+  }
+
   private preset(preset: ModelPresetTemplate): void {
     const key = this.baseUrl.replace(/\/+$/, '') === preset.profile.baseUrl.replace(/\/+$/, '') && this.protocol === preset.profile.protocol ? this.apiKey : '';
     const copy = ModelProfilePolicy.restore(preset.profile)!;
@@ -167,7 +180,7 @@ export struct ModelSettingsSheet {
   }
 
   private requestClose(): void {
-    if (this.busy) { return; }
+    if (this.busy) { this.report('正在读取或测试配置，请完成后再返回'); return; }
     if (!this.currentId) { this.onClose(); return; }
     this.drafts.set(this.currentId, this.form());
     let dirty = this.newProfiles.size > 0;
@@ -266,13 +279,23 @@ export struct ModelSettingsSheet {
   @Builder
   connection() {
     this.hint('可选。授权后将资料发往你配置的服务。')
+    Button(this.catalogOpen ? '收起模型目录' : '从模型目录新建配置').height(44).width('100%')
+      .type(ButtonType.Normal).backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary)
+      .onClick(() => { this.catalogOpen = !this.catalogOpen; })
+    if (this.catalogOpen) {
+      this.hint('选择后创建新草稿，保留当前档案。目录不是团队云服务，模型 ID 和开通状态请以控制台为准。')
+      ForEach(AiProviderCatalog.list(), (entry: AiCatalogEntry) => {
+        Button(entry.label).height(44).width('100%').type(ButtonType.Normal)
+          .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary).onClick(() => this.addFromCatalog(entry))
+      }, (entry: AiCatalogEntry) => entry.id)
+    }
     this.field('档案名称', () => this.label, '例如：学习助手', (v: string) => { this.label = v; })
     this.field('服务地址', () => this.baseUrl, 'https://…', (v: string) => {
       if (v.split('/')[2] !== this.baseUrl.split('/')[2]) { this.apiKey = ''; }
       this.baseUrl = v;
       if (RemoteAiPolicy.endpoint(v) !== this.consentEndpoint) { this.remoteConsent = false; }
     })
-    this.hint(this.protocol === 'gemini' ? 'Gemini 地址应含 API 版本，例如 /v1beta。' : this.protocol === 'anthropic' ? '填写服务根地址，程序追加 /v1/messages。' : '填写兼容 API 的根地址（通常以 /v1 结尾），程序追加 /chat/completions。')
+    this.hint(this.protocol === 'gemini' ? 'Gemini 地址应含 API 版本，例如 /v1beta。' : this.protocol === 'anthropic' ? '填写服务根地址，程序追加 /v1/messages。' : '可填写兼容根地址（程序追加 /chat/completions），或完整对话地址；不要重复追加路径。')
     Row({ space: 8 }) {
       TextInput({ text: this.apiKey, placeholder: 'API Key' }).type(this.showKey ? InputType.Normal : InputType.Password)
         .height(48).layoutWeight(1).fontSize(14).backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary)
@@ -327,7 +350,7 @@ export struct ModelSettingsSheet {
     ForEach(ACCESS_OPTIONS, (option: AccessOption) => {
       Button(option.label).height(48).width('100%')
         .backgroundColor(this.toolAccess === option.value ? this.palette().accent : this.palette().surfaceSubtle)
-        .fontColor(this.toolAccess === option.value ? Color.White : this.palette().inkSecondary)
+        .fontColor(this.toolAccess === option.value ? this.palette().onAccent : this.palette().inkSecondary)
         .onClick(() => { this.toolAccess = option.value; this.changed(); })
     }, (option: AccessOption) => option.value)
     this.field('工具循环上限 · 1–6 轮', () => this.rounds, '5', (v: string) => { this.rounds = v; })
@@ -363,7 +386,7 @@ export struct ModelSettingsSheet {
             ForEach(PROTOCOLS, (p: ProtocolOption) => {
               Button(p.label).height(44).layoutWeight(1).fontSize(12)
                 .backgroundColor(this.protocol === p.value ? this.palette().accent : this.palette().surfaceSubtle)
-                .fontColor(this.protocol === p.value ? Color.White : this.palette().inkSecondary)
+                .fontColor(this.protocol === p.value ? this.palette().onAccent : this.palette().inkSecondary)
                 .onClick(() => { if (this.protocol !== p.value) { this.remoteConsent = false; } this.protocol = p.value; this.changed(); })
             }, (p: ProtocolOption) => p.value)
           }.width('100%')
@@ -392,10 +415,12 @@ export struct ModelSettingsSheet {
   build() {
     Column() {
       Column({ space: 12 }) {
+        if (!this.embedded) {
         Row() {
           Text('助手设置').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
           IconButton({ icon: $r('app.media.ic_back'), label: '返回设置', available: !this.busy, onAction: () => this.requestClose() })
         }.width('100%')
+        }
         Row({ space: 8 }) {
           ForEach(['本地助手', '自配 API', '云 AI'], (name: string, index: number) => {
             Button(name).height(44).layoutWeight(1).fontSize(14)
@@ -434,6 +459,11 @@ export struct ModelSettingsSheet {
             } else if (this.sourceTab === 2) {
               Text('云 AI 暂未开放').fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
               this.hint('当前没有团队云服务。你可以离线使用本地助手，或配置自己的模型 API。')
+              this.hint('计划模型目录：Seed、Qwen、DeepSeek、GLM。云端调用尚未开放；以下可新建自己的 API 配置，不会启用团队服务。')
+              ForEach(AiProviderCatalog.list(), (entry: AiCatalogEntry) => {
+                Button(`自配 API · ${entry.label}`).height(44).width('100%').type(ButtonType.Normal)
+                  .backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkPrimary).onClick(() => this.addFromCatalog(entry))
+              }, (entry: AiCatalogEntry) => entry.id)
             } else if (this.tab === 0) { this.connection() } else { this.advanced() }
           }.width('100%').alignItems(HorizontalAlign.Start).enabled(!this.busy)
         }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
@@ -454,7 +484,7 @@ export struct ModelSettingsSheet {
           }.width('100%')
         } else if (this.sourceTab === 0) {
           Button(this.assistantMode === 'local' ? '本地助手已启用' : '使用本地助手').height(48).width('100%').enabled(!this.busy)
-            .type(ButtonType.Normal).borderRadius(10).backgroundColor(this.palette().accent).fontColor(Color.White).onClick(() => this.useLocal())
+            .type(ButtonType.Normal).borderRadius(10).backgroundColor(this.palette().accent).fontColor(this.palette().onAccent).onClick(() => this.useLocal())
         } else if (this.sourceTab === 2) {
           Button('暂未开放').height(48).width('100%').enabled(false).backgroundColor(this.palette().surfaceSubtle).fontColor(this.palette().inkMuted)
         } else {
