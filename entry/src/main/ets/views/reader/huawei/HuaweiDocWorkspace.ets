@@ -12,12 +12,11 @@ import { PdfAnnotatorView } from '../pdf/PdfAnnotatorView';
 import { InkWidthSlider } from '../../common/InkWidthSlider';
 import { InkToolPolicy } from '../../../services/ink/InkToolPolicy';
 import { HandwritingCanvas } from '../HandwritingCanvas';
-import { HuaweiAiSplitPanel } from './HuaweiAiSplitPanel';
 import { HuaweiDocActionDialog, HuaweiDocDialogType } from './HuaweiDocActionDialog';
 import { AppIcon } from '../../common/AppIcon';
 import { IconButton } from '../../common/IconButton';
 
-export type HuaweiTabType = 'file' | 'view' | 'play' | 'annotate' | 'ai';
+export type HuaweiTabType = 'file' | 'view' | 'play' | 'annotate';
 export type SplitModeType = 'none' | 'ai' | 'scratchpad';
 
 @Component
@@ -35,7 +34,6 @@ export struct HuaweiDocWorkspace {
   onSearchNotes: () => void = () => {};
   onSaveStateChange: (state: string) => void = () => {};
   onToggleFavorite: (note: NoteItem) => void = () => {};
-  onOpenModelSettings: () => void = () => {};
   onRestorePdfSource: () => Promise<void> = async () => {};
 
   private handleBackRequest(): void {
@@ -551,8 +549,6 @@ export struct HuaweiDocWorkspace {
         .onClick(() => { this.documentMenuOpen = false; this.onToggleFavorite(this.note); })
       MenuItem({ content: '打开随堂稿纸', startIcon: $r('app.media.ic_canvas') })
         .onClick(() => { this.documentMenuOpen = false; this.switchSplitMode('scratchpad'); })
-      MenuItem({ content: '打开 AI 伴读', startIcon: $r('app.media.ic_sparkle') })
-        .onClick(() => { this.documentMenuOpen = false; this.switchSplitMode('ai'); })
       MenuItem({ content: '仅显示正文', startIcon: $r('app.media.ic_page') })
         .onClick(() => { this.documentMenuOpen = false; this.switchSplitMode('none'); })
       if (!this.isHandwritingNote()) {
@@ -922,25 +918,7 @@ export struct HuaweiDocWorkspace {
             }
 
             Column() {
-              if (this.splitMode === 'ai') {
-                HuaweiAiSplitPanel({
-                  onOpenModelSettings: () => {
-                    if (this.isAnnotateMode || this.exitSaving || this.documentDirty || this.scratchpadDirty) { this.showToast('请先返回阅读并完成文档保存'); }
-                    else { this.onOpenModelSettings(); }
-                  },
-                  note: this.note,
-                  currentPage: this.currentPage,
-                  onExtractText: () => {
-                    if (this.isAnnotateMode || this.exitSaving || this.documentDirty || this.scratchpadDirty) { this.showToast('请先返回阅读并完成文档保存'); }
-                    else { this.onExtractPdfText(this.currentPage); }
-                  },
-                  onClose: () => {
-                    animateTo({ duration: AnimationTokens.DURATION_SPLIT, curve: AnimationTokens.CURVE_STANDARD }, () => {
-                      this.splitMode = 'none';
-                    });
-                  }
-                })
-              } else if (this.splitMode === 'scratchpad') {
+              if (this.splitMode === 'scratchpad') {
                 this.scratchpadSplitPane()
               }
             }

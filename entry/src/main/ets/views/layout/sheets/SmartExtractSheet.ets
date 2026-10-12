@@ -8,14 +8,10 @@ import { SmartExtractService, SmartLayoutStyle, SMART_INPUT_LIMIT } from '../../
 import { SmartNoteBuilder } from '../../../services/smart/SmartNoteBuilder';
 import { OcrService } from '../../../services/ocr/OcrService';
 import { DocumentExtractService } from '../../../services/smart/DocumentExtractService';
-import { ModelConfigService } from '../../../services/ai/ModelConfigService';
-import { ModelProfilePolicy } from '../../../services/ai/ModelProfilePolicy';
-import { RemoteAiPolicy } from '../../../services/ai/RemoteAiPolicy';
 import { common } from '@kit.AbilityKit';
-import { REMOTE_AI_ENABLED } from '../../../common/constants/RuntimeCapabilities';
 import { IconButton } from '../../common/IconButton';
 import { AppIcon } from '../../common/AppIcon';
-import { AssistantText } from '../../common/AssistantText';
+import { DocumentText } from '../../common/DocumentText';
 
 interface SmartExtractDraft {
   input: string;
@@ -29,7 +25,6 @@ interface SmartExtractDraft {
   includeRelations: boolean;
   style?: SmartLayoutStyle;
   mergeWrappedLines?: boolean;
-  useAi?: boolean;
 }
 
 @Component
@@ -37,7 +32,6 @@ export struct SmartExtractSheet {
   onClose: () => void = () => {};
   onCommit: (content: SmartContent, selectedTasks: SmartTask[]) => Promise<void> = async () => {};
   onImportSource: (uri: string) => Promise<string> = async () => { throw new Error('资料库尚未就绪，请稍后重试'); };
-  onOpenModelSettings: () => void = () => {};
   @Prop @Watch('requestClose') closeToken: number = 0;
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
@@ -47,8 +41,6 @@ export struct SmartExtractSheet {
   @State private imageUri: string = '';
   @State private sourceNotice: string = '';
   @State private layoutStyle: SmartLayoutStyle = 'faithful';
-  @State private useAi: boolean = false;
-  @State private aiReady: boolean = false;
   @State private pdfStart: string = '1';
   @State private pdfEnd: string = '1';
   @State private importProgress: string = '';
@@ -74,7 +66,6 @@ export struct SmartExtractSheet {
       this.imageUri = draft.imageUri || '';
       this.layoutStyle = draft.style === 'study' ? 'study' : 'faithful';
       this.mergeWrappedLines = draft.mergeWrappedLines === true;
-      this.useAi = REMOTE_AI_ENABLED && draft.useAi === true;
     }
     if (draft && draft.result !== null) {
       this.inputText = draft.input;
@@ -90,7 +81,6 @@ export struct SmartExtractSheet {
     }
     this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
     this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
-    this.loadAiAvailability();
   }
 
   aboutToDisappear(): void {
@@ -105,15 +95,6 @@ export struct SmartExtractSheet {
 
   private busy(): boolean {
     return this.step === 'ocr' || this.step === 'importing' || this.step === 'extracting' || this.step === 'saving';
-  }
-
-  private async loadAiAvailability(): Promise<void> {
-    try {
-      const profile = await ModelConfigService.getInstance().getActiveProfile();
-      if (!this.alive) { return; }
-      this.aiReady = REMOTE_AI_ENABLED && !ModelProfilePolicy.validate(profile) && !profile.credentialUnavailable && RemoteAiPolicy.consented(profile);
-    } catch { if (this.alive) { this.aiReady = false; } }
-    if (this.alive && !this.aiReady) { this.useAi = false; }
   }
 
   private async pickDocument(): Promise<void> {
@@ -151,7 +132,7 @@ export struct SmartExtractSheet {
       result: this.step === 'result' ? this.result : null, title: this.title,
       category: this.category, body: this.body, tasks: this.tasks,
       selectedTaskIds: this.selectedTaskIds, includeRelations: this.includeRelations,
-      style: this.layoutStyle, mergeWrappedLines: this.mergeWrappedLines, useAi: this.useAi };
+      style: this.layoutStyle, mergeWrappedLines: this.mergeWrappedLines };
     AppStorage.setOrCreate('smartExtractResultDraft', draft);
     this.requestId++;
     this.onClose();
@@ -206,7 +187,7 @@ export struct SmartExtractSheet {
     this.errorMsg = '';
     this.step = 'extracting';
     try {
-      const extracted = await SmartExtractService.getInstance().extract(this.inputText, '整理笔记', this.layoutStyle, this.useAi && this.aiReady, this.mergeWrappedLines);
+      const extracted = await SmartExtractService.getInstance().extract(this.inputText, '整理笔记', this.layoutStyle, this.mergeWrappedLines);
       if (!this.alive || id !== this.requestId) {
         return;
       }
@@ -293,7 +274,7 @@ export struct SmartExtractSheet {
       this.hint('1  导入或粘贴 → 2  校对文字 → 3  预览排版 → 4  保存笔记')
       Button({ type: ButtonType.Normal }) {
         Row({ space: 8 }) {
-          AppIcon({ source: $r('app.media.ic_sparkle'), tint: this.palette().accent })
+          AppIcon({ source: $r('app.media.ic_note'), tint: this.palette().accent })
           Text('从图片识别文字').fontSize(14)
         }.justifyContent(FlexAlign.Center).width('100%')
       }.width('100%').height(48)
@@ -337,27 +318,14 @@ export struct SmartExtractSheet {
           .backgroundColor(this.layoutStyle === 'study' ? this.palette().accentSoft : this.palette().surfaceSubtle)
           .onClick(() => { this.layoutStyle = 'study'; })
       }.width('100%')
-      this.hint(this.layoutStyle === 'study' ? '按明确标题和项目符号整理层级，不改写或补充知识；无需大模型。' : '保留段落、原顺序、代码与公式，仅补笔记标题；无需大模型。')
+      this.hint(this.layoutStyle === 'study' ? '按明确标题和项目符号整理层级，不改写或补充知识。' : '保留段落、原顺序、代码与公式，仅补笔记标题。')
       Row({ space: 10 }) {
         Text('合并图片断行').fontSize(14).layoutWeight(1).fontColor(this.palette().inkPrimary)
         Toggle({ type: ToggleType.Switch, isOn: this.mergeWrappedLines }).selectedColor(this.palette().accent)
           .onChange((value: boolean) => { this.mergeWrappedLines = value; })
       }.width('100%').constraintSize({ minHeight: 48 })
       if (this.mergeWrappedLines) { this.hint('尝试连接普通正文的断行，列表、空段、代码、表格与公式保留。请对照原文检查多栏内容和特殊换行。') }
-      if (REMOTE_AI_ENABLED) {
-      Row({ space: 8 }) {
-        Text('AI 整理').layoutWeight(1).fontColor(this.palette().inkPrimary)
-        Toggle({ type: ToggleType.Switch, isOn: this.useAi && this.aiReady }).enabled(this.aiReady).selectedColor(this.palette().accent)
-          .onChange((value: boolean) => { this.useAi = value && this.aiReady; })
-      }.width('100%').constraintSize({ minHeight: 44 })
-      this.hint(this.useAi && this.aiReady ? '校对后的文字将发送到你配置并授权的模型服务，保存前可检查并编辑结果。' :
-        this.aiReady ? '关闭时使用本地规则，不联网。' : '未配置或未授权模型，AI 整理不可用；本机识别与离线排版仍可使用。')
-      Button('模型设置').height(44).fontColor(this.palette().inkSecondary)
-        .backgroundColor(this.palette().surfaceSubtle).onClick(() => {
-          this.requestClose();
-          this.onOpenModelSettings();
-        })
-      } else { this.hint('本地整理保留原文，不联网。') }
+      this.hint('本地规则整理，保留原文。')
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
@@ -390,7 +358,7 @@ export struct SmartExtractSheet {
         Text(this.result?.rawMarkdown || '').width('100%').fontSize(TypographyTokens.BODY_REGULAR)
           .fontColor(this.palette().inkPrimary).lineHeight(24).copyOption(CopyOptions.InApp)
       } else {
-        AssistantText({ text: this.previewBody() }).width('100%').padding(12).borderRadius(10).backgroundColor(this.palette().surfaceSubtle)
+        DocumentText({ text: this.previewBody() }).width('100%').padding(12).borderRadius(10).backgroundColor(this.palette().surfaceSubtle)
       }
       Text(`添加到日历 · 已选 ${this.selectedTaskIds.length} 项`)
         .fontSize(TypographyTokens.BODY_REGULAR).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
@@ -446,7 +414,7 @@ export struct SmartExtractSheet {
           Text(this.errorMsg).width('100%').fontSize(14).fontColor(this.palette().danger)
         }
         if (this.step === 'input') {
-          Button(this.useAi && this.aiReady ? '开始 AI 排版' : '开始本地整理').width('100%').height(48)
+          Button('开始本地整理').width('100%').height(48)
             .fontColor(this.palette().onAccent).backgroundColor(this.palette().accent)
             .enabled(this.inputText.trim().length > 0 && this.inputText.length <= SMART_INPUT_LIMIT)
             .onClick(() => this.triggerExtraction())

@@ -22,7 +22,7 @@ const expected = { bundleName: app.bundleName, versionName: app.versionName, ver
 record('identity', 'project', app.bundleName === config.bundleName && /^([A-Za-z][\w]*\.)+[A-Za-z][\w]*$/.test(app.bundleName), '统一应用身份与市场登记配置');
 record('upgrade_version', 'project', Number.isInteger(app.versionCode) && app.versionCode > config.previousReleaseCode && /^\d+\.\d+\.\d+$/.test(app.versionName), '候选版本高于登记的升级基线');
 record('devices', 'project', JSON.stringify([...devices].sort()) === JSON.stringify(['phone', 'tablet']), '首发统一手机与 Pad 应用包');
-record('permissions', 'project', JSON.stringify([...permissions].sort()) === JSON.stringify(['ohos.permission.DISTRIBUTED_DATASYNC','ohos.permission.INTERNET']), '仅联网与主动附近传递权限');
+record('permissions', 'project', JSON.stringify([...permissions].sort()) === JSON.stringify(['ohos.permission.DISTRIBUTED_DATASYNC']), '仅主动附近传递权限');
 const distributed = module.requestPermissions.find(p => p.name === 'ohos.permission.DISTRIBUTED_DATASYNC');
 record('permission_reason', 'project', !!distributed?.reason && distributed?.usedScene?.when === 'inuse' && distributed.usedScene.abilities.includes('EntryAbility'), '设备权限有用途说明，使用时申请');
 record('backup', 'project', json('entry/src/main/resources/base/profile/backup_config.json').allowToBackupRestore === false, '关闭整包备份；保留应用内资料导出');
@@ -32,23 +32,18 @@ record('release_obfuscation', 'project', release?.arkOptions?.obfuscation?.ruleO
 record('dependencies', 'project', Object.keys(json('entry/oh-package.json5').dependencies || {}).length === 0 && !json('entry/build-profile.json5').buildOption.externalNativeOptions, '生产包没有额外 SDK 或未使用的原生模板');
 const generated = spawnSync(process.execPath, [path.join(root,'tools/generate-market-materials.mjs'), '--check'], { cwd: root, encoding: 'utf8' });
 record('privacy_consistency', 'project', generated.status === 0, '应用内与可托管隐私说明来自同一份数据');
-record('secret_protection', 'project', read('entry/src/main/ets/services/ai/ModelConfigService.ets').includes("clean.apiKey = ''") &&
-  read('entry/src/main/ets/services/ai/HuksCredentialStore.ets').includes('HUKS_MODE_GCM'), '模型元数据不保存明文密钥；运行行为由工作流测试核验');
-for (const file of ['providers/OpenAiCompatProvider.ets', 'providers/GeminiProvider.ets', 'providers/AnthropicProvider.ets', 'EmbeddingProvider.ets']) {
-  const source = read(`entry/src/main/ets/services/ai/${file}`);
-  record(`transport_${file}`, 'project', source.includes('RemoteAiPolicy.assertAllowed(profile)') && source.includes('maxRedirects: 0'), '聊天、连接测试与向量入口检查授权和安全传输');
-}
-record('stream_transport', 'project', read('entry/src/main/ets/services/ai/SseHttpClient.ets').includes('maxRedirects: 0'), '原生流式接收不跟随重定向');
+const localAudit = spawnSync(process.execPath, [path.join(root,'tools/verify-local-release.mjs')], { cwd: root, encoding: 'utf8' });
+record('feature_source_audit', 'project', localAudit.status === 0, localAudit.status === 0 ? '本地发布范围、依赖与产品文案检查通过' : (localAudit.stderr || '本地发布检查失败'));
 record('first_launch_empty', 'project', read('entry/src/main/ets/pages/Index.ets').includes('this.storage.load(context, [])') &&
   !fs.existsSync(path.join(root,'entry/src/main/ets/common/seed/SeedContent.ets')), '发布版首次启动为空；调试版测试 PDF 不进入发布资料');
 record('release_debug_samples', 'project', ['**/debug-pdf-preview/**','**/example-course.pdf','**/example-snapshot.pdf'].every(pattern =>
   release?.resOptions?.ignoreResourcePattern?.includes(pattern)) &&
   read('entry/src/main/ets/services/NoteStorageService.ets').includes('if (!BuildProfile.DEBUG) { return notes; }'),
   '测试原件与预览图片仅用于调试，发布版不自动注入');
-record('offline_default_optional_api', 'project', config.assistantMode === 'local-default-byok' &&
-  read('entry/src/main/ets/common/constants/RuntimeCapabilities.ets').includes('CLOUD_AI_ENABLED: boolean = false') &&
-  read('entry/src/main/ets/services/ai/AssistantModeService.ets').includes("prefs.get('mode', 'local')") &&
-  read('entry/src/main/ets/services/ai/RemoteAiPolicy.ets').includes('if (!RemoteAiPolicy.consented(p))'), '默认离线；自配 API 需要服务授权；团队云 AI 未接通');
+record('local_rules_only', 'project', config.assistantMode === 'local-rules-only' &&
+  !permissions.includes('ohos.permission.INTERNET') &&
+  !fs.existsSync(path.join(root, 'entry/src/main/ets/services/ai/ModelProvider.ets')) &&
+  !read('entry/src/main/ets/services/smart/SmartExtractService.ets').includes('createProvider'), '本地规则整理；无模型服务或联网权限');
 record('public_identity', 'submission', typeof config.publisher === 'string' && config.publisher.trim().length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(config.supportEmail || '') &&
   Number.isInteger(config.privacyResponseWorkingDays) && config.privacyResponseWorkingDays > 0 && config.privacyResponseWorkingDays <= 15, '填写与 AGC 一致的真实发布者、有效客服邮箱及隐私回复期限');
 record('public_privacy', 'submission', /^https:\/\/[^\s@]+$/i.test(config.privacyUrl || '') && !/example\.(com|org)|localhost|待填写/.test(config.privacyUrl), '填写已托管且可公开访问的 HTTPS 隐私政策网址，提交前人工核对全文');
@@ -68,7 +63,7 @@ function currentReview(file, kind, extra = () => true) {
 }
 record('sdk_eligibility', 'submission', currentReview(config.sdkReleaseEvidence, 'sdk', e => e.targetSdkVersion === product.targetSdkVersion && e.compatibleSdkVersion === product.compatibleSdkVersion), '核对当前 AGC 接受的 SDK 与系统版本；包内 Release 字段不能替代此证据');
 record('qualification', 'submission', currentReview(config.qualificationEvidence, 'qualification', e => e.publisher === config.publisher && e.bundleName === app.bundleName), '发布帐号、类别资质/备案与素材授权按实际发布地区完成核对');
-record('ai_service_review', 'submission', currentReview(config.aiServiceReviewEvidence, 'ai-service'), '按默认本地与可选授权 API 的实际功能核对地区、类别及数据发送要求');
+record('feature_scope_review', 'submission', currentReview(config.featureScopeReviewEvidence, 'feature-scope'), '核对本地发布范围、类别与审核声明');
 
 const status = spawnSync('git', ['status','--porcelain','--untracked-files=all'], { cwd: root, encoding:'utf8' });
 const dirty = (status.stdout || '').trim().split(/\r?\n/).filter(line => line && !line.endsWith(' pack.info'));

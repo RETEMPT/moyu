@@ -36,9 +36,9 @@ export interface NoteItem {
   pageCount?: number;
   /** 文档元数据 JSON（如尺寸、大小、原文件名等） */
   documentMeta?: string;
-  /** AI 自动生成的摘要 */
+  /** 资料的摘要 */
   aiSummary?: string;
-  /** AI 自动分析的智能标签列表 */
+  /** 用户确认的智能标签列表 */
   aiTags?: string[];
   /** 已校对的 PDF 页文字，JSON 序列化 PdfTextPage[]；不替换批注正文。 */
   pdfTextJson?: string;

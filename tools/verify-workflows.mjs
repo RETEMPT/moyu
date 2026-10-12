@@ -14,7 +14,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sdkArg = process.argv.indexOf('--typescript');
 const ts = require(sdkArg >= 0 ? path.resolve(process.argv[sdkArg + 1]) : 'typescript');
 const base = 'entry/src/main/ets/';
-const parserFile = `${base}services/ai/AiParser.ets`;
+const parserFile = `${base}services/smart/SourceTextParser.ets`;
 const builderFile = `${base}services/smart/SmartNoteBuilder.ets`;
 const extractFile = `${base}services/smart/SmartExtractService.ets`;
 const ocrFile = `${base}services/ocr/OcrService.ets`;
@@ -45,96 +45,21 @@ function load(relative, mocks = {}, cache = new Map()) {
   return module.exports;
 }
 
-const { AiParser } = load(parserFile);
+const { SourceTextParser } = load(parserFile);
 const { SmartNoteBuilder } = load(builderFile);
 const { SmartCaptureService } = load(`${base}services/smart/SmartCaptureService.ets`);
-const { ChatSessionSanitizer } = load(`${base}services/ai/ChatSessionSanitizer.ets`);
 const plain = value => JSON.parse(JSON.stringify(value));
 const reference = new Date(2026, 8, 30, 10);
 const source = '【美术课通知】\n2026年10月2日前提交素描作业。\n已经完成报名，无需准备额外材料。\n地点：画室二楼。';
-
-const { ModelProfilePolicy } = load(`${base}services/ai/ModelProfilePolicy.ets`);
-const { ToolArgumentValidator } = load(`${base}services/ai/ToolArgumentValidator.ets`);
-const { AGENT_TOOLS } = load(`${base}services/ai/ToolRegistry.ets`);
-const { WorkspaceToolExecutor } = load(`${base}services/ai/WorkspaceToolExecutor.ets`);
-const { ActionProposalService } = load(`${base}services/ai/ActionProposalService.ets`);
-const { NoteToolReader } = load(`${base}services/ai/NoteToolReader.ets`);
 const profile = overrides => ({ id: 'study', label: '学习', protocol: 'openai-compat', baseUrl: 'https://example.com/v1',
   apiKey: 'test-key', modelId: 'test-model', temperature: 0.7, maxTokens: 4096, stream: true,
   systemPrompt: '', createdAt: 1, updatedAt: 1, ...overrides });
-
-test('model validation rejects incomplete or unsafe endpoints and invalid numeric configuration', () => {
-  assert.equal(ModelProfilePolicy.validate(profile()), '');
-  for (const change of [{ label: '' }, { apiKey: '' }, { baseUrl: 'https://key@example.com/v1' },
-    { baseUrl: 'https://example.com/v1?key=secret' }, { baseUrl: 'file:///notes' },
-    { modelId: '' }, { temperature: NaN }, { temperature: 3 }, { maxTokens: 10 },
-    { maxTokens: 1024.5 }, { maxToolRounds: 7 }]) {
-    assert.notEqual(ModelProfilePolicy.validate(profile(change)), '', JSON.stringify(change));
-  }
-  assert.equal(ModelProfilePolicy.validate(profile({ baseUrl: 'http://127.0.0.1:11434/v1', apiKey: '' })), '');
-});
-
-test('model restoration isolates malformed rows and preserves user model IDs', () => {
-  assert.equal(ModelProfilePolicy.restore(null), null);
-  assert.equal(ModelProfilePolicy.restore({ id: 'bad', label: 'bad', protocol: 'invalid' }), null);
-  const restored = ModelProfilePolicy.restore(profile({ modelId: 'my-model', apiKey: '***broken', maxTokens: -8,
-    temperature: null, maxToolRounds: 'bad', stream: false }));
-  assert.equal(restored.modelId, 'my-model'); assert.equal(restored.apiKey, '');
-  assert.equal(restored.maxTokens, 8192); assert.equal(restored.stream, false); assert.equal(restored.maxToolRounds, 5);
-});
-
-test('tool configuration limits actual capabilities by protocol, stream and permission', () => {
-  assert.equal(ModelProfilePolicy.availableTools(profile({ toolAccess: 'none' }), AGENT_TOOLS).length, 0);
-  assert.equal(ModelProfilePolicy.availableTools(profile({ stream: false }), AGENT_TOOLS).length, 0);
-  assert.equal(ModelProfilePolicy.availableTools(profile({ protocol: 'gemini' }), AGENT_TOOLS).length, 0);
-  assert.equal(ModelProfilePolicy.availableTools(profile({ protocol: 'anthropic' }), AGENT_TOOLS).length, 0);
-  const read = ModelProfilePolicy.availableTools(profile({ toolAccess: 'read' }), AGENT_TOOLS);
-  assert.ok(read.length >= 6); assert.ok(read.every(tool => tool.permission === 'read'));
-  assert.equal(ModelProfilePolicy.availableTools(profile({ toolAccess: 'confirm-write' }), AGENT_TOOLS).length, AGENT_TOOLS.length);
-});
-
-for (const [name, args] of [['create_todo', null], ['create_todo', []], ['create_todo', { title: 7 }],
-  ['create_todo', { title: '   ' }], ['create_todo', { title: '任务', date: '2026-02-29' }],
-  ['create_todo', { title: '任务', date: '2026-04-31' }], ['create_todo', { title: '任务', date: '下周五' }],
-  ['create_note', { title: '笔记', content: '' }], ['create_link', { sourceIdentifier: 'A', targetTitle: 'B]]\nextra' }],
-  ['search_notes', { query: 'A', limit: 2.5 }], ['search_notes', { query: 'A', limit: 11 }],
-  ['read_note', { identifier: 'A', extra: true }], ['list_todos', { status: 'maybe' }]]) {
-  test(`tool arguments reject malformed ${name}: ${JSON.stringify(args)}`, () => {
-    assert.throws(() => ToolArgumentValidator.parse(name, JSON.stringify(args)));
-  });
-}
-test('explicit dates accept leap days and relative dates never silently guess ambiguous input', () => {
-  assert.equal(ToolArgumentValidator.date('2028-02-29'), '2028-02-29');
-  assert.match(ToolArgumentValidator.date('明天'), /^\d{4}-\d{2}-\d{2}$/);
-  assert.throws(() => ToolArgumentValidator.date('12月25日'));
-});
 
 function toolPorts(overrides = {}) {
   return { search: () => 'results', list: () => 'notes', read: () => 'body', summarize: () => 'stats',
     outline: () => 'outline', todos: () => 'todos', createTodo: async () => 'saved', addTag: async () => 'saved',
     createLink: async () => 'saved', categorize: async () => 'saved', createNote: async () => 'saved', progress: () => {}, ...overrides };
 }
-test('write executor waits for persistence and never reports successful storage failures', async () => {
-  let release; let writes = 0; const statuses = [];
-  const executor = new WorkspaceToolExecutor(toolPorts({ createTodo: () => { writes++; return new Promise(resolve => { release = resolve; }); },
-    progress: status => statuses.push(status) }));
-  let done = false; const running = executor.execute('create_todo', '{"title":"任务"}').then(result => { done = true; return result; });
-  await Promise.resolve(); assert.equal(done, false); assert.equal(writes, 1);
-  release('saved'); assert.equal((await running).ok, true);
-  const broken = new WorkspaceToolExecutor(toolPorts({ createNote: async () => { throw new Error('storage full'); } }));
-  const failed = await broken.execute('create_note', '{"title":"笔记","content":"正文"}');
-  assert.equal(failed.ok, false); assert.match(failed.content, /storage full/);
-  await executor.execute('create_todo', '{"title":12}'); assert.equal(writes, 1);
-});
-
-test('note tools reject ambiguous and partial titles while IDs resolve exactly', () => {
-  const notes = [{ id: 'a', title: '算法', contentDetail: '# 算法\n```\n# 代码注释\n```\n## 搜索' },
-    { id: 'b', title: '算法', contentDetail: '' }];
-  assert.throws(() => NoteToolReader.resolve(notes, '算法'), /ID/);
-  assert.throws(() => NoteToolReader.resolve(notes, '算'));
-  const outline = NoteToolReader.outline(NoteToolReader.resolve(notes, 'a'));
-  assert.match(outline, /第 5 行/); assert.ok(!outline.includes('代码注释'));
-});
 
 test('note card keys refresh covers, pinning and favorites without losing note identity', () => {
   const { noteRenderKey } = load(`${base}common/utils/ForEachKeys.ets`);
@@ -143,60 +68,6 @@ test('note card keys refresh covers, pinning and favorites without losing note i
   for (const change of [{ coverUrl: 'cover:mist' }, { favorite: true }, { isPinned: true }, { category: '工作' }]) {
     assert.notEqual(noteRenderKey({ ...note, ...change }), original);
   }
-});
-
-test('manual proposals use the same validated, awaited tools and propagate incomplete actions', async () => {
-  const executor = new WorkspaceToolExecutor(toolPorts({ createTodo: async () => { throw new Error('disk full'); } }));
-  assert.equal((await ActionProposalService.execute({ id: '1', type: 'todo', title: '任务', date: '2026-10-01', desc: '' }, executor)).ok, false);
-  assert.equal((await ActionProposalService.execute({ id: '1', type: 'delete-all', title: '任务', desc: '' }, executor)).ok, false);
-});
-
-function orchestratorFixture(changes = {}, tools = [], providerChanges = {}, mocks = {}) {
-  const configured = profile(changes); const requests = []; let streamCalls = 0; let completeCalls = 0;
-  const provider = { complete: async (_, request) => { completeCalls++; requests.push(request); return '完整答案'; },
-    completeStream: async (_, request, onChunk) => {
-      streamCalls++; requests.push(request);
-      for (let index = 0; index < tools.length; index++) {
-        onChunk({ delta: '', done: false, toolCall: { index, id: `call_${index}`, name: tools[index].name, argumentsFragment: JSON.stringify(tools[index].args) } });
-      }
-      onChunk({ delta: tools.length ? '' : '答案', done: true }); return { abort() {} };
-    } };
-  Object.assign(provider, providerChanges);
-  const { AgentOrchestrator } = load(`${base}services/ai/AgentOrchestrator.ets`, {
-    ...mocks,
-    [path.resolve(root, `${base}services/ai/ModelProvider.ets`)]: { createProvider: () => provider,
-      StreamHandleImpl: class { constructor(abort) { this.abort = abort; } } },
-    [path.resolve(root, `${base}services/ai/ModelConfigService.ets`)]: { ModelConfigService: { getInstance: () => ({ getActiveProfile: async () => configured }) } }
-  });
-  return { orchestrator: new AgentOrchestrator(), configured, requests, counts: () => ({ streamCalls, completeCalls }) };
-}
-test('agent respects nonstream configuration and includes saved instructions', async () => {
-  const f = orchestratorFixture({ stream: false, systemPrompt: '先给结论' });
-  const result = await f.orchestrator.run('L3', { query: '总结', history: [], profile: f.configured }, () => {});
-  assert.equal(result.text, '完整答案'); assert.deepEqual(f.counts(), { completeCalls: 1, streamCalls: 0 });
-  assert.match(f.requests[0].messages[0].content, /先给结论/); assert.equal(f.requests[0].toolsJson, undefined);
-});
-for (const mode of ['disabled', 'readonly', 'invalid', 'denied', 'cancelled']) {
-  test(`agent never writes when tool request is ${mode}`, async () => {
-    let writes = 0; let confirmations = 0; let cancelled = false;
-    const f = orchestratorFixture({ maxToolRounds: 1, toolAccess: mode === 'disabled' ? 'none' : mode === 'readonly' ? 'read' : 'confirm-write' },
-      [{ name: 'create_todo', args: mode === 'invalid' ? { title: 7 } : { title: '任务' } }]);
-    await f.orchestrator.run('L2', { query: '规划', history: [], profile: f.configured, tools: AGENT_TOOLS,
-      executor: { execute: async () => { writes++; return { ok: true, content: 'saved' }; } },
-      isCancelled: () => cancelled, confirm: async () => { confirmations++; if (mode === 'cancelled') cancelled = true; return mode !== 'denied'; }
-    }, () => {});
-    assert.equal(writes, 0);
-    if (['disabled', 'readonly', 'invalid'].includes(mode)) assert.equal(confirmations, 0);
-    assert.equal(f.counts().streamCalls, 1);
-  });
-}
-test('agent enforces configured round limit and executes each write only after confirmation', async () => {
-  let writes = 0; let confirmations = 0;
-  const f = orchestratorFixture({ maxToolRounds: 1 }, [{ name: 'create_todo', args: { title: '任务' } }]);
-  const result = await f.orchestrator.run('L2', { query: '规划', history: [], profile: f.configured, tools: AGENT_TOOLS,
-    confirm: async () => { confirmations++; return true; }, executor: { execute: async () => { assert.equal(confirmations, 1); writes++; return { ok: true, content: 'saved' }; } }
-  }, () => {});
-  assert.equal(writes, 1); assert.equal(f.counts().streamCalls, 1); assert.match(result.text, /上限/);
 });
 
 test('cover presets require no file access, gallery copies persist and source handles close', async () => {
@@ -226,60 +97,8 @@ test('failed or oversized cover copies clean partial file and release source', a
   }
 });
 
-test('configuration flush failure preserves the active profile and never broadcasts success', async () => {
-  const original = profile({ apiKey: '', credentialRef: 'key_000000000000000000000001' }); const values = new Map([['profiles', JSON.stringify([original])], ['activeProfileId', original.id]]);
-  const publications = []; let fail = true;
-  const prefs = { get: async (key, fallback) => values.get(key) ?? fallback, put: async (key, value) => values.set(key, value),
-    flush: async () => { if (fail) throw new Error('disk full'); } };
-  const { ModelConfigService } = load(`${base}services/ai/ModelConfigService.ets`, {
-    '@kit.ArkData': { preferences: { getPreferences: async () => prefs } },
-    [path.resolve(root, `${base}services/ai/HuksCredentialStore.ets`)]: { HuksCredentialStore: class {
-      async init() {} async read() { return 'test-key'; } async write() { return 'key_000000000000000000000002'; } async remove() {}
-    } },
-    AppStorage: { setOrCreate: (key, value) => publications.push([key, value]) }
-  });
-  const service = ModelConfigService.getInstance(); await service.init({});
-  await assert.rejects(service.saveAndActivate(profile({ id: 'new', label: '新配置' })));
-  assert.equal((await service.getActiveProfile()).id, original.id); assert.equal(publications.length, 0);
-  fail = false; const saved = await service.saveAndActivate(profile({ id: 'new', label: '新配置' }));
-  assert.equal(saved.length, 2); assert.equal((await service.getActiveProfile()).id, 'new'); assert.equal(publications.length, 2);
-});
-
-test('semantic search is explicit and embedding cache refreshes changed content', async () => {
-  const inputs = [];
-  const { EmbeddingIndexService } = load(`${base}services/ai/EmbeddingIndexService.ets`, {
-    [path.resolve(root, `${base}services/ai/EmbeddingProvider.ets`)]: {
-      createEmbeddingProvider: () => ({ embed: async (_, texts) => { inputs.push(texts); return texts.map(() => [1, 2]); } })
-    }
-  });
-  const service = EmbeddingIndexService.getInstance();
-  const configured = profile({ embeddingModelId: 'example' });
-  const chunk = { id: 'chunk', noteId: 'note', noteTitle: '标题', headingPath: '', text: '旧正文', startLine: 0, tokenEstimate: 2 };
-  assert.equal(await service.ensure(configured, [chunk]), false); assert.equal(inputs.length, 0);
-  configured.semanticSearch = true;
-  assert.equal(await service.ensure(configured, [chunk]), true);
-  assert.equal(await service.ensure(configured, [chunk]), true); assert.equal(inputs.length, 1);
-  assert.equal(await service.ensure(configured, [{ ...chunk, text: '新正文' }]), true); assert.equal(inputs.length, 2);
-  assert.match(inputs[1][0], /新正文/);
-});
-
-test('embedding cancellation and invalid vectors cannot populate a successful index', async () => {
-  for (const cancelled of [false, true]) {
-    let cancel = false;
-    const { EmbeddingIndexService } = load(`${base}services/ai/EmbeddingIndexService.ets`, {
-      [path.resolve(root, `${base}services/ai/EmbeddingProvider.ets`)]: {
-        createEmbeddingProvider: () => ({ embed: async () => { cancel = cancelled; return cancelled ? [[1, 2]] : [[]]; } })
-      }
-    });
-    const service = EmbeddingIndexService.getInstance();
-    assert.equal(await service.ensure(profile({ semanticSearch: true, embeddingModelId: 'example' }),
-      [{ id: 'chunk', noteTitle: '标题', headingPath: '', text: '正文' }], () => cancel), false);
-    assert.equal(service.size(), 0);
-  }
-});
-
 test('local extraction preserves source and never invents subject facts, tags or links', () => {
-  const result = AiParser.fromSource(source);
+  const result = SourceTextParser.fromSource(source);
   assert.equal(result.title, '美术课通知');
   assert.equal(result.rawMarkdown, source);
   assert.equal(result.tasks.length, 1);
@@ -292,40 +111,16 @@ test('local extraction preserves source and never invents subject facts, tags or
 });
 
 test('no actionable source yields no invented calendar entries', () => {
-  assert.equal(AiParser.fromSource('今天阳光很好。').tasks.length, 0);
-  assert.equal(AiParser.fromSource('期末考试地点：艺术楼。').tasks.length, 0);
-  assert.equal(AiParser.fromSource('已经提交报告；无需完成练习。').tasks.length, 0);
+  assert.equal(SourceTextParser.fromSource('今天阳光很好。').tasks.length, 0);
+  assert.equal(SourceTextParser.fromSource('期末考试地点：艺术楼。').tasks.length, 0);
+  assert.equal(SourceTextParser.fromSource('已经提交报告；无需完成练习。').tasks.length, 0);
 });
 
 test('line endings, formulas and code remain in locally formatted body', () => {
-  const result = AiParser.fromSource('# 数学\r\n\r\n$x=42$\r\n```js\r\nconst x = 42;\r\n```');
+  const result = SourceTextParser.fromSource('# 数学\r\n\r\n$x=42$\r\n```js\r\nconst x = 42;\r\n```');
   assert.ok(result.formattedMarkdown.includes('$x=42$'));
   assert.ok(result.formattedMarkdown.includes('const x = 42;'));
   assert.ok(!result.formattedMarkdown.includes('\r'));
-});
-
-test('model arrays reject malformed rows, normalize fields and regenerate unique IDs', () => {
-  const model = { title: '报告', type: 'unexpected', summary: 42, formattedMarkdown: '# 报告\n\n正文',
-    tags: [null, '工作', 8, '工作'], entities: [null, {}, { name: '会议', type: '???' }],
-    tasks: [null, {}, { title: '提交报告', id: 'same', priority: '???', deadline: 7 },
-      { title: '提交报告', id: 'same' }, { title: '整理资料', id: 'same' }],
-    relations: [null, { targetTitle: '[[资料]]\n', reason: 9 }] };
-  const result = AiParser.parseModelContent('```json\n' + JSON.stringify(model) + '\n```');
-  assert.equal(result.type, 'general');
-  assert.equal(result.summary, '');
-  assert.deepEqual(plain(result.tags), ['工作']);
-  assert.equal(result.tasks.length, 2);
-  assert.notEqual(result.tasks[0].id, result.tasks[1].id);
-  assert.equal(result.tasks[0].priority, 'medium');
-  assert.equal(result.tasks[0].deadline, '');
-  assert.equal(result.entities[0].type, 'other');
-  assert.equal(result.relations[0].targetTitle, '资料');
-});
-
-test('invalid or irrelevant model JSON cannot masquerade as successful extraction', () => {
-  for (const text of ['not json', 'null', '[]', '{"unrelated":true}', '{"title":', '```json\n{}\n```']) {
-    assert.throws(() => AiParser.parseModelContent(text));
-  }
 });
 
 for (const [input, expected] of [
@@ -343,7 +138,7 @@ test('relative deadline rolls over the local year correctly', () => {
 });
 
 test('saved body matches preview, includes original, edits and only chosen tasks', () => {
-  const content = AiParser.fromSource(source);
+  const content = SourceTextParser.fromSource(source);
   content.title = '我的美术课';
   content.formattedMarkdown = '# 旧标题\n\n校对后的正文。';
   content.category = '美术';
@@ -379,7 +174,7 @@ function captureStore(failStage = '') {
 
 for (const stage of ['document', 'notes', 'todos']) {
   test(`saving failure at ${stage} preserves state and retry never duplicates items`, async () => {
-    const content = AiParser.fromSource(source);
+    const content = SourceTextParser.fromSource(source);
     const store = captureStore(stage);
     await assert.rejects(SmartCaptureService.commit(content, content.tasks, store.port),
       stage === 'todos' ? /笔记已保存.*待办同步失败/ : /笔记保存未成功/);
@@ -398,60 +193,9 @@ for (const stage of ['document', 'notes', 'todos']) {
 test('save without selected tasks never writes calendar or deletes unrelated records', async () => {
   const store = captureStore();
   store.state.todos = [{ id: 'existing', title: 'old' }];
-  await SmartCaptureService.commit(AiParser.fromSource('随笔'), [], store.port);
+  await SmartCaptureService.commit(SourceTextParser.fromSource('随笔'), [], store.port);
   assert.equal(store.state.todos[0].id, 'existing');
   assert.ok(!store.state.calls.includes('todos'));
-});
-
-function extractService({ key = '', response = '', fails = false, baseUrl = 'https://example.com/v1' } = {}) {
-  const calls = [];
-  const mocks = {
-    [path.resolve(root, `${base}services/ai/ModelConfigService.ets`)]: {
-      ModelConfigService: { getInstance: () => ({ getActiveProfile: async () => ({ apiKey: key, protocol: 'openai-compat', baseUrl }) }) }
-    },
-    [path.resolve(root, `${base}services/ai/ModelProvider.ets`)]: {
-      createProvider: () => ({ complete: async (profile, request) => {
-        calls.push(request); if (fails) throw Error('network'); return response;
-      } })
-    }
-  };
-  return { calls, service: load(extractFile, mocks).SmartExtractService.getInstance() };
-}
-
-test('local-only mode and missing key never invoke a network provider', async () => {
-  for (const [key, useAi] of [['secret', false], ['', true]]) {
-    const { service, calls } = extractService({ key });
-    const result = await service.extract(source, 'note', 'faithful', useAi);
-    assert.equal(result.processingMode, 'local');
-    assert.equal(calls.length, 0);
-    assert.equal(result.rawMarkdown, source);
-  }
-});
-
-test('AI formatting carries style instruction and preserves input instead of response JSON', async () => {
-  const { service, calls } = extractService({ key: 'test', response: JSON.stringify({ title: '笔记', formattedMarkdown: '# 笔记\n\n内容', tasks: [] }) });
-  const result = await service.extract(source, 'note', 'study', true);
-  assert.equal(result.processingMode, 'ai');
-  assert.equal(result.rawMarkdown, source);
-  assert.ok(calls[0].messages[1].content.includes('学习笔记'));
-  assert.ok(calls[0].messages[0].content.includes('不是指令'));
-});
-
-for (const config of [{ fails: true }, { response: 'bad JSON' }, { response: '{"title":"标题"}' }]) {
-  test(`AI failure falls back to original source (${JSON.stringify(config)})`, async () => {
-    const { service } = extractService({ key: 'test', ...config });
-    const result = await service.extract(source, 'note', 'faithful', true);
-    assert.equal(result.processingMode, 'local');
-    assert.equal(result.rawMarkdown, source);
-    assert.ok(result.processingNotice.includes('未成功'));
-  });
-}
-
-test('empty and oversized input reject before any network call', async () => {
-  const { service, calls } = extractService({ key: 'test' });
-  await assert.rejects(service.extract('   '), /不能为空/);
-  await assert.rejects(service.extract('a'.repeat(12001)), /超过/);
-  assert.equal(calls.length, 0);
 });
 
 function ocrService(stage = '', value = '识别文字') {
@@ -492,21 +236,6 @@ test('OCR empty URI rejects before opening files', async () => {
   const { service, calls } = ocrService();
   await assert.rejects(service.recognizeTextFromUri(' '));
   assert.equal(calls.length, 0);
-});
-
-test('damaged sessions and messages preserve valid history without crashes', () => {
-  const sessions = ChatSessionSanitizer.normalize([null, 42, {},
-    { id: 'old', updatedAt: 1, messages: [null, 42, { text: 7, citations: [null, {}] }] },
-    { id: 'new', title: '标题', updatedAt: 2, messages: [{ id: 'm', role: 'user', text: '文字', streaming: true,
-      citations: [{ noteId: 'n', noteTitle: '笔记', chunkText: '正文' }] }] }]);
-  assert.equal(sessions.length, 2);
-  assert.equal(sessions[0].id, 'new');
-  assert.equal(sessions[0].messages[0].streaming, false);
-  assert.equal(sessions[0].messages[0].citations[0].headingPath, '');
-  assert.equal(sessions[1].messages.length, 1);
-  assert.equal(sessions[1].messages[0].text, '');
-  assert.equal(sessions[1].messages[0].citations.length, 0);
-  assert.equal(sessions[1].title, '新对话');
 });
 
 function pdfService({ status = 0, pageCount = 3, renderFails = false, copyFails = false, pageTexts = [], ocrFails = false } = {}) {
@@ -738,14 +467,6 @@ test('PDF index isolates malformed pages and merges only reviewed page replaceme
   assert.equal(StudySourceService.pages({ ...note, pdfTextJson: JSON.stringify(bad) }).length, 0);
   assert.equal(StudySourceService.pages({ ...note, pdfTextJson: 'broken' }).length, 0);
 });
-test('PDF chunks carry page provenance and IDs do not collide across pages', () => {
-  const { ChunkIndexService } = load(`${base}services/ai/ChunkIndexService.ets`);
-  const index = new ChunkIndexService();
-  const chunks = StudySourceService.documents([pdfStudyNote()]).flatMap(doc => plain(index.build(doc)));
-  assert.equal(new Set(chunks.map(c => c.id)).size, chunks.length);
-  assert.ok(chunks.some(c => c.pageNumber === 1 && c.text.includes('银行家')));
-  assert.ok(chunks.some(c => c.pageNumber === 2 && c.text.includes('物理地址')));
-});
 test('PDF annotation snapshots retain indexed text and source metadata while saving current strokes', () => {
   // Execute the actual pure snapshot method, without instantiating ArkUI or simulating gestures.
   const source = fs.readFileSync(path.resolve(root, `${base}views/reader/pdf/PdfAnnotatorView.ets`), 'utf8');
@@ -777,15 +498,6 @@ test('review intervals stay bounded and malformed persisted rows do not enter th
   assert.equal(normalized.length, 1); assert.equal(normalized[0].intervalDays, 180);
   assert.equal(ReviewPolicy.rate({ ...card, intervalDays: 180, repetitions: 99 }, 'good', 1).intervalDays, 180);
 });
-test('AI review drafts require an exact source excerpt from the claimed PDF page', () => {
-  const note = pdfStudyNote();
-  const good = { question: '银行家算法如何避免风险？', answer: '执行安全性检查', sourceText: '银行家算法通过安全性检查', pageNumber: 1 };
-  assert.equal(ReviewPolicy.generated(JSON.stringify([good]), note).length, 1);
-  for (const draft of [{ ...good, pageNumber: 2 }, { ...good, pageNumber: 99 }, { ...good, sourceText: '资料从未说过的内容' },
-    { ...good, question: '' }, { ...good, sourceText: '短文' }]) assert.throws(() => ReviewPolicy.generated(JSON.stringify([draft]), note));
-  assert.equal(ReviewPolicy.generated(JSON.stringify([good, good]), note).length, 1);
-  assert.throws(() => ReviewPolicy.generated('[{"answer":"虚构内容"}]', note));
-});
 test('course summaries exclude removed source notes and count only linked unfinished tasks', () => {
   const card = ReviewPolicy.create(studyNote(), { question: 'Q', answer: 'A', sourceText: '' }, 1);
   const summary = ReviewPolicy.courses([studyNote()], [card, { ...card, id: 'other', noteId: 'deleted' }],
@@ -793,13 +505,6 @@ test('course summaries exclude removed source notes and count only linked unfini
   assert.equal(summary.noteCount, 1); assert.equal(summary.dueCount, 1); assert.equal(summary.cardCount, 1); assert.equal(summary.todoCount, 1);
 });
 const studyBackup = () => ({ schemaVersion: 1, id: 'backup123', createdAt: 1, notes: [studyNote()], cards: [], assets: [] });
-test('study backup strips device paths, model credentials, unknown properties and keeps bundled covers', () => {
-  const backup = studyBackup();
-  backup.notes[0] = studyNote({ sourceUri: '/outside/private.pdf', apiKey: 'secret', modelConfig: { secret: true }, coverUrl: 'cover:ink' });
-  const normalized = plain(StudyBackupPolicy.validate(backup));
-  assert.equal(normalized.notes[0].coverUrl, 'cover:ink');
-  assert.ok(!JSON.stringify(normalized).includes('secret')); assert.ok(!JSON.stringify(normalized).includes('/outside'));
-});
 test('study backup rejects duplicate IDs, traversal IDs, invalid assets and orphaned cards', () => {
   const backup = studyBackup();
   for (const input of [{ ...backup, notes: [studyNote({ id: '../note' })] }, { ...backup, notes: [studyNote({ id: undefined })] },
@@ -908,20 +613,6 @@ test('unreadable review storage blocks writes rather than overwriting the origin
     const f = reviewStorageFixture(raw); await assert.rejects(f.service.load({}), /损坏/);
     await assert.rejects(f.service.save({}, []), /阻止覆盖/); assert.equal(f.raw(), raw); assert.equal(f.writes.length, 0);
   }
-});
-test('local backup exports actual PDF and cover bytes without credentials and selection validates the package', async () => {
-  const f = backupFileFixture(); const context = { filesDir: '/sandbox' };
-  f.files.set('/sandbox/documents/book.pdf', Buffer.from('%PDF-1.7\noriginal'));
-  f.files.set('/sandbox/covers/photo.img', Buffer.from('original image bytes'));
-  const note = studyNote({ type: 'PDF', sourceType: 'pdf', sourceUri: '/sandbox/documents/book.pdf', coverUrl: '/sandbox/covers/photo.img', apiKey: 'never-export' });
-  assert.equal(await f.service.exportFile(context, [note], []), true);
-  const backup = JSON.parse(f.files.get('/picked/backup.json').toString('utf8'));
-  assert.equal(backup.assets.length, 2);
-  assert.equal(Buffer.from(backup.assets[0].data, 'base64').toString(), '%PDF-1.7\noriginal');
-  assert.ok(!JSON.stringify(backup).includes('never-export'));
-  assert.ok(!JSON.stringify(backup).includes('/sandbox'));
-  assert.equal((await f.service.selectFile(context)).notes.length, 1);
-  assert.equal(f.calls.filter(c => c[0] === 'close').length, 4);
 });
 test('bundled sample backups remain labeled examples and do not block an initial full backup', async () => {
   const { seedNotes } = load('tools/fixtures/SeedContent.ets'); const f = backupFileFixture();
@@ -1037,29 +728,6 @@ test('separate Markdown writers serialize replacement and compare UTF-8 byte cou
   await Promise.all([new f.AtomicTextFile().write('/note.md', '第一版 📚'), new f.AtomicTextFile().write('/note.md', '第二版 📖')]);
   assert.equal(f.files.get('/note.md'), '第二版 📖'); assert.equal(f.files.size, 1);
   assert.deepEqual(f.calls.map(call => call[0]), ['write', 'rename', 'write', 'rename']);
-});
-
-test('concurrent chat upserts and deletion preserve independent sessions and capture mutable inputs', async () => {
-  const f = preferenceFixture({ sessions: '[]' });
-  const { ChatSessionService } = load(`${base}services/ai/ChatSessionService.ets`, {
-    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
-  });
-  const service = ChatSessionService.getInstance(); await service.init({});
-  const session = id => ({ id, title: id, messages: [], createdAt: 1, updatedAt: 1 });
-  const first = session('first'); const saved = service.saveSession(first); first.title = 'mutated'; first.id = 'mutated';
-  await Promise.all([saved, service.saveSession(session('second')), service.saveSession(session('third')), service.deleteSession('second')]);
-  assert.deepEqual(plain((await service.loadSessions()).map(item => item.id).sort()), ['first', 'third']);
-  assert.equal((await service.loadSessions()).find(item => item.id === 'first').title, 'first');
-});
-
-test('corrupt chat history cannot be replaced by an upsert or a clearing action', async () => {
-  const f = preferenceFixture({ sessions: '{broken' });
-  const { ChatSessionService } = load(`${base}services/ai/ChatSessionService.ets`, {
-    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
-  });
-  const service = ChatSessionService.getInstance(); await service.init({});
-  await assert.rejects(service.saveSession({ id: 'new', title: '', messages: [] }));
-  await assert.rejects(service.clearAll(), /原数据已保留|阻止覆盖/); assert.equal(f.values.get('sessions'), '{broken');
 });
 
 test('reader commits serialize autosave and exit, preserve PDF indexing, and publish only after persistence', async () => {
@@ -1268,221 +936,6 @@ test('reader commits re-read the library after file persistence and do not resur
   assert.equal(notes.length, 1); assert.equal(writes, 1);
 });
 
-
-const { RemoteAiPolicy } = load(`${base}services/ai/RemoteAiPolicy.ets`);
-const consentProfile = overrides => profile({ remoteConsentVersion: RemoteAiPolicy.VERSION,
-  remoteConsentEndpoint: 'https://example.com/v1', remoteConsentProtocol: 'openai-compat', remoteConsentedAt: 1, ...overrides });
-
-test('AI consent binds version, complete endpoint and protocol; HTTP and header injection are rejected', () => {
-  assert.doesNotThrow(() => RemoteAiPolicy.assertAllowed(consentProfile()));
-  for (const change of [{ remoteConsentVersion: undefined }, { remoteConsentVersion: 0 }, { remoteConsentedAt: 0 },
-    { baseUrl: 'https://other.example/v1' }, { baseUrl: 'https://example.com/v2' }, { protocol: 'gemini' },
-    { baseUrl: 'http://example.com/v1' }, { baseUrl: 'http://localhost.evil/v1' },
-    { baseUrl: 'http://127.0.0.1:11434/v1' }, { apiKey: 'key\r\nInjected: value' }, { credentialUnavailable: true }]) {
-    assert.throws(() => RemoteAiPolicy.assertAllowed(consentProfile(change)));
-  }
-  const local = consentProfile({ baseUrl: 'http://127.0.0.1:11434/v1', apiKey: '', remoteConsentEndpoint: 'http://127.0.0.1:11434/v1' });
-  assert.doesNotThrow(() => RemoteAiPolicy.assertAllowed(local));
-});
-
-function modelFixture(initial = [profile()], changes = {}) {
-  const values = new Map([['profiles', JSON.stringify(initial)], ['activeProfileId', initial[0]?.id || '']]);
-  const secrets = new Map(); const publications = []; let counter = 0;
-  for (const p of initial) if (p.credentialRef) secrets.set(p.credentialRef, { id: p.id, key: 'original-key' });
-  const state = { failFlush: false, failEncrypt: false, ...changes };
-  const prefs = { get: async (k, fallback) => values.get(k) ?? fallback, put: async (k, v) => values.set(k, v),
-    flush: async () => { if (state.failFlush) throw Error('disk full'); } };
-  class Credentials {
-    async init() {}
-    async write(id, key) {
-      if (state.failEncrypt) throw Error('keystore unavailable');
-      const ref = `key_${(++counter + 100).toString(16).padStart(24, '0')}`;
-      secrets.set(ref, { id, key }); return ref;
-    }
-    async read(id, ref) { const value = secrets.get(ref); if (!value || value.id !== id) throw Error('missing key'); return value.key; }
-    async remove(ref) { secrets.delete(ref); }
-    async clear() { secrets.clear(); }
-  }
-  const { ModelConfigService } = load(`${base}services/ai/ModelConfigService.ets`, {
-    '@kit.ArkData': { preferences: { getPreferences: async () => prefs } },
-    [path.resolve(root, `${base}services/ai/HuksCredentialStore.ets`)]: { HuksCredentialStore: Credentials },
-    AppStorage: { setOrCreate: (k, v) => publications.push([k, v]) }
-  });
-  return { service: ModelConfigService.getInstance(), values, secrets, publications, state };
-}
-
-test('legacy key migration encrypts before commit and no key appears in model metadata', async () => {
-  const f = modelFixture(); await f.service.init({});
-  const loaded = await f.service.loadProfiles(); assert.equal(loaded[0].apiKey, 'test-key');
-  const stored = JSON.parse(f.values.get('profiles'));
-  assert.equal(stored[0].apiKey, ''); assert.ok(stored[0].credentialRef); assert.equal(f.values.get('profiles').includes('test-key'), false);
-  assert.equal((await f.service.getActiveProfile()).apiKey, 'test-key');
-  assert.equal(f.publications.length, 0);
-});
-
-for (const failure of ['failFlush', 'failEncrypt']) test(`legacy migration preserves raw data when ${failure}`, async () => {
-  const f = modelFixture(undefined, { [failure]: true }); await f.service.init({});
-  const raw = f.values.get('profiles'); await assert.rejects(f.service.loadProfiles());
-  assert.equal(f.values.get('profiles'), raw); assert.equal(f.secrets.size, 0);
-  f.state[failure] = false; assert.equal((await f.service.loadProfiles())[0].apiKey, 'test-key');
-});
-
-test('key replacement flush failure keeps the old key and activation; successful deletion removes the reference', async () => {
-  const f = modelFixture([profile({ apiKey: '', credentialRef: 'key_000000000000000000000001' }), profile({ id: 'other', apiKey: '' })]);
-  await f.service.init({}); f.state.failFlush = true;
-  await assert.rejects(f.service.saveAndActivate(profile({ apiKey: 'replacement-key' })));
-  assert.equal((await f.service.getActiveProfile()).apiKey, 'original-key'); assert.equal(f.secrets.size, 1);
-  assert.equal(f.publications.length, 0); f.state.failFlush = false;
-  await f.service.saveAndActivate(profile({ apiKey: 'replacement-key' }));
-  assert.equal((await f.service.getActiveProfile()).apiKey, 'replacement-key'); assert.equal(f.secrets.size, 1);
-  await f.service.deleteProfile('study'); assert.equal(f.secrets.size, 0); assert.equal(await f.service.getActiveProfileId(), 'other');
-});
-
-test('unreadable device key is visible and retained when saving unrelated settings', async () => {
-  const f = modelFixture([profile({ apiKey: '', credentialRef: 'key_000000000000000000000001' })]); await f.service.init({}); f.secrets.clear();
-  const p = await f.service.getActiveProfile(); assert.equal(p.credentialUnavailable, true);
-  await f.service.saveAndActivate({ ...p, label: 'renamed' });
-  const stored = JSON.parse(f.values.get('profiles'))[0]; assert.equal(stored.credentialRef, 'key_000000000000000000000001');
-  assert.equal(stored.apiKey, ''); assert.equal(stored.credentialUnavailable, undefined);
-});
-
-test('concurrent model saves retain both profiles; corrupt metadata never becomes a default overwrite', async () => {
-  const f = modelFixture(); await f.service.init({});
-  await Promise.all([f.service.upsertProfile(profile({ id: 'a' })), f.service.upsertProfile(profile({ id: 'b' }))]);
-  assert.deepEqual(plain((await f.service.loadProfiles()).map(p => p.id)).sort(), ['a', 'b', 'study']);
-  const bad = modelFixture(); await bad.service.init({}); bad.values.set('profiles', '{broken');
-  await assert.rejects(bad.service.loadProfiles()); await assert.rejects(bad.service.upsertProfile(profile()));
-  assert.equal(bad.values.get('profiles'), '{broken');
-});
-
-function huksFixture() {
-  const values = new Map(); const sessions = new Map(); const key = randomBytes(32); let generated = false; let handle = 0;
-  const tags = { HUKS_TAG_ALGORITHM: 1, HUKS_TAG_PURPOSE: 2, HUKS_TAG_KEY_SIZE: 3, HUKS_TAG_BLOCK_MODE: 4,
-    HUKS_TAG_PADDING: 5, HUKS_TAG_NONCE: 6, HUKS_TAG_ASSOCIATED_DATA: 7, HUKS_TAG_AE_TAG: 8 };
-  const huks = { HuksTag: tags, HuksKeyAlg: { HUKS_ALG_AES: 1 }, HuksKeyPurpose: { HUKS_KEY_PURPOSE_ENCRYPT: 1, HUKS_KEY_PURPOSE_DECRYPT: 2 },
-    HuksKeySize: { HUKS_AES_KEY_SIZE_256: 256 }, HuksCipherMode: { HUKS_MODE_GCM: 32 }, HuksKeyPadding: { HUKS_PADDING_NONE: 0 },
-    isKeyItemExist: async () => generated, generateKeyItem: async () => { generated = true; },
-    initSession: async (_, options) => { const id = ++handle; sessions.set(id, options); return { handle: id }; },
-    finishSession: async (id, options) => {
-      const props = new Map(options.properties.map(p => [p.tag, p.value])); const nonce = Buffer.from(props.get(tags.HUKS_TAG_NONCE));
-      const encrypt = props.get(tags.HUKS_TAG_PURPOSE) === 1;
-      const cipher = encrypt ? createCipheriv('aes-256-gcm', key, nonce) : createDecipheriv('aes-256-gcm', key, nonce);
-      cipher.setAAD(Buffer.from(props.get(tags.HUKS_TAG_ASSOCIATED_DATA)));
-      if (!encrypt) cipher.setAuthTag(Buffer.from(props.get(tags.HUKS_TAG_AE_TAG)));
-      const data = Buffer.concat([cipher.update(Buffer.from(options.inData)), cipher.final()]);
-      sessions.delete(id); return { outData: encrypt ? Buffer.concat([data, cipher.getAuthTag()]) : data };
-    }, abortSession: async id => { sessions.delete(id); } };
-  const prefs = { get: async (k, fallback) => values.get(k) ?? fallback, put: async (k,v) => values.set(k,v), flush: async () => {} };
-  const { HuksCredentialStore } = load(`${base}services/ai/HuksCredentialStore.ets`, {
-    '@kit.ArkData': { preferences: { getPreferences: async () => prefs } }, '@kit.UniversalKeystoreKit': { huks },
-    '@kit.CryptoArchitectureKit': { cryptoFramework: { createRandom: () => ({ generateRandom: async n => ({ data: randomBytes(n) }) }) } },
-    '@kit.ArkTS': { util: { TextEncoder: class { encodeInto(text) { return new TextEncoder().encode(text); } }, TextDecoder } }
-  });
-  return { store: new HuksCredentialStore(), values, sessions };
-}
-
-test('HUKS adapter supplies nonce, AAD and GCM tag; tampering or cross-profile use fails without plaintext fallback', async () => {
-  const f = huksFixture(); await f.store.init({});
-  const ref = await f.store.write('study', 'secret-密钥'); assert.equal(await f.store.read('study', ref), 'secret-密钥');
-  assert.ok(!f.values.get(ref).includes('secret')); await assert.rejects(f.store.read('other', ref));
-  const packet = JSON.parse(f.values.get(ref)); packet.cipher = `${packet.cipher[0] === '0' ? '1' : '0'}${packet.cipher.slice(1)}`;
-  f.values.set(ref, JSON.stringify(packet)); await assert.rejects(f.store.read('study', ref)); assert.equal(f.sessions.size, 0);
-});
-
-for (const protocol of ['openai-compat', 'gemini', 'anthropic']) test(`${protocol} rejects unapproved chat and connection tests before HTTP creation`, async () => {
-  let creations = 0;
-  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
-    '@kit.NetworkKit': { http: { createHttp: () => { creations++; throw Error('unexpected network'); } } }, '@kit.ArkTS': { util: {} }
-  });
-  const p = profile({ protocol }); const provider = createProvider(protocol);
-  await assert.rejects(provider.complete(p, { messages: [] }));
-  await assert.rejects(provider.completeStream(p, { messages: [] }, () => {}));
-  assert.equal((await provider.testConnection(p)).ok, false); assert.equal(creations, 0);
-});
-
-for (const protocol of ['openai-compat', 'gemini']) test(`${protocol} rejects unapproved embeddings before HTTP creation`, async () => {
-  let creations = 0;
-  const { createEmbeddingProvider } = load(`${base}services/ai/EmbeddingProvider.ets`, {
-    '@kit.NetworkKit': { http: { createHttp: () => { creations++; throw Error('unexpected network'); } } }
-  });
-  await assert.rejects(createEmbeddingProvider(protocol).embed(profile({ protocol }), ['private notes'])); assert.equal(creations, 0);
-});
-
-for (const protocol of ['openai-compat', 'gemini', 'anthropic']) test(`${protocol} disables redirects and destroys non-stream HTTP resources on failure`, async () => {
-  let destroyed = 0; const requests = [];
-  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
-    '@kit.NetworkKit': { http: { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 0 },
-      createHttp: () => ({ request: async (url, options) => { requests.push(options); return { responseCode: 401, result: 'private echoed-key' }; }, destroy: () => destroyed++ }) } },
-    '@kit.ArkTS': { util: {} }
-  });
-  const p = consentProfile({ protocol, remoteConsentProtocol: protocol });
-  await assert.rejects(createProvider(protocol).complete(p, { messages: [] }), error => !error.message.includes('echoed-key'));
-  assert.equal(requests[0].maxRedirects, 0); assert.equal(destroyed, 1);
-});
-
-
-test('removing one key preserves other profile keys; all legacy keys can be removed with HUKS unavailable', async () => {
-  const f = modelFixture([profile({apiKey:'',credentialRef:'key_000000000000000000000001'}),
-    profile({id:'other',apiKey:'',credentialRef:'key_000000000000000000000002'})]);
-  await f.service.init({}); await f.service.clearCredentials('study');
-  const profiles = await f.service.loadProfiles(); assert.equal(profiles[0].apiKey,''); assert.equal(profiles[1].apiKey,'original-key');
-  assert.equal(f.secrets.size,1); assert.equal(profiles[0].remoteConsentVersion,undefined);
-  const legacy = modelFixture([consentProfile(),consentProfile({id:'other'})],{failEncrypt:true});
-  await legacy.service.init({}); await legacy.service.clearCredentials();
-  assert.equal(legacy.values.get('profiles').includes('test-key'),false);
-  assert.ok((await legacy.service.loadProfiles()).every(p=>!p.apiKey && !p.remoteConsentVersion));
-});
-
-for (const protocol of ['openai-compat','gemini','anthropic']) test(`${protocol} streams UTF-8 across byte boundaries and closes once without callbacks after abort`, async () => {
-  const events = new Map(); let resolveStatus; let destroyed=0; const chunks=[];
-  const client = {on:(event,callback)=>events.set(event,callback),destroy:()=>destroyed++,
-    requestInStream:()=>new Promise(resolve=>{resolveStatus=resolve;})};
-  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
-    '@kit.NetworkKit':{http:{createHttp:()=>client,RequestMethod:{POST:'POST'},HttpDataType:{ARRAY_BUFFER:1}}},
-    '@kit.ArkTS':{util:{TextDecoder:{create:()=>{const d=new TextDecoder();return {decodeToString:(bytes,options)=>d.decode(bytes,options)};}}}}
-  });
-  const p=consentProfile({protocol,remoteConsentProtocol:protocol});
-  const handle = await createProvider(protocol).completeStream(p,{messages:[]},chunk=>chunks.push(chunk));
-  const text = protocol==='openai-compat' ? 'data: {"choices":[{"delta":{"content":"中文😀"},"finish_reason":"stop"}]}' :
-    protocol==='gemini' ? 'data: {"candidates":[{"content":{"parts":[{"text":"中文😀"}]},"finishReason":"STOP"}]}' :
-    'data: {"type":"content_block_delta","delta":{"text":"中文😀"}}\ndata: {"type":"message_stop"}';
-  const bytes=new TextEncoder().encode(text); resolveStatus(200); await Promise.resolve();
-  for(const byte of bytes) events.get('dataReceive')(Uint8Array.of(byte).buffer);
-  await events.get('dataEnd')();
-  assert.equal(chunks.filter(c=>!c.done).map(c=>c.delta).join(''),'中文😀'); assert.equal(chunks.filter(c=>c.done).length,1); assert.equal(destroyed,1);
-  const count=chunks.length;handle.abort();events.get('dataReceive')(new TextEncoder().encode('data: {}\n').buffer);
-  assert.equal(chunks.length,count);assert.equal(destroyed,1);
-});
-
-test('notice rejection is recorded without authorizing remote AI, and a corrupt receipt can be replaced',async()=>{
-  const values=new Map([['notice','{broken']]);
-  const prefs={get:async(k,fallback)=>values.get(k)??fallback,put:async(k,v)=>values.set(k,v),flush:async()=>{}};
-  const { PrivacyNoticeService }=load(`${base}services/PrivacyNoticeService.ets`,{'@kit.ArkData':{preferences:{getPreferences:async()=>prefs}}});
-  const service=new PrivacyNoticeService();assert.equal(await service.shown({}),false);await service.choose({},false);
-  assert.equal(await service.shown({}),true);assert.equal(JSON.parse(values.get('notice')).agree,false);
-  assert.throws(()=>RemoteAiPolicy.assertAllowed(profile()));
-});
-
-
-test('explicit model reset recovers corrupt metadata; failed reset preserves the original snapshot', async () => {
-  const f=modelFixture();await f.service.init({});f.values.set('profiles','{broken');await assert.rejects(f.service.loadProfiles());
-  f.state.failFlush=true;await assert.rejects(f.service.resetProfiles());assert.equal(f.values.get('profiles'),'{broken');
-  f.state.failFlush=false;await f.service.resetProfiles();const profiles=await f.service.loadProfiles();
-  assert.equal(profiles.length,1);assert.equal(profiles[0].apiKey,'');assert.equal(profiles[0].remoteConsentVersion,undefined);
-  assert.equal(await f.service.getActiveProfileId(),profiles[0].id);
-});
-
-
-test('SSE transport releases client when SDK request startup throws synchronously',async()=>{
-  let destroyed=0;const chunks=[];
-  const { createProvider }=load(`${base}services/ai/ModelProvider.ets`,{
-    '@kit.NetworkKit':{http:{createHttp:()=>({on(){},destroy(){destroyed++;},requestInStream(){throw Error('SDK unavailable');}}),RequestMethod:{POST:'POST'},HttpDataType:{ARRAY_BUFFER:1}}},
-    '@kit.ArkTS':{util:{TextDecoder:{create:()=>({decodeToString:()=>''})}}}
-  });
-  const handle=await createProvider('gemini').completeStream(consentProfile({protocol:'gemini',remoteConsentProtocol:'gemini'}),{messages:[]},c=>chunks.push(c));
-  assert.equal(destroyed,1);assert.equal(chunks.length,1);assert.ok(chunks[0].error);handle.abort();assert.equal(destroyed,1);
-});
-
 const { AiModelCatalog } = load('tools/fixtures/AiModelCatalog.ets');
 test('cloud directory stays unavailable and editing returned rows cannot alter its templates', () => {
   assert.equal(AiModelCatalog.CLOUD_AVAILABLE, false);
@@ -1493,177 +946,7 @@ test('cloud directory stays unavailable and editing returned rows cannot alter i
   assert.equal(AiModelCatalog.list('unknown').length, 0);
   assert.equal(AiModelCatalog.createApiDraft('unknown'), null);
 });
-
-test('catalog API drafts have unique identity, no key or consent, and require explicit user setup', () => {
-  for (const entry of AiModelCatalog.list()) {
-    const p = AiModelCatalog.createApiDraft(entry.id), other = AiModelCatalog.createApiDraft(entry.id);
-    assert.notEqual(p.id, other.id); assert.equal(p.apiKey, '');
-    assert.equal(p.credentialRef, undefined); assert.equal(p.remoteConsentVersion, undefined);
-    assert.equal(p.semanticSearch, false); assert.equal(p.protocol, 'openai-compat');
-    assert.notEqual(ModelProfilePolicy.validate(p), '');
-    assert.throws(() => RemoteAiPolicy.assertAllowed(p), /授权/);
-  }
-});
-
-for (const entry of AiModelCatalog.list()) test(`catalog ${entry.name} uses its exact compatible chat endpoint after consent`, async () => {
-  const requests = []; let destroyed = 0;
-  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
-    '@kit.NetworkKit': { http: { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 0 }, createHttp: () => ({
-      request: async (url, options) => { requests.push({url,options}); return { responseCode: 200, result: JSON.stringify({ choices: [{message:{content:'mock reply'}}] }) }; },
-      destroy: () => destroyed++ }) } }, '@kit.ArkTS': { util: {} }
-  });
-  const draft = AiModelCatalog.createApiDraft(entry.id);
-  draft.apiKey = 'test-key'; draft.remoteConsentVersion = RemoteAiPolicy.VERSION;
-  draft.remoteConsentEndpoint = draft.baseUrl; draft.remoteConsentProtocol = draft.protocol; draft.remoteConsentedAt = Date.now();
-  assert.equal(ModelProfilePolicy.validate(draft), '');
-  assert.equal(await createProvider(draft.protocol).complete(draft, {messages:[{role:'user',content:'test'}]}), 'mock reply');
-  assert.equal(requests[0].url, entry.apiEndpoint.endsWith('/chat/completions') ? entry.apiEndpoint : `${entry.apiEndpoint}/chat/completions`);
-  assert.equal(JSON.parse(requests[0].options.extraData).model, entry.modelId);
-  assert.equal(requests[0].options.maxRedirects, 0); assert.equal(destroyed, 1);
-});
-
-test('loopback template requires an installed model ID and never sends an empty bearer header', async () => {
-  const { getPresetTemplates } = load(`${base}common/types/ModelConfig.ets`);
-  const draft = getPresetTemplates().find(p => p.profile.baseUrl.startsWith('http://127.0.0.1')).profile;
-  assert.equal(draft.apiKey, ''); assert.equal(draft.modelId, ''); assert.notEqual(ModelProfilePolicy.validate(draft), '');
-  draft.modelId = 'installed-test-model'; assert.equal(ModelProfilePolicy.validate(draft), '');
-  draft.remoteConsentVersion = RemoteAiPolicy.VERSION; draft.remoteConsentEndpoint = draft.baseUrl;
-  draft.remoteConsentProtocol = draft.protocol; draft.remoteConsentedAt = Date.now();
-  let headers;
-  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
-    '@kit.NetworkKit': { http: { RequestMethod: { POST:'POST' }, HttpDataType: { STRING:0 }, createHttp: () => ({
-      request: async (_, options) => { headers = options.header; return {responseCode:200,result:'{"choices":[{"message":{"content":"ok"}}]}'}; }, destroy() {} }) } },
-    '@kit.ArkTS': { util:{} }
-  });
-  await createProvider(draft.protocol).complete(draft, {messages:[]}); assert.equal(headers.Authorization, undefined);
-});
-
-test('message replacement captures input, preserves pinned metadata and never revives a deleted session', async () => {
-  const f = preferenceFixture();
-  const { ChatSessionService } = load(`${base}services/ai/ChatSessionService.ets`, {
-    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
-  });
-  const service = ChatSessionService.getInstance(); await service.init({});
-  const session = { id:'study',title:'课程',pinned:true,agentMode:'L1',createdAt:1,updatedAt:1,messages:[] };
-  await service.saveSession(session);
-  const messages = [{id:'q',role:'user',text:'原输入',createdAt:2}];
-  const running = service.replaceMessages('study', messages); messages[0].text = '后续更改';
-  const saved = await running; assert.equal(saved.messages[0].text, '原输入');
-  assert.equal(saved.title, '课程'); assert.equal(saved.pinned, true); assert.equal(saved.agentMode, 'L1');
-  await service.deleteSession('study'); await assert.rejects(service.replaceMessages('study', []), /删除/);
-  assert.equal((await service.loadSessions()).length, 0);
-});
-
-test('failed message replacement preserves the original conversation and remains retryable', async () => {
-  const f = preferenceFixture();
-  const { ChatSessionService } = load(`${base}services/ai/ChatSessionService.ets`, {
-    '@kit.ArkData': { preferences: { getPreferences: async () => f.prefs } }
-  });
-  const service = ChatSessionService.getInstance(); await service.init({});
-  await service.saveSession({id:'study',title:'课程',createdAt:1,updatedAt:1,messages:[{id:'q',role:'user',text:'原文',createdAt:1}]});
-  f.fail(true); await assert.rejects(service.replaceMessages('study', []));
-  assert.equal((await service.loadSessions())[0].messages[0].text, '原文');
-  f.fail(false); await service.replaceMessages('study', []); assert.equal((await service.loadSessions())[0].messages.length, 0);
-});
-
-function compatibleStreamFixture(timers = {}) {
-  const events = new Map(), chunks = []; let resolveStatus, destroyed = 0;
-  const { createProvider } = load(`${base}services/ai/ModelProvider.ets`, {
-    ...timers,
-    '@kit.NetworkKit': { http: { RequestMethod:{POST:'POST'},HttpDataType:{ARRAY_BUFFER:1},createHttp:()=>({
-      on:(event,callback)=>events.set(event,callback),destroy:()=>destroyed++,requestInStream:()=>new Promise(resolve=>{resolveStatus=resolve;}) }) } },
-    '@kit.ArkTS': { util: { TextDecoder:{create:()=>{const d=new TextDecoder();return {decodeToString:(bytes,options)=>d.decode(bytes,options)};}} } }
-  });
-  return { events,chunks,provider:createProvider('openai-compat'),status:code=>resolveStatus(code),destroyed:()=>destroyed,
-    receive:text=>events.get('dataReceive')(new TextEncoder().encode(text).buffer) };
-}
-
-test('compatible streaming preserves reasoning and tool fragments and emits one terminal result', async () => {
-  const f=compatibleStreamFixture(); await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));
-  f.status(200);await Promise.resolve();
-  for (const delta of [{reasoning_content:'推理'}, {tool_calls:[{index:0,id:'call_a',function:{name:'create_todo',arguments:'{"title":'}}]},
-    {tool_calls:[{index:0,function:{arguments:'"复习"}'}}]}]) f.receive(`data: ${JSON.stringify({choices:[{delta,finish_reason:null}]})}\n`);
-  f.receive('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\ndata: [DONE]\n');await f.events.get('dataEnd')();
-  assert.equal(f.chunks.filter(c=>c.done).length,1);assert.equal(f.chunks.at(-1).finishReason,'tool_calls');
-  assert.equal(f.chunks.find(c=>c.reasoningDelta).reasoningDelta,'推理');
-  assert.equal(f.chunks.filter(c=>c.toolCall).map(c=>c.toolCall.argumentsFragment).join(''),'{"title":"复习"}');assert.equal(f.destroyed(),1);
-});
-
-test('compatible stream buffers early data until status and never treats HTTP failure as an answer', async () => {
-  const f=compatibleStreamFixture();await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));
-  f.receive('data: {"choices":[{"delta":{"content":"private server data"},"finish_reason":null}]}\n');
-  assert.equal(f.chunks.length,0);f.status(401);await Promise.resolve();await f.events.get('dataEnd')();
-  assert.equal(f.chunks.length,1);assert.ok(f.chunks[0].error.includes('401'));
-  assert.ok(!JSON.stringify(f.chunks).includes('private server data'));assert.equal(f.destroyed(),1);
-});
-
-test('compatible stream provider errors and cancellation close exactly once without leaking payload', async () => {
-  const f=compatibleStreamFixture();await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));
-  f.status(200);await Promise.resolve();f.receive('data: {"error":{"message":"echoed secret"}}\n');await f.events.get('dataEnd')();
-  assert.equal(f.chunks.length,1);assert.ok(f.chunks[0].error);assert.ok(!f.chunks[0].error.includes('secret'));assert.equal(f.destroyed(),1);
-  const cancelled=compatibleStreamFixture();const handle=await cancelled.provider.completeStream(consentProfile(),{messages:[]},c=>cancelled.chunks.push(c));
-  handle.abort();cancelled.status(200);await cancelled.events.get('dataEnd')();
-  cancelled.receive('data: {"choices":[{"delta":{"content":"late"}}]}\n');assert.equal(cancelled.chunks.length,0);assert.equal(cancelled.destroyed(),1);
-});
-
-test('explicit model formatting can use a keyless loopback service while the default still performs no model request', async () => {
-  const { service, calls } = extractService({ baseUrl: 'http://127.0.0.1:11434/v1', response: '{"title":"课程","formattedMarkdown":"# 课程\\n\\n正文"}' });
-  await service.extract(source); assert.equal(calls.length, 0);
-  const result = await service.extract(source, '课程', 'faithful', true);
-  assert.equal(result.processingMode, 'ai'); assert.equal(calls.length, 1);
-});
-
-const { LocalAssistantService } = load(`${base}services/ai/LocalAssistantService.ets`);
 const localContext = (notes = [], pinned = []) => ({ notes, pinned, todos: [] });
-test('offline assistant works with an empty workspace without any platform or network dependency', async () => {
-  const result = await new LocalAssistantService().answer('提取要点', localContext());
-  assert.match(result.text, /新建笔记|导入资料/); assert.equal(result.citations.length, 0);
-});
-test('Chinese natural questions find exact original text and source lines without whitespace', async () => {
-  const notes = [studyNote({ id:'os',title:'操作系统',contentDetail:'# 课程\n\n## 死锁条件\n\n死锁需要互斥、占有等待、不可剥夺和循环等待。' }),
-    studyNote({ id:'math',title:'数学',contentDetail:'# 数学\n\n三角函数周期为 2π。' })];
-  const before = JSON.stringify(notes);
-  const result = await new LocalAssistantService().answer('请问死锁有哪些条件？', localContext(notes));
-  assert.match(result.text, /不可剥夺/); assert.equal(result.citations[0].noteId, 'os');
-  assert.equal(result.citations[0].startLine, 5); assert.equal(JSON.stringify(notes), before);
-  assert.ok(!result.text.includes('三角函数'));
-});
-test('local attachments constrain extraction and unmatched questions give a usable next step', async () => {
-  const os = studyNote({id:'os',title:'操作系统',contentDetail:'# 课程\n\n死锁需要互斥。'});
-  const math = studyNote({id:'math',title:'数学',contentDetail:'# 数学\n\n圆周率约为 3.14。'});
-  const assistant = new LocalAssistantService();
-  const result = await assistant.answer('提取要点', localContext([os, math], [math]));
-  assert.match(result.text, /3\.14/); assert.ok(result.citations.every(c=>c.noteId==='math'));
-  assert.match((await assistant.answer('死锁', localContext([os,math],[math]))).text, /未找到/);
-});
-test('offline PDF retrieval cites the actual extracted page and does not treat file metadata as content', async () => {
-  const note = studyNote({ id:'pdf',type:'PDF',sourceType:'pdf',pageCount:4,
-    contentDetail:'# PDF\n\n已导入文件',pdfTextJson:JSON.stringify([{pageNumber:3,text:'银行家算法通过安全序列判断分配。',method:'text',extractedAt:1}]) });
-  const assistant = new LocalAssistantService();
-  const result = await assistant.answer('银行家算法',localContext([note]));
-  assert.equal(result.citations[0].pageNumber,3); assert.match(result.text,/安全序列/);
-  note.pdfTextJson='[]'; assert.match((await assistant.answer('提取要点',localContext([note]))).text,/提取并校对/);
-});
-test('offline task extraction preserves explicit tasks without creating or guessing deadlines', async () => {
-  const notes = [studyNote({contentDetail:'# 通知\n\n- [ ] 2026年10月12日前提交报告\n- [x] 已完成报名'})];
-  const result = await new LocalAssistantService().answer('整理待办',localContext(notes));
-  assert.match(result.text,/提交报告/); assert.ok(!result.text.includes('已完成报名')); assert.match(result.text,/未自动创建/);
-});
-test('local scanning yields for cancellation and never returns a late answer', async () => {
-  const result = await new LocalAssistantService().answer('提取要点',localContext([studyNote()]),()=>true);
-  assert.equal(result.text,''); assert.equal(result.citations.length,0);
-});
-test('local mode is the persisted default and a failed switch never enables remote use', async () => {
-  const values = new Map(); const app = new Map(); let fail=false;
-  const { AssistantModeService, ASSISTANT_MODE_KEY } = load(`${base}services/ai/AssistantModeService.ets`, {
-    '@kit.ArkData':{preferences:{getPreferences:async()=>({get:async(k,d)=>values.get(k)??d,put:async(k,v)=>values.set(k,v),flush:async()=>{if(fail)throw Error('disk');}})}},
-    AppStorage:{setOrCreate:(k,v)=>app.set(k,v)}
-  });
-  const service=AssistantModeService.getInstance(); await service.init({}); assert.equal(app.get(ASSISTANT_MODE_KEY),'local');
-  fail=true;await assert.rejects(service.setMode('remote'));assert.equal(app.get(ASSISTANT_MODE_KEY),'local');assert.equal(values.get('mode'),'local');
-  fail=false;await service.setMode('remote');assert.equal(app.get(ASSISTANT_MODE_KEY),'remote');
-  await service.setMode('local');assert.equal(values.get('mode'),'local');
-});
 
 const penEnums = { SourceTool:{Unknown:0,Finger:1,Pen:2,MOUSE:3,TOUCHPAD:4},TouchType:{Down:0,Up:1,Move:2,Cancel:3} };
 const { InkInputService } = load(`${base}services/ink/InkInputService.ets`,penEnums);
@@ -1749,16 +1032,6 @@ function fakeTimers() {
   return {jobs,setTimeout:(fn,delay)=>{jobs.set(++id,{fn,delay});return id;},clearTimeout:key=>jobs.delete(key),
     fire:delay=>{const entry=[...jobs].find(([,value])=>value.delay===delay);assert.ok(entry,`timer ${delay}`);jobs.delete(entry[0]);entry[1].fn();}};
 }
-test('silent streams and interrupted streams end with actionable errors and clear all timers', async () => {
-  for(const timeout of [45000,30000,180000]) {
-    const timers=fakeTimers(),f=compatibleStreamFixture(timers);
-    await f.provider.completeStream(consentProfile(),{messages:[]},c=>f.chunks.push(c));f.status(200);await Promise.resolve();
-    if(timeout===30000)f.receive('data: {"choices":[{"delta":{"content":"部分答案"},"finish_reason":null}]}\n');
-    timers.fire(timeout);assert.equal(f.destroyed(),1);assert.ok(f.chunks.at(-1).done);assert.ok(f.chunks.at(-1).error);
-    assert.equal(timers.jobs.size,0);f.receive('data: {"choices":[{"delta":{"content":"late"}}]}\n');
-    assert.equal(f.chunks.filter(c=>c.done).length,1);
-  }
-});
 
 function viewMethod(relative,name,globals={}) {
   const source=fs.readFileSync(path.join(root,base,relative),'utf8').replaceAll('\r\n','\n');
@@ -1782,64 +1055,6 @@ test('actual note creation preserves the requested type, awaits both writes and 
   assert.equal(view.notes,before);assert.equal(view.noteCreateBusy,false);assert.match(view.noteCreateError,/创建失败/);
 });
 
-test('assistant defaults to offline and persists only the mode explicitly selected by the user', async () => {
-  const values=new Map();const app=new Map();
-  const {AssistantModeService,ASSISTANT_MODE_KEY}=load(`${base}services/ai/AssistantModeService.ets`,{
-    BuildProfile:{DEBUG:false},AppStorage:{setOrCreate:(key,value)=>app.set(key,value)},
-    '@kit.ArkData':{preferences:{getPreferences:async()=>({get:async(k,d)=>values.get(k)??d,put:async(k,v)=>values.set(k,v),flush:async()=>{}})}}
-  });
-  const service=AssistantModeService.getInstance();await service.init({});assert.equal(app.get(ASSISTANT_MODE_KEY),'local');
-  await service.setMode('remote');assert.equal(app.get(ASSISTANT_MODE_KEY),'remote');assert.equal(values.get('mode'),'remote');
-  await service.setMode('local');assert.equal(app.get(ASSISTANT_MODE_KEY),'local');assert.equal(values.get('mode'),'local');
-});
-
-test('unconfigured release blocks chat, connection tests and embeddings before any network client is created', async () => {
-  let creations=0;const mocks={BuildProfile:{DEBUG:false},'@kit.NetworkKit':{http:{createHttp:()=>{creations++;throw Error('network');}}},'@kit.ArkTS':{util:{}}};
-  const {createProvider}=load(`${base}services/ai/ModelProvider.ets`,mocks);
-  const {createEmbeddingProvider}=load(`${base}services/ai/EmbeddingProvider.ets`,mocks);
-  for(const protocol of ['openai-compat','gemini','anthropic']) {
-    const p=consentProfile({protocol,remoteConsentProtocol:protocol,remoteConsentVersion:undefined});const provider=createProvider(protocol);
-    await assert.rejects(provider.complete(p,{messages:[]}),/授权/);
-    await assert.rejects(provider.completeStream(p,{messages:[]},()=>{}),/授权/);
-    assert.equal((await provider.testConnection(p)).ok,false);
-    if(protocol!=='anthropic')await assert.rejects(createEmbeddingProvider(protocol).embed(p,['正文']),/授权/);
-  }
-  assert.equal(creations,0);
-});
-
-test('stream cancellation settles immediately and aborts a handle that arrives after stopping', async () => {
-  let callback,releaseHandle,control,aborts=0;const deltas=[];
-  const f=orchestratorFixture({},[],{completeStream:(_,request,onChunk)=>{callback=onChunk;return new Promise(resolve=>{releaseHandle=resolve;});}});
-  const running=f.orchestrator.run('L3',{query:'总结',history:[],profile:f.configured},text=>deltas.push(text),handle=>{control=handle;});
-  const stopped=assert.rejects(running,/停止/);control.abort();await stopped;
-  callback({delta:'晚到内容',done:true});releaseHandle({abort:()=>aborts++});await Promise.resolve();await Promise.resolve();
-  assert.equal(deltas.length,0);assert.equal(aborts,1);
-});
-
-test('nonstream cancellation and deadlines abort the transport and ignore late answers', async () => {
-  for(const timeout of [false,true]) {
-    const timers=fakeTimers();let resolveAnswer,control,aborts=0;const deltas=[];
-    const f=orchestratorFixture({stream:false},[],{complete:(_,request,onHandle)=>{
-      onHandle({abort:()=>aborts++});return new Promise(resolve=>{resolveAnswer=resolve;});
-    }},timers);
-    const running=f.orchestrator.run('L3',{query:'总结',history:[],profile:f.configured},text=>deltas.push(text),handle=>{control=handle;});
-    const ended=assert.rejects(running,timeout?/响应/:/停止/);if(timeout)timers.fire(60000);else control.abort();await ended;
-    resolveAnswer('晚到内容');await Promise.resolve();await Promise.resolve();
-    assert.equal(aborts,1);assert.equal(deltas.length,0);assert.equal(timers.jobs.size,0);
-  }
-});
-
-test('each nonstream adapter exposes cancellation before sending and destroys the client once', async () => {
-  for(const protocol of ['openai-compat','gemini','anthropic']) {
-    let requests=0,destroyed=0;const {createProvider}=load(`${base}services/ai/ModelProvider.ets`,{
-      '@kit.NetworkKit':{http:{createHttp:()=>({request:async()=>{requests++;},destroy:()=>destroyed++})}},'@kit.ArkTS':{util:{}}
-    });
-    const p=consentProfile({protocol,remoteConsentProtocol:protocol});
-    await assert.rejects(createProvider(protocol).complete(p,{messages:[]},handle=>handle.abort()),/取消|停止/);
-    assert.equal(requests,0);assert.equal(destroyed,1);
-  }
-});
-
 function pdfHistoryView() {
   const relative='views/reader/pdf/PdfAnnotatorView.ets';let saved=0;
   const view={pageStrokes:{0:[]},undoStack:[],redoStack:[],eraseBefore:null,erasePage:-1,eraserWidth:20,currentPageIdx:0,scheduleSave:()=>saved++,activeInputFinisher:null,activeInputPage:-1};
@@ -1850,8 +1065,6 @@ function pdfHistoryView() {
 
 const { CanvasStrokeEraser } = load(`${base}services/ink/CanvasStrokeEraser.ets`);
 const { InkToolPolicy } = load(`${base}services/ink/InkToolPolicy.ets`);
-const { AiReferenceSearch } = load(`${base}services/ai/AiReferenceSearch.ets`);
-const { CompanionSourcePolicy } = load(`${base}services/ai/CompanionSourcePolicy.ets`);
 
 test('tool size bounds clamp invalid input without confusing pen, highlighter and eraser', () => {
   for (const [tool, min, max] of [['pen', 1, 16], ['highlighter', 6, 32], ['eraser', 8, 64]]) {
@@ -1922,125 +1135,6 @@ test('PDF eraser size scales with the displayed page and respects configured rad
   }
 });
 
-test('reference search finds metadata and actual body text while excluding deleted and already selected notes', () => {
-  const notes = [studyNote({ id: 'a', title: '算法', category: '计算机', tags: ['复习'], contentDetail: '二分搜索的边界条件' }),
-    studyNote({ id: 'b', title: '算法练习', deletedAt: 1 }), studyNote({ id: 'c', title: '算法另一份' })];
-  assert.deepEqual(plain(AiReferenceSearch.find(notes, '边界')).map(n => n.id), ['a']);
-  assert.deepEqual(plain(AiReferenceSearch.find(notes, '计算机 复习')).map(n => n.id), ['a']);
-  assert.deepEqual(plain(AiReferenceSearch.find(notes, '算法', ['c'])).map(n => n.id), ['a']);
-});
-
-test('scanned PDF reference search never indexes placeholder descriptions but accepts reviewed page text', () => {
-  const note = studyNote({ id: 'pdf', type: 'PDF', sourceType: 'pdf', pageCount: 2,
-    contentDetail: 'placeholder-keyword', pdfTextJson: JSON.stringify([{ pageNumber: 2, text: '真实光学实验记录', method: 'ocr', extractedAt: 1 }]) });
-  assert.equal(AiReferenceSearch.find([note], 'placeholder').length, 0);
-  assert.equal(AiReferenceSearch.find([note], '光学').length, 1);
-  assert.equal(AiReferenceSearch.find([note], '不存在').length, 0);
-});
-
-test('companion page scope sends only the requested reviewed page and never mutates the source note', () => {
-  const original = studyNote({ type: 'PDF', sourceType: 'pdf', pageCount: 3, contentDetail: 'PDF metadata',
-    pdfTextJson: JSON.stringify([{ pageNumber: 1, text: '第一页', method: 'text', extractedAt: 1 }, { pageNumber: 3, text: '第三页', method: 'ocr', extractedAt: 2 }]) });
-  const before = JSON.stringify(original);
-  const page = CompanionSourcePolicy.snapshot(original, 3, true);
-  assert.equal(page.contentDetail, ''); assert.equal(JSON.parse(page.pdfTextJson).length, 1);
-  assert.equal(JSON.parse(page.pdfTextJson)[0].pageNumber, 3); assert.ok(CompanionSourcePolicy.readable(page));
-  assert.equal(CompanionSourcePolicy.readable(CompanionSourcePolicy.snapshot(original, 2, true)), false);
-  assert.equal(JSON.parse(CompanionSourcePolicy.snapshot(original, 2, false).pdfTextJson).length, 2);
-  assert.equal(JSON.stringify(original), before);
-});
-
-test('companion blank whiteboard metadata is not treated as transcribed handwriting', () => {
-  const note = studyNote({ type: 'Handwriting', contentDetail: '# 新建白板' });
-  assert.equal(CompanionSourcePolicy.readable(CompanionSourcePolicy.snapshot(note, 1, true)), false);
-  const markdown = studyNote({ type: 'Markdown', contentDetail: '# 学习笔记\n正文' });
-  assert.equal(CompanionSourcePolicy.snapshot(markdown, 1, true).contentDetail, markdown.contentDetail);
-});
-
-test('saving ink metadata does not cancel companion answers but changing documents resets the thread', () => {
-  const changed = viewMethod('views/reader/huawei/HuaweiAiSplitPanel.ets', 'onNoteChanged', { COMPANION_CACHE: new Map([['new', ['saved conversation']]]) });
-  let cancelled = 0; const v = { note: { id: 'old' }, loadedNoteId: 'old', inputQuestion: 'draft', messages: ['current'], cancelStream: () => cancelled++ };
-  changed.call(v); assert.equal(cancelled, 0); assert.equal(v.inputQuestion, 'draft');
-  v.note = { id: 'new' }; changed.call(v); assert.equal(cancelled, 1); assert.equal(v.inputQuestion, '');
-  assert.deepEqual(v.messages, ['saved conversation']);
-});
-
-test('companion remote follow-ups include earlier turns and the actual captured page text', async () => {
-  let context;
-  const run = viewMethod('views/reader/huawei/HuaweiAiSplitPanel.ets', 'runL1', { REMOTE_AI_ENABLED: true, StudySourceService });
-  const note = studyNote({ type: 'PDF', sourceType: 'pdf', pageCount: 2,
-    pdfTextJson: JSON.stringify([{ pageNumber: 2, text: '第二页实验数据', method: 'text', extractedAt: 1 }]) });
-  const view = { note, alive: true, requestId: 0, assistantMode: 'remote', isLoading: true, messages: [
-    { id: 'u1', sender: 'user', text: '解释实验', error: '' }, { id: 'a1', sender: 'assistant', text: '先核对数据', error: '' },
-    { id: 'failed', sender: 'assistant', text: '失败', error: 'network' }, { id: 'u2', sender: 'user', text: '再详细一点', error: '' }],
-    sourceSnapshot: () => CompanionSourcePolicy.snapshot(note, 2, true), scopeLabel: () => '第 2 页',
-    parseCard: text => ({ text, error: '', sender: 'assistant' }), persist() {}, scrollToBottom() {},
-    orchestrator: { run: async (_, ctx, delta) => { context = ctx; delta('解释结果', true); } } };
-  await run.call(view, '再详细一点');
-  assert.deepEqual(plain(context.history).map(m => m.text), ['解释实验', '先核对数据']);
-  assert.ok(context.currentDoc.content.includes('第二页实验数据')); assert.equal(view.messages.at(-1).scope, '第 2 页');
-  assert.equal(view.isLoading, false);
-});
-
-test('companion send readiness requires readable text plus authorization only for remote mode', () => {
-  const canAsk = viewMethod('views/reader/huawei/HuaweiAiSplitPanel.ets', 'canAsk', { REMOTE_AI_ENABLED: true });
-  const v = { ready: true, assistantMode: 'local', remoteReady: false, hasReadableSource: () => true };
-  assert.equal(canAsk.call(v), true); v.assistantMode = 'remote'; assert.equal(canAsk.call(v), false);
-  v.remoteReady = true; assert.equal(canAsk.call(v), true); v.hasReadableSource = () => false; assert.equal(canAsk.call(v), false);
-});
-
-test('AI model tasks stay disabled in local mode and during writes even if local assistant is ready', () => {
-  const available = viewMethod('views/ai/AiWorkspace.ets', 'remoteTaskAvailable', { REMOTE_AI_ENABLED: true });
-  const v = { assistantMode: 'local', modelReady: true, menuActionsAvailable: () => true };
-  assert.equal(available.call(v), false); v.assistantMode = 'remote'; assert.equal(available.call(v), true);
-  v.menuActionsAvailable = () => false; assert.equal(available.call(v), false);
-});
-
-test('switching companion pages cancels only a running current-page answer', () => {
-  const changed = viewMethod('views/reader/huawei/HuaweiAiSplitPanel.ets', 'onPageChanged');
-  let cancelled = 0; const v = { pageOnly: true, isLoading: true, cancelStream: () => cancelled++ };
-  changed.call(v); assert.equal(cancelled, 1); v.pageOnly = false; changed.call(v); assert.equal(cancelled, 1);
-});
-
-test('late companion task preparation cannot send into a different document or accept a repeated tap', async () => {
-  let release, changes = 0, sends = 0;
-  const prepare = viewMethod('views/reader/huawei/HuaweiAiSplitPanel.ets', 'prepareLocalPrompt', {
-    AssistantModeService: { getInstance: () => ({ setMode: () => { changes++; return new Promise(resolve => { release = resolve; }); } }) },
-    promptAction: { showToast() {} }
-  });
-  const v = { ready: true, alive: true, note: { id: 'old' }, localPromptId: 0, inputQuestion: 'new draft',
-    hasReadableSource: () => true, isLoading: false, modeSwitchBusy: false, sendQuestion: () => sends++ };
-  const pending = prepare.call(v, '提取要点'); await prepare.call(v, '整理待办'); assert.equal(changes, 1);
-  v.note = { id: 'new' }; v.localPromptId++; v.modeSwitchBusy = false; release(); await pending;
-  assert.equal(sends, 0); assert.equal(v.inputQuestion, 'new draft'); assert.equal(v.modeSwitchBusy, false);
-});
-
-test('AI model task preparation requires a ready selected model and preserves drafts when unavailable', () => {
-  const prepare = viewMethod('views/ai/AiWorkspace.ets', 'prepareModelTask');
-  let closed = 0; const v = { inputText: 'existing draft', remoteTaskAvailable: () => false, closeComposerMenus: () => closed++ };
-  prepare.call(v, 'generate'); assert.equal(v.inputText, 'existing draft'); assert.equal(closed, 0);
-  v.remoteTaskAvailable = () => true; prepare.call(v, 'generate'); assert.equal(v.inputText, 'generate'); assert.equal(closed, 1);
-});
-
-test('AI task preparation preserves a newer draft or session after asynchronous local-mode selection', async () => {
-  const prepare = viewMethod('views/ai/AiWorkspace.ets', 'prepareLocalTask');
-  for (const change of ['draft', 'session']) {
-    let release;
-    const v = { alive: true, assistantMode: 'remote', inputText: 'original', loadedSessionId: 'a', activeSessionId: 'a',
-      closeComposerMenus() {}, menuActionsAvailable: () => true,
-      switchLocalAssistant: () => new Promise(resolve => { release = () => { v.assistantMode = 'local'; resolve(); }; }) };
-    const pending = prepare.call(v, '提取要点');
-    if (change === 'draft') { v.inputText = 'newer draft'; } else { v.loadedSessionId = 'b'; v.activeSessionId = 'b'; }
-    release(); await pending; assert.equal(v.inputText, change === 'draft' ? 'newer draft' : 'original');
-  }
-});
-
-test('AI back closes reference selection before leaving the workspace', () => {
-  const back = viewMethod('views/ai/AiWorkspace.ets', 'handleBackRequest'); let navigated = 0;
-  const v = { pickerOpen: true, onNavigateBack: () => navigated++ }; back.call(v);
-  assert.equal(v.pickerOpen, false); assert.equal(navigated, 0); back.call(v); assert.equal(navigated, 1);
-});
-
 test('new note creation persists independent project destination and topic tags', async () => {
   const create = viewMethod('pages/Index.ets', 'createNote'); let saved;
   const v = { notes: [], noteCreateBusy: false, activeSpaceName: () => '', formatTime: () => '', notify() {},
@@ -2056,86 +1150,6 @@ test('new note submission honors an explicit unfiled destination and keeps the f
   await commit.call(v, '标题', '未分类', ['课堂']); assert.equal(calls[0][2], '未分类'); assert.ok(v.pendingCreate);
   v.createNote = async () => true; await commit.call(v, '标题', '课程'); assert.equal(v.pendingCreate, null);
 });
-
-test('composer menu state explicitly toggles, remains exclusive and refuses opening during an active operation', () => {
-  const v = { plusMenuOpen: false, modelMenuOpen: false, conversationMenuOpen: false, pickerOpen: true, alive: true };
-  for (const method of ['toggleComposerMenu', 'closeComposerMenus', 'menuActionsAvailable']) v[method] = viewMethod('views/ai/AiWorkspace.ets', method);
-  v.toggleComposerMenu('plus'); assert.equal(v.plusMenuOpen, true); assert.equal(v.pickerOpen, false);
-  v.toggleComposerMenu('plus'); assert.equal(v.plusMenuOpen, false);
-  v.toggleComposerMenu('conversation'); assert.equal(v.conversationMenuOpen, true);
-  v.toggleComposerMenu('model'); assert.equal(v.modelMenuOpen, true); assert.equal(v.conversationMenuOpen, false);
-  v.closeComposerMenus(); v.attachmentBusy = true; v.toggleComposerMenu('plus'); assert.equal(v.plusMenuOpen, false);
-});
-
-function chatLifecycleView() {
-  const v = { alive: true, isLoading: false, servicesReady: true, sessionLoadRequestId: 0,
-    activeSessionId: '', loadedSessionId: '', sessionLoadBusy: false, sessionLoadError: '',
-    messages: [], lastCitations: [], inputText: '', currentAgentMode: 'auto',
-    persistQueue: Promise.resolve(), unsavedSessions: new Map(), emitContext() {}, scrollToBottom() {},
-    onSessionSaved() {}, sessionService: { loadSessions: async () => [], saveSession: async () => {} } };
-  let created = 0;
-  for (const method of ['loadSessionById', 'persistSession', 'menuActionsAvailable']) {
-    v[method] = viewMethod('views/ai/AiWorkspace.ets', method, {
-      createEmptySession: () => ({ id: `created-${++created}`, title: '新对话', createdAt: 1, updatedAt: 1, messages: [] }),
-      promptAction: { showToast() {} } });
-  }
-  return v;
-}
-
-test('late conversation loads cannot overwrite the selected conversation or clear its loading state', async () => {
-  const v = chatLifecycleView(), pending = [];
-  v.sessionService.loadSessions = () => new Promise(resolve => pending.push(resolve));
-  v.activeSessionId = 'a'; const first = v.loadSessionById('a');
-  v.activeSessionId = 'b'; const second = v.loadSessionById('b');
-  pending[0]([{ id: 'a', messages: [{ id: 'a1', role: 'user', text: '旧记录' }] }]); await first;
-  assert.equal(v.loadedSessionId, 'b'); assert.equal(v.messages.length, 0); assert.equal(v.sessionLoadBusy, true);
-  pending[1]([{ id: 'b', messages: [{ id: 'b1', role: 'assistant', text: '新记录', citations: [{ noteId: 'b' }] }] }]); await second;
-  assert.equal(v.messages[0].text, '新记录'); assert.equal(v.sessionLoadBusy, false); assert.equal(v.lastCitations[0].noteId, 'b');
-  v.activeSessionId = 'a'; const after = v.loadSessionById('a'); v.alive = false;
-  pending[2]([{ id: 'a', messages: [{ text: '晚到' }] }]); await after; assert.equal(v.messages.length, 0);
-});
-
-test('a missing or unreadable conversation blocks actions until a successful retry without losing an initial draft', async () => {
-  const v = chatLifecycleView(); v.inputText = '从文档进入的提问'; await v.loadSessionById('');
-  assert.equal(v.inputText, '从文档进入的提问');
-  v.activeSessionId = 'a'; await v.loadSessionById('a'); assert.match(v.sessionLoadError, /不存在/); assert.equal(v.menuActionsAvailable(), false);
-  v.sessionService.loadSessions = async () => { throw Error('read'); };
-  await v.loadSessionById('a'); assert.match(v.sessionLoadError, /读取失败/); assert.equal(v.menuActionsAvailable(), false);
-  v.sessionService.loadSessions = async () => [{ id: 'a', messages: [] }];
-  await v.loadSessionById('a'); assert.equal(v.sessionLoadError, ''); assert.equal(v.menuActionsAvailable(), true);
-});
-
-test('a late save captures the original conversation and does not reactivate it after selection changes', async () => {
-  const v = chatLifecycleView(), saved = [], callbacks = []; let release;
-  v.loadedSessionId = 'a'; v.messages = [{ role: 'user', text: '保留 A' }];
-  v.sessionService.loadSessions = () => new Promise(resolve => { release = resolve; });
-  v.sessionService.saveSession = async session => saved.push(plain(session));
-  v.onSessionSaved = (session, activate) => callbacks.push([session.id, activate]);
-  const pending = v.persistSession(); await Promise.resolve();
-  v.loadedSessionId = 'b'; v.sessionLoadRequestId++; v.messages = [{ role: 'user', text: '新的 B' }];
-  release([{ id: 'a', title: 'A', createdAt: 1, pinned: true }]); await pending;
-  assert.equal(saved[0].id, 'a'); assert.equal(saved[0].messages[0].text, '保留 A'); assert.equal(saved[0].pinned, true);
-  assert.deepEqual(callbacks, [['a', false]]);
-  const publish = viewMethod('pages/Index.ets', 'handleSessionSaved');
-  const index = { sessions: [], activeSessionId: 'b', sortSessions: rows => rows };
-  publish.call(index, saved[0], false); assert.equal(index.activeSessionId, 'b'); assert.equal(index.sessions[0].id, 'a');
-});
-
-test('overlapping fresh conversation saves share one ID and preserve ordered snapshots through a failed retry', async () => {
-  const v = chatLifecycleView(), stored = new Map(), writes = []; let failures = 1;
-  v.sessionService.loadSessions = async () => [...stored.values()];
-  v.sessionService.saveSession = async session => {
-    if (failures-- > 0) throw Error('write');
-    stored.set(session.id, plain(session)); writes.push(plain(session));
-  };
-  v.messages = [{ role: 'user', text: '题目' }]; const first = v.persistSession();
-  const id = v.loadedSessionId; v.messages.push({ role: 'assistant', text: '答案' }); const second = v.persistSession();
-  await Promise.all([first, second]); assert.equal(v.loadedSessionId, id); assert.equal(stored.size, 1);
-  assert.equal(writes[0].messages.length, 2); assert.equal(writes[0].title, '题目'); assert.equal(v.unsavedSessions.size, 0);
-  v.messages.push({ role: 'assistant', text: '补充' }); await v.persistSession(); assert.equal(stored.get(id).messages.length, 3);
-});
-
-const { ChatHistoryPolicy } = load(`${base}services/ai/ChatHistoryPolicy.ets`);
 const { MarkerImportPolicy } = load(`${base}services/smart/MarkerImportPolicy.ets`, {
   [path.resolve(root, `${base}services/smart/SmartExtractService.ets`)]: { SMART_INPUT_LIMIT: 12000 } });
 test('Marker Markdown and official success JSON preserve formulas, tables and order without treating raw structure as prose', () => {
@@ -2233,130 +1247,7 @@ test('closing during a durable file import suppresses late extraction and leaves
   assert.equal(reads, 0); assert.equal(view.inputText, '原稿');
 });
 
-test('AI extraction toggle requires a valid consented profile and ignores readiness results after closing', async () => {
-  for (const allowed of [false, true]) {
-    const ready = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'loadAiAvailability', {
-      REMOTE_AI_ENABLED: true, ModelConfigService: { getInstance: () => ({ getActiveProfile: async () => profile({}) }) },
-      ModelProfilePolicy: { validate: () => '' }, RemoteAiPolicy: { consented: () => allowed } });
-    const v = { alive: true, useAi: true, aiReady: false }; await ready.call(v);
-    assert.equal(v.aiReady, allowed); assert.equal(v.useAi, allowed);
-    v.alive = false; v.aiReady = false; await ready.call(v); assert.equal(v.aiReady, false);
-  }
-});
-
-test('a restored AI preference cannot send extraction before model readiness finishes', async () => {
-  const requests = [];
-  const extract = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'triggerExtraction', {
-    SMART_INPUT_LIMIT: 12000, SmartExtractService: { getInstance: () => ({ extract: async (...args) => {
-      requests.push(args); return { title: '资料', formattedMarkdown: '# 资料', tasks: [] };
-    } }) } });
-  const v = { alive: true, requestId: 0, busy: () => false, inputText: '原文', layoutStyle: 'faithful',
-    useAi: true, aiReady: false, mergeWrappedLines: false };
-  await extract.call(v); assert.equal(requests[0][3], false); assert.equal(v.step, 'result');
-  v.aiReady = true; await extract.call(v); assert.equal(requests[1][3], true);
-});
-
-const { WorkspaceNotePolicy } = load(`${base}services/ai/WorkspaceNotePolicy.ets`);
-test('AI content changes require the read version and preserve unrelated data while binary content is immutable', () => {
-  const original = studyNote({ type: 'Markdown', updatedAt: 10, favorite: true, scratchpadStrokes: 'ink', coverUrl: 'cover:mist' });
-  const before = JSON.stringify(original);
-  assert.throws(() => WorkspaceNotePolicy.mutate(original, 'update_note', '# 新正文', 9), /已变化/);
-  const changed = WorkspaceNotePolicy.mutate(original, 'update_note', '# 新正文', 10);
-  assert.equal(changed.contentDetail, '# 新正文'); assert.equal(changed.scratchpadStrokes, 'ink'); assert.equal(changed.coverUrl, 'cover:mist');
-  for (const type of ['PDF', 'Handwriting', 'Doc']) assert.throws(() => WorkspaceNotePolicy.mutate({ ...original, type }, 'update_note', '覆盖', 10), /文字笔记/);
-  assert.equal(WorkspaceNotePolicy.mutate(original, 'set_note_flag', 'pinned:yes', 0).isPinned, true);
-  assert.equal(WorkspaceNotePolicy.mutate(original, 'rename_note', '新标题', 0).title, '新标题');
-  const future = { ...original, updatedAt: Date.now() + 100000 };
-  assert.equal(WorkspaceNotePolicy.mutate(future, 'rename_note', '新标题', 0).updatedAt, future.updatedAt + 1);
-  assert.throws(() => WorkspaceNotePolicy.mutate(original, 'set_note_flag', 'secret:yes', 0)); assert.equal(JSON.stringify(original), before);
-});
-
-test('expanded function tools validate pagination, enum flags and revisions before dispatching write ports', async () => {
-  const requests = [];
-  const executor = new WorkspaceToolExecutor(toolPorts({ manageNote: async (...args) => { requests.push(args); return 'saved'; },
-    setTodoStatus: async (...args) => { requests.push(args); return 'saved'; } }));
-  assert.equal((await executor.execute('update_note', JSON.stringify({ identifier: 'a', content: '# 新', expectedUpdatedAt: 10 }))).ok, true);
-  assert.deepEqual(requests[0], ['update_note', 'a', '# 新', 10]);
-  assert.equal((await executor.execute('set_todo_status', '{"identifier":"todo-1","status":"done"}')).ok, true);
-  assert.equal((await executor.execute('set_note_flag', '{"identifier":"a","flag":"system","value":"yes"}')).ok, false);
-  assert.equal(requests.length, 2);
-  assert.throws(() => ToolArgumentValidator.parse('read_note', '{"identifier":"a","offset":-1}'));
-  assert.equal(ToolArgumentValidator.parse('list_notes', '{"offset":50,"limit":50}').limit, 50);
-  const todoExecutor = new WorkspaceToolExecutor(toolPorts({ todos: (...args) => { requests.push(args); return 'todo'; } }));
-  await todoExecutor.execute('list_todos', '{"offset":50,"limit":20,"status":"done"}');
-  assert.deepEqual(requests.at(-1), ['', 'done', 50, 20]);
-});
-
-test('paginated note listing and reading reach later content with IDs and versions instead of dropping the tail', () => {
-  const notes = Array.from({ length: 55 }, (_, i) => studyNote({ id: String(i), title: `笔记 ${i}`, contentDetail: 'abcdefghij'.repeat(3000), updatedAt: 123 }));
-  const listing = viewMethod('views/ai/AiWorkspace.ets', 'toolListNotes'); const reading = viewMethod('views/ai/AiWorkspace.ets', 'toolReadNote', { NoteToolReader, StudySourceService });
-  const v = { allNotes: notes }; assert.match(listing.call(v, '', 50, 20), /ID: 54/); assert.match(listing.call(v, '', 50, 20), /末尾/);
-  const text = reading.call(v, '54', 24000, 12000); assert.match(text, /updatedAt: 123/); assert.ok(text.includes('abcdefghij'.repeat(600))); assert.match(text, /末尾/);
-  const todos = Array.from({ length: 61 }, (_, i) => ({ id: `todo-${i}`, title: `任务 ${i}`, date: '2026-10-09', done: false }));
-  const listTodos = viewMethod('views/ai/AiWorkspace.ets', 'toolListTodos');
-  assert.match(listTodos.call({ todos }, '', 'all'), /offset=50/);
-  assert.match(listTodos.call({ todos }, '', 'all', 50, 50), /ID: todo-60/);
-  assert.match(listTodos.call({ todos }, '', 'all', 50, 50), /末尾/);
-});
-
-test('queued AI tag edits read the latest state and a failed task does not strand subsequent mutations', async () => {
-  const { SerialTaskQueue } = load(`${base}services/storage/SerialTaskQueue.ets`);
-  const change = viewMethod('pages/Index.ets', 'handleAiAddTag'); let release;
-  const v = { aiMutationQueue: new SerialTaskQueue(), note: studyNote({ tags: [], tag: '' }), requireAiNote() { return this.note; },
-    saveAiNote: async note => { if (note.tags.length === 1) await new Promise(resolve => { release = resolve; }); v.note = note; } };
-  const a = change.call(v, 'a', '数学'), b = change.call(v, 'a', '复习'); await Promise.resolve(); release(); await Promise.all([a, b]);
-  assert.deepEqual(plain(v.note.tags), ['数学', '复习']);
-  await assert.rejects(change.call(v, 'a', '')); await change.call(v, 'a', '考试'); assert.equal(v.note.tags.length, 3);
-});
-
-test('AI body writes preserve the original file and UI snapshot when metadata fails, including new-note cleanup', async () => {
-  const save = viewMethod('pages/Index.ets', 'saveAiNote', { Error });
-  const original = studyNote({ id: 'a', type: 'Markdown', contentDetail: '原文' }), changed = { ...original, contentDetail: '新文' };
-  const calls = [], v = { notes: [original], readingOpen: false, fullScreenDocOpen: false, readingNote: { id: '' },
-    getAbilityContext: () => ({}), storage: { saveDocument: async (_, note, text) => calls.push([note.id, text]),
-      save: async () => { throw Error('metadata'); }, delete: async (_, id) => calls.push(['delete', id]) },
-    rebuildSpaces() { calls.push('published'); }, refreshStats() {}, refreshGraph: async () => {} };
-  await assert.rejects(save.call(v, changed, true), /metadata/);
-  assert.deepEqual(calls, [['a', '新文'], ['a', '原文']]); assert.equal(v.notes[0], original);
-  calls.length = 0; await assert.rejects(save.call(v, { ...changed, id: 'b' }, true), /metadata/);
-  assert.deepEqual(calls, [['b', '新文'], ['delete', 'b']]); assert.equal(v.notes.length, 1);
-});
-
-test('AI body editing blocks both reader surfaces before file I/O and publishes only after durable success', async () => {
-  const save = viewMethod('pages/Index.ets', 'saveAiNote'), original = studyNote({ id: 'a' }); let writes = 0, release, reachedSave;
-  const waitingSave = new Promise(resolve => { reachedSave = resolve; });
-  const v = { notes: [original], readingNote: original, fullScreenDocNote: original, readingOpen: true, fullScreenDocOpen: false,
-    getAbilityContext: () => ({}), storage: { saveDocument: async () => { writes++; }, save: () => new Promise(resolve => { release = resolve; reachedSave(); }) },
-    rebuildSpaces() {}, refreshStats() {}, refreshGraph: async () => {} };
-  const changed = { ...original, contentDetail: '新文' };
-  await assert.rejects(save.call(v, changed, true), /结束/); assert.equal(writes, 0);
-  v.readingOpen = false; v.fullScreenDocOpen = true;
-  await assert.rejects(save.call(v, changed, true), /结束/); assert.equal(writes, 0);
-  v.fullScreenDocOpen = false; const pending = save.call(v, changed, true); await waitingSave;
-  assert.equal(v.notes[0], original); release(); await pending; assert.equal(v.notes[0], changed); assert.equal(v.readingNote, changed);
-});
-
-test('AI todo status is persisted before publishing and failed writes keep the previous state', async () => {
-  const { SerialTaskQueue } = load(`${base}services/storage/SerialTaskQueue.ets`);
-  const change = viewMethod('pages/Index.ets', 'handleAiSetTodoStatus'); let fail = true, release;
-  const todo = { id: 'todo-1', date: '2026-10-09', title: '复习', done: false, noteRefs: [], createdAt: 1, updatedAt: 1 };
-  const v = { aiMutationQueue: new SerialTaskQueue(), todos: [todo], getAbilityContext: () => ({}),
-    todoStorage: { saveTodos: async () => { if (fail) throw Error('disk'); await new Promise(resolve => { release = resolve; }); } } };
-  await assert.rejects(change.call(v, todo.id, 'done'), /disk/); assert.equal(v.todos[0], todo);
-  fail = false; const pending = change.call(v, todo.id, 'done'); await Promise.resolve();
-  assert.equal(v.todos[0].done, false); release(); await pending; assert.equal(v.todos[0].done, true);
-  await assert.rejects(change.call(v, todo.id, 'invalid'), /无效/); assert.equal(v.todos[0].done, true);
-});
-
-test('AI link creation refuses binary notes and appends once to the latest text note', async () => {
-  const { SerialTaskQueue } = load(`${base}services/storage/SerialTaskQueue.ets`);
-  const change = viewMethod('pages/Index.ets', 'handleAiCreateLink', { WorkspaceNotePolicy });
-  const v = { aiMutationQueue: new SerialTaskQueue(), note: studyNote({ type: 'PDF' }), writes: 0,
-    requireAiNote() { return this.note; }, saveAiNote: async note => { v.writes++; v.note = note; } };
-  await assert.rejects(change.call(v, 'a', '概念'), /文字笔记/); assert.equal(v.writes, 0);
-  v.note = studyNote({ type: 'Markdown' }); await change.call(v, 'a', '概念'); await change.call(v, 'a', '概念');
-  assert.equal(v.writes, 1); assert.ok(v.note.contentDetail.endsWith('[[概念]]\n'));
-});
+const { WorkspaceNotePolicy } = load(`${base}services/WorkspaceNotePolicy.ets`);
 
 test('home shelf sorts once for the same source and filter, then refreshes when the immutable library snapshot changes', () => {
   const display = viewMethod('views/workspace/HomeWorkspace.ets', 'displayNotes');
@@ -2365,27 +1256,6 @@ test('home shelf sorts once for the same source and filter, then refreshes when 
   const sorted = display.call(v); assert.equal(display.call(v), sorted); assert.equal(sorted[0].id, 'b');
   v.recentNotes = v.recentNotes.concat(studyNote({ id: 'c', updatedAt: 3 })); assert.equal(display.call(v)[0].id, 'c');
   assert.equal(v.recentNotes[0].updatedAt, 1); v.activeShelfFilter = 'favorite'; assert.equal(display.call(v).length, 0);
-});
-test('history search groups pinned conversations once, ignores hidden tool output and orders newest first', () => {
-  const now = new Date(2026, 9, 9, 10).getTime();
-  const make = overrides => ({ id: 'a', title: '数学笔记', pinned: false, updatedAt: now, messages: [], ...overrides });
-  const rows = [make({ id: 'old', updatedAt: now - 10 * 86400000 }), make({ id: 'pin', pinned: true }),
-    make({ id: 'today', messages: [{ role: 'user', text: '复习  线性代数' }, { role: 'tool', text: 'hidden-secret' }] }),
-    make({ id: 'week', updatedAt: now - 86400000 })];
-  assert.deepEqual(plain(ChatHistoryPolicy.filter(rows, '数学 线性', '今天', now)).map(row => row.id), ['today']);
-  assert.equal(ChatHistoryPolicy.filter(rows, 'hidden-secret', '今天', now).length, 0);
-  assert.equal(ChatHistoryPolicy.group(rows[1], now), '置顶');
-  assert.deepEqual(['置顶', '今天', '最近七天', '更早'].flatMap(group => plain(ChatHistoryPolicy.filter(rows, '', group, now)).map(row => row.id)).sort(), ['old', 'pin', 'today', 'week']);
-});
-
-test('opening and closing history restores the existing sidebar state without changing the active session', () => {
-  for (const collapsed of [false, true]) {
-    const v = { sidebarCollapsed: collapsed, chatHistoryOpen: false, activeSessionId: 'draft', singleColumn: false };
-    v.closeChatHistory = viewMethod('pages/Index.ets', 'closeChatHistory');
-    const toggle = viewMethod('pages/Index.ets', 'toggleChatHistory');
-    toggle.call(v); assert.equal(v.chatHistoryOpen, true); assert.equal(v.sidebarCollapsed, false);
-    toggle.call(v); assert.equal(v.chatHistoryOpen, false); assert.equal(v.sidebarCollapsed, collapsed); assert.equal(v.activeSessionId, 'draft');
-  }
 });
 
 test('PDF erasing uses line segments and groups a gesture into one reversible operation', () => {
@@ -2426,15 +1296,6 @@ test('leaving a scratchpad or global canvas commits its last stroke and pending 
       finishStroke:()=>calls.push('stroke'),flushSave:()=>calls.push('save'),shortcuts:{stop(){}},input:{reset(){}},inkFrame:{release(){}}};
     disappear.call(view);assert.deepEqual(calls,isScratchpad||persistOnDisappear?['stroke','save']:[]);assert.equal(view.saveTimer,-1);
   }
-});
-
-test('switching companion documents saves the partial reply under the original document only', () => {
-  const cache=new Map([['b',[{text:'文档B的对话'}]]]);const globals={COMPANION_CACHE:cache};const relative='views/reader/huawei/HuaweiAiSplitPanel.ets';
-  const view={note:{id:'b'},loadedNoteId:'a',messages:[{text:'文档A的问题'}],isLoading:true,accumulated:'文档A的部分答案',
-    streamingCard:{id:'answer-a'},streamHandle:{abort(){}},requestId:1,parseCard:text=>({text})};
-  for(const method of ['persist','cancelStream','onNoteChanged'])view[method]=viewMethod(relative,method,globals);
-  view.onNoteChanged();assert.equal(cache.get('a').at(-1).text,'文档A的部分答案');assert.equal(cache.get('b').length,1);
-  assert.equal(view.messages[0].text,'文档B的对话');assert.equal(view.loadedNoteId,'b');assert.equal(view.isLoading,false);
 });
 
 function shareHarness({ supported = true, exists = true, failure = null } = {}) {
@@ -2493,31 +1354,7 @@ test('native chooser unavailability or failure propagates without reporting deli
   assert.equal(unavailable.panels.length, 0); assert.equal(failed.panels.length, 0);
 });
 
-const { AssistantTextParser } = load(`${base}services/ai/AssistantTextParser.ets`);
-test('assistant output preserves interleaved text, multiple formulas, lists, code and citations', () => {
-  const text = '# 回答\n先说明。\n$$a+b$$\n1. 第一步\n$$\nc=d\n$$\n```js\nconst x = 1;\n```\n> 来源：资料第 2 页\n最后说明。';
-  const blocks = plain(AssistantTextParser.parse(text));
-  assert.deepEqual(blocks.map(b => b.kind), ['heading','paragraph','math','list','math','code','quote','paragraph']);
-  assert.equal(blocks[2].text,'a+b'); assert.equal(blocks[4].text,'c=d');
-  assert.equal(blocks[5].language,'js'); assert.equal(blocks[5].text,'const x = 1;');
-  assert.match(blocks[6].text,/第 2 页/); assert.equal(blocks[7].text,'最后说明。');
-});
-test('partial assistant streams retain unfinished code and formulas without losing their body', () => {
-  assert.deepEqual(plain(AssistantTextParser.parse('说明\n```python\nprint(1)')).map(b=>b.text),['说明','print(1)']);
-  assert.equal(AssistantTextParser.parse('$$\nx+y')[0].text,'x+y');
-  assert.equal(AssistantTextParser.parse('$$x+y\n下一行')[0].text,'x+y\n下一行');
-});
-test('assistant tables preserve escaped pipes and surrounding paragraphs', () => {
-  const blocks=plain(AssistantTextParser.parse('前文\n| 项目 | 结果 |\n| --- | --- |\n| A \\| B | 通过 |\n后文'));
-  assert.deepEqual(blocks.map(b=>b.kind),['paragraph','table','paragraph']);
-  assert.deepEqual(blocks[1].rows,[['项目','结果'],['A | B','通过']]);
-  assert.equal(blocks[2].text,'后文');
-});
-test('assistant inline formatting preserves plain text and literal markup that is still streaming', () => {
-  const spans=plain(AssistantTextParser.spans('原文 **重点** `code` ~~删除~~ *斜体* 未完 **'));
-  assert.deepEqual(spans.filter(s=>s.style!=='plain').map(s=>[s.text,s.style]),[['重点','bold'],['code','code'],['删除','strike'],['斜体','italic']]);
-  assert.ok(spans.at(-1).text.endsWith('**'));
-});
+const { DocumentTextParser } = load(`${base}services/document/DocumentTextParser.ets`);
 
 const { CanvasViewport } = load(`${base}services/ink/CanvasViewport.ets`);
 
@@ -2716,51 +1553,9 @@ test('only the latest successful ink snapshot clears dirty state; failures remai
     v.saveRevision++;v.onSaved=async()=>{throw Error('disk');};await flush.call(v);assert.equal(v.savedRevision,3);assert.deepEqual(dirty,[false]);
   }
 });
-
-test('chat deletion requires confirmation, ignores duplicate taps and waits for actual storage', async () => {
-  const remove=viewMethod('pages/Index.ets','handleDeleteSession');let confirm,write;
-  const calls=[];const v={sessions:[{id:'a'},{id:'b'}],activeSessionId:'a',sessionDeleteBusy:false,
-    confirmDestructive:()=>new Promise(r=>confirm=r),chatStorage:{deleteSession:id=>{calls.push(id);return new Promise(r=>write=r);}},notify:()=>{}};
-  const pending=remove.call(v,'a');await remove.call(v,'a');assert.deepEqual(calls,[]);assert.equal(v.sessionDeleteBusy,true);
-  confirm(true);await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(calls,['a']);assert.equal(v.sessions.length,2);
-  write();await pending;assert.deepEqual(v.sessions.map(s=>s.id),['b']);assert.equal(v.activeSessionId,'');assert.equal(v.sessionDeleteBusy,false);
-});
-test('cancelled or failed chat deletion leaves the original history and selection intact', async () => {
-  const remove=viewMethod('pages/Index.ets','handleDeleteSession');
-  for(const confirmed of [false,true]) {
-    let writes=0;const sessions=[{id:'a'}];const v={sessions,activeSessionId:'a',sessionDeleteBusy:false,confirmDestructive:async()=>confirmed,
-      chatStorage:{deleteSession:async()=>{writes++;throw Error('disk');}},notify:()=>{}};
-    await remove.call(v,'a');assert.equal(writes,confirmed?1:0);assert.equal(v.sessions,sessions);assert.equal(v.activeSessionId,'a');assert.equal(v.sessionDeleteBusy,false);
-  }
-});
-test('companion clearing requires confirmation and cannot clear a different document after navigation', async () => {
-  const relative='views/reader/huawei/HuaweiAiSplitPanel.ets';
-  for(const [index,moved,expected] of [[0,false,0],[1,false,1],[1,true,0]]) {
-    let resolve,clears=0;const clear=viewMethod(relative,'requestClearThread',{promptAction:{showDialog:()=>new Promise(r=>resolve=r)}});
-    const v={isLoading:false,clearConfirmBusy:false,messages:[{text:'keep'}],loadedNoteId:'a',alive:true,palette:()=>({}),clearThread:()=>clears++};
-    const pending=clear.call(v);if(moved)v.loadedNoteId='b';resolve({index});await pending;assert.equal(clears,expected);assert.equal(v.clearConfirmBusy,false);
-  }
-});
-test('AI back navigation first closes the anchored action or model menu', () => {
-  const back=viewMethod('views/ai/AiWorkspace.ets','handleBackRequest');let exits=0;
-  const v={plusMenuOpen:true,modelMenuOpen:false,onNavigateBack:()=>exits++};back.call(v);assert.equal(v.plusMenuOpen,false);assert.equal(exits,0);
-  v.modelMenuOpen=true;back.call(v);assert.equal(v.modelMenuOpen,false);assert.equal(exits,0);back.call(v);assert.equal(exits,1);
-});
-
-test('deleted conversations reject late streamed answers and stale bulk snapshots', async () => {
-  const f=preferenceFixture({sessions:'[]'});
-  const {ChatSessionService}=load(`${base}services/ai/ChatSessionService.ets`,{'@kit.ArkData':{preferences:{getPreferences:async()=>f.prefs}}});
-  const service=new ChatSessionService();await service.init({});
-  const row={id:'late',title:'原回答',messages:[],createdAt:1,updatedAt:1};
-  await service.saveSession(row);await service.deleteSession(row.id);
-  await assert.rejects(service.saveSession(row),/删除/);await service.saveSessions([row]);
-  assert.equal((await service.loadSessions()).length,0);
-  await service.saveSession({...row,id:'new'});await service.clearAll();
-  await assert.rejects(service.saveSession({...row,id:'new'}),/删除/);
-});
 test('reader parsing preserves Unicode, source line indices, numbered lists and rich block bodies', () => {
   const relative='views/reader/MarkdownReader.ets';
-  const parse=viewMethod(relative,'parseBlocks',{AssistantTextParser});
+  const parse=viewMethod(relative,'parseBlocks',{DocumentTextParser});
   const source='#### 中文 English αβ\n\n2. 次序\n- [ ] 未完成\n```js\nconst x = "中文";\n```\n$$x²+y²$$\n| 项目 | 值 |\n| --- | --- |\n| α | 1 |';
   const v={parseTask:viewMethod(relative,'parseTask')};const blocks=plain(parse.call(v,source));
   assert.deepEqual(blocks.map(b=>[b.kind,b.line]),[['heading',0],['ordered',2],['task',3],['code',4],['math',7],['table',8]]);
@@ -2807,15 +1602,6 @@ test('the extraction import adapter returns library PDF and text paths and propa
   assert.equal(await method.call(view, 'file://result.md'), '/sandbox/notes/text.md');
   view.importDocument = async () => null; await assert.rejects(method.call(view, 'file://source.pdf'), /保存/);
 });
-test('AI external import waits for persistence and never pins into a different or closed conversation', async () => {
-  const method=viewMethod('views/ai/AiWorkspace.ets','importExternalFile',{promptAction:{showToast:()=>{}}});
-  for(const moved of [false,true]) {
-    let resolve;const v={alive:true,loadedSessionId:'a',activeSessionId:'a',attachmentRequestId:0,pinnedNotes:[],menuActionsAvailable:()=>true,
-      onImportExternal:()=>new Promise(r=>resolve=r),emitContext:()=>{},onPinnedNotesChange:()=>{}};
-    const pending=method.call(v);assert.equal(v.pinnedNotes.length,0);if(moved)v.loadedSessionId='b';resolve({id:'pdf',title:'PDF'});await pending;
-    assert.equal(v.pinnedNotes.length,moved?0:1);
-  }
-});
 test('bundled example PDF is explicitly imported with durable source and rejects a broken native document', async () => {
   const fixture=importService('');const result=await fixture.service.importExamplePdf({filesDir:'/sandbox'});
   assert.equal(result.status,'imported');assert.equal(result.noteType,'PDF');assert.equal(result.sourceUri,'/sandbox/copy.pdf');assert.equal(result.pageCount,2);
@@ -2838,21 +1624,6 @@ test('bundled PDF short writes and invalid resource bytes cannot leave a phantom
 });
 
 const { LocalTextFormatter } = load(`${base}services/smart/LocalTextFormatter.ets`);
-test('local formatting has distinct study layout without discarding code, tables, formulas or source', async () => {
-  const input = '【课程记录】\n一、基本概念\n• 第一条定义\n• 第二条定义\n\n二、例题\n```python\n    prepare = "提交代码示例"\n```\n\n| 名称 | 数量 |\n| --- | --- |\n| 实验 | 42 |\n\n$$\nx = 42\n$$\n\n$$\ny = 7\n$$';
-  const { service, calls } = extractService({ key: 'configured' });
-  const faithful = await service.extract(input, '课程', 'faithful');
-  const study = await service.extract(input, '课程', 'study');
-  assert.equal(calls.length, 0); assert.equal(study.rawMarkdown, input);
-  assert.ok(study.formattedMarkdown.includes('## 一、基本概念'));
-  assert.ok(study.formattedMarkdown.includes('- 第一条定义'));
-  assert.ok(!faithful.formattedMarkdown.includes('## 一、基本概念'));
-  assert.ok(faithful.formattedMarkdown.endsWith(input));
-  for (const fragment of ['    prepare = "提交代码示例"', '| 实验 | 42 |', '$$\nx = 42\n$$', '$$\ny = 7\n$$']) {
-    assert.ok(study.formattedMarkdown.includes(fragment), fragment);
-  }
-  assert.equal(study.tasks.length, 0);
-});
 
 test('OCR paragraph repair is opt-in and protects all structural boundaries and explicit hard breaks', () => {
   const input = '这是一段从照片中识别出的课程内容\n继续说明具体要求。\n\nAn introduction to the subject\ncontinues here.\n\n一、学习要求\n- 完成练习\n| 课程 | 学分 |\n| 数学 | 4 |\n\n```text\n这是一段足够长的代码示例文字内容\n这里的代码不能被合并\n```\n$$\n这是足够长的公式中的说明文字\n这一行应保持独立\n$$\n这是一段指定了硬换行的普通文字  \n下一行保持独立';
@@ -2869,33 +1640,13 @@ test('OCR paragraph repair is opt-in and protects all structural boundaries and 
 test('unclosed code fences, matching fence lengths and indented code never become headings or tasks', () => {
   const input = '```text\n一、提交报告\n``\n• 完成练习\n\n    二、提交材料';
   const body = LocalTextFormatter.format(input, '笔记', 'study', true);
-  assert.ok(body.endsWith(input)); assert.equal(AiParser.fromSource(input).tasks.length, 0);
-});
-
-test('local extraction preserves leading code indentation and explicit trailing line breaks inside the original source', async () => {
-  const input = '    prepare = "提交代码示例"\n    total = 42\n\n正常正文  \n下一行';
-  const { service, calls } = extractService();
-  const result = await service.extract(input, '代码与正文', 'study', false, true);
-  assert.equal(result.rawMarkdown, input); assert.equal(result.tasks.length, 0); assert.equal(calls.length, 0);
-  assert.ok(result.formattedMarkdown.endsWith(input));
+  assert.ok(body.endsWith(input)); assert.equal(SourceTextParser.fromSource(input).tasks.length, 0);
 });
 
 test('completed checkboxes, negative clauses and cancelled actions never become calendar suggestions', () => {
   const input = '- [x] 完成课程报名\n- [X] 提交旧报告\n不需要准备材料，也不要提交重复报告。\n报名取消。\n明天提交新的实验报告。';
-  const tasks = AiParser.fromSource(input).tasks;
+  const tasks = SourceTextParser.fromSource(input).tasks;
   assert.equal(tasks.length, 1); assert.equal(tasks[0].title, '明天提交新的实验报告');
-});
-
-test('failed or unconfigured optional AI keeps the selected local study layout and OCR repair', async () => {
-  for (const config of [{}, { key: 'test', fails: true }]) {
-    const { service } = extractService(config);
-    const input = '一、课程介绍\n这是一段从照片中识别出的课程内容\n继续说明具体要求。';
-    const result = await service.extract(input, '课程', 'study', true, true);
-    assert.equal(result.processingMode, 'local'); assert.equal(result.rawMarkdown, input);
-    assert.ok(result.formattedMarkdown.includes('## 一、课程介绍'));
-    assert.ok(result.formattedMarkdown.includes('课程内容继续说明'));
-    assert.ok(result.processingNotice.includes('核对'));
-  }
 });
 
 test('system OCR uses block paragraphs only when all SDK characters and their order match', async () => {
@@ -2991,83 +1742,13 @@ const { SettingsCatalog, SETTINGS_ENTRIES, SETTINGS_GROUPS } = load(`${base}comm
 test('settings search covers names and user vocabulary, preserves group boundaries and returns no fake matches', () => {
   assert.equal(SettingsCatalog.search('OCR')[0].id, 'capture');
   assert.equal(SettingsCatalog.search('浅蓝')[0].id, 'theme');
-  assert.equal(SettingsCatalog.search('deepseek API')[0].id, 'ai');
+  assert.equal(SettingsCatalog.search('deepseek API').length, 0);
   assert.equal(SettingsCatalog.search('恢复', 'connection')[0].id, 'backup');
   assert.equal(SettingsCatalog.search('恢复', 'workspace').length, 0);
   assert.equal(SettingsCatalog.search('不存在的选项').length, 0);
   assert.equal(new Set(SETTINGS_ENTRIES.map(entry => entry.id)).size, SETTINGS_ENTRIES.length);
   assert.ok(SETTINGS_ENTRIES.every(entry => SETTINGS_GROUPS.some(group => group.id === entry.group)));
   assert.equal(SettingsCatalog.normalize('cloud'), 'backup'); assert.equal(SettingsCatalog.normalize('unknown'), 'overview');
-});
-
-test('settings categories and system back wait for the AI draft guard before modifying native page history', () => {
-  const navigate = viewMethod('views/settings/SettingsWorkspace.ets', 'navigate', { SettingsCatalog });
-  const applyNavigation = viewMethod('views/settings/SettingsWorkspace.ets', 'applyNavigation');
-  const calls = [], view = { section: 'ai', pendingSection: 'overview', modelCloseToken: 0, reduceMotion: true,
-    paths: { size: () => 1, replacePath: (...args) => calls.push(['replace', ...args]), clear: (...args) => calls.push(['clear', ...args]) } };
-  view.applyNavigation = () => applyNavigation.call(view);
-  navigate.call(view, 'theme'); assert.equal(view.modelCloseToken, 1); assert.equal(view.section, 'ai'); assert.equal(calls.length, 0);
-  // Only the guarded model's successful close callback allows navigation.
-  applyNavigation.call(view); assert.equal(view.section, 'theme'); assert.equal(calls[0][2], false);
-  navigate.call(view, 'overview'); assert.equal(view.section, 'overview'); assert.deepEqual(calls[1], ['clear', false]);
-});
-
-test('leaving settings through the main navigation waits for model draft confirmation and executes the selected action once', () => {
-  const requestExit = viewMethod('views/settings/SettingsWorkspace.ets', 'requestExit');
-  const applyNavigation = viewMethod('views/settings/SettingsWorkspace.ets', 'applyNavigation');
-  let confirmed = 0;
-  const view = { section: 'ai', leavePending: false, modelCloseToken: 0, onExitConfirmed: () => confirmed++ };
-  view.applyNavigation = () => applyNavigation.call(view);
-  requestExit.call(view); assert.equal(view.modelCloseToken, 1); assert.equal(confirmed, 0);
-  assert.equal(view.section, 'ai'); applyNavigation.call(view); assert.equal(confirmed, 1); assert.equal(view.leavePending, false);
-  const afterExit = viewMethod('pages/Index.ets', 'afterSettingsExit', { NAV_SETTINGS: 'settings' });
-  const complete = viewMethod('pages/Index.ets', 'completeSettingsExit', { NAV_HOME: 'home' });
-  const shell = { activeNav: 'settings', settingsExitToken: 0, settingsExitAction: null };
-  let opened = 0; afterExit.call(shell, () => opened++); assert.equal(opened, 0); assert.equal(shell.settingsExitToken, 1);
-  complete.call(shell); assert.equal(opened, 1); assert.equal(shell.activeNav, 'home'); assert.equal(shell.settingsExitAction, null);
-});
-
-test('recognition drafts retain layout choices, images and edited results while a save in progress cannot be dismissed', () => {
-  const app = new Map(), storage = { setOrCreate: (key, value) => app.set(key, value), get: key => app.get(key) };
-  const close = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'requestClose', { AppStorage: storage });
-  const appear = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'aboutToAppear', { AppStorage: storage,
-    REMOTE_AI_ENABLED: true, KeyboardAvoidMode: { RESIZE: 1 } });
-  let closed = 0;
-  const view = { step: 'result', inputText: '实际输入', imageUri: 'photo://selected', result: { id: 'actual-result' },
-    title: '校对标题', category: '课程', body: '校对正文', tasks: [], selectedTaskIds: [], includeRelations: false,
-    layoutStyle: 'study', mergeWrappedLines: true, useAi: false, requestId: 0, onClose: () => closed++ };
-  close.call(view); assert.equal(closed, 1);
-  const restored = { loadAiAvailability() {}, getUIContext: () => ({ getKeyboardAvoidMode: () => 0, setKeyboardAvoidMode: () => {} }) };
-  appear.call(restored); assert.equal(restored.layoutStyle, 'study'); assert.equal(restored.mergeWrappedLines, true);
-  assert.equal(restored.body, '校对正文'); assert.equal(restored.imageUri, 'photo://selected'); assert.equal(restored.step, 'result');
-  view.step = 'saving'; close.call(view); assert.equal(closed, 1);
-  app.set('smartExtractResultDraft', { input: '旧草稿', imageUri: '', result: null }); appear.call(restored);
-  assert.equal(restored.layoutStyle, 'faithful'); assert.equal(restored.mergeWrappedLines, false); assert.equal(restored.useAi, false);
-});
-
-const { AiProviderCatalog } = load(`${base}services/ai/AiProviderCatalog.ets`);
-test('provider catalog exposes the requested families without sharing mutable rows, keys or default consent', () => {
-  const entries = AiProviderCatalog.list();
-  for (const family of ['Seed', 'Qwen', 'DeepSeek', 'GLM']) { assert.ok(entries.some(entry => entry.label.includes(family))); }
-  for (const entry of entries) {
-    const draft = AiProviderCatalog.createDraft(entry.id, `draft-${entry.id}`);
-    assert.equal(draft.apiKey, ''); assert.equal(draft.remoteConsentVersion, undefined); assert.equal(draft.credentialRef, undefined);
-    assert.equal(draft.semanticSearch, false); assert.equal(draft.toolAccess, 'none'); assert.ok(draft.baseUrl.startsWith('https://'));
-  }
-  entries[0].baseUrl = 'https://changed.example.com'; assert.notEqual(AiProviderCatalog.list()[0].baseUrl, entries[0].baseUrl);
-  assert.equal(AiProviderCatalog.createDraft('unknown', 'new'), null);
-  assert.equal(AiProviderCatalog.createDraft('seed', ''), null);
-});
-
-test('choosing a service template creates a fresh draft and preserves the existing unsaved profile and active selection', () => {
-  const add = viewMethod('views/settings/ModelSettingsSheet.ets', 'addFromCatalog', { AiProviderCatalog });
-  const existing = profile({ id: 'existing', apiKey: 'test-existing-key' });
-  const view = { busy: false, currentId: 'existing', activeId: 'existing', profiles: [existing], drafts: new Map(), newProfiles: new Set(),
-    form: () => existing, fill(draft) { this.currentId = draft.id; }, report() {} };
-  add.call(view, AiProviderCatalog.list()[0]);
-  assert.equal(view.drafts.get('existing').apiKey, 'test-existing-key'); assert.equal(view.activeId, 'existing');
-  assert.equal(view.profiles.length, 2); assert.equal(view.profiles[1].apiKey, ''); assert.equal(view.newProfiles.size, 1);
-  assert.equal(view.sourceTab, 1); assert.equal(view.tab, 0);
 });
 
 function documentNavigationHarness(overrides = {}) {
@@ -3189,40 +1870,6 @@ test('late reader persistence publishes library data without replacing a differe
     assert.equal(view.fullScreenDocNote.id, 'new'); assert.equal(view.fullScreenDocNote.title, 'keep');
     assert.equal(view.notes[0].id, 'old');
   }
-});
-
-test('AI attachment import ignores repeated taps while awaiting durable import', async () => {
-  const importFile = viewMethod('views/ai/AiWorkspace.ets', 'importExternalFile', { promptAction: { showToast() {} } });
-  let release, imports = 0;
-  const view = { alive: true, loadedSessionId: 'a', activeSessionId: 'a', attachmentRequestId: 0, attachmentBusy: false,
-    menuActionsAvailable() { return !this.attachmentBusy; }, pinnedNotes: [], emitContext() {}, onPinnedNotesChange() {},
-    onImportExternal: () => { imports++; return new Promise(resolve => { release = resolve; }); } };
-  const pending = importFile.call(view); await importFile.call(view); assert.equal(imports, 1);
-  release(null); await pending; assert.equal(view.attachmentBusy, false); assert.deepEqual(view.pinnedNotes, []);
-});
-
-test('removing AI references respects newer selections and synchronizes confirmed context', async () => {
-  for (const changed of [false, true]) {
-    let answer, updates = 0;
-    const clear = viewMethod('views/ai/AiWorkspace.ets', 'clearPinnedReferences', {
-      promptAction: { showDialog: () => new Promise(resolve => { answer = resolve; }) } });
-    const view = { loadedSessionId: 'a', activeSessionId: 'a', pinnedNotes: [{ id: 'old' }], menuActionsAvailable: () => true,
-      palette: () => ({}), onPinnedNotesChange() { updates++; }, emitContext() { updates++; } };
-    const pending = clear.call(view); if (changed) { view.pinnedNotes = [{ id: 'new' }]; }
-    answer({ index: 1 }); await pending;
-    assert.deepEqual(plain(view.pinnedNotes), changed ? [{ id: 'new' }] : []); assert.equal(updates, changed ? 0 : 2);
-  }
-});
-
-test('AI context notifications coalesce latest state and cannot publish after leaving', () => {
-  const queued = [], published = [];
-  const emit = viewMethod('views/ai/AiWorkspace.ets', 'emitContext', { setTimeout: action => queued.push(action) });
-  const view = { alive: true, contextRevision: 0, lastCitations: ['old'], pinnedNotes: [{ id: 'old' }], runningLayer: 'L1',
-    layerTitle: layer => layer, modelLabel: 'local', onContextChange: (...args) => published.push(args) };
-  emit.call(view); view.pinnedNotes = [{ id: 'new' }]; view.lastCitations = ['new']; emit.call(view);
-  queued.splice(0).forEach(action => action()); assert.equal(published.length, 1);
-  assert.equal(published[0][1][0].id, 'new'); assert.equal(published[0][0][0], 'new');
-  emit.call(view); view.alive = false; queued[0](); assert.equal(published.length, 1);
 });
 test('pen contacts ignore repeated starts and unrelated cancellations without losing their initiating pointer', () => {
   const input = new InkInputService();
@@ -3555,4 +2202,68 @@ test('a stylus takeover completes finger ink before acquiring the new pen pointe
     input: { isActive: () => true, isPenActive: () => false, read: () => { order.push('read new pen'); return { phase: 'ignore' }; } },
     finishStroke: () => order.push('finish old finger') };
   handle.call(view, touchEvent(0, 7, 2)); assert.deepEqual(order, ['finish old finger', 'read new pen']);
+});
+
+const { GraphTopicPolicy } = load(`${base}services/GraphTopicPolicy.ets`);
+test('empty saved projects and note-only categories share one deduplicated topic list', () => {
+  assert.deepEqual(plain(GraphTopicPolicy.topics([{category:'课程'}, {category:'课程'}, {category:''}],
+    [{name:'空主题'}, {name:'课程'}, {name:' 空主题 '}])),
+    [{name:'空主题',count:0},{name:'课程',count:2},{name:'未分类',count:1}]);
+  assert.equal(GraphTopicPolicy.topics([], [{name:'all'}])[0].name, 'all');
+});
+
+test('actual theme creation waits for persistence, prevents double clicks and survives reload', async () => {
+  const create = viewMethod('pages/Index.ets', 'createProject');
+  let release, saved; const calls=[];
+  const view={customProjects:[], projectCreateBusy:false, getAbilityContext:()=>({}),
+    storage:{saveProjects:(_,next)=>new Promise(resolve=>{saved=plain(next);release=resolve;})},
+    rebuildSpaces:()=>calls.push('refresh'), notify:message=>calls.push(message)};
+  const pending=create.call(view,'空主题','#6366F1','📁');
+  assert.equal(view.customProjects.length,0); assert.equal(calls.length,0);
+  assert.equal(await create.call(view,'重复点击','#6366F1','📁'),false);
+  release(); assert.equal(await pending,true); assert.equal(view.customProjects[0].name,'空主题');
+  assert.equal(GraphTopicPolicy.topics([],saved)[0].count,0);
+  assert.equal(await create.call(view,'空主题','#6366F1','📁'),false);
+});
+
+test('theme persistence failure leaves the original state and permits retry', async () => {
+  const create=viewMethod('pages/Index.ets','createProject');
+  const original=[{name:'已有主题'}];const messages=[];
+  const view={customProjects:original,projectCreateBusy:false,getAbilityContext:()=>({}),
+    storage:{saveProjects:async()=>{throw Error('full');}},notify:m=>messages.push(m),rebuildSpaces:()=>assert.fail('uncommitted refresh')};
+  assert.equal(await create.call(view,'新主题','',''),false);
+  assert.equal(view.customProjects,original);assert.equal(view.projectCreateBusy,false);
+  assert.match(messages[0],/失败/);
+});
+
+for(const outcome of ['success','failure','exception','leave']) {
+  test(`graph confirmation preserves input until its ${outcome} result`,async()=>{
+    const submit=viewMethod('views/workspace/GraphWorkspace.ets','submitGalaxy',{promptAction:{showToast(){}}});
+    let release,writes=0,draws=0;
+    const view={galaxySaving:false,newGalaxyName:' 数学 ',alive:true,activeGalaxy:'__all_topics__',isCreatingGalaxy:true,
+      getGalaxies:()=>[],canvasReady:true,drawGraph:()=>draws++,
+      onCreateGalaxy:()=>{writes++;return new Promise((resolve,reject)=>{release=()=>outcome==='exception'?reject(Error('full')):resolve(outcome!=='failure');});}};
+    const pending=submit.call(view);await submit.call(view);assert.equal(writes,1);assert.equal(view.newGalaxyName,' 数学 ');
+    if(outcome==='leave')view.alive=false;
+    release();await pending;
+    if(outcome==='success'){assert.equal(view.activeGalaxy,'数学');assert.equal(view.newGalaxyName,'');assert.equal(view.isCreatingGalaxy,false);assert.equal(draws,1);}
+    else{assert.equal(view.activeGalaxy,'__all_topics__');assert.equal(view.newGalaxyName,' 数学 ');assert.equal(draws,0);}
+  });
+}
+
+test('local formatter preserves original facts, negation, code and formulas without any provider', async () => {
+  const service=load(extractFile).SmartExtractService.getInstance();
+  const source='【课程通知】\n一、作业\n2026年10月20日前提交报告。\n无需报名。\n```\n准备删除记录\n```\n$$\nx = 12\n$$';
+  const result=await service.extract(source,'整理笔记','study');
+  assert.equal(result.processingMode,'local');assert.equal(result.rawMarkdown,source);
+  assert.match(result.formattedMarkdown,/## 一、作业/);assert.match(result.formattedMarkdown,/无需报名/);
+  assert.equal(result.tasks.length,1);assert.match(result.tasks[0].title,/提交报告/);
+  assert.match(result.formattedMarkdown,/x = 12/);assert.match(result.formattedMarkdown,/准备删除记录/);
+});
+
+test('project dialog stays open on failure and closes only after successful save',async()=>{
+  const submit=viewMethod('views/layout/sheets/NewProjectSheet.ets','submit');let close=0;
+  const view={name:'数学',color:'',icon:'',saving:false,error:'',onClose:()=>close++,onCreateProject:async()=>false};
+  await submit.call(view);assert.equal(close,0);assert.match(view.error,/未能创建/);
+  view.onCreateProject=async()=>true;await submit.call(view);assert.equal(close,1);
 });

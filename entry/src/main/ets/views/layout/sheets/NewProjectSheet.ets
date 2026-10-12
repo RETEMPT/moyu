@@ -24,7 +24,7 @@ const PRESET_COLORS: string[] = [
 @Component
 export struct NewProjectSheet {
   onClose: () => void = () => {};
-  onCreateProject: (name: string, color: string, icon: string) => void = () => {};
+  onCreateProject: (name: string, color: string, icon: string) => Promise<boolean> = async () => false;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
@@ -34,15 +34,22 @@ export struct NewProjectSheet {
   @State private color: string = PRESET_COLORS[0];
   @State private isFocused: boolean = false;
   private cleared: boolean = false;
+  @State private saving: boolean = false;
+  @State private error: string = '';
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
-  private submit(): void {
+  private async submit(): Promise<void> {
+    if (this.saving) { return; }
     const trimmed: string = this.name.trim();
-    this.onCreateProject(trimmed.length > 0 ? trimmed : '未命名项目', this.color, this.icon);
-    this.onClose();
+    this.saving = true; this.error = '';
+    try {
+      if (await this.onCreateProject(trimmed.length > 0 ? trimmed : '未命名项目', this.color, this.icon)) { this.onClose(); }
+      else { this.error = '未能创建，请检查名称或重试'; }
+    } catch { this.error = '保存失败，请重试'; }
+    finally { this.saving = false; }
   }
 
   build() {
@@ -67,6 +74,8 @@ export struct NewProjectSheet {
         .width('100%')
 
         TextInput({ text: this.name, placeholder: '未命名项目' })
+          .maxLength(80)
+          .enabled(!this.saving)
           .fontSize(TypographyTokens.TITLE_SUB)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.palette().inkPrimary)
@@ -99,19 +108,22 @@ export struct NewProjectSheet {
         this.iconPicker()
         this.colorPicker()
 
+        if (this.error) { Text(this.error).fontSize(13).fontColor(this.palette().danger).width('100%') }
         Row({ space: 10 }) {
           Button('取消')
             .layoutWeight(1)
-            .height(38)
+            .height(48)
+            .enabled(!this.saving)
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().inkSecondary)
             .backgroundColor(this.palette().surfaceSubtle)
             .borderRadius(10)
             .onClick(() => this.onClose())
 
-          Button('创建项目')
+          Button(this.saving ? '正在保存…' : '创建项目')
             .layoutWeight(1.2)
-            .height(38)
+            .height(48)
+            .enabled(!this.saving)
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.palette().onAccent)
@@ -145,7 +157,7 @@ export struct NewProjectSheet {
     .alignItems(HorizontalAlign.Center)
     .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.35)')
     .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }))
-    .onClick(() => this.onClose())
+    .onClick(() => { if (!this.saving) { this.onClose(); } })
   }
 
   @Builder

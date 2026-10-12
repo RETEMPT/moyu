@@ -1,5 +1,5 @@
 /**
- * AI 提取的实体（人 / 地点 / 时间 / 课程 / 文档 / 概念）
+ * 原文提取的实体（人 / 地点 / 时间 / 课程 / 文档 / 概念）
  */
 export type SmartEntityType = 'person' | 'location' | 'time' | 'course' | 'concept' | 'document' | 'other';
 

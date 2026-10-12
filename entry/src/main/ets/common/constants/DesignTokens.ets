@@ -31,7 +31,7 @@ export interface ColorPalette {
   // ---- UI/UX Pro Max 扩展语义色 ----
   primary: string;         // 核心主色
   primarySoft: string;     // 核心主色柔和浅底
-  accentPurple: string;    // AI 伴读与智能生成强调色
+  accentPurple: string;    // 阅读与整理强调色
   cardBackground: string;  // Bento 模块卡片底色
   borderFocus: string;     // 聚焦光标外框色
   statusPending: string;   // 待办/待处理状态色

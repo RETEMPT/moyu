@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseJsonc, packageErrors, deviceEvidenceErrors, REQUIRED_CASES } from './app-market-policy.mjs';
 
-const expected = { bundleName:'com.retempt.flowmind', versionName:'1.0.4', versionCode:1001004,
-  minApi:24,targetApi:26, devices:['phone','tablet'], permissions:['ohos.permission.INTERNET','ohos.permission.DISTRIBUTED_DATASYNC'],
+const expected = { bundleName:'com.retempt.flowmind', versionName:'1.0.5', versionCode:1001005,
+  minApi:24,targetApi:26, devices:['phone','tablet'], permissions:['ohos.permission.DISTRIBUTED_DATASYNC'],
   sourceCommit:'abcdef',appSha256:'artifact-sha' };
 const pack = () => ({ appSha256:'artifact-sha',pack:{ summary:{app:{bundleName:expected.bundleName,version:{code:expected.versionCode,name:expected.versionName}}}},
   modules:[{module:{name:'entry',deviceTypes:expected.devices,requestPermissions:expected.permissions.map(name=>({name}))},
@@ -34,7 +34,7 @@ const qa = () => ({versionCode:expected.versionCode,appSha256:expected.appSha256
 test('complete recent physical-device evidence must match the exact APP and source',()=>{
   assert.deepEqual(deviceEvidenceErrors(qa(),expected),[]);
   for (const change of [e=>{e.appSha256='old-package';}, e=>{e.sourceCommit='old-commit';}, e=>{e.devices[0].physical=false;},
-    e=>{e.devices[0].cases.ai_consent_revoke.status='TODO';},e=>{e.devices[1].cases.backup_restore.evidence='';},
+    e=>{e.devices[0].cases.local_formatting.status='TODO';},e=>{e.devices[1].cases.backup_restore.evidence='';},
     e=>{e.devices[0].checkedAt='2000-01-01';},e=>{e.devices[0].checkedAt='2099-01-01';}]) {
     const e=qa();change(e);assert.ok(deviceEvidenceErrors(e,expected).length);
   }

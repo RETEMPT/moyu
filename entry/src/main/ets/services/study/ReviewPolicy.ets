@@ -49,25 +49,6 @@ export class ReviewPolicy {
       createdAt: card.createdAt, updatedAt: now, lastRating: rating };
   }
 
-  static generated(raw: string, note: NoteItem): ReviewDraft[] {
-    const clean = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-    const parsed = JSON.parse(clean) as ReviewDraft[];
-    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 6) { throw new Error('题卡格式无效，请重试'); }
-    const valid: ReviewDraft[] = [];
-    for (const draft of parsed) {
-      if (!draft || typeof draft.question !== 'string' || typeof draft.answer !== 'string' ||
-        !draft.question.trim() || !draft.answer.trim() || draft.question.length > 4000 || draft.answer.length > 12000 ||
-        typeof draft.sourceText !== 'string' || draft.sourceText.trim().length < 8 || draft.sourceText.length > 2000) { continue; }
-      const source = draft.pageNumber !== undefined ? StudySourceService.pages(note)
-        .find((p) => p.pageNumber === draft.pageNumber)?.text || '' : note.contentDetail;
-      if (!source.replace(/\s+/g, '').includes(draft.sourceText.replace(/\s+/g, ''))) { continue; }
-      if (valid.some((item: ReviewDraft) => item.question === draft.question.trim())) { continue; }
-      valid.push({ question: draft.question.trim(), answer: draft.answer.trim(), sourceText: draft.sourceText.trim(), pageNumber: draft.pageNumber });
-    }
-    if (valid.length === 0) { throw new Error('生成内容没有可核对的原文依据，未保存题卡'); }
-    return valid;
-  }
-
   static courses(notes: NoteItem[], cards: ReviewCard[], todos: TodoItem[], now: number = Date.now()): CourseSummary[] {
     const grouped: Map<string, CourseSummary> = new Map();
     const noteCourses: Map<string, string> = new Map();

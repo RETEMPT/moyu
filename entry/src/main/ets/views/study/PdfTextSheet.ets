@@ -63,7 +63,7 @@ export struct PdfTextSheet {
         Scroll() {
         Column({ space: 12 }) {
         Text(`${this.note.title} · 共 ${this.note.pageCount || 1} 页`).fontSize(13).fontColor(this.palette().inkSecondary).width('100%')
-        Text('端侧处理，每次最多 30 页。保存后的文字用于搜索、AI 引用与题卡；原 PDF 和笔迹保留。').fontSize(13)
+        Text('端侧处理，每次最多 30 页。保存后的文字用于原文搜索与题卡；原 PDF 和笔迹保留。').fontSize(13)
           .fontColor(this.palette().inkSecondary).width('100%')
         Row({ space: 8 }) {
           TextInput({ text: this.start, placeholder: '起始页' }).type(InputType.Number).layoutWeight(1).onChange((value: string) => { this.start = value; }).enabled(!this.busy)

@@ -1,8 +1,8 @@
 /**
- * AI 结构化解析核心成果 (SmartContent)
+ * 原文结构化整理核心成果 (SmartContent)
  *
  * 用户输入图片、PDF、文档或碎片文字后，
- * AI 统一输出此结构化数据，闭环转为：知识卡、待办行动、关联图谱。
+ * 本地规则提取此结构化数据，闭环转为：知识卡、待办行动、关联图谱。
  */
 import { SmartEntity } from './SmartEntity';
 import { SmartTask } from './SmartTask';
@@ -25,7 +25,7 @@ export interface SmartContent {
   rawMarkdown?: string;
   /** 排版正文与原文分开保留。 */
   formattedMarkdown?: string;
-  processingMode?: 'ai' | 'local';
+  processingMode?: 'local';
   processingNotice?: string;
   category?: string;
   createdAt: number;

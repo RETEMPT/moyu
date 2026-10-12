@@ -1,5 +1,5 @@
 {
-  "versionCode": 1001003,
+  "versionCode": 1001005,
   "appSha256": "",
   "sourceCommit": "",
   "devices": [
@@ -32,14 +32,6 @@
           "evidence": ""
         },
         "permission_denied": {
-          "status": "TODO",
-          "evidence": ""
-        },
-        "ai_consent_revoke": {
-          "status": "TODO",
-          "evidence": ""
-        },
-        "ai_failure_cancel": {
           "status": "TODO",
           "evidence": ""
         },
@@ -79,15 +71,23 @@
           "status": "TODO",
           "evidence": ""
         },
-        "local_assistant": {
-          "status": "TODO",
-          "evidence": ""
-        },
         "create_note": {
           "status": "TODO",
           "evidence": ""
         },
         "stylus_handwriting": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "local_formatting": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "graph_topic_persistence": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "local_feature_scope": {
           "status": "TODO",
           "evidence": ""
         }
@@ -125,14 +125,6 @@
           "status": "TODO",
           "evidence": ""
         },
-        "ai_consent_revoke": {
-          "status": "TODO",
-          "evidence": ""
-        },
-        "ai_failure_cancel": {
-          "status": "TODO",
-          "evidence": ""
-        },
         "backup_restore": {
           "status": "TODO",
           "evidence": ""
@@ -169,15 +161,23 @@
           "status": "TODO",
           "evidence": ""
         },
-        "local_assistant": {
-          "status": "TODO",
-          "evidence": ""
-        },
         "create_note": {
           "status": "TODO",
           "evidence": ""
         },
         "stylus_handwriting": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "local_formatting": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "graph_topic_persistence": {
+          "status": "TODO",
+          "evidence": ""
+        },
+        "local_feature_scope": {
           "status": "TODO",
           "evidence": ""
         }

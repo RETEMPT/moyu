@@ -17,13 +17,6 @@
     "publisher": "",
     "bundleName": "com.retempt.flowmind"
   },
-  "ai-service": {
-    "kind": "ai-service",
-    "reviewed": false,
-    "reviewer": "",
-    "checkedAt": "",
-    "reference": ""
-  },
   "signing": {
     "kind": "signing",
     "reviewed": false,
@@ -36,5 +29,12 @@
     "distribution": "app_gallery",
     "certificateChainSha256": "",
     "appSha256": ""
+  },
+  "feature-scope": {
+    "kind": "feature-scope",
+    "reviewed": false,
+    "reviewer": "",
+    "checkedAt": "",
+    "reference": ""
   }
 }

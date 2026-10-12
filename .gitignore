@@ -37,3 +37,4 @@
 /release/*.local.json
 /release/reports/
 /release/evidence/
+/tmp/

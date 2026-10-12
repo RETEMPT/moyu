@@ -10,7 +10,6 @@ export const NAV_LIBRARY: string = '资料库';
 export const NAV_GRAPH: string = '图谱';
 /** 自由画布与助手工作台 */
 export const NAV_CANVAS: string = '白板';
-export const NAV_AI: string = '墨客';
 /** 待办日历与回收站导航键 */
 export const NAV_TODO: string = '待办';
 export const NAV_TRASH: string = '回收站';

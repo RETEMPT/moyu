@@ -125,13 +125,13 @@ function renderer() {
     animateTo: (_, action) => action(), RenderingContextSettings: inert, CanvasRenderingContext2D: inert, OffscreenCanvas: inert, Scroller: inert,
     TransitionEffect: new Proxy({}, { get: (_, key) => key === 'OPACITY' ? { animation() { return this; } } : () => ({ combine() { return this; }, animation() { return this; } }) }),
     SourceTool: { Finger: 1, Pen: 2 }, TouchType: { Down: 0, Up: 1, Move: 2, Cancel: 3 } };
-  for (const name of ['Button', 'Column', 'Row', 'Text', 'Blank', 'Image', 'Stack', 'Scroll', 'TextInput', 'TextArea',
+  for (const name of ['Button', 'Column', 'Row', 'Text', 'Span', 'Blank', 'Image', 'Stack', 'Scroll', 'TextInput', 'TextArea',
     'Divider', 'Canvas', 'Circle', 'Menu', 'MenuItem', 'MenuItemGroup', 'If', 'ForEach', 'LazyForEach', 'Slider', 'Flex', 'Context', 'List', 'ListItem', 'Swiper', 'GridRow', 'GridCol', '__Common__', 'Gesture', 'PinchGesture']) globals[name] = native(name);
   for (const name of ['ButtonType', 'FontWeight', 'Color', 'HorizontalAlign', 'FlexAlign', 'TextAlign', 'TextOverflow',
-    'ScrollDirection', 'BarState', 'Alignment', 'ItemAlign', 'Placement', 'Curve', 'HitTestMode', 'HoverEffect',
-    'GestureMode', 'GestureDirection', 'GesturePriority', 'GestureJudgeResult', 'ScrollAlign', 'TransitionEdge', 'ModifierKey', 'ImageFit', 'ImageInterpolation', 'SliderStyle', 'FlexWrap', 'FlexDirection', 'ItemAlign', 'ResponseType', 'VerticalAlign', 'InputType']) globals[name] = enums;
-  const realViews = new Set(['views/common/IconButton', 'views/common/AppIcon', 'views/common/InkWidthSlider',
-    'views/reader/HandwritingCanvas', 'views/ai/AiWorkspace', 'views/ai/ChatHistorySidebar',
+    'ScrollDirection', 'BarState', 'Alignment', 'ItemAlign', 'Placement', 'Curve', 'HitTestMode', 'HoverEffect', 'Visibility',
+    'GestureMode', 'GestureDirection', 'GesturePriority', 'GestureJudgeResult', 'ScrollAlign', 'TransitionEdge', 'ModifierKey', 'ImageFit', 'ImageInterpolation', 'SliderStyle', 'FlexWrap', 'FlexDirection', 'ItemAlign', 'ResponseType', 'VerticalAlign', 'InputType', 'FontStyle', 'TextDecorationType', 'CopyOptions']) globals[name] = enums;
+  const realViews = new Set(['views/common/IconButton', 'views/common/AppIcon', 'views/common/InkWidthSlider', 'views/common/DocumentText',
+    'views/reader/HandwritingCanvas', 'views/workspace/GraphWorkspace', 'views/layout/BottomNavBar',
     'views/reader/huawei/HuaweiDocWorkspace', 'views/reader/pdf/PdfAnnotatorView', 'views/reader/pdf/PdfPageCanvas', 'views/layout/Sidebar', 'views/brand/BrandMark', 'views/workspace/HomeWorkspace']);
   function load(relative, compiled = realViews.has(relative)) {
     const key = `${compiled}:${relative}`; if (modules.has(key)) return modules.get(key).exports;
@@ -145,7 +145,7 @@ function renderer() {
       if (!dependency) throw Error(`Unmapped import ${specifier}`);
       if (dependency === 'views/reader/pdf/PdfPageCanvas') return { PdfPageCanvas: PdfPageAdapter };
       if (realViews.has(dependency)) return load(dependency, true);
-      if (dependency.startsWith('common/') || dependency.startsWith('services/ink/') || dependency === 'services/document/PdfPageDataSource' || dependency === 'services/ai/ChatHistoryPolicy' || dependency === 'services/ai/AiReferenceSearch') {
+      if (dependency.startsWith('common/') || dependency.startsWith('services/ink/') || dependency === 'services/document/PdfPageDataSource' || dependency === 'services/GraphTopicPolicy' || dependency === 'services/document/DocumentTextParser') {
         if (dependency.endsWith('StylusShortcutService')) return { StylusShortcutService: inert };
         return load(dependency, false);
       }
@@ -186,31 +186,6 @@ test('compiled whiteboard click updates the actual eraser button, icon and pen s
   ui.click('荧光笔'); assert.equal(ui.find('荧光笔').props.backgroundColor, view.palette().accentSoft);
   assert.equal(eraserIcon.props.fillColor, view.palette().inkSecondary);
   assert.notEqual(ui.find('橡皮').props.backgroundColor, view.palette().accentSoft);
-});
-
-test('compiled AI plus and more open real menu items; switching and outside dismissal reset state', () => {
-  const ui = renderer(); const view = ui.mount('views/ai/AiWorkspace', 'AiWorkspace', {});
-  ui.click('添加资料与任务'); assert.equal(view.plusMenuOpen, true); assert.ok(ui.find('引用库内资料'));
-  assert.equal(ui.find('讲解引用资料').props.enabled, false);
-  ui.click('引用库内资料'); assert.equal(view.pickerOpen, true); assert.equal(view.plusMenuOpen, false);
-  ui.click('对话操作'); assert.equal(view.conversationMenuOpen, true); assert.ok(ui.find('助手与模型设置'));
-  const menu = [...ui.nodes.values()].find(node => node.props.bindMenu?.[0] === true);
-  menu.props.bindMenu[2].onDisappear(); ui.flush(); assert.equal(view.conversationMenuOpen, false);
-  ui.click('添加资料与任务'); assert.equal(view.plusMenuOpen, true);
-  let toggles = 0; view.onToggleHistory = () => { toggles++; view.historyOpen = !view.historyOpen; };
-  ui.click('对话记录'); assert.equal(toggles, 1); assert.equal(ui.find('对话记录').props.backgroundColor, view.palette().accentSoft);
-  ui.click('对话记录'); assert.equal(toggles, 2); assert.equal(view.historyOpen, false);
-  const unchanged = Object.fromEntries(['currentNote', 'todos', 'reviewCards', 'stats', 'activeSessionId', 'externalPinnedNotes',
-    'prefilledPrompt', 'toolsEnabled', 'contextPanelOpen', 'backRequestToken', 'historyOpen'].map(name => [name, view[name]]));
-  view.updateStateVars({ ...unchanged, allNotes: [{ id: 'new', title: '新导入的资料', type: 'Markdown' }] }); ui.flush();
-  assert.equal(view.pickerCandidates()[0].id, 'new');
-  view.sessionLoadBusy = true; ui.flush(); assert.ok(ui.find('正在读取对话…'));
-  assert.equal(ui.find('添加资料与任务').props.enabled, false);
-  assert.equal(ui.find('新建对话').props.enabled, false);
-  view.sessionLoadBusy = false; view.sessionLoadError = '对话读取失败'; ui.flush();
-  assert.ok(ui.find('重新读取')); assert.equal(ui.find('添加资料与任务').props.enabled, false);
-  assert.equal(ui.find('新建对话').props.enabled, true);
-  let retried = 0; view.loadSessionById = () => { retried++; }; ui.click('重新读取'); assert.equal(retried, 1);
 });
 
 test('compiled compact reader enters writable annotation and restores the single reading row on return', () => {
@@ -260,23 +235,11 @@ test('compiled whole-page pager swipes vertically, keeps page callbacks bound an
   view.zoomScale = 2; ui.flush(); assert.equal(pager.props.disableSwipe, true);
 });
 
-test('compiled document more contains working scratchpad and companion navigation actions', () => {
+test('compiled document more contains working scratchpad navigation without removed companion actions', () => {
   const ui = renderer(); const view = ui.mount('views/reader/huawei/HuaweiDocWorkspace', 'HuaweiDocWorkspace', { note: { id: 'pdf', title: '课堂', type: 'Doc', tag: 'PDF', sourceType: 'pdf' } }, 'topNavigationBar');
   ui.click('更多文档操作'); assert.ok(ui.find('打开随堂稿纸'));
   ui.click('打开随堂稿纸'); assert.equal(view.splitMode, 'scratchpad'); assert.equal(view.documentMenuOpen, false);
-  ui.click('更多文档操作'); ui.click('打开 AI 伴读'); assert.equal(view.splitMode, 'ai');
-});
-
-test('compiled history replaces navigation, filters rows and retains callbacks for a selected conversation', () => {
-  const ui = renderer(); const selected = [];
-  const sessions = [{ id: 'a', title: '数学笔记', messages: [{ role: 'user', text: '复习线性代数' }], updatedAt: Date.now(), pinned: false },
-    { id: 'b', title: '英语阅读', messages: [], updatedAt: 1, pinned: true }];
-  const view = ui.mount('views/layout/Sidebar', 'Sidebar', { historyOpen: true, sessions, onSelectSession: session => selected.push(session.id) });
-  assert.equal(ui.find('项目与资料'), undefined); assert.ok(ui.find('对话记录'));
-  ui.click('打开对话：数学笔记'); assert.deepEqual(selected, ['a']);
-  const input = [...ui.nodes.values()].find(node => node.type === 'TextInput'); input.props.onChange('英语'); ui.flush();
-  assert.equal(ui.find('打开对话：数学笔记'), undefined); assert.ok(ui.find('打开对话：英语阅读'));
-  view.historyOpen = false; ui.flush(); assert.ok(ui.find('项目与资料')); assert.equal(ui.find('对话记录'), undefined);
+  ui.click('更多文档操作'); assert.equal(ui.find('打开 AI 伴读'), undefined);
 });
 
 test('compiled shelf has bounded initial cards, no cover shortcut and retains cover selection in the context menu', () => {
@@ -314,4 +277,36 @@ test('compiled textbook uses a lazy page source and routes last-page annotation 
   last.props.onEraseStarted(); last.props.onStrokeAdded({ pageIndex: 599 });
   assert.deepEqual(erased, [599]); assert.equal(strokes[0].pageIndex, 599);
   list.props.onScrollIndex(599); ui.flush(); assert.equal(view.currentPageIdx, 599); assert.deepEqual(selected, [600]);
+});
+
+for (const phone of [true, false]) {
+  test(`compiled ${phone ? 'phone' : 'tablet'} graph shows empty topics and awaits confirmation`, async () => {
+    const ui=renderer();let release;
+    const view=ui.mount('views/workspace/GraphWorkspace','GraphWorkspace',{
+      projects:[{name:'空主题'}],allNotes:[],onCreateGalaxy:()=>new Promise(resolve=>{release=resolve;})},
+      'initialRender', v=>{v.isPhone=phone;});
+    assert.ok(ui.find('空主题'));ui.click('新建主题');
+    const input=[...ui.nodes.values()].find(node=>node.props.accessibilityText==='主题名称');
+    assert.equal(input.props.height,48);assert.equal(input.props.width,'100%');
+    input.props.onChange('数学');ui.flush();
+    const confirming=ui.find('确定新建主题').props.onClick();ui.flush();
+    assert.equal(view.isCreatingGalaxy,true);assert.equal(ui.find('确定新建主题').props.enabled,false);
+    release(true);await confirming;ui.flush();
+    assert.equal(view.activeGalaxy,'数学');assert.equal(view.isCreatingGalaxy,false);
+  });
+}
+
+test('compiled phone navigation and tablet sidebar omit removed workspaces',()=>{
+  for(const [file,name] of [['views/layout/BottomNavBar','BottomNavBar'],['views/layout/Sidebar','Sidebar']]) {
+    const ui=renderer();ui.mount(file,name,{});
+    assert.equal(ui.find('墨客'),undefined);assert.equal(ui.find('伴读'),undefined);
+    assert.ok(ui.find(name === 'Sidebar' ? '知识图谱' : '首页'));
+  }
+});
+
+test('compiled local preview retains headings and code and refreshes without streaming state',()=>{
+  const ui=renderer();const view=ui.mount('views/common/DocumentText','DocumentText',
+    {text:'# 校对结果\n\n```\nx = 12\n```'},'initialRender',v=>v.aboutToAppear());
+  assert.ok(ui.find('校对结果'));assert.ok(ui.find('x = 12'));assert.equal(ui.find('生成中…'),undefined);
+  view.text='# 更新原文';view.refresh();ui.flush();assert.ok(ui.find('更新原文'));assert.equal(ui.find('x = 12'),undefined);
 });

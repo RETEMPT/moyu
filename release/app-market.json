@@ -8,10 +8,10 @@
   "privacyResponseWorkingDays": 15,
   "sdkReleaseEvidence": "",
   "qualificationEvidence": "",
-  "aiServiceReviewEvidence": "",
   "deviceEvidence": "",
   "screenshots": [],
-  "previousReleaseCode": 1001003,
+  "previousReleaseCode": 1001004,
   "signingEvidence": "",
-  "assistantMode": "local-default-byok"
+  "assistantMode": "local-rules-only",
+  "featureScopeReviewEvidence": ""
 }

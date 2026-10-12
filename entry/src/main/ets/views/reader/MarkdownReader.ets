@@ -20,8 +20,8 @@ import { NoteCoverVisual } from './NoteCoverVisual';
 import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
 import { SystemShareService } from '../../services/SystemShareService';
-import { AssistantText } from '../common/AssistantText';
-import { AssistantTextParser, AssistantBlock, AssistantSpan } from '../../services/ai/AssistantTextParser';
+import { DocumentText } from '../common/DocumentText';
+import { DocumentTextParser, DocumentBlock, DocumentSpan } from '../../services/document/DocumentTextParser';
 
 /** 输入停止后延迟落盘的毫秒数 */
 const AUTOSAVE_DELAY_MS: number = 800;
@@ -339,7 +339,7 @@ export struct MarkdownReader {
 
   private parseBlocks(source: string): MarkdownBlock[] {
     const lines = source.replace(/\r\n/g, '\n').split('\n');
-    return AssistantTextParser.parse(source).map((block: AssistantBlock): MarkdownBlock => {
+    return DocumentTextParser.parse(source).map((block: DocumentBlock): MarkdownBlock => {
       const task = block.kind === 'list' ? this.parseTask(lines[block.line].trim()) : null;
       let kind = block.kind;
       if (kind === 'list') { kind = task ? 'task' : /^\d/.test(block.marker) ? 'ordered' : 'bullet'; }
@@ -668,7 +668,7 @@ export struct MarkdownReader {
     Flex({ wrap: FlexWrap.Wrap }) {
       ForEach(this.splitSegments(text), (segment: TextSegment) => {
         Text() {
-          ForEach(AssistantTextParser.spans(segment.text), (span: AssistantSpan) => {
+          ForEach(DocumentTextParser.spans(segment.text), (span: DocumentSpan) => {
             Span(span.text).fontWeight(span.style === 'bold' ? FontWeight.Bold : weight)
               .fontStyle(span.style === 'italic' ? FontStyle.Italic : FontStyle.Normal)
               .fontFamily(span.style === 'code' ? 'monospace' : 'sans-serif')
@@ -762,7 +762,7 @@ export struct MarkdownReader {
       .padding({ left: 6 })
       .margin({ top: 2, bottom: 2 })
     } else if (block.kind === 'table' || block.kind === 'math' || block.kind === 'code') {
-      AssistantText({ text: block.text })
+      DocumentText({ text: block.text })
     } else if (block.kind === 'divider') {
       Divider()
         .strokeWidth(1)

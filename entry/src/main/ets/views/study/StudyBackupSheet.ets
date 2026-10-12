@@ -108,7 +108,7 @@ export struct StudyBackupSheet {
         }.width('100%')
         Scroll() {
         Column({ space: 12 }) {
-        Text('包含笔记、原 PDF、自定义封面、笔迹、已提取页面和复习题卡。日历、回收站、会话与模型密钥不在此备份内。')
+        Text('包含笔记、原 PDF、自定义封面、笔迹、已提取页面和复习题卡。日历与回收站不在此备份内。')
           .fontSize(14).fontColor(this.palette().inkSecondary).width('100%')
         Text('文件未加密，请保存到可信位置；可自行存到系统文件选择器支持的网盘。恢复会创建副本，每份资料独立保存。')
           .fontSize(13).fontColor(this.palette().inkSecondary).width('100%')

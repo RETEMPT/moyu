@@ -8,8 +8,6 @@ import { SETTINGS_GROUPS, SettingsGroup, SettingsEntry, SettingsCatalog } from '
 import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
 import { BrandMark } from '../brand/BrandMark';
-import { ModelSettingsSheet } from './ModelSettingsSheet';
-import { ModelSetupGuide } from './ModelSetupGuide';
 import { GUIDE_STEPS, GuideStep } from './UsageGuideSheet';
 import { promptAction } from '@kit.ArkUI';
 import { NoteItem } from '../../common/types/NoteItem';
@@ -42,7 +40,7 @@ export struct SettingsWorkspace {
   @State themeBusy: boolean = false;
   @State motionBusy: boolean = false;
   @State motionValue: boolean = false;
-  @State modelCloseToken: number = 0;
+  @State detailCloseToken: number = 0;
   @State sampleBusy: boolean = false;
   @State version: string = '';
   private pendingSection: string = 'overview';
@@ -65,7 +63,6 @@ export struct SettingsWorkspace {
     if (this.section === target) { return; }
     this.leavePending = false;
     this.pendingSection = target;
-    if (this.section === 'ai') { this.modelCloseToken++; return; }
     this.applyNavigation();
   }
   private applyNavigation(): void {
@@ -78,11 +75,11 @@ export struct SettingsWorkspace {
   }
   private requestExit(): void {
     this.leavePending = true;
-    if (this.section === 'ai') { this.modelCloseToken++; } else { this.applyNavigation(); }
+    this.applyNavigation();
   }
   private icon(id: string): Resource {
     if (id === 'theme') { return $r('app.media.ic_cover'); }
-    if (id === 'ai' || id === 'capture') { return $r('app.media.ic_sparkle'); }
+    if (id === 'capture') { return $r('app.media.ic_format'); }
     if (id === 'backup') { return $r('app.media.ic_cloud'); }
     if (id === 'ecosystem') { return $r('app.media.ic_pen'); }
     if (id === 'guide' || id === 'about') { return $r('app.media.ic_help'); }
@@ -146,7 +143,7 @@ export struct SettingsWorkspace {
           .accessibilityText('搜索设置').onChange((value: string) => { this.search = value; })
         if (SettingsCatalog.search(this.search).length === 0) {
           this.heading('没有找到设置')
-          this.paragraph('试试“主题”“备份”或“API”，也可以清空搜索浏览分类。')
+          this.paragraph('试试“主题”“备份”或“文字识别”，也可以清空搜索浏览分类。')
           this.action('清空搜索', () => { this.search = ''; })
         }
         ForEach(SETTINGS_GROUPS, (group: SettingsGroup) => {
@@ -218,8 +215,8 @@ export struct SettingsWorkspace {
       this.paragraph('资料保存在应用沙箱。卸载前或换机前，请导出本地备份；重新安装不会自动找回旧资料。')
       this.action('备份与传递', () => this.navigate('backup'))
     } else if (name === 'capture') {
-      this.heading('不配置大模型，也能收集和整理')
-      this.paragraph('图片由鸿蒙系统文字识别处理，识别后先校对，再使用本地规则排版。粘贴文字也可以直接整理，不需要 Key。')
+      this.heading('收集和整理原文')
+      this.paragraph('图片由鸿蒙系统文字识别处理，识别后先校对，再使用本地规则排版。粘贴文字也可以直接整理，在本机完成。')
       this.action('识别与整理文字', this.onOpenCapture, true)
       this.heading('两种整理方式')
       this.paragraph('保留原文：保留原顺序与段落。学习笔记：将明确的标题和项目符号整理成层级，不补写原文没有的知识。')
@@ -231,24 +228,22 @@ export struct SettingsWorkspace {
       this.paragraph('导出文件留作换机备份；恢复时创建副本。附近传递需要双方主动确认，是否发现设备取决于系统授权、可信设备与网络条件。')
       this.action('打开备份与传递', this.onOpenBackup, true)
       this.heading('备份范围')
-      this.paragraph('备份是明文文件，包含资料、原 PDF、封面、笔迹与题卡。不含待办、对话、回收站和模型密钥，请妥善保存文件。')
+      this.paragraph('备份是明文文件，包含资料、原 PDF、封面、笔迹与题卡。不含待办和回收站，请妥善保存文件。')
       this.heading('云服务状态')
-      this.paragraph('团队云盘、云备份与云 AI 尚未开放。当前不会在后台自动上传资料，也不提供华为账号自动云同步。')
-      this.action('AI 与模型', () => this.navigate('ai'))
+      this.paragraph('本地文件备份与附近设备传递由你主动发起，不在后台自动上传资料。')
     } else if (name === 'ecosystem') {
       this.heading('与系统能力协作')
       this.paragraph('手机保留底部导航；Pad 使用同一组图标。布局跟随窗口宽度，分屏或小窗口会收为单页。')
       this.heading('系统分享与文件')
-      this.paragraph('导入 PDF 会复制到本机资料库，保留外部原文件，重启后可继续阅读。墨客和智能提取导入的资料在“外部参考”中查看。系统分享可选择接收方；分享原 PDF 不包含应用内笔迹，完整笔迹可通过资料备份传递。')
+      this.paragraph('导入 PDF 会复制到本机资料库，保留外部原文件，重启后可继续阅读。文字整理导入的资料在“外部参考”中查看。系统分享可选择接收方；分享原 PDF 不包含应用内笔迹，完整笔迹可通过资料备份传递。')
       this.heading('手写笔')
       this.paragraph('笔在系统中配对。应用处理笔/手指分流、压力、撤销与重做；双击与轻捏依赖 Penkit、笔型号和设备支持，需在支持设备上验收。')
-      this.heading('文字识别与密钥')
-      this.paragraph(canIUse('SystemCapability.AI.OCR.TextRecognition') ? '系统声明支持文字识别；无大模型配置即可从图片提取文字，实际效果与图片清晰度有关。' : '此设备未声明系统文字识别能力，可粘贴文字进行本地排版。')
-      this.paragraph('自配 API 密钥由系统 HUKS 加密保护。不包含在资料备份中，换设备需要重新填写并授权。')
+      this.heading('文字识别')
+      this.paragraph(canIUse('SystemCapability.AI.OCR.TextRecognition') ? '系统声明支持文字识别；可以从图片提取文字，实际效果与图片清晰度有关。' : '此设备未声明系统文字识别能力，可粘贴文字进行本地排版。')
+      this.paragraph('附近设备连接时才申请相应权限，可在系统设置撤销。')
       this.action('备份与附近传递', () => this.navigate('backup'))
       this.action('文字识别与排版', () => this.navigate('capture'))
     } else if (name === 'guide') {
-      ModelSetupGuide({ onConfigure: () => this.navigate('ai') })
       ForEach(GUIDE_STEPS, (step: GuideStep) => {
         Column({ space: 8 }) { this.heading(step.title); this.paragraph(step.text) }
           .padding(16).borderRadius(12).backgroundColor(this.palette().surface).width('100%')
@@ -269,17 +264,16 @@ export struct SettingsWorkspace {
       }
     } else if (name === 'legal') {
       this.heading('默认本地，联网由你选择')
-      this.paragraph('离线助手按原文检索和摘录；图片识别与本地整理无需模型服务。自配 API 需要配置和授权，选用后相关输入才发送至你指定的服务商。')
+      this.paragraph('图片由系统文字识别处理，校对后通过本地规则整理。资料保存在本机，分享与传递由你主动发起。')
       this.action('阅读隐私说明与数据协议', this.onOpenPrivacy, true)
       this.heading('控制你的数据')
       this.paragraph('删除资料先进入回收站；清空需确认。系统分享由你选择接收方，附近传递接收的是副本。本地备份是明文，请自行保护。')
-      this.action('AI 授权与密钥配置', () => this.navigate('ai'))
     } else {
       BrandMark({ markSize: 64 })
       this.heading(`墨语 · FlowMind ${this.version}`)
-      this.paragraph('面向校园的本地知识工作空间：资料整理、PDF 阅读、手写记录、日程与复习，配合离线检索和可选的自配 API。')
+      this.paragraph('面向校园的本地知识工作空间：资料整理、PDF 阅读、手写记录、日程与复习，支持原文搜索与本地规则排版。')
       this.heading('开源与反馈')
-      this.paragraph('开源项目：github.com/RETEMPT/moyu。反馈时请注明版本、设备和复现步骤，避免附带密钥或私人资料。')
+      this.paragraph('开源项目：github.com/RETEMPT/moyu。反馈时请注明版本、设备和复现步骤，避免附带私人资料。')
       this.action('使用指引', () => this.navigate('guide'))
       this.action('隐私与数据', () => this.navigate('legal'))
     }
@@ -294,14 +288,10 @@ export struct SettingsWorkspace {
   @Builder
   destination(name: string) {
     NavDestination() {
-      if (name === 'ai') {
-        ModelSettingsSheet({ embedded: true, closeToken: this.modelCloseToken, onClose: () => this.applyNavigation() })
-      } else {
         Scroll() {
           Column({ space: 18 }) { this.detail(name) }
             .width('100%').constraintSize({ maxWidth: 760 }).padding(this.phone ? 16 : 24).alignItems(HorizontalAlign.Start)
         }.width('100%').height('100%').scrollBar(BarState.Auto)
-      }
     }.title(this.destinationTitle(name)).hideBackButton(true).backgroundColor(this.palette().canvas)
       .onBackPressed(() => { this.navigate('overview'); return true; })
   }

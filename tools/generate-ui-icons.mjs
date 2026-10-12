@@ -5,10 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const icons = {
-  history: '<path d="M3 11a9 9 0 1 1 2.5 7M3 4v7h7M12 7v5l3 2"/>',
   home: '<path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M9 21v-7h6v7"/>',
   note: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>',
-  sparkle: '<path d="m12 3 2.1 6.9L21 12l-6.9 2.1L12 21l-2.1-6.9L3 12l6.9-2.1Z"/><path d="M20 3v4M18 5h4"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/>',
   canvas: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m7 16 2-5 5-5 4 4-5 5-6 1ZM9 11l4 4"/>',
   graph: '<path d="m7 7 10 1M7 7l3 11M17 8l-7 10"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="8" r="3"/><circle cx="10" cy="19" r="3"/>',
@@ -31,7 +29,6 @@ const icons = {
   back: '<path d="M20 12H4m7-7-7 7 7 7"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
-  send: '<path d="m3 3 18 9-18 9 4-9ZM7 12h14"/>',
   stop: '<rect x="5" y="5" width="14" height="14" rx="3"/>',
   refresh: '<path d="M20 9a8 8 0 0 0-14-3L3 9m0-6v6h6M4 15a8 8 0 0 0 14 3l3-3m0 6v-6h-6"/>',
   chevron_left: '<path d="m15 5-7 7 7 7"/>',

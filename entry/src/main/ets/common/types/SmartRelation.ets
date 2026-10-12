@@ -1,5 +1,5 @@
 /**
- * AI 发现的知识关联 (SmartRelation)
+ * 用户确认的知识关联 (SmartRelation)
  */
 export interface SmartRelation {
   id: string;

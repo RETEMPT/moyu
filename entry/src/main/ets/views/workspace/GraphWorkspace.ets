@@ -10,12 +10,14 @@
  * 6. 轻量悬浮动作条 (Docked Action Pill)：选定节点后在画布底端弹出小巧胶囊条（高度仅 36vp），直达「连线」或「进入笔记」
  * 7. 多主题分类切换：顶部横向胶囊切换不同主题星系（如操作系统、考研数学等），亦可新建分类
  */
-import { curves, promptAction } from '@kit.ArkUI';
+import { curves, promptAction, KeyboardAvoidMode } from '@kit.ArkUI';
 import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { Backlink, LinkGraph, UnresolvedLink } from '../../common/types/LinkGraph';
 import { NoteItem } from '../../common/types/NoteItem';
 import { WorkspaceStats } from '../../common/types/WorkspaceStats';
+import { SpaceFolder } from '../../common/types/SpaceFolder';
+import { GraphTopicPolicy } from '../../services/GraphTopicPolicy';
 
 /** 纯白二叉拓扑节点 */
 export interface GraphNode {
@@ -63,11 +65,12 @@ export struct GraphWorkspace {
   @Prop @Watch('onGraphChanged') graph: LinkGraph = { backlinks: [], unresolvedLinks: [] };
   @Prop stats: WorkspaceStats = { noteCount: 0, linkCount: 0, unresolvedCount: 0, tagCount: 0 };
   @Prop @Watch('onNotesChanged') allNotes: NoteItem[] = [];
+  @Prop @Watch('onNotesChanged') projects: SpaceFolder[] = [];
 
   onSelectNoteById: (noteId: string) => void = () => {};
   onOpenNoteByTitle: (title: string) => void = () => {};
   onLinkNodes: (sourceIdentifier: string, targetTitle: string) => void = () => {};
-  onCreateGalaxy: (galaxyName: string) => void = () => {};
+  onCreateGalaxy: (galaxyName: string) => Promise<boolean> = async () => false;
 
   @StorageProp('flowmindDarkMode') @Watch('onGraphChanged') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') @Watch('onGraphChanged') themeStyle: string = 'ink';
@@ -83,7 +86,7 @@ export struct GraphWorkspace {
   @State panY: number = 0;
   @State selectedNode: GraphNode | null = null;
   @State filterMode: string = 'all'; // 'all' | 'notes' | 'unresolved'
-  @State activeGalaxy: string = 'all'; // 'all' | 具体的分类名
+  @State activeGalaxy: string = '__all_topics__'; // 'all' | 具体的分类名
 
   // 连线模式
   @State linkingMode: boolean = false;
@@ -92,6 +95,45 @@ export struct GraphWorkspace {
   // 新建主题分类
   @State isCreatingGalaxy: boolean = false;
   @State newGalaxyName: string = '';
+  @State galaxySaving: boolean = false;
+  private alive: boolean = true;
+  private previousKeyboardMode: KeyboardAvoidMode = KeyboardAvoidMode.OFFSET;
+
+  aboutToAppear(): void {
+    this.alive = true;
+    this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
+    this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
+  }
+
+  aboutToDisappear(): void {
+    this.alive = false;
+    this.getUIContext().setKeyboardAvoidMode(this.previousKeyboardMode);
+  }
+
+  private async submitGalaxy(): Promise<void> {
+    if (this.galaxySaving) { return; }
+    const name = this.newGalaxyName.trim();
+    if (!name || name.length > 80) {
+      promptAction.showToast({ message: '主题名称需为 1–80 字' }); return;
+    }
+    if (this.getGalaxies().some((topic: GalaxyCluster) => topic.id !== '__all_topics__' && topic.name === name)) {
+      promptAction.showToast({ message: '主题已存在，请从上方选择' }); return;
+    }
+    this.galaxySaving = true;
+    try {
+      const saved = await this.onCreateGalaxy(name);
+      if (!this.alive || !saved) { return; }
+      this.activeGalaxy = name;
+      this.selectedNode = null;
+      this.linkingMode = false;
+      this.linkSourceNode = null;
+      this.newGalaxyName = '';
+      this.isCreatingGalaxy = false;
+      if (this.canvasReady) { this.drawGraph(); }
+    } catch {
+      if (this.alive) { promptAction.showToast({ message: '主题保存失败，请重试' }); }
+    } finally { if (this.alive) { this.galaxySaving = false; } }
+  }
 
   // 拖动节点坐标暂存 (key: node.label -> NodePoint)
   private nodeCustomPositions: Map<string, NodePoint> = new Map();
@@ -122,18 +164,11 @@ export struct GraphWorkspace {
    * 获取多主题分类列表
    */
   private getGalaxies(): GalaxyCluster[] {
-    const map: Map<string, number> = new Map();
-    for (let i = 0; i < this.allNotes.length; i++) {
-      const cat: string = (this.allNotes[i].category && this.allNotes[i].category.trim().length > 0)
-        ? this.allNotes[i].category.trim()
-        : '未分类';
-      const cur: number = map.get(cat) ?? 0;
-      map.set(cat, cur + 1);
-    }
+    const topics = GraphTopicPolicy.topics(this.allNotes, this.projects);
 
     const clusters: GalaxyCluster[] = [];
     clusters.push({
-      id: 'all',
+      id: '__all_topics__',
       name: '全部主题',
       count: this.allNotes.length,
       color: this.palette().accent
@@ -141,11 +176,11 @@ export struct GraphWorkspace {
 
     const colors: string[] = ['#3B82F6', '#8B5CF6', '#EC4899', '#10B981', '#F59E0B', '#06B6D4'];
     let idx: number = 0;
-    map.forEach((count: number, name: string) => {
+    topics.forEach((topic) => {
       clusters.push({
-        id: name,
-        name: name,
-        count: count,
+        id: topic.name,
+        name: topic.name,
+        count: topic.count,
         color: colors[idx % colors.length]
       });
       idx++;
@@ -223,13 +258,13 @@ export struct GraphWorkspace {
     for (let i = 0; i < this.allNotes.length; i++) {
       const n: NoteItem = this.allNotes[i];
       const cat: string = (n.category && n.category.trim().length > 0) ? n.category.trim() : '未分类';
-      if (this.activeGalaxy === 'all' || cat === this.activeGalaxy) {
+      if (this.activeGalaxy === '__all_topics__' || cat === this.activeGalaxy) {
         ensureNode(`id:${n.id}`, n.id, n.title, false);
       }
     }
 
     // 4. 若选定了特定分类，仅保留该分类及直连节点
-    if (this.activeGalaxy !== 'all') {
+    if (this.activeGalaxy !== '__all_topics__') {
       const filteredIndices: Set<number> = new Set();
       for (let i = 0; i < rawNodes.length; i++) {
         if (rawNodes[i].category === this.activeGalaxy) {
@@ -303,7 +338,7 @@ export struct GraphWorkspace {
     let rootIdx: number = 0;
     let maxDegree: number = -1;
     for (let i = 0; i < nodes.length; i++) {
-      if (this.activeGalaxy !== 'all' && nodes[i].label.includes(this.activeGalaxy)) {
+      if (this.activeGalaxy !== '__all_topics__' && nodes[i].label.includes(this.activeGalaxy)) {
         rootIdx = i;
         break;
       }
@@ -757,6 +792,9 @@ export struct GraphWorkspace {
         .borderRadius(8)
         .backgroundColor(this.palette().accentSoft)
         .hoverEffect(HoverEffect.Highlight)
+        .constraintSize({ minHeight: 44 })
+        .accessibilityText('新建主题')
+        .enabled(!this.galaxySaving)
         .onClick(() => {
           this.isCreatingGalaxy = true;
         })
@@ -801,7 +839,7 @@ export struct GraphWorkspace {
       Column() {
         Column() {
           // ---- 1. 顶栏标题与统计 ----
-          Row() {
+          Flex({ direction: this.isPhone ? FlexDirection.Column : FlexDirection.Row, alignItems: ItemAlign.Start }) {
             Column({ space: 4 }) {
               Row({ space: 8 }) {
                 Text('知识图谱')
@@ -823,9 +861,9 @@ export struct GraphWorkspace {
                 .fontColor(this.palette().inkSecondary)
             }
             .alignItems(HorizontalAlign.Start)
-            .layoutWeight(1)
+            .layoutWeight(this.isPhone ? 0 : 1)
 
-            Blank()
+            if (!this.isPhone) { Blank() }
 
             // 过滤选择胶囊
             Row({ space: 6 }) {
@@ -835,7 +873,6 @@ export struct GraphWorkspace {
             }
           }
           .width('100%')
-          .alignItems(VerticalAlign.Center)
           .margin({ bottom: 12 })
 
           // ---- 1.1 主题分类横向切换栏 ----
@@ -847,7 +884,7 @@ export struct GraphWorkspace {
 
           // 新建主题分类内联条
           if (this.isCreatingGalaxy) {
-            Row({ space: 8 }) {
+            Column({ space: 8 }) {
               Text('新建分类：')
                 .fontSize(TypographyTokens.TINY)
                 .fontColor(this.palette().inkPrimary)
@@ -856,8 +893,11 @@ export struct GraphWorkspace {
                 placeholder: '输入分类主题，如：操作系统 / 考研数学'
               })
                 .fontSize(TypographyTokens.TINY)
-                .height(30)
-                .layoutWeight(1)
+                .height(48)
+                .width('100%')
+                .maxLength(80)
+                .enabled(!this.galaxySaving)
+                .accessibilityText('主题名称')
                 .backgroundColor(this.palette().surface)
                 .border({ width: 1, color: this.palette().borderSubtle })
                 .borderRadius(6)
@@ -865,33 +905,31 @@ export struct GraphWorkspace {
                   this.newGalaxyName = v;
                 })
 
-              Text('确定')
+              Row({ space: 8 }) {
+              Button(this.galaxySaving ? '正在保存…' : '确定')
+                .height(48)
+                .layoutWeight(1)
+                .enabled(!this.galaxySaving)
+                .accessibilityText('确定新建主题')
                 .fontSize(TypographyTokens.TINY)
                 .fontWeight(FontWeight.Bold)
                 .fontColor(this.palette().onAccent)
                 .padding({ left: 10, right: 10, top: 5, bottom: 5 })
                 .borderRadius(6)
                 .backgroundColor(this.palette().accent)
-                .onClick(() => {
-                  const name: string = this.newGalaxyName.trim();
-                  if (name.length === 0) {
-                    promptAction.showToast({ message: '请输入分类主题名称' });
-                    return;
-                  }
-                  this.onCreateGalaxy(name);
-                  this.activeGalaxy = name;
-                  this.newGalaxyName = '';
-                  this.isCreatingGalaxy = false;
-                  promptAction.showToast({ message: `已创建并切换到主题「${name}」` });
-                })
+                .onClick(() => this.submitGalaxy())
 
-              Text('取消')
+              Button('取消')
+                .height(48)
+                .layoutWeight(1)
+                .enabled(!this.galaxySaving)
                 .fontSize(TypographyTokens.TINY)
                 .fontColor(this.palette().inkMuted)
                 .padding({ left: 8, right: 8, top: 5, bottom: 5 })
                 .onClick(() => {
                   this.isCreatingGalaxy = false;
                 })
+              }.width('100%')
             }
             .width('100%')
             .padding(8)

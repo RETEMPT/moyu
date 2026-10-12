@@ -12,19 +12,16 @@ import { curves, promptAction } from '@kit.ArkUI';
 import { NoteItem } from '../common/types/NoteItem';
 import { ReaderSaveKind } from '../common/types/ReaderSaveKind';
 import { SerialTaskQueue } from '../services/storage/SerialTaskQueue';
-import { WorkspaceNotePolicy } from '../services/ai/WorkspaceNotePolicy';
+import { WorkspaceNotePolicy } from '../services/WorkspaceNotePolicy';
 import { SpaceFolder } from '../common/types/SpaceFolder';
 import { LinkGraph, Backlink, UnresolvedLink } from '../common/types/LinkGraph';
 import { MarkdownOutlineItem } from '../common/types/MarkdownOutlineItem';
 import { WorkspaceStats } from '../common/types/WorkspaceStats';
 import { DocumentTransferResult, MarkdownDocument } from '../common/types/MarkdownDocument';
 import { TodoItem, DayNote } from '../common/types/TodoItem';
-import { ChatSession } from '../common/types/ChatSession';
-import { ChatCitation } from '../common/types/ChatSession';
 import {
   CATEGORY_UNFILED,
   FILTER_ALL,
-  NAV_AI,
   NAV_CANVAS,
   NAV_FAVORITE,
   NAV_GRAPH,
@@ -43,20 +40,14 @@ import { PdfDocumentService } from '../services/document/PdfDocumentService';
 import { NoteCoverService } from '../services/NoteCoverService';
 import { NoteSearchService } from '../services/NoteSearchService';
 import { TodoStorageService } from '../services/TodoStorageService';
-import { ChatSessionService } from '../services/ai/ChatSessionService';
-import { ModelConfigService } from '../services/ai/ModelConfigService';
 import { buildSpaces } from '../services/WorkspaceBuilder';
 import { templateBody } from '../common/templates/NoteTemplates';
-import { AssistantModeService } from '../services/ai/AssistantModeService';
 import { UsageGuideSheet } from '../views/settings/UsageGuideSheet';
-import { REMOTE_AI_ENABLED } from '../common/constants/RuntimeCapabilities';
 import { AppShell } from '../views/layout/AppShell';
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
 import { LibraryWorkspace } from '../views/workspace/LibraryWorkspace';
 import { GraphWorkspace } from '../views/workspace/GraphWorkspace';
 import { HandwritingCanvas } from '../views/reader/HandwritingCanvas';
-import { AiWorkspace } from '../views/ai/AiWorkspace';
-import { AiSourcesPanel } from '../views/ai/AiSourcesPanel';
 import { TodoWorkspace } from '../views/workspace/TodoWorkspace';
 import { TrashWorkspace } from '../views/workspace/TrashWorkspace';
 import { FavoriteWorkspace } from '../views/workspace/FavoriteWorkspace';
@@ -90,7 +81,6 @@ import { StudyBackupSheet } from '../views/study/StudyBackupSheet';
 import { StudyRestoreService } from '../services/study/StudyRestoreService';
 import { ReaderCommitService } from '../services/document/ReaderCommitService';
 import { PrivacySheet } from '../views/settings/PrivacySheet';
-import { PrivacyNoticeService } from '../services/PrivacyNoticeService';
 
 /** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
 interface PendingNoteCreate {
@@ -125,8 +115,6 @@ struct Index {
   @State settingsExitToken: number = 0;
   @State settingsOpenToken: number = 0;
   private settingsExitAction: (() => void) | null = null;
-  @State aiBackToken: number = 0;
-  private sessionDeleteBusy: boolean = false;
   @State activeSpaceId: string = '';
   @State activeNoteId: string = '';
   @State sidebarCollapsed: boolean = false;
@@ -139,6 +127,7 @@ struct Index {
 
   // ---- 本地数据 ----
   @State customProjects: SpaceFolder[] = [];
+  @State projectCreateBusy: boolean = false;
   @State spaces: SpaceFolder[] = [];
   @State notes: NoteItem[] = [];
   @State trash: NoteItem[] = [];
@@ -149,19 +138,7 @@ struct Index {
   @State todos: TodoItem[] = [];
   @State dayNotes: DayNote[] = [];
 
-  // ---- AI 会话（列表由 Index 持有，侧栏与工作台共用） ----
-  @State sessions: ChatSession[] = [];
-  @State activeSessionId: string = '';
-  @State chatHistoryOpen: boolean = false;
-  private historyRestoreCollapsed: boolean = false;
-  private aiMutationQueue: SerialTaskQueue = new SerialTaskQueue();
-  /** AI 墨客右栏「来源与上下文」由工作台上报 */
-  @State aiCitations: ChatCitation[] = [];
-  @State aiPinnedNotes: NoteItem[] = [];
-  @State aiLayerLabel: string = '';
-  @State aiModelLabel: string = '';
-  @State aiToolsEnabled: boolean = true;
-  @State aiPrefilledPrompt: string = '';
+  private noteMutationQueue: SerialTaskQueue = new SerialTaskQueue();
 
   // ---- 研读态 (速记与 Markdown 随笔) ----
   @State readingOpen: boolean = false;
@@ -190,9 +167,6 @@ struct Index {
   @State backupVisible: boolean = false;
   @State backupCloseToken: number = 0;
   @State privacyVisible: boolean = false;
-  @State privacyWelcome: boolean = true;
-  @State privacySaving: boolean = false;
-  private privacyNotice: PrivacyNoticeService = new PrivacyNoticeService();
   @State pdfExtractNoteId: string = '';
   @State pdfExtractPage: number = 1;
   @State pdfExtractCloseToken: number = 0;
@@ -222,7 +196,6 @@ struct Index {
   private readerCommits: ReaderCommitService = new ReaderCommitService();
   private searchService: NoteSearchService = new NoteSearchService();
   private todoStorage: TodoStorageService = new TodoStorageService();
-  private chatStorage: ChatSessionService = ChatSessionService.getInstance();
   private toastTimer: number = -1;
   private bootstrapped: boolean = false;
 
@@ -242,25 +215,11 @@ struct Index {
     return this.appContext;
   }
 
-  private toggleChatHistory(): void {
-    if (this.chatHistoryOpen) { this.closeChatHistory(); return; }
-    this.historyRestoreCollapsed = this.sidebarCollapsed;
-    this.chatHistoryOpen = true; this.sidebarCollapsed = false;
-    if (this.singleColumn) { this.contextPanelOpen = false; }
-  }
-
-  private closeChatHistory(): void {
-    if (!this.chatHistoryOpen) { return; }
-    this.chatHistoryOpen = false; this.sidebarCollapsed = this.historyRestoreCollapsed;
-  }
-
   private dismissNavigationOverlay(): void {
-    if (this.chatHistoryOpen) { this.closeChatHistory(); }
     if (this.singleColumn) { this.sidebarCollapsed = true; this.contextPanelOpen = false; }
   }
 
   onBackPress(): boolean {
-    if (this.privacyWelcome) { this.getAbilityContext().terminateSelf(); return true; }
     if (this.privacyVisible) { this.privacyVisible = false; return true; }
     if (this.backupVisible) { this.backupCloseToken++; return true; }
     if (this.studyVisible) { this.studyCloseToken++; return true; }
@@ -272,12 +231,10 @@ struct Index {
     if (this.smartExtractVisible) { this.smartExtractCloseToken++; return true; }
     if (this.searchVisible) { this.searchVisible = false; return true; }
     if (this.fullScreenDocOpen) { this.documentBackToken++; return true; }
-    if (this.chatHistoryOpen) { this.closeChatHistory(); return true; }
     if (this.singleColumn && this.contextPanelOpen) { this.contextPanelOpen = false; return true; }
     if (this.singleColumn && !this.sidebarCollapsed) { this.sidebarCollapsed = true; return true; }
     if (this.readingOpen) { this.closeReading(); return true; }
     if (this.activeNav === NAV_SETTINGS) { this.settingsBackToken++; return true; }
-    if (this.activeNav === NAV_AI) { this.aiBackToken++; return true; }
     if (this.activeNav !== NAV_HOME) { this.activeNav = NAV_HOME; this.activeSpaceId = ''; return true; }
     return false;
   }
@@ -306,8 +263,6 @@ struct Index {
   private async bootstrap(): Promise<void> {
     const context: common.UIAbilityContext = this.getAbilityContext();
     PdfDocumentService.getInstance().bindContext(context);
-    try { this.privacyWelcome = !await this.privacyNotice.shown(context); }
-    catch { this.privacyWelcome = true; }
     try {
       const loaded: NoteItem[] = await this.storage.load(context, []);
       this.notes = loaded;
@@ -337,131 +292,8 @@ struct Index {
     this.refreshGraph();
     await this.loadTrash(context);
     await this.loadTodos(context);
-    await this.loadSessions(context);
     try { this.reviewCards = await this.reviewStorage.load(context); }
     catch { this.notify('复习记录读取失败，原数据已保留'); }
-    // 模型配置也在这里初始化：AI 视图自行取 Context 有竞态，
-    // 由持有 Context 的 Index 统一初始化，视图侧只读单例。
-    try {
-      await AssistantModeService.getInstance().init(context);
-      if (REMOTE_AI_ENABLED) { await ModelConfigService.getInstance().init(context); }
-    } catch (error) {
-      console.error(`模型配置初始化失败: ${JSON.stringify(error)}`);
-    }
-  }
-
-  // ==================================================================
-  // AI 会话（侧栏「对话」模式 + AI 墨客工作台共用同一份列表）
-  // ==================================================================
-
-  /** 置顶优先、其次按更新时间倒序 */
-  private sortSessions(list: ChatSession[]): ChatSession[] {
-    const next: ChatSession[] = list.slice();
-    next.sort((a: ChatSession, b: ChatSession) => {
-      if (a.pinned !== b.pinned) {
-        return a.pinned ? -1 : 1;
-      }
-      return b.updatedAt - a.updatedAt;
-    });
-    return next;
-  }
-
-  /** AiWorkspace 新建或更新会话后回写列表，并同步 activeSessionId */
-  private handleSessionSaved(session: ChatSession, activate: boolean = true): void {
-    let replaced: boolean = false;
-    const next: ChatSession[] = [];
-    for (let i = 0; i < this.sessions.length; i++) {
-      if (this.sessions[i].id === session.id) {
-        next.push(session);
-        replaced = true;
-      } else {
-        next.push(this.sessions[i]);
-      }
-    }
-    if (!replaced) {
-      next.unshift(session);
-    }
-    this.sessions = this.sortSessions(next);
-    if (activate) { this.activeSessionId = session.id; }
-  }
-
-  private handleSelectSession(session: ChatSession): void {
-    this.dismissNavigationOverlay();
-    if (!session || !session.id) {
-      return;
-    }
-    this.activeNav = NAV_AI;
-    this.readingOpen = false;
-    this.fullScreenDocOpen = false;
-    this.activeNoteId = '';
-    this.activeSessionId = session.id;
-  }
-
-  private handleNewSession(): void {
-    this.dismissNavigationOverlay();
-    this.activeNav = NAV_AI;
-    this.readingOpen = false;
-    this.fullScreenDocOpen = false;
-    this.aiPinnedNotes = []; this.aiPrefilledPrompt = '';
-    this.activeSessionId = '';
-  }
-
-  private async handleDeleteSession(sessionId: string): Promise<void> {
-    if (this.sessionDeleteBusy || !this.sessions.some((session: ChatSession) => session.id === sessionId)) { return; }
-    this.sessionDeleteBusy = true;
-    try {
-      if (!await this.confirmDestructive('删除这段对话？消息将无法恢复，资料和已创建的待办会保留。')) { return; }
-      await this.chatStorage.deleteSession(sessionId);
-    } catch (error) {
-      console.error(`会话删除失败: ${JSON.stringify(error)}`);
-      this.notify('会话删除失败');
-      return;
-    } finally {
-      this.sessionDeleteBusy = false;
-    }
-    this.sessions = this.sessions.filter((s: ChatSession) => s.id !== sessionId);
-    if (this.activeSessionId === sessionId) {
-      this.activeSessionId = '';
-    }
-    this.notify('已删除对话');
-  }
-
-  private async handleTogglePinSession(session: ChatSession): Promise<void> {
-    const next: ChatSession[] = [];
-    for (let i = 0; i < this.sessions.length; i++) {
-      const s: ChatSession = this.sessions[i];
-      if (s.id === session.id) {
-        const toggled: ChatSession = {
-          id: s.id,
-          title: s.title,
-          pinned: !s.pinned,
-          agentMode: s.agentMode,
-          messages: s.messages,
-          createdAt: s.createdAt,
-          updatedAt: s.updatedAt
-        };
-        next.push(toggled);
-      } else {
-        next.push(s);
-      }
-    }
-    this.sessions = this.sortSessions(next);
-    try {
-      await this.chatStorage.saveSessions(this.sessions);
-    } catch (error) {
-      console.error(`会话置顶保存失败: ${JSON.stringify(error)}`);
-    }
-  }
-
-  /** 载入 AI 会话列表（侧栏「对话」模式的唯一数据源） */
-  private async loadSessions(context: common.UIAbilityContext): Promise<void> {
-    try {
-      await this.chatStorage.init(context);
-      this.sessions = await this.chatStorage.loadSessions();
-    } catch (error) {
-      console.error(`会话列表加载失败: ${JSON.stringify(error)}`);
-      this.sessions = [];
-    }
   }
 
   /**
@@ -1050,15 +882,14 @@ struct Index {
     return true;
   }
 
-  private createProject(name: string, color: string, icon: string): void {
+  private async createProject(name: string, color: string, icon: string): Promise<boolean> {
+    if (this.projectCreateBusy) { return false; }
     const trimmed = name.trim();
-    if (trimmed.length === 0) {
-      return;
-    }
+    if (trimmed.length === 0 || trimmed.length > 80) { this.notify('主题名称需为 1–80 字'); return false; }
     for (let i = 0; i < this.customProjects.length; i++) {
       if (this.customProjects[i].name === trimmed) {
         this.notify(`项目「${trimmed}」已存在`);
-        return;
+        return false;
       }
     }
     const newProj: SpaceFolder = {
@@ -1071,10 +902,16 @@ struct Index {
       icon: icon,
       notes: []
     };
-    this.customProjects = [...this.customProjects, newProj];
-    this.rebuildSpaces();
-    this.persistProjects();
-    this.notify(`已创建项目「${trimmed}」`);
+    this.projectCreateBusy = true;
+    try {
+      const next = [...this.customProjects, newProj];
+      await this.storage.saveProjects(this.getAbilityContext(), next);
+      this.customProjects = next;
+      this.rebuildSpaces();
+      this.notify(`已创建项目「${trimmed}」`);
+      return true;
+    } catch { this.notify('主题保存失败，请重试'); return false; }
+    finally { this.projectCreateBusy = false; }
   }
 
   private renameProject(oldName: string, newName: string): void {
@@ -1321,7 +1158,7 @@ struct Index {
     return null;
   }
 
-  private requireAiNote(identifier: string): NoteItem {
+  private requireNote(identifier: string): NoteItem {
     const key = identifier.trim().toLowerCase();
     const byId = this.notes.find((note: NoteItem) => note.id.toLowerCase() === key);
     if (byId) { return byId; }
@@ -1330,11 +1167,11 @@ struct Index {
     return matches[0];
   }
 
-  private commitAiNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
-    return this.aiMutationQueue.run<void>(() => this.saveAiNote(note, writeBody));
+  private commitNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
+    return this.noteMutationQueue.run<void>(() => this.saveLinkedNote(note, writeBody));
   }
 
-  private async saveAiNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
+  private async saveLinkedNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
     const previous = this.notes.find((item: NoteItem) => item.id === note.id);
     const context = this.getAbilityContext();
     if (writeBody && previous && ((this.readingOpen && this.readingNote.id === previous.id) ||
@@ -1357,83 +1194,17 @@ struct Index {
     await this.refreshGraph();
   }
 
-  private async handleAiAddTag(identifier: string, tags: string): Promise<void> {
-    return this.aiMutationQueue.run<void>(async () => {
-      const note = this.requireAiNote(identifier);
-      const values = tags.split(/[,，]/).map((value: string) => value.trim()).filter((value: string) => value.length > 0);
-      if (!values.length) { throw new Error('标签不能为空'); }
-      const merged = note.tags ? note.tags.slice() : note.tag.split(',').filter((value: string) => value.trim().length > 0);
-      for (const value of values) { if (!merged.includes(value)) { merged.push(value); } }
-      const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
-      updated.tags = merged; updated.tag = merged.join(', '); updated.updatedAt = Math.max(Date.now(), (note.updatedAt || 0) + 1); updated.updateTime = '刚刚';
-      await this.saveAiNote(updated);
-    });
-  }
-
-  private async handleAiCreateLink(identifier: string, title: string): Promise<void> {
-    return this.aiMutationQueue.run<void>(async () => {
-      const note = this.requireAiNote(identifier);
+  private async createGraphLink(identifier: string, title: string): Promise<void> {
+    return this.noteMutationQueue.run<void>(async () => {
+      const note = this.requireNote(identifier);
       const link = `[[${title}]]`;
       const updated = WorkspaceNotePolicy.mutate(note, 'update_note',
         note.contentDetail.includes(link) ? note.contentDetail : `${note.contentDetail}\n\n${link}\n`, note.updatedAt || 0);
       if (note.contentDetail.includes(link)) { return; }
-      await this.saveAiNote(updated, true);
+      await this.saveLinkedNote(updated, true);
     });
   }
 
-  private async handleAiCategorize(identifier: string, category: string): Promise<void> {
-    return this.aiMutationQueue.run<void>(async () => {
-      const note = this.requireAiNote(identifier);
-      const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
-      updated.category = category; updated.updatedAt = Math.max(Date.now(), (note.updatedAt || 0) + 1); updated.updateTime = '刚刚';
-      await this.saveAiNote(updated);
-    });
-  }
-
-  private async handleAiCreateNote(title: string, category: string, tag: string, content: string): Promise<void> {
-    const now = Date.now();
-    const tags = tag.trim() ? tag.split(/[,，]/).map((value: string) => value.trim()).filter((value: string) => !!value) : ['AI生成'];
-    const note: NoteItem = { id: `note-${now}-${Math.floor(Math.random() * 1000000000)}`, title, category: category || CATEGORY_UNFILED,
-      type: 'Markdown', previewText: content.slice(0, 100).replace(/[#*`\n]/g, ' ').trim(), tag: tags.join(', '), tags,
-      tagColor: '', updateTime: '刚刚', contentDetail: content, createdAt: now, updatedAt: now };
-    await this.commitAiNote(note, true);
-    this.notify(`已保存笔记《${title}》`);
-  }
-
-  private async handleAiCreateTodo(date: string, title: string): Promise<void> {
-    return this.aiMutationQueue.run<void>(() => this.saveAiTodo(date, title));
-  }
-
-  private async saveAiTodo(date: string, title: string): Promise<void> {
-    const now = Date.now();
-    const todo: TodoItem = { id: `todo-${now}-${this.todos.length}`, date, title, done: false,
-      noteRefs: [], createdAt: now, updatedAt: now };
-    const next = [todo].concat(this.todos);
-    await this.todoStorage.saveTodos(this.getAbilityContext(), next);
-    this.todos = next;
-  }
-
-  private handleAiManageNote(operation: string, identifier: string, value: string, expectedUpdatedAt: number): Promise<string> {
-    return this.aiMutationQueue.run<string>(async () => {
-      const current = this.requireAiNote(identifier);
-      const next = WorkspaceNotePolicy.mutate(current, operation, value, expectedUpdatedAt);
-      await this.saveAiNote(next, operation === 'update_note');
-      return `已保存《${next.title}》 · ID ${next.id} · updatedAt ${next.updatedAt}`;
-    });
-  }
-
-  private handleAiSetTodoStatus(identifier: string, status: string): Promise<string> {
-    return this.aiMutationQueue.run<string>(async () => {
-      const current = this.todos.find((todo: TodoItem) => todo.id === identifier);
-      if (!current) { throw new Error('待办已不存在，请重新查询 ID'); }
-      if (!['done', 'pending'].includes(status)) { throw new Error('待办状态无效'); }
-      const next = this.todos.map((todo: TodoItem) => todo.id === current.id ?
-        { id: todo.id, date: todo.date, title: todo.title, done: status === 'done', noteRefs: todo.noteRefs,
-          createdAt: todo.createdAt, updatedAt: Date.now() } as TodoItem : todo);
-      await this.todoStorage.saveTodos(this.getAbilityContext(), next); this.todos = next;
-      return `待办 ${identifier} 已设为${status === 'done' ? '完成' : '未完成'}`;
-    });
-  }
   // ==================================================================
   // 重命名 / 移动分类
   // ==================================================================
@@ -1999,14 +1770,13 @@ struct Index {
         graph: this.linkGraph,
         stats: this.stats,
         allNotes: this.notes,
+        projects: this.customProjects,
         onSelectNoteById: (noteId: string) => this.openNoteById(noteId),
         onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
         onLinkNodes: (sourceIdentifier: string, targetTitle: string) => {
-          this.handleAiCreateLink(sourceIdentifier, targetTitle);
+          this.createGraphLink(sourceIdentifier, targetTitle);
         },
-        onCreateGalaxy: (galaxyName: string) => {
-          this.createProject(galaxyName, '#6366F1', '🪐');
-        }
+        onCreateGalaxy: (galaxyName: string) => this.createProject(galaxyName, '#6366F1', '🪐')
       })
       .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
     } else if (this.activeNav === NAV_TODO) {
@@ -2053,131 +1823,11 @@ struct Index {
       .width('100%')
       .height('100%')
       .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
-    } else {
-      AiWorkspace({
-        onOpenCitation: (c: ChatCitation) => this.openStudySource(c.noteId, c.pageNumber, c.startLine),
-        reviewCards: this.reviewCards,
-        allNotes: this.notes,
-        todos: this.todos,
-        stats: this.stats,
-        activeSessionId: this.activeSessionId,
-        onImportExternal: () => this.importDocument('外部参考'),
-        backRequestToken: this.aiBackToken,
-        onNavigateBack: () => { this.activeNav = NAV_HOME; },
-        onNewSession: () => this.handleNewSession(),
-        historyOpen: this.chatHistoryOpen,
-        onToggleHistory: () => this.toggleChatHistory(),
-        onDeleteSession: (id: string) => { this.handleDeleteSession(id); },
-        currentNote: this.activeNoteId.length > 0
-          ? this.notes.find((note: NoteItem) => note.id === this.activeNoteId) ?? null
-          : null,
-        externalPinnedNotes: this.aiPinnedNotes,
-        prefilledPrompt: this.aiPrefilledPrompt,
-        toolsEnabled: this.aiToolsEnabled,
-        contextPanelOpen: this.contextPanelOpen,
-        onToggleContextPanel: () => {
-          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-            this.contextPanelOpen = !this.contextPanelOpen;
-            if (this.singleColumn && this.contextPanelOpen) { this.sidebarCollapsed = true; }
-          });
-        },
-        onPinnedNotesChange: (pinned: NoteItem[]) => {
-          this.aiPinnedNotes = pinned;
-        },
-        onSessionSaved: (session: ChatSession, activate?: boolean) => {
-          this.handleSessionSaved(session, activate !== false);
-        },
-        onContextChange: (citations: ChatCitation[], pinned: NoteItem[], layerLabel: string, modelLabel: string) => {
-          this.aiCitations = citations;
-          this.aiPinnedNotes = pinned;
-          this.aiLayerLabel = layerLabel;
-          this.aiModelLabel = modelLabel;
-        },
-        onOpenModelSettings: () => {
-          this.openSettings('ai');
-        },
-        onCreateTodo: (dateKey: string, title: string) => this.handleAiCreateTodo(dateKey, title),
-        onAddTagToNote: (identifier: string, tags: string) => this.handleAiAddTag(identifier, tags),
-        onCreateLinkBetweenNotes: (sourceIdentifier: string, targetTitle: string) => this.handleAiCreateLink(sourceIdentifier, targetTitle),
-        onCategorizeNote: (identifier: string, category: string) => this.handleAiCategorize(identifier, category),
-        onCreateNewNote: (title: string, category: string, tag: string, content: string) => this.handleAiCreateNote(title, category, tag, content),
-        onManageNote: (operation: string, identifier: string, value: string, expectedUpdatedAt: number) =>
-          this.handleAiManageNote(operation, identifier, value, expectedUpdatedAt),
-        onSetTodoStatus: (identifier: string, status: string) => this.handleAiSetTodoStatus(identifier, status),
-        onOpenSearch: () => {
-          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-            this.searchVisible = true;
-          });
-        },
-        onSmartExtract: () => {
-          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-            this.smartExtractVisible = true;
-          });
-        }
-      })
     }
   }
 
   @Builder
   contextContent() {
-    // AI 墨客下右栏改为「来源与上下文」；其余场景仍是笔记大纲 / 反向链接
-    if (this.activeNav === NAV_AI) {
-      AiSourcesPanel({
-        spaces: this.spaces,
-        citations: this.aiCitations,
-        pinnedNotes: this.aiPinnedNotes,
-        layerLabel: this.aiLayerLabel,
-        modelLabel: this.aiModelLabel,
-        currentDocTitle: this.activeNoteId.length > 0
-          ? (this.notes.find((note: NoteItem) => note.id === this.activeNoteId)?.title ?? '')
-          : '',
-        currentDocNote: this.activeNoteId.length > 0
-          ? (this.notes.find((note: NoteItem) => note.id === this.activeNoteId) ?? null)
-          : null,
-        allNotes: this.notes,
-        toolsEnabled: this.aiToolsEnabled,
-        onToggleTools: (enabled: boolean) => {
-          this.aiToolsEnabled = enabled;
-        },
-        onAddPinnedNote: (note: NoteItem) => {
-          if (!this.aiPinnedNotes.some((n: NoteItem) => n.id === note.id)) {
-            this.aiPinnedNotes = [...this.aiPinnedNotes, note];
-          }
-        },
-        onAddBatchPinnedNotes: (notes: NoteItem[]) => {
-          const currentIds: Set<string> = new Set(this.aiPinnedNotes.map((n: NoteItem) => n.id));
-          const newNotes: NoteItem[] = notes.filter((n: NoteItem) => !currentIds.has(n.id));
-          if (newNotes.length > 0) {
-            this.aiPinnedNotes = [...this.aiPinnedNotes, ...newNotes];
-          }
-        },
-        onRemovePinnedNote: (noteId: string) => {
-          this.aiPinnedNotes = this.aiPinnedNotes.filter((n: NoteItem) => n.id !== noteId);
-        },
-        onRemoveBatchPinnedNotes: (noteIds: string[]) => {
-          const removeIds: Set<string> = new Set(noteIds);
-          this.aiPinnedNotes = this.aiPinnedNotes.filter((n: NoteItem) => !removeIds.has(n.id));
-        },
-        onClearPinnedNotes: () => {
-          this.aiPinnedNotes = [];
-        },
-        onCreateProject: (name: string, color: string, icon: string) => {
-          this.createProject(name, color, icon);
-        },
-        onStartChatWithContext: (prefilled: string) => {
-          this.aiPrefilledPrompt = prefilled;
-        },
-        onPreviewSource: (c: ChatCitation) => this.openStudySource(c.noteId, c.pageNumber, c.startLine),
-        onOpenModelSettings: () => {
-          this.openSettings('ai');
-        },
-        onClose: () => {
-          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-            this.contextPanelOpen = false;
-          });
-        }
-      })
-    } else {
       ContextDrawer({
         outlineItems: this.outlineItems,
         backlinks: this.currentBacklinks(),
@@ -2201,7 +1851,6 @@ struct Index {
           });
         }
       })
-    }
   }
 
   build() {
@@ -2228,12 +1877,10 @@ struct Index {
           this.onBreadcrumbClick(index, segment);
         },
         onLayoutModeChange: (singleColumn: boolean, threeColumn: boolean) => {
-          this.closeChatHistory();
           this.sidebarCollapsed = singleColumn;
           this.contextPanelOpen = threeColumn;
         },
         onToggleSidebar: () => {
-          if (this.chatHistoryOpen) { this.closeChatHistory(); return; }
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.sidebarCollapsed = !this.sidebarCollapsed;
             if (this.singleColumn && !this.sidebarCollapsed) { this.contextPanelOpen = false; }
@@ -2326,20 +1973,6 @@ struct Index {
         },
         trashCount: this.trash.length,
         todoPendingCount: this.todoPendingCount(),
-        historyOpen: this.chatHistoryOpen,
-        sessions: this.sessions,
-        activeSessionId: this.activeSessionId,
-        onCloseHistory: () => this.closeChatHistory(),
-        onNewSession: () => this.handleNewSession(),
-        onSelectSession: (session: ChatSession) => {
-          this.handleSelectSession(session);
-        },
-        onDeleteSession: (sessionId: string) => {
-          this.handleDeleteSession(sessionId);
-        },
-        onTogglePinSession: (session: ChatSession) => {
-          this.handleTogglePinSession(session);
-        },
         favoriteCount: this.favoriteNotes().length,
         onRenameNote: (note: NoteItem, newTitle: string) => {
           this.commitRename(note, newTitle);
@@ -2360,7 +1993,6 @@ struct Index {
         HuaweiDocWorkspace({
           note: this.fullScreenDocNote,
           onRestorePdfSource: () => this.restoreReaderPdfSource(),
-          onOpenModelSettings: () => this.openSettings('ai'),
           sourcePage: this.sourcePage,
           sourceJumpToken: this.sourceJumpToken,
           onExtractPdfText: (page: number) => { this.pdfExtractNoteId = this.fullScreenDocNote.id; this.pdfExtractPage = page; },
@@ -2391,17 +2023,8 @@ struct Index {
         .height('100%')
       }
 
-      if (this.privacyVisible || this.privacyWelcome) {
-        PrivacySheet({ welcome: this.privacyWelcome, saving: this.privacySaving,
-          onClose: () => { this.privacyVisible = false; },
-          onChoice: async (agree: boolean) => {
-            if (this.privacySaving) { return; }
-            this.privacySaving = true;
-            try { await this.privacyNotice.choose(this.getAbilityContext(), agree); this.privacyWelcome = false; }
-            catch { this.privacyWelcome = false; this.notify('选择未能保存，下次启动会再次提示'); }
-            finally { this.privacySaving = false; }
-          }
-        })
+      if (this.privacyVisible) {
+        PrivacySheet({ onClose: () => { this.privacyVisible = false; } })
       }
       if (this.backupVisible) {
         StudyBackupSheet({ notes: this.notes, cards: this.reviewCards, closeToken: this.backupCloseToken,
@@ -2461,7 +2084,6 @@ struct Index {
             });
           },
           closeToken: this.smartExtractCloseToken,
-          onOpenModelSettings: () => { this.smartExtractVisible = false; this.openSettings('ai'); },
           onCommit: (content: SmartContent, selectedTasks: SmartTask[]) => {
             return this.handleCommitSmartExtract(content, selectedTasks);
           }
@@ -2502,9 +2124,7 @@ struct Index {
               this.createProjectOpen = false;
             });
           },
-          onCreateProject: (name: string, color: string, icon: string) => {
-            this.createProject(name, color, icon);
-          }
+          onCreateProject: (name: string, color: string, icon: string) => this.createProject(name, color, icon)
         })
       }
 

@@ -3,7 +3,7 @@
  *
  * 核心架构：
  *   1. 顶部：工作区标识与全局首页入口
- *   2. 快捷检索与全局导航（知识图谱 / 自由白板 / AI 墨客）
+ *   2. 快捷检索与全局导航（知识图谱 / 自由白板）
  *   3. 项目文件资源管理器（Project Explorer）：
  *      - 项目（Project）作为一级容器，包含主题色、图标与下辖资料
  *      - 短按：触感凹陷回弹（0.96 scale + springMotion(0.25, 0.76) 弹簧曲线），箭头 90° 平滑旋转，展开/折叠子文件树
@@ -22,11 +22,9 @@ import {
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
-import { ChatSession } from '../../common/types/ChatSession';
-import { NAV_AI, NAV_CANVAS, NAV_FAVORITE, NAV_GRAPH, NAV_HOME, NAV_SETTINGS, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
+import { NAV_CANVAS, NAV_FAVORITE, NAV_GRAPH, NAV_HOME, NAV_SETTINGS, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
 import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
-import { ChatHistorySidebar } from '../ai/ChatHistorySidebar';
 import { documentIcon } from '../../common/utils/DocumentPresentation';
 import { noteRenderKey, spaceRenderKey } from '../../common/utils/ForEachKeys';
 import { BrandMark } from '../brand/BrandMark';
@@ -57,10 +55,7 @@ export struct Sidebar {
   /** 全部未完成待办数，用于「待办」导航角标 */
   @Prop todoPendingCount: number = 0;
   /** 中段模式：'tree' 项目资料树 | 'sessions' 对话记录 */
-  @Prop historyOpen: boolean = false;
   /** 对话记录（sessions 模式渲染） */
-  @Prop sessions: ChatSession[] = [];
-  @Prop activeSessionId: string = '';
   /** 收藏（置顶/星标）笔记数，用于「收藏」导航角标 */
   @Prop favoriteCount: number = 0;
 
@@ -88,11 +83,6 @@ export struct Sidebar {
   /** 请求打开居中「新建项目」对话框 */
   onOpenCreateProject: () => void = () => {};
   /** 切换中段模式（资料树 ↔ 对话记录） */
-  onCloseHistory: () => void = () => {};
-  onNewSession: () => void = () => {};
-  onSelectSession: (session: ChatSession) => void = () => {};
-  onDeleteSession: (sessionId: string) => void = () => {};
-  onTogglePinSession: (session: ChatSession) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
@@ -436,7 +426,7 @@ export struct Sidebar {
   }
 
   // ------------------------------------------------------------------
-  // 视图构建：对话记录列表（AI 墨客左栏第二模式）
+  // 视图构建：对话记录列表
   // ------------------------------------------------------------------
 
   /** 项目资料区段头：收起全部 + 新建项目 + 模式切换 */
@@ -467,11 +457,6 @@ export struct Sidebar {
 
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
-      if (this.historyOpen) {
-        ChatHistorySidebar({ sessions: this.sessions, activeSessionId: this.activeSessionId,
-          onClose: this.onCloseHistory, onNew: this.onNewSession, onSelect: this.onSelectSession,
-          onDelete: this.onDeleteSession, onPin: this.onTogglePinSession })
-      } else {
       Column() {
         // ---- 顶部工作区品牌 ----
         Row({ space: 8 }) {
@@ -529,7 +514,6 @@ export struct Sidebar {
         Column({ space: 2 }) {
           this.navRow($r('app.media.ic_graph'), '知识图谱', NAV_GRAPH)
           this.navRow($r('app.media.ic_canvas'), '自由白板', NAV_CANVAS)
-          this.navRow($r('app.media.ic_sparkle'), '墨客', NAV_AI)
           this.navRow($r('app.media.ic_star'), '收藏', NAV_FAVORITE, this.favoriteCount)
           this.navRow($r('app.media.ic_check'), '待办', NAV_TODO, this.todoPendingCount)
           this.navRow($r('app.media.ic_trash'), '回收站', NAV_TRASH, this.trashCount)
@@ -573,7 +557,6 @@ export struct Sidebar {
       .width('100%')
       .height('100%')
       .padding({ left: 8, right: 8, top: 8 })
-      }
 
     }
     .width(this.drawerWidth())

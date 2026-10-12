@@ -336,7 +336,7 @@ export struct HomeWorkspace {
               this.homeAction($r('app.media.ic_note'), '文字笔记', true, () => this.onCreateNote())
               this.homeAction($r('app.media.ic_pen'), '手写笔记', false, () => this.onCreateHandwriting())
               this.homeAction($r('app.media.ic_import'), '导入文档', false, () => this.onImportDocument())
-              this.homeAction($r('app.media.ic_sparkle'), '提取内容', false, () => this.onSmartExtract())
+              this.homeAction($r('app.media.ic_note'), '提取内容', false, () => this.onSmartExtract())
             }.width('100%')
           }.width('100%').margin({ bottom: 20 })
 
@@ -349,7 +349,7 @@ export struct HomeWorkspace {
               this.statBentoCard($r('app.media.ic_link'), '双向链接', `${this.stats.linkCount}`, '[[概念]] 已解析', 'rgba(99,102,241,0.12)', NAV_GRAPH)
             }
             GridCol() {
-              this.statBentoCard($r('app.media.ic_sparkle'), '待创建概念', `${this.stats.unresolvedCount}`, '思维脉络待扩充', 'rgba(217,119,6,0.12)', NAV_GRAPH)
+              this.statBentoCard($r('app.media.ic_note'), '待创建概念', `${this.stats.unresolvedCount}`, '思维脉络待扩充', 'rgba(217,119,6,0.12)', NAV_GRAPH)
             }
             GridCol() {
               this.statBentoCard($r('app.media.ic_tag'), '聚合标签', `${this.stats.tagCount}`, '#标签 自动归档', 'rgba(5,150,105,0.12)', NAV_LIBRARY)

@@ -44,7 +44,7 @@ export struct PrivacySheet {
           }.width('100%')
         }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
         if (this.welcome) {
-          Text('外部 AI 默认关闭，附近传递只在主动连接时请求权限。离线使用后，也可在模型设置中单独授权 AI 服务。')
+          Text('资料保存在本机，附近传递只在主动连接时请求权限。')
             .fontSize(13).lineHeight(20).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkSecondary).width('100%')
           Button('同意隐私说明并继续').height(48).width('100%').enabled(!this.saving).onClick(() => this.onChoice(true))
           Button('暂不同意，离线使用').height(48).width('100%').enabled(!this.saving).onClick(() => this.onChoice(false))

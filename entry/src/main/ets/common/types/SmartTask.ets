@@ -1,5 +1,5 @@
 /**
- * AI 提取并转化的待办行动 (SmartTask)
+ * 原文提取并转化的待办行动 (SmartTask)
  */
 export interface SmartTask {
   id: string;

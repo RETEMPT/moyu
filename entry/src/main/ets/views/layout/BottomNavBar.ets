@@ -3,7 +3,7 @@ import { window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
-import { NAV_HOME, NAV_LIBRARY, NAV_AI, NAV_TODO, NAV_GRAPH } from '../../common/constants/WorkspaceConstants';
+import { NAV_HOME, NAV_LIBRARY, NAV_TODO, NAV_GRAPH } from '../../common/constants/WorkspaceConstants';
 
 interface BottomTabItem {
   icon: Resource;
@@ -25,7 +25,6 @@ export struct BottomNavBar {
   private tabs: BottomTabItem[] = [
     { icon: $r('app.media.ic_home'), label: '首页', navKey: NAV_HOME },
     { icon: $r('app.media.ic_note'), label: '资料', navKey: NAV_LIBRARY },
-    { icon: $r('app.media.ic_sparkle'), label: '墨客', navKey: NAV_AI },
     { icon: $r('app.media.ic_check'), label: '待办', navKey: NAV_TODO },
     { icon: $r('app.media.ic_graph'), label: '图谱', navKey: NAV_GRAPH }
   ];
