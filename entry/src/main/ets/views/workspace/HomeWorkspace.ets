@@ -4,6 +4,7 @@ import { NoteItem } from '../../common/types/NoteItem';
 import { AppIcon } from '../common/AppIcon';
 import { readingRenderKey } from '../../common/utils/ForEachKeys';
 import { NAV_LIBRARY } from '../../common/constants/WorkspaceConstants';
+import { AI_FEATURES_VISIBLE } from '../../common/constants/RuntimeCapabilities';
 import { ReadingProgressPolicy } from '../../services/document/ReadingProgressPolicy';
 import { MemoFeedPolicy, MemoTagCount } from '../../services/library/MemoFeedPolicy';
 import { QuickMemoComposer } from '../common/QuickMemoComposer';
@@ -135,11 +136,13 @@ export struct HomeWorkspace {
           Text('主页').fontSize(TypographyTokens.TITLE_HERO).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
           Text('记录想法，整理知识。').fontSize(14).fontColor(this.palette().inkMuted)
         }.width('100%').alignItems(HorizontalAlign.Start).margin({ bottom: 4 })
-        GridRow({ columns: this.singleColumn ? 2 : 4, gutter: 8 }) {
+        GridRow({ columns: this.singleColumn ? 2 : (AI_FEATURES_VISIBLE ? 4 : 3), gutter: 8 }) {
           GridCol() { this.quickAction($r('app.media.ic_new_note'), '新建笔记', () => this.onCreateNote()) }
           GridCol() { this.quickAction($r('app.media.ic_pen'), '手写笔记', () => this.onCreateHandwriting()) }
           GridCol() { this.quickAction($r('app.media.ic_import'), '导入资料', () => this.onImportDocument()) }
-          GridCol() { this.quickAction($r('app.media.ic_text_page'), '文字整理', () => this.onSmartExtract()) }
+          if (AI_FEATURES_VISIBLE) {
+            GridCol() { this.quickAction($r('app.media.ic_text_page'), '文字整理', () => this.onSmartExtract()) }
+          }
         }.width('100%')
         QuickMemoComposer({ text: this.memoDraft, status: this.memoStatus, saving: this.memoSaving, ready: this.memoReady,
           onChange: this.onMemoChange, onSave: () => { this.pinnedOnly = false; this.onSaveMemo(); }, onRetryDraft: this.onRetryMemoDraft })

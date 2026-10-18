@@ -1,5 +1,6 @@
 import { copyNote } from '../common/utils/NoteSnapshot';
 import { AnimationTokens } from '../common/constants/DesignTokens';
+import { AI_FEATURES_VISIBLE } from '../common/constants/RuntimeCapabilities';
 /**
  * 墨语 (FlowMind) 顶层装配器
  *
@@ -2073,7 +2074,7 @@ struct Index {
       }
 
 
-      if (this.smartExtractVisible) {
+      if (AI_FEATURES_VISIBLE && this.smartExtractVisible) {
         SmartExtractSheet({
           onImportSource: (uri: string) => this.importExtractSource(uri),
           onClose: () => {
