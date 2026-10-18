@@ -39,16 +39,16 @@ export class DebugPdfPreviewService {
 
   pageCount(filePath: string): number { return this.kindOf(filePath) ? 2 : 0; }
 
-  renderPage(filePath: string, pageIndex: number): DebugPdfPage | null {
+  async renderPage(filePath: string, pageIndex: number): Promise<DebugPdfPage | null> {
     const kind = this.kindOf(filePath);
     if (!kind || this.context === null) { return null; }
     if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= 2) { throw new Error('PDF 页码超出范围'); }
-    const bytes = this.context.resourceManager.getRawFileContentSync(`debug-pdf-preview/${kind}-${pageIndex + 1}.png`);
+    const bytes = await this.context.resourceManager.getRawFileContent(`debug-pdf-preview/${kind}-${pageIndex + 1}.png`);
     const source = image.createImageSource(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
     try {
-      const info = source.getImageInfoSync();
-      const pixelMap = source.createPixelMapSync({ editable: false, desiredPixelFormat: image.PixelMapFormat.RGBA_8888 });
+      const info = await source.getImageInfo();
+      const pixelMap = await source.createPixelMap({ editable: false, desiredPixelFormat: image.PixelMapFormat.RGBA_8888 });
       return { pixelMap: pixelMap, aspectRatio: info.size.width / info.size.height };
-    } finally { source.release().catch(() => {}); }
+    } finally { await source.release(); }
   }
 }

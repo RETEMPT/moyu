@@ -16,28 +16,31 @@ const icons = {
   trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
   menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
   link: '<path d="m10 14 4-4M9 16l-2 2a4.2 4.2 0 0 1-6-6l4-4a4.2 4.2 0 0 1 6 0M15 8l2-2a4.2 4.2 0 0 1 6 6l-4 4a4.2 4.2 0 0 1-6 0" transform="translate(1 0) scale(.92 1)"/>',
-  import: '<path d="M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5M12 3v12m-5-5 5 5 5-5"/>',
+  import: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9ZM14 3v6h6M12 18V11m-3 3 3-3 3 3"/>',
   cover: '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="8" cy="9" r="1.5"/><path d="m4 17 5-5 4 4 3-3 4 4"/>',
-  pen: '<path d="m14 3 7 7-7 7-11 4 4-11Z"/><path d="m14 3-3 3 7 7 3-3M3 21l7-7"/><circle cx="11" cy="13" r="1.4"/>',
+  pen: '<path d="m16 3 5 5-12 12-6 1 1-6ZM13 6l5 5M3 21h18"/>',
   highlighter: '<path d="m14 3 7 7-8 8-7-7ZM6 11l-3 6 4 4 6-3M3 21h8"/>',
   eraser: '<path d="m14 3 7 7-10 11H6l-4-4ZM8 11l7 7M11 21h10"/>',
   undo: '<path d="m8 4-5 5 5 5M3 9h10a7 7 0 0 1 0 14" transform="translate(0 -2)"/>',
   redo: '<path d="m16 4 5 5-5 5M21 9H11a7 7 0 0 0 0 14" transform="translate(0 -2)"/>',
   hand: '<path d="M8 12V5a2 2 0 0 1 4 0v7-9a2 2 0 0 1 4 0v9-7a2 2 0 0 1 4 0v10c0 4-3 7-7 7h-1c-2 0-4-1-5-3l-4-6a2 2 0 0 1 3-2l2 2"/>',
-  settings: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="2" fill="#000"/><circle cx="16" cy="12" r="2" fill="#000"/><circle cx="10" cy="18" r="2" fill="#000"/>',
+  shape: '<rect x="3" y="3" width="12" height="12" rx="1"/><circle cx="16" cy="16" r="5"/>',
+  line: '<path d="m4 20 16-16"/>',
+  rectangle: '<rect x="3" y="5" width="18" height="14" rx=".5"/>',
+  ellipse: '<ellipse cx="12" cy="12" rx="9" ry="6"/>',
+  arrow: '<path d="m4 20 16-16M10 4h10v10"/>',
+  lock: '<rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>',
+  unlock: '<rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 7.5-2M12 14v3"/>',
+  settings: '<path d="m10 3-.6 2.2-1.8 1L5.4 6 3.5 9.3 5 11v2l-1.5 1.7L5.4 18l2.2-.2 1.8 1L10 21h4l.6-2.2 1.8-1 2.2.2 1.9-3.3L19 13v-2l1.5-1.7L18.6 6l-2.2.2-1.8-1L14 3Z"/><circle cx="12" cy="12" r="3"/>',
   more: '<circle cx="5" cy="12" r="1.4" fill="#000"/><circle cx="12" cy="12" r="1.4" fill="#000"/><circle cx="19" cy="12" r="1.4" fill="#000"/>',
   back: '<path d="M20 12H4m7-7-7 7 7 7"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
-  copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
-  stop: '<rect x="5" y="5" width="14" height="14" rx="3"/>',
   refresh: '<path d="M20 9a8 8 0 0 0-14-3L3 9m0-6v6h6M4 15a8 8 0 0 0 14 3l3-3m0 6v-6h-6"/>',
   chevron_left: '<path d="m15 5-7 7 7 7"/>',
   chevron_right: '<path d="m9 5 7 7-7 7"/>',
-  chevron_down: '<path d="m5 9 7 7 7-7"/>',
   chevron_up: '<path d="m5 15 7-7 7 7"/>',
   panel: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16M18 8v8"/>',
   split: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M12 4v16"/>',
-  fullscreen: '<path d="M3 9V3h6M15 3h6v6M21 15v6h-6M9 21H3v-6"/>',
   read: '<path d="M12 5c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1Zm0 0v15"/>',
   plus: '<path d="M12 4v16M4 12h16"/>',
   format: '<path d="M4 5h16M12 5v14M8 19h8M4 12v-3M20 12v-3"/>',
@@ -46,15 +49,27 @@ const icons = {
   ordered: '<path d="M10 6h10M10 12h10M10 18h10M3 4h2v5M3 13c0-3 4-3 4-1 0 2-4 3-4 6h4"/>',
   bold: '<path d="M6 4h7a4 4 0 0 1 0 8H6Zm0 8h8a4 4 0 0 1 0 8H6Z"/>',
   italic: '<path d="M10 4h8M6 20h8M14 4l-4 16"/>',
-  pin: '<path d="M8 3h8l-1 6 4 4v2H5v-2l4-4ZM12 15v6"/>',
   export: '<path d="M4 11v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M12 16V3m-5 5 5-5 5 5"/>',
+  screenshot: '<path d="M3 8V4h4M17 4h4v4M21 16v4h-4M7 20H3v-4"/><rect x="6" y="8" width="12" height="9" rx="2"/><circle cx="12" cy="12.5" r="2.2"/>',
+  share: '<path d="m8 10 8-4M8 14l8 4"/><circle cx="5" cy="12" r="3"/><circle cx="19" cy="4" r="3"/><circle cx="19" cy="20" r="3"/>',
   folder: '<path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   pdf: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9ZM14 3v6h6M8 13h8M8 17h8"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M7 3v4M17 3v4M3 10h18M8 14h2M14 14h2M8 18h2"/>',
   cloud: '<path d="M6 19h12a4 4 0 0 0 1-7.9A7 7 0 0 0 5.4 9 5 5 0 0 0 6 19Z"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 1 1 5 2c-2 1-2 1-2 3M12 17v.1"/>',
   clear: '<path d="M5 4v16M9 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H9M9 12h8m-3-3 3 3-3 3"/>',
-  page: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 11h6M9 15h4"/>',
+  page: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9ZM14 3v6h6"/>',
+  checkbox_empty: '<rect x="3" y="3" width="18" height="18" rx="3"/>',
+  checkbox_partial: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7 12h10"/>',
+  project_rocket: '<path d="m8 15-4 1 1-5 4-2c3-4 6-6 12-6 0 6-2 9-6 12l-2 4-5 1 1-4M5 19l-2 2M10 14l-3-3"/><circle cx="16" cy="8" r="2"/>',
+  project_books: '<rect x="3" y="4" width="5" height="17" rx="1"/><rect x="8" y="4" width="5" height="17" rx="1"/><path d="m14 5 4-1 4 16-4 1ZM4 8h3M9 8h3M16 9l3-1"/>',
+  project_bulb: '<path d="M8 14a6 6 0 1 1 8 0c-1 1-1 2-1 3H9c0-1 0-2-1-3ZM9 20h6M11 23h2M12 13V9"/>',
+  project_science: '<path d="M9 3h6M10 3v6L4 19a1.3 1.3 0 0 0 1 2h14a1.3 1.3 0 0 0 1-2L14 9V3M7 15h10"/><circle cx="11" cy="18" r=".7"/>',
+  project_briefcase: '<rect x="3" y="7" width="18" height="14" rx="2"/><path d="M8 7V4h8v3M3 12c6 4 12 4 18 0M11 13h2v3h-2Z"/>',
+  project_target: '<circle cx="11" cy="13" r="9"/><circle cx="11" cy="13" r="5"/><path d="m11 13 10-10M17 3h4v4"/>',
+  project_palette: '<path d="M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1-4c-1-1 0-2 1-2h3a3 3 0 0 0 3-3c0-5-4-9-9-9Z"/><circle cx="8" cy="8" r="1"/><circle cx="12" cy="6" r="1"/><circle cx="16" cy="8" r="1"/><circle cx="7" cy="12" r="1"/>',
+  new_note: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5M14 3v6h6V9l-6-6M17 13v8M13 17h8"/>',
+  text_page: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h5"/>',
   code: '<path d="m8 6-6 6 6 6M16 6l6 6-6 6M14 3l-4 18"/>',
   strike: '<path d="M17 6c-2-4-11-4-11 1 0 2 2 3 5 4M7 18c3 4 11 3 11-1 0-2-2-3-5-4M3 12h18"/>',
   divider: '<path d="M3 12h18"/>',
@@ -66,9 +81,6 @@ const outputs = new Map();
 for (const [name, body] of Object.entries(icons)) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000000" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">\n  ${body}\n</svg>\n`;
   outputs.set(`entry/src/main/resources/base/media/ic_${name}.svg`, svg);
-}
-for (const name of ['note', 'cover']) {
-  outputs.set(`entry/src/main/resources/base/media/ic_${name}_white.svg`, outputs.get(`entry/src/main/resources/base/media/ic_${name}.svg`).replaceAll('#000000', '#FFFFFF').replaceAll('#000"', '#FFFFFF"'));
 }
 
 for (const theme of ['light', 'dark']) {
@@ -105,9 +117,10 @@ const tiles = Object.entries(icons).map(([name, body], i) => {
 outputs.set('design/icon-preview.svg', `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><rect width="1024" height="1024" fill="#F8F7FB"/><g font-family="Arial,sans-serif"><text x="48" y="48" font-size="26" fill="#242033">FlowMind / Purple ink</text>${brandPanels}<rect x="520" y="92" width="452" height="164" rx="24" fill="#221E2D"/><text x="550" y="130" font-size="16" fill="#F8FAFC">Theme-aware vector assets</text><text x="550" y="166" font-size="14" fill="#BBA4FF">24-unit grid / 1.8-unit strokes</text><text x="550" y="202" font-size="14" fill="#B8B0C7">44vp native button targets</text><text x="550" y="232" font-size="12" fill="#A49AB6">Asset review, not a device screenshot</text>${tiles}</g></svg>\n`);
 
 if (process.argv.includes('--check')) {
-  const stale = [...outputs].filter(([name, value]) => !fs.existsSync(path.join(root, name)) || fs.readFileSync(path.join(root, name), 'utf8').replace(/\r\n/g, '\n') !== value);
+  const checked = [...outputs].filter(([name]) => process.argv.includes('--local-docs') || !name.startsWith('design/'));
+  const stale = checked.filter(([name, value]) => !fs.existsSync(path.join(root, name)) || fs.readFileSync(path.join(root, name), 'utf8').replace(/\r\n/g, '\n') !== value);
   if (stale.length) { console.error('Icon masters need regeneration: ' + stale.map(([name]) => name).join(', ')); process.exitCode = 1; }
-  else console.log(`${outputs.size} vector assets match the icon source.`);
+  else console.log(`${checked.length} vector assets match the icon source.`);
 } else {
   for (const [name, value] of outputs) { fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true }); fs.writeFileSync(path.join(root, name), value); }
   console.log(`Generated ${outputs.size} vector assets.`);

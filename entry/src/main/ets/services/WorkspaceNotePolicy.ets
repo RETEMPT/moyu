@@ -1,6 +1,18 @@
 import { NoteItem } from '../common/types/NoteItem';
+import { FREE_CANVAS_ID } from '../common/constants/WorkspaceConstants';
 
 export class WorkspaceNotePolicy {
+  static isFreeCanvas(note: NoteItem): boolean {
+    return note.type.toLowerCase() === 'canvas' && (note.id === FREE_CANVAS_ID || note.id.startsWith(FREE_CANVAS_ID + '-'));
+  }
+
+  static createFreeCanvas(occupiedIds: string[], now: number): NoteItem {
+    let id = FREE_CANVAS_ID; let suffix = 0;
+    while (occupiedIds.includes(id)) { id = FREE_CANVAS_ID + '-' + now + '-' + (++suffix); }
+    return { id, title: '自由白板', category: '速记灵感', type: 'canvas', previewText: '自由白板',
+      tag: '手写', tagColor: '', updateTime: '刚刚', contentDetail: '', strokes: '[]', createdAt: now, updatedAt: now };
+  }
+
   static mutate(note: NoteItem, operation: string, value: string, expectedUpdatedAt: number): NoteItem {
     const next = JSON.parse(JSON.stringify(note)) as NoteItem;
     if (operation === 'rename_note') {

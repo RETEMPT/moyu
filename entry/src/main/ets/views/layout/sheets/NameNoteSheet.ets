@@ -15,7 +15,7 @@ export struct NameNoteSheet {
   onConfirm: (name: string, project: string, tags: string[]) => void = () => {};
   onTypeChange: (type: string) => void = () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
-  @StorageProp('flowmindThemeStyle') style: string = 'ink';
+  @StorageProp('flowmindThemeStyle') style: string = 'mono';
   @State draft: string = '';
   @State destination: string = '未分类';
   @State tagDraft: string = '';
@@ -35,7 +35,7 @@ export struct NameNoteSheet {
         Text(title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
         Text(detail).fontSize(11).fontColor(this.palette().inkSecondary)
       }.padding(12).width('100%')
-    }.layoutWeight(1).height(100).padding(0).borderRadius(12).enabled(!this.busy)
+    }.layoutWeight(1).height(100).padding(0).borderRadius(5).enabled(!this.busy)
       .backgroundColor(this.noteType === type ? this.palette().accentSoft : this.palette().surfaceSubtle)
       .accessibilityText(`${title}${this.noteType === type ? '，已选中' : ''}，${detail}`).onClick(() => this.onTypeChange(type))
   }

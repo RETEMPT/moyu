@@ -1,5 +1,5 @@
 # Release keeps JSON wire/schema properties and native libentry export names unchanged.
 # Only safe local-name obfuscation, whitespace compression and console removal are enabled.
-# Re-test persistence, backup restoration and AI protocol fields before stronger rules.
+# Re-test persistence, backup restoration and native bindings before stronger rules.
 -compact
 -remove-log

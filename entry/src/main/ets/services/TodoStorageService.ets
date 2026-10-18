@@ -1,63 +1,37 @@
 /**
  * 待办与日期备忘的本地存储服务
  *
- * 与笔记正文（.md 文件）分开：待办数据量小、结构固定，直接用 Preferences
- * 存 JSON 快照。损坏数据阻止覆盖并报告错误；写入失败恢复缓存。
+ * 待办、笔记关联和日期备忘存入统一关系数据库；旧 Preferences 仅用于首次校验迁移。
  */
 import { Context } from '@kit.AbilityKit';
-import { preferences } from '@kit.ArkData';
 import { TodoItem, DayNote } from '../common/types/TodoItem';
-import { SnapshotStore } from './storage/SnapshotStore';
+import { DomainStorage } from './storage/DomainStorage';
 
 const PREFERENCES_NAME: string = 'flowmind_todos';
 const TODOS_KEY: string = 'todos';
 const DAYNOTES_KEY: string = 'daynotes';
 
 export class TodoStorageService {
-  private todoPreferences: preferences.Preferences | null = null;
-  private snapshots: SnapshotStore = new SnapshotStore();
-
-  private async ensure(context: Context): Promise<preferences.Preferences> {
-    let prefs: preferences.Preferences | null = this.todoPreferences;
-    if (prefs === null) {
-      prefs = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
-      this.todoPreferences = prefs;
-    }
-    return prefs;
-  }
+  private domain: DomainStorage = new DomainStorage();
 
   /** 读取全部待办；缺失时返回空数组，损坏时报错并保留原数据 */
   async loadTodos(context: Context): Promise<TodoItem[]> {
-    try { return await this.readTodos(context); }
-    catch (error) { this.snapshots.block(TODOS_KEY); throw new Error(error instanceof Error ? error.message : '待办读取失败'); }
-  }
-
-  private async readTodos(context: Context): Promise<TodoItem[]> {
-    const prefs: preferences.Preferences = await this.ensure(context);
-    return await this.snapshots.read<TodoItem[]>(prefs, TODOS_KEY, (value: TodoItem[]) => this.isTodoArray(value)) || [];
+    return await this.domain.load<TodoItem[]>(context, TODOS_KEY, PREFERENCES_NAME, TODOS_KEY, (value: TodoItem[]) => this.isTodoArray(value)) || [];
   }
 
   /** 写入全部待办 */
   async saveTodos(context: Context, todos: TodoItem[]): Promise<void> {
-    const prefs: preferences.Preferences = await this.ensure(context);
-    await this.snapshots.write(prefs, TODOS_KEY, JSON.stringify(todos));
+    await this.domain.save<TodoItem[]>(context, TODOS_KEY, PREFERENCES_NAME, TODOS_KEY, todos, (value: TodoItem[]) => this.isTodoArray(value));
   }
 
   /** 读取全部日期备忘；缺失时返回空数组，损坏时报错并保留原数据 */
   async loadDayNotes(context: Context): Promise<DayNote[]> {
-    try { return await this.readDayNotes(context); }
-    catch (error) { this.snapshots.block(DAYNOTES_KEY); throw new Error(error instanceof Error ? error.message : '日期备忘读取失败'); }
-  }
-
-  private async readDayNotes(context: Context): Promise<DayNote[]> {
-    const prefs: preferences.Preferences = await this.ensure(context);
-    return await this.snapshots.read<DayNote[]>(prefs, DAYNOTES_KEY, (value: DayNote[]) => this.isDayNoteArray(value)) || [];
+    return await this.domain.load<DayNote[]>(context, DAYNOTES_KEY, PREFERENCES_NAME, DAYNOTES_KEY, (value: DayNote[]) => this.isDayNoteArray(value)) || [];
   }
 
   /** 写入全部日期备忘 */
   async saveDayNotes(context: Context, dayNotes: DayNote[]): Promise<void> {
-    const prefs: preferences.Preferences = await this.ensure(context);
-    await this.snapshots.write(prefs, DAYNOTES_KEY, JSON.stringify(dayNotes));
+    await this.domain.save<DayNote[]>(context, DAYNOTES_KEY, PREFERENCES_NAME, DAYNOTES_KEY, dayNotes, (value: DayNote[]) => this.isDayNoteArray(value));
   }
 
   private isTodoArray(value: TodoItem[]): boolean {
@@ -69,7 +43,8 @@ export class TodoStorageService {
         || typeof item.id !== 'string'
         || typeof item.date !== 'string'
         || typeof item.title !== 'string'
-        || typeof item.done !== 'boolean') {
+        || typeof item.done !== 'boolean'
+        || (item.noteRefs !== undefined && (!Array.isArray(item.noteRefs) || !item.noteRefs.every((id: string) => typeof id === 'string')))) {
         return false;
       }
     }

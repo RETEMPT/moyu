@@ -32,6 +32,11 @@ export function noteRenderKey(note: NoteItem): string {
   return `${note.id}|${note.title}|${note.type}|${note.category}|${note.tag}|${tags}|${updated}|${note.coverUrl || ''}|${note.favorite === true}|${note.isPinned === true}`;
 }
 
+/** Progress refreshes only rows that display it; the sidebar need not rebuild for a page turn. */
+export function readingRenderKey(note: NoteItem): string {
+  return `${noteRenderKey(note)}|${note.pageCount || 0}|${note.lastReadAt || 0}|${note.readPage || 0}`;
+}
+
 /**
  * 侧边栏项目行的 ForEach 键。
  *

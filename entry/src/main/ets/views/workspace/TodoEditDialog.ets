@@ -21,13 +21,15 @@ export struct TodoEditDialog {
   @Prop initialRefs: string[] = [];
 
   onClose: () => void = () => {};
-  onSave: (title: string, noteRefs: string[]) => void = () => {};
+  onSave: (title: string, noteRefs: string[]) => Promise<boolean> = async () => false;
 
   @State titleInput: string = '';
   @State selected: string[] = [];
+  @State private saving: boolean = false;
+  @State private saveError: string = '';
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
@@ -63,12 +65,15 @@ export struct TodoEditDialog {
     this.selected = next;
   }
 
-  private commit(): void {
+  private async commit(): Promise<void> {
     const trimmed: string = this.titleInput.trim();
-    if (trimmed.length === 0) {
+    if (trimmed.length === 0 || this.saving) {
       return;
     }
-    this.onSave(trimmed, this.selected.slice());
+    this.saving = true; this.saveError = '';
+    try { if (!await this.onSave(trimmed, this.selected.slice())) { this.saveError = '保存失败，输入已保留，请重试'; } }
+    catch { this.saveError = '保存失败，输入已保留，请重试'; }
+    finally { this.saving = false; }
   }
 
   @Builder
@@ -97,7 +102,7 @@ export struct TodoEditDialog {
     .borderRadius(6)
     .backgroundColor(this.isSelected(note.id) ? this.palette().activeBg : Color.Transparent)
     .hoverEffect(HoverEffect.Highlight)
-    .onClick(() => this.toggleRef(note.id))
+    .enabled(!this.saving).onClick(() => this.toggleRef(note.id))
   }
 
   build() {
@@ -122,6 +127,7 @@ export struct TodoEditDialog {
           .borderRadius(6)
           .height(40)
           .width('100%')
+          .enabled(!this.saving)
           .onChange((value: string) => {
             this.titleInput = value;
           })
@@ -151,6 +157,7 @@ export struct TodoEditDialog {
           .scrollBar(BarState.Auto)
         }
 
+        if (this.saveError) { Text(this.saveError).fontSize(12).fontColor(this.palette().danger).width('100%').margin({ top: 8 }) }
         Row({ space: 10 }) {
           Blank()
           Text('取消')
@@ -160,15 +167,15 @@ export struct TodoEditDialog {
             .borderRadius(6)
             .backgroundColor(this.palette().surfaceSubtle)
             .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => this.onClose())
-          Text('保存')
+            .enabled(!this.saving).onClick(() => this.onClose())
+          Text(this.saving ? '保存中…' : '保存')
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().onAccent)
             .padding({ left: 18, right: 18, top: 8, bottom: 8 })
             .borderRadius(6)
             .backgroundColor(this.palette().accent)
             .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => this.commit())
+            .enabled(!this.saving).onClick(() => this.commit())
         }
         .width('100%')
         .margin({ top: 18 })
@@ -176,9 +183,9 @@ export struct TodoEditDialog {
       .width('100%')
       .constraintSize({ maxWidth: 480 })
       .padding({ left: 22, right: 22, top: 20, bottom: 18 })
-      .borderRadius(12)
+      .borderRadius(5)
       .backgroundColor(this.palette().surface)
-      .shadow({ radius: 32, color: 'rgba(0,0,0,0.22)' })
+      .shadow({ radius: 20, color: 'rgba(0,0,0,0.12)', offsetY: 6 })
       .border({ width: 1, color: this.palette().border })
       .onClick(() => {
         // 消费卡片内点击，避免冒泡到遮罩导致弹窗关闭
@@ -189,6 +196,6 @@ export struct TodoEditDialog {
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
     .backgroundColor('rgba(0,0,0,0.28)')
-    .onClick(() => this.onClose())
+    .onClick(() => { if (!this.saving) { this.onClose(); } })
   }
 }

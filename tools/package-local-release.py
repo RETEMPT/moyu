@@ -70,7 +70,7 @@ def main():
                 raise ValueError('HAP digest mismatch')
             files[f'FlowMind-{version}-unsigned.hap'] = payload
             with zipfile.ZipFile(io.BytesIO(payload)) as hap, tempfile.TemporaryDirectory(dir=output) as folder:
-                retired = [name for name in hap.namelist() if re.search(r'(?:archive/|ic_(?:sparkle|history|send)\.svg|ModelSetup|deepseek)', name, re.I)]
+                retired = [name for name in hap.namelist() if re.search(r'(?:archive/|ic_(?:sparkle|history|send|stop)\.svg|ModelSetup|deepseek)', name, re.I)]
                 if retired:
                     raise ValueError(f'Retired assets included: {retired}')
                 abc_name = next(name for name in hap.namelist() if name.endswith('modules.abc'))
@@ -80,7 +80,7 @@ def main():
                 subprocess.run([args.disassembler, str(abc), str(listing)], check=True, capture_output=True, timeout=120)
                 # Panda disassembly can encode emoji as CESU-8 surrogate pairs.
                 text = listing.read_text(encoding='utf-8', errors='surrogatepass').replace('SystemCapability.AI.OCR.TextRecognition', '')
-                forbidden = re.search(r'(?:services/ai/|views/ai/|AiWorkspace|AssistantText|HuaweiAiSplitPanel|ModelConfigService|ModelProvider|REMOTE_AI_ENABLED|墨客|伴读|大模型|自配 API|\bAI\b)', text)
+                forbidden = re.search(r'(?:services/ai/|views/ai/|AiWorkspace|AssistantText|HuaweiAiSplitPanel|ModelConfigService|ModelProvider|AiModelCatalog|MarkerImportPolicy|aiSummary|aiTags|REMOTE_AI_ENABLED|墨客|伴读|大模型|自配 API|\bAI\b)', text)
                 if forbidden:
                     raise ValueError(f'Retired compiled feature: {forbidden[0]}')
                 audit.append({'module': module['name'], 'compiledFeatureAudit': 'PASS', 'retiredResourceAudit': 'PASS',
@@ -131,11 +131,12 @@ PDF/笔迹、升级与备份、小屏键盘、大字体、横竖屏与分屏。
             archive.writestr(f'FlowMind-{version}/{name}', data)
     tracked = git('ls-files').splitlines()
     source_zip = output / f'FlowMind-{version}-source.zip'
-    source_prefixes = ('AppScope/', 'entry/', 'hvigor/', 'tools/', 'design/', '.github/')
-    source_files = {'README.md', 'LICENSE', 'CONTRIBUTING.md', '.gitignore', '.gitattributes',
+    source_prefixes = ('AppScope/', 'entry/', 'hvigor/', 'tools/', 'design/', '.github/', 'docs/', 'archive/ai/')
+    source_files = {'README.md', 'PRODUCT_SCOPE.md', 'TECH_STACK.md', 'PROJECT_MEMORY.md', 'SECURITY.md',
+                    'LICENSE', 'CONTRIBUTING.md', '.gitignore', '.gitattributes',
                     'build_hap.bat', 'deploy_hap.bat', 'build-profile.json5', 'hvigorfile.ts',
                     'oh-package.json5', 'oh-package-lock.json5', 'code-linter.json5',
-                    'docs/USER_GUIDE.md', 'docs/PRIVACY.md', 'docs/APP_MARKET_RELEASE.md', 'docs/RELEASE_1.0.5.md',
+                    'docs/USER_GUIDE.md', 'docs/PRIVACY.md',
                     'release/README.md', 'release/STORE_LISTING.md', 'release/DEPENDENCIES.md',
                     'release/app-market.json', 'release/privacy-sections.json', 'release/review-evidence.template.json',
                     'release/device-evidence.template.json', 'release/site/privacy.html'}
@@ -145,10 +146,10 @@ PDF/笔迹、升级与备份、小屏键盘、大字体、横竖屏与分屏。
                 if name == 'local.properties' or re.search(r'\.(p12|pfx|pem|key|p7b|cer)$', name, re.I):
                     raise ValueError('Private signing files must never be packaged')
                 archive.write(ROOT / name, f'FlowMind-{version}-source/{name}')
-    archive_zip = output / f'FlowMind-{version}-optional-features.zip'
+    archive_zip = output / f'FlowMind-{version}-ai-history.zip'
     with zipfile.ZipFile(archive_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for name in tracked:
-            if name.startswith('archive/optional-features/'):
+            if name.startswith('archive/ai/'):
                 archive.write(ROOT / name, name)
     for file in [release_zip, source_zip, archive_zip]:
         with zipfile.ZipFile(file) as archive:

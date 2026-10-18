@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { parseJsonc, packageErrors, deviceEvidenceErrors, REQUIRED_CASES } from './app-market-policy.mjs';
 
 const expected = { bundleName:'com.retempt.flowmind', versionName:'1.0.5', versionCode:1001005,
-  minApi:24,targetApi:26, devices:['phone','tablet'], permissions:['ohos.permission.DISTRIBUTED_DATASYNC'],
+  minApi:24,targetApi:26, devices:['phone','tablet'], permissions:[],
   sourceCommit:'abcdef',appSha256:'artifact-sha' };
 const pack = () => ({ appSha256:'artifact-sha',pack:{ summary:{app:{bundleName:expected.bundleName,version:{code:expected.versionCode,name:expected.versionName}}}},
   modules:[{module:{name:'entry',deviceTypes:expected.devices,requestPermissions:expected.permissions.map(name=>({name}))},

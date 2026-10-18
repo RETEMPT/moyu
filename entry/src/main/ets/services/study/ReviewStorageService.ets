@@ -1,26 +1,20 @@
 import { Context } from '@kit.AbilityKit';
-import { preferences } from '@kit.ArkData';
 import { ReviewCard } from '../../common/types/StudyTypes';
 import { ReviewPolicy } from './ReviewPolicy';
-import { SnapshotStore } from '../storage/SnapshotStore';
+import { DomainStorage } from '../storage/DomainStorage';
 
 export class ReviewStorageService {
-  private prefs: preferences.Preferences | null = null;
-  private snapshots: SnapshotStore = new SnapshotStore();
-  private async ensure(context: Context): Promise<preferences.Preferences> {
-    if (this.prefs === null) { this.prefs = await preferences.getPreferences(context, { name: 'flowmind_study' }); }
-    return this.prefs;
-  }
+  private domain: DomainStorage = new DomainStorage();
   async load(context: Context): Promise<ReviewCard[]> {
     try {
-      const rows = await this.snapshots.read<ReviewCard[]>(await this.ensure(context), 'cards',
-        (value: ReviewCard[]) => Array.isArray(value));
+      const rows = await this.domain.load<ReviewCard[]>(context, 'cards', 'flowmind_study', 'cards',
+        (value: ReviewCard[]) => Array.isArray(value) && ReviewPolicy.normalize(value).length === value.length);
       return ReviewPolicy.normalize(rows || []);
-    } catch { this.snapshots.block('cards'); throw new Error('复习记录损坏或无法读取，请先保留设备数据'); }
+    } catch { throw new Error('复习记录损坏或无法读取，请先保留设备数据'); }
   }
   async save(context: Context, cards: ReviewCard[]): Promise<void> {
-    const prefs = await this.ensure(context);
-    try { await this.snapshots.write(prefs, 'cards', JSON.stringify(cards)); }
+    try { await this.domain.save<ReviewCard[]>(context, 'cards', 'flowmind_study', 'cards', cards,
+      (value: ReviewCard[]) => Array.isArray(value) && ReviewPolicy.normalize(value).length === value.length); }
     catch (error) { throw new Error('复习记录保存失败；' + (error as Error).message); }
   }
 }

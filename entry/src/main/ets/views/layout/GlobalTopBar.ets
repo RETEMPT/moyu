@@ -7,9 +7,10 @@
 import { ColorPalette, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { SAVE_FAILED, SAVE_SAVING } from '../../common/constants/WorkspaceConstants';
+import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
 
-const TOP_BAR_HEIGHT: number = 52;
+const TOP_BAR_HEIGHT: number = 48;
 const ICON_SIZE: number = 44;
 
 @Component
@@ -30,7 +31,7 @@ export struct GlobalTopBar {
   onBreadcrumbClick: (index: number, segment: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
@@ -50,18 +51,14 @@ export struct GlobalTopBar {
     if (this.saveState === SAVE_FAILED) {
       return palette.danger;
     }
-    return palette.success;
+    return palette.inkMuted;
   }
 
   build() {
     Row() {
       // ---- 左区 ----
       Row() {
-        Image($r('app.media.ic_menu'))
-          .width(20)
-          .height(20)
-          .objectFit(ImageFit.Contain)
-          .fillColor(this.palette().inkSecondary)
+        AppIcon({ source: $r('app.media.ic_menu'), iconSize: 20, tint: this.palette().inkSecondary })
       }
       .width(this.iconSize())
       .height(this.iconSize())
@@ -78,9 +75,9 @@ export struct GlobalTopBar {
               .fontSize(TypographyTokens.CAPTION)
               .fontColor(this.palette().inkMuted)
           }
-          Text(segment)
+          Text(segment === '首页' ? '主页' : segment)
             .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(index === this.breadcrumb.length - 1 ? this.palette().inkPrimary : this.palette().accent)
+            .fontColor(index === this.breadcrumb.length - 1 ? this.palette().inkPrimary : this.palette().inkMuted)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .hoverEffect(HoverEffect.Highlight)
@@ -91,9 +88,9 @@ export struct GlobalTopBar {
       .margin({ left: 4 })
 
       // ---- 右区 ----
+      if (this.saveState === SAVE_SAVING || this.saveState === SAVE_FAILED) {
       Row({ space: 5 }) {
-        Circle({ width: 6, height: 6 })
-          .fill(this.saveStateColor())
+        AppIcon({ source: $r('app.media.ic_lock'), iconSize: 14, tint: this.saveStateColor() })
         if (!this.isPhone || this.saveState === SAVE_FAILED) {
           Text(this.saveState)
             .fontSize(TypographyTokens.CAPTION)
@@ -102,13 +99,10 @@ export struct GlobalTopBar {
       }
       .accessibilityText(this.saveState)
       .margin({ right: 8 })
+      }
 
       Row() {
-        Image($r('app.media.ic_search'))
-          .width(20)
-          .height(20)
-          .objectFit(ImageFit.Contain)
-          .fillColor(this.palette().inkSecondary)
+        AppIcon({ source: $r('app.media.ic_search'), iconSize: 20, tint: this.palette().inkSecondary })
       }
       .width(this.iconSize())
       .height(this.iconSize())
@@ -116,6 +110,7 @@ export struct GlobalTopBar {
       .borderRadius(6)
       .hoverEffect(HoverEffect.Highlight)
       .accessibilityText('搜索笔记')
+      .keyboardShortcut('f', [ModifierKey.CTRL], () => this.onOpenSearch())
       .onClick(() => this.onOpenSearch())
 
       if (this.showContextToggle) {
@@ -127,6 +122,5 @@ export struct GlobalTopBar {
     .height(TOP_BAR_HEIGHT)
     .padding({ left: 8, right: 8 })
     .backgroundColor(this.palette().canvas)
-    .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
   }
 }

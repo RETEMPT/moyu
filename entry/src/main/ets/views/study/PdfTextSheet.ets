@@ -11,7 +11,7 @@ export struct PdfTextSheet {
   onClose: () => void = () => {};
   onSave: (pages: PdfTextPage[]) => Promise<void> = async () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
   @State start: string = '1';
   @State end: string = '1';
@@ -88,7 +88,7 @@ export struct PdfTextSheet {
         }
         }.width('100%')
         }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
-      }.padding(20).width(this.phone ? '94%' : 600).height('88%').borderRadius(18).backgroundColor(this.palette().surface)
+      }.padding(20).width(this.phone ? '94%' : 600).height('88%').borderRadius(8).backgroundColor(this.palette().surface)
         .onClick(() => {})
     }.width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       .backgroundColor('rgba(0,0,0,0.4)').onClick(() => { if (!this.busy) { this.onClose(); } })

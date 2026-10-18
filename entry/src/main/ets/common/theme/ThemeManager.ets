@@ -40,7 +40,7 @@ const ALTERNATE_ICON_MIN_API: number = 26;
 export class ThemeManager {
   /** 用户当前选择的模式，未 restore 前按「跟随系统」处理 */
   private static mode: ThemeMode = ThemeMode.SYSTEM;
-  private static style: string = 'ink';
+  private static style: string = 'mono';
   private static writes: Promise<void> = Promise.resolve();
   /** 系统当前的深浅色，用于解析 ThemeMode.SYSTEM */
   private static systemIsDark: boolean = false;
@@ -86,13 +86,13 @@ export class ThemeManager {
       ThemeManager.store = await preferences.getPreferences(context, { name: PREFERENCES_NAME });
       const stored: number = await ThemeManager.store.get(THEME_MODE_KEY, ThemeMode.SYSTEM as number) as number;
       ThemeManager.mode = normalizeThemeMode(stored);
-      ThemeManager.style = normalizeThemeStyle(await ThemeManager.store.get('themeStyle', 'ink') as string);
+      ThemeManager.style = normalizeThemeStyle(await ThemeManager.store.get('themeStyle', 'mono') as string);
       const reduce = await ThemeManager.store.get('reduceMotion', false);
       AppStorage.setOrCreate<boolean>('flowmindReduceMotion', reduce === true);
     } catch (error) {
       console.error(`主题偏好读取失败，回退为跟随系统: ${JSON.stringify(error)}`);
       ThemeManager.mode = ThemeMode.SYSTEM;
-      ThemeManager.style = 'ink';
+      ThemeManager.style = 'mono';
       AppStorage.setOrCreate<boolean>('flowmindReduceMotion', false);
     }
     AppStorage.setOrCreate<string>(THEME_STYLE_KEY, ThemeManager.style);

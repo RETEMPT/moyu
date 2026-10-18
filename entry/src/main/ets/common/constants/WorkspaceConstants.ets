@@ -8,8 +8,9 @@ export const NAV_HOME: string = '首页';
 export const NAV_SETTINGS: string = '设置';
 export const NAV_LIBRARY: string = '资料库';
 export const NAV_GRAPH: string = '图谱';
-/** 自由画布与助手工作台 */
+/** 独立自由画布工作区。 */
 export const NAV_CANVAS: string = '白板';
+export const FREE_CANVAS_ID: string = 'canvas-global';
 /** 待办日历与回收站导航键 */
 export const NAV_TODO: string = '待办';
 export const NAV_TRASH: string = '回收站';
@@ -24,7 +25,7 @@ export const CATEGORY_UNFILED: string = '未分类';
 
 /** 资料库筛选项 */
 export const FILTER_ALL: string = '全部';
-export const NOTE_FILTERS: string[] = [FILTER_ALL, '手写', 'PDF', 'Word', 'Markdown'];
+export const NOTE_FILTERS: string[] = [FILTER_ALL, '手写', 'PDF', '图片', 'Markdown'];
 
 /** Markdown 落盘状态文案 */
 export const SAVE_IDLE: string = '已保存';

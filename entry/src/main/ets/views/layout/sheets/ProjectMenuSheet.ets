@@ -3,7 +3,7 @@
  *
  * 由 Sidebar 在 activeSheet === 'project_menu' 时挂载。
  * 面板本身不持有项目数据，只接收当前项目与一组回调，
- * 所有状态改动都回到 Index（见 pages/Index.ets 的 createNoteInProject 等）。
+ * 所有状态改动都通过回调交给 Index 保存。
  */
 import { TypographyTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
@@ -11,6 +11,7 @@ import { ColorPalette } from '../../../common/constants/DesignTokens';
 import { SpaceFolder } from '../../../common/types/SpaceFolder';
 import { DestructiveConfirm, SheetActionRow, SheetCancelButton, SheetOverlay } from './SheetScaffold';
 import { AppIcon } from '../../common/AppIcon';
+import { projectIcon } from '../../../common/utils/ProjectIcons';
 
 @Component
 export struct ProjectMenuSheet {
@@ -24,7 +25,7 @@ export struct ProjectMenuSheet {
   onDeleteProject: (name: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
@@ -34,7 +35,7 @@ export struct ProjectMenuSheet {
     SheetOverlay({ onDismiss: this.onClose }) {
       Column({ space: 6 }) {
         Row({ space: 6 }) {
-          AppIcon({ source: $r('app.media.ic_folder'), tint: this.palette().accent })
+          AppIcon({ source: projectIcon(this.project.icon || ''), tint: this.palette().inkSecondary })
           Text(this.project.name)
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontWeight(FontWeight.Bold)
@@ -70,7 +71,7 @@ export struct ProjectMenuSheet {
         DestructiveConfirm({
           triggerLabel: '删除项目',
           question: `确定删除「${this.project.name}」？`,
-          consequence: '下辖资料将自动归入「未分类」，不会丢失。',
+          consequence: '项目和其中的资料将一起移入回收站，可在回收站恢复。',
           onConfirm: () => this.onDeleteProject(this.project.name)
         })
 

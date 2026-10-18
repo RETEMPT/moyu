@@ -13,15 +13,18 @@ import { SheetOverlay } from './SheetScaffold';
 @Component
 export struct MoveNoteSheet {
   @Prop note: NoteItem;
+  @Prop @Watch('requestClose') closeToken: number = 0;
   @Prop categories: string[] = [];
 
   onClose: () => void = () => {};
-  onMoveNote: (note: NoteItem, category: string) => void = () => {};
+  onMoveNote: (note: NoteItem, category: string) => Promise<boolean> = async () => false;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
 
   @State private draft: string = '';
+  @State private saving: boolean = false;
+  @State private error: string = '';
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
@@ -31,13 +34,19 @@ export struct MoveNoteSheet {
     return this.note.category.length === 0 ? '未分类' : this.note.category;
   }
 
-  private move_to(category: string): void {
-    const trimmed: string = category.trim();
-    if (trimmed.length === 0) {
-      return;
-    }
-    this.onMoveNote(this.note, trimmed);
-    this.onClose();
+  private requestClose(): void { if (!this.saving) { this.onClose(); } }
+
+  private async move_to(category: string): Promise<void> {
+    if (this.saving) { return; }
+    const trimmed = category.trim();
+    if (!trimmed) { this.error = '请输入项目名称'; return; }
+    if (trimmed === this.currentCategory()) { this.onClose(); return; }
+    this.saving = true; this.error = '';
+    try {
+      if (await this.onMoveNote(this.note, trimmed)) { this.onClose(); }
+      else { this.error = '未能移动资料，请重试'; }
+    } catch { this.error = '未能移动资料，请重试'; }
+    finally { this.saving = false; }
   }
 
   @Builder
@@ -59,16 +68,16 @@ export struct MoveNoteSheet {
       }
     }
     .width('100%')
-    .height(34)
+    .height(44)
     .padding({ left: 10, right: 10 })
     .borderRadius(6)
     .backgroundColor(category === this.currentCategory() ? this.palette().activeBg : this.palette().surfaceSubtle)
     .hoverEffect(HoverEffect.Highlight)
-    .onClick(() => this.move_to(category))
+    .enabled(!this.saving).accessibilityText('归类到 ' + category).onClick(() => this.move_to(category))
   }
 
   build() {
-    SheetOverlay({ onDismiss: this.onClose }) {
+    SheetOverlay({ onDismiss: () => this.requestClose() }) {
       Column({ space: 8 }) {
         Text(`移动「${this.note.title}」到项目`)
           .fontSize(TypographyTokens.BODY_REGULAR)
@@ -104,30 +113,32 @@ export struct MoveNoteSheet {
             .placeholderColor(this.palette().inkMuted)
             .backgroundColor(this.palette().surfaceSubtle)
             .borderRadius(6)
-            .height(32)
-            .layoutWeight(1)
+            .height(44)
+            .layoutWeight(1).enabled(!this.saving).accessibilityText('资料新项目名称')
             .onChange((value: string) => {
               this.draft = value;
             })
-          Button('移动并新建')
-            .height(32)
+          Button(this.saving ? '保存中…' : '移动并新建')
+            .height(44)
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().onAccent)
             .backgroundColor(this.palette().accent)
             .borderRadius(6)
-            .onClick(() => this.move_to(this.draft))
+            .enabled(!this.saving).onClick(() => this.move_to(this.draft))
         }
         .width('100%')
 
+        if (this.error) { Text(this.error).fontSize(12).fontColor(this.palette().danger).width('100%') }
+
         Button('取消')
           .width('100%')
-          .height(28)
+          .height(44)
           .fontSize(TypographyTokens.CAPTION)
           .fontColor(this.palette().inkSecondary)
           .backgroundColor(this.palette().surfaceSubtle)
           .borderRadius(6)
           .margin({ top: 2 })
-          .onClick(() => this.onClose())
+          .enabled(!this.saving).onClick(() => this.requestClose())
       }
       .width('100%')
     }

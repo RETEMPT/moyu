@@ -9,10 +9,13 @@
  */
 import { ColorPalette, TypographyTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
+import { PROJECT_ICONS, ProjectIconOption, projectIcon } from '../../../common/utils/ProjectIcons';
+import { AppIcon } from '../../common/AppIcon';
+import { IconButton } from '../../common/IconButton';
 
-/** 项目预设图标与颜色。仅本表单使用，故就近定义。 */
-const PRESET_ICONS: string[] = ['📁', '🚀', '📚', '💡', '🔬', '💼', '🎯', '🎨'];
+/** 项目预设颜色；图标与其他项目入口共用映射。 */
 const PRESET_COLORS: string[] = [
+  '#787774', // 中性灰
   '#4F46E5', // 经典靛蓝
   '#059669', // 翡翠绿
   '#D97706', // 琥珀橙
@@ -27,10 +30,10 @@ export struct NewProjectSheet {
   onCreateProject: (name: string, color: string, icon: string) => Promise<boolean> = async () => false;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
 
   @State private name: string = '未命名项目';
-  @State private icon: string = PRESET_ICONS[0];
+  @State private icon: string = PROJECT_ICONS[0].value;
   @State private color: string = PRESET_COLORS[0];
   @State private isFocused: boolean = false;
   private cleared: boolean = false;
@@ -61,15 +64,7 @@ export struct NewProjectSheet {
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().inkPrimary)
           Blank()
-          Text('✕')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().inkMuted)
-            .width(28)
-            .height(28)
-            .textAlign(TextAlign.Center)
-            .borderRadius(6)
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => this.onClose())
+          IconButton({ icon: $r('app.media.ic_close'), label: '关闭新建项目', available: !this.saving, onAction: this.onClose })
         }
         .width('100%')
 
@@ -81,11 +76,12 @@ export struct NewProjectSheet {
           .fontColor(this.palette().inkPrimary)
           .placeholderColor(this.palette().inkMuted)
           .backgroundColor(this.palette().surfaceSubtle)
-          .borderRadius(10)
+          .borderRadius(5)
           .height(46)
           .width('100%')
+          .accessibilityText('项目名称')
           .onFocus(() => {
-            animateTo({ duration: 260, curve: Curve.EaseInOut }, () => {
+            animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
               this.isFocused = true;
             });
             if (!this.cleared && this.name === '未命名项目') {
@@ -94,7 +90,7 @@ export struct NewProjectSheet {
             }
           })
           .onBlur(() => {
-            animateTo({ duration: 260, curve: Curve.EaseInOut }, () => {
+            animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => {
               this.isFocused = false;
             });
           })
@@ -117,7 +113,7 @@ export struct NewProjectSheet {
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().inkSecondary)
             .backgroundColor(this.palette().surfaceSubtle)
-            .borderRadius(10)
+            .borderRadius(5)
             .onClick(() => this.onClose())
 
           Button(this.saving ? '正在保存…' : '创建项目')
@@ -128,7 +124,7 @@ export struct NewProjectSheet {
             .fontWeight(FontWeight.Medium)
             .fontColor(this.palette().onAccent)
             .backgroundColor(this.palette().accent)
-            .borderRadius(10)
+            .borderRadius(5)
             .onClick(() => this.submit())
         }
         .width('100%')
@@ -136,9 +132,9 @@ export struct NewProjectSheet {
       .width('88%')
       .constraintSize({ maxWidth: 400 })
       .padding(20)
-      .borderRadius(16)
+      .borderRadius(5)
       .backgroundColor(this.palette().surface)
-      .shadow({ radius: 28, color: this.isDarkMode ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.18)', offsetY: 8 })
+      .shadow({ radius: 20, color: 'rgba(0,0,0,0.12)', offsetY: 6 })
       .border({ width: 1, color: this.palette().borderSubtle })
       .offset({ y: this.isFocused ? -90 : 0 })
       .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
@@ -163,27 +159,22 @@ export struct NewProjectSheet {
   @Builder
   iconPicker() {
     Column({ space: 6 }) {
-      Text('选择图标')
-        .fontSize(TypographyTokens.TINY)
+      Text('图标')
+        .fontSize(13)
         .fontColor(this.palette().inkMuted)
         .width('100%')
-      Row({ space: 10 }) {
-        ForEach(PRESET_ICONS, (item: string) => {
-          Text(item)
-            .fontSize(22)
-            .width(36)
-            .height(36)
-            .textAlign(TextAlign.Center)
-            .borderRadius(8)
-            .backgroundColor(this.icon === item ? this.palette().accentSoft : this.palette().surfaceSubtle)
-            .border({
-              width: 1.5,
-              color: this.icon === item ? this.palette().accent : Color.Transparent
-            })
-            .onClick(() => {
-              this.icon = item;
-            })
-        }, (item: string) => item)
+      GridRow({ columns: 4, gutter: 8 }) {
+        ForEach(PROJECT_ICONS, (item: ProjectIconOption) => {
+          GridCol() {
+            Button({ type: ButtonType.Normal }) {
+              AppIcon({ source: projectIcon(item.value), iconSize: 23, tint: this.palette().inkPrimary })
+            }.width('100%').height(44).padding(0).borderRadius(5).enabled(!this.saving)
+              .backgroundColor(this.icon === item.value ? this.palette().activeBg : Color.Transparent)
+              .border({ width: 1, color: this.icon === item.value ? this.palette().inkPrimary : this.palette().borderSubtle })
+              .accessibilityText('项目图标 ' + item.label).accessibilityDescription(this.icon === item.value ? '已选择' : '未选择')
+              .onClick(() => { this.icon = item.value; })
+          }
+        }, (item: ProjectIconOption) => item.value)
       }
       .width('100%')
     }
@@ -193,18 +184,18 @@ export struct NewProjectSheet {
   colorPicker() {
     Column({ space: 6 }) {
       Text('主题色')
-        .fontSize(TypographyTokens.TINY)
+        .fontSize(13)
         .fontColor(this.palette().inkMuted)
         .width('100%')
-      Row({ space: 12 }) {
+      Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(PRESET_COLORS, (item: string) => {
-          Circle({ width: 24, height: 24 })
-            .fill(item)
-            .stroke(this.color === item ? this.palette().inkPrimary : Color.Transparent)
-            .strokeWidth(2.5)
-            .onClick(() => {
-              this.color = item;
-            })
+          Button({ type: ButtonType.Normal }) {
+            Circle({ width: 20, height: 20 }).fill(item)
+              .stroke(this.color === item ? this.palette().inkPrimary : Color.Transparent).strokeWidth(2)
+          }.width(44).height(44).padding(0).borderRadius(5).enabled(!this.saving)
+            .backgroundColor(this.color === item ? this.palette().activeBg : Color.Transparent)
+            .accessibilityText('项目颜色 ' + item).accessibilityDescription(this.color === item ? '已选择' : '未选择')
+            .onClick(() => { this.color = item; })
         }, (item: string) => item)
       }
       .width('100%')

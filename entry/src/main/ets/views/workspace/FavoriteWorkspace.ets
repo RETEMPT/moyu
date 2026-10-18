@@ -8,8 +8,7 @@ import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/const
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { noteRenderKey } from '../../common/utils/ForEachKeys';
-import { DocumentCover } from '../common/DocumentCover';
-import { NoteCoverVisual } from '../reader/NoteCoverVisual';
+import { DocumentPreview } from '../common/DocumentPreview';
 import { AppIcon } from '../common/AppIcon';
 
 @Component
@@ -19,21 +18,23 @@ export struct FavoriteWorkspace {
   onSelectNote: (note: NoteItem) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
+  /** 分类 + 真实页数；没有页数的格式不补数字。 */
+  private metaLabel(note: NoteItem): string {
+    const category: string = note.category.length === 0 ? '未分类' : note.category;
+    return note.pageCount !== undefined && note.pageCount > 0 ? `${category} · ${note.pageCount} 页` : category;
+  }
+
   @Builder
   favCard(note: NoteItem) {
     Row({ space: 10 }) {
-      if (note.coverUrl && note.coverUrl.length > 0) {
-        NoteCoverVisual({ source: note.coverUrl }).width(56).height(64).borderRadius(8).clip(true)
-      } else {
-        DocumentCover({ type: note.type, compact: true }).width(56).height(64).borderRadius(8).clip(true)
-      }
+      DocumentPreview({ note, compact: true }).width(56).height(72)
       Column({ space: 3 }) {
         Text(note.title.length === 0 ? '未命名笔记' : note.title)
           .fontSize(TypographyTokens.BODY_LARGE)
@@ -42,7 +43,7 @@ export struct FavoriteWorkspace {
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .width('100%')
-        Text(note.category.length === 0 ? '未分类' : note.category)
+        Text(this.metaLabel(note))
           .fontSize(TypographyTokens.TINY)
           .fontColor(this.palette().inkMuted)
           .width('100%')
@@ -51,9 +52,10 @@ export struct FavoriteWorkspace {
       .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
-    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
     .borderRadius(8)
     .backgroundColor(this.palette().surfaceSubtle)
+    .accessibilityText('打开收藏 ' + note.title)
     .hoverEffect(HoverEffect.Highlight)
     .onClick(() => this.onSelectNote(note))
   }
@@ -62,7 +64,7 @@ export struct FavoriteWorkspace {
     Column() {
       Row({ space: 8 }) {
         Text('收藏')
-          .fontSize(TypographyTokens.TITLE_HERO)
+          .fontSize(24)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.palette().inkPrimary)
         Text(`${this.favorites.length} 篇`)
@@ -93,7 +95,7 @@ export struct FavoriteWorkspace {
             ListItem() {
               this.favCard(note)
             }
-          }, (note: NoteItem) => noteRenderKey(note))
+          }, (note: NoteItem) => noteRenderKey(note) + ':' + (note.pageCount ?? 0))
         }
         .layoutWeight(1)
         .width('100%')

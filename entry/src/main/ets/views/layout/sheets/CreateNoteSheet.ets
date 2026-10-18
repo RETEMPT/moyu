@@ -13,7 +13,7 @@ export struct CreateNoteSheet {
   onCreateNote: (title: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
 
   @State private name: string = '未命名笔记';
 
@@ -54,7 +54,7 @@ export struct CreateNoteSheet {
           .fontColor(this.palette().inkPrimary)
           .placeholderColor(this.palette().inkMuted)
           .backgroundColor(this.palette().surfaceSubtle)
-          .borderRadius(10)
+          .borderRadius(5)
           .height(48)
           .width('100%')
           .onChange((value: string) => {
@@ -76,7 +76,7 @@ export struct CreateNoteSheet {
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().inkSecondary)
             .backgroundColor(this.palette().surfaceSubtle)
-            .borderRadius(10)
+            .borderRadius(5)
             .onClick(() => this.onClose())
 
           Button('开始书写')
@@ -86,7 +86,7 @@ export struct CreateNoteSheet {
             .fontWeight(FontWeight.Medium)
             .fontColor(this.palette().onAccent)
             .backgroundColor(this.palette().accent)
-            .borderRadius(10)
+            .borderRadius(5)
             .onClick(() => this.submit())
         }
         .width('100%')
@@ -94,9 +94,9 @@ export struct CreateNoteSheet {
       .width('88%')
       .constraintSize({ maxWidth: 400 })
       .padding(20)
-      .borderRadius(16)
+      .borderRadius(5)
       .backgroundColor(this.palette().surface)
-      .shadow({ radius: 28, color: this.isDarkMode ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.18)', offsetY: 8 })
+      .shadow({ radius: 20, color: 'rgba(0,0,0,0.12)', offsetY: 6 })
       .border({ width: 1, color: this.palette().borderSubtle })
       .transition(
         TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })

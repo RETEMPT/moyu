@@ -15,7 +15,7 @@ export interface StudyImportPorts {
 /** File import and nearby reception use the same validation, stable IDs and recovery semantics. */
 export class StudyImportService {
   static async restore(context: Context, input: StudyBackup, ports: StudyImportPorts): Promise<StudyImportResult> {
-    const backup = StudyBackupPolicy.validate(input);
+    const backup = await StudyBackupService.validate(input);
     let imported = 0; let skipped = 0;
     try {
       for (let i = 0; i < backup.notes.length; i++) {

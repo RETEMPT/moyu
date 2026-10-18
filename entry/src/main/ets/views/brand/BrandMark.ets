@@ -11,8 +11,6 @@
  * resources/base/media/brand_mark_light.png 与 brand_mark_dark.png 由
  * tools/generate-icons.mjs 从 design/app_mark_*.svg 生成。
  */
-import { ColorPalette } from '../../common/constants/DesignTokens';
-import { ThemeHelper } from '../../common/theme/ThemeHelper';
 
 @Component
 export struct BrandMark {
@@ -23,7 +21,6 @@ export struct BrandMark {
   @Prop markSize: number = 22;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
 
   build() {
     Image(this.isDarkMode ? $r('app.media.brand_mark_dark') : $r('app.media.brand_mark_light'))
@@ -31,40 +28,5 @@ export struct BrandMark {
       .height(this.markSize)
       .draggable(false)
       .interpolation(ImageInterpolation.High)
-  }
-}
-
-/**
- * 品牌标 + 工作区名的横向组合，侧边栏与首页共用，
- * 避免两处各写一遍同样的排版。
- */
-@Component
-export struct BrandLockup {
-  @Prop markSize: number = 22;
-  @Prop label: string = '墨语 · 第二大脑';
-  @Prop fontSize: number = 14;
-  @Prop showLabel: boolean = true;
-
-  @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
-
-  private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
-  }
-
-  build() {
-    Row({ space: 8 }) {
-      BrandMark({ markSize: this.markSize })
-      if (this.showLabel) {
-        Text(this.label)
-          .fontSize(this.fontSize)
-          .fontColor(this.palette().inkPrimary)
-          .fontWeight(FontWeight.Medium)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-      }
-    }
-    .alignItems(VerticalAlign.Center)
   }
 }

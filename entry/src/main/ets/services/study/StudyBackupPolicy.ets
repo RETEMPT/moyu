@@ -4,6 +4,7 @@ import { ReviewPolicy } from './ReviewPolicy';
 import { StudySourceService } from './StudySourceService';
 import { isCoverPreset } from '../../common/types/NoteCover';
 import { MarkdownParserService } from '../MarkdownParserService';
+import { ImageDocumentPolicy } from '../document/ImageDocumentPolicy';
 
 export class StudyBackupPolicy {
   static note(note: NoteItem): NoteItem {
@@ -21,10 +22,14 @@ export class StudyBackupPolicy {
       contentDetail: note.contentDetail, favorite: note.favorite === true, isPinned: note.isPinned === true,
       tags: Array.isArray(note.tags) ? note.tags.filter((tag: string) => typeof tag === 'string' && tag.length < 200).slice(0, 100) : [],
       createdAt: Number.isFinite(note.createdAt) ? note.createdAt : 0, updatedAt: Number.isFinite(note.updatedAt) ? note.updatedAt : 0,
+      lastReadAt: Number.isFinite(note.lastReadAt) && (note.lastReadAt || 0) > 0 ? note.lastReadAt : undefined,
+      readPage: Number.isInteger(note.readPage) && (note.readPage || 0) > 0 && (note.readPage || 0) <= (note.pageCount || 0) ? note.readPage : undefined,
       strokes: typeof note.strokes === 'string' && note.strokes.length < 8000000 ? note.strokes : undefined,
       scratchpadStrokes: typeof note.scratchpadStrokes === 'string' && note.scratchpadStrokes.length < 8000000 ? note.scratchpadStrokes : undefined,
+      paperStyle: ['blank', 'grid', 'ruled'].includes(note.paperStyle || '') ? note.paperStyle : undefined,
+      scratchpadPaperStyle: ['blank', 'grid', 'ruled'].includes(note.scratchpadPaperStyle || '') ? note.scratchpadPaperStyle : undefined,
       pageAnnotations: typeof note.pageAnnotations === 'string' && note.pageAnnotations.length < 8000000 ? note.pageAnnotations : undefined,
-      sourceType: note.sourceType === 'pdf' ? 'pdf' : undefined,
+      sourceType: note.sourceType === 'image' ? 'image' : note.sourceType === 'pdf' ? 'pdf' : undefined,
       pageCount: Number.isInteger(note.pageCount) && (note.pageCount || 0) > 0 && (note.pageCount || 0) <= 10000 ? note.pageCount : undefined,
       coverUrl: typeof note.coverUrl === 'string' && isCoverPreset(note.coverUrl) ? note.coverUrl : undefined,
       pdfTextJson: JSON.stringify(StudySourceService.pages(note)) };
@@ -43,15 +48,20 @@ export class StudyBackupPolicy {
     }
     const assets: BackupAsset[] = [];
     for (const asset of input.assets) {
-      if (!asset || !notes.some((note: NoteItem) => note.id === asset.noteId) || !['pdf', 'cover'].includes(asset.kind) ||
+      if (!asset || !notes.some((note: NoteItem) => note.id === asset.noteId) || !['pdf', 'image', 'cover'].includes(asset.kind) ||
+        (asset.kind === 'image' && (!notes.some((note: NoteItem) => note.id === asset.noteId && note.sourceType === 'image') ||
+          typeof asset.extension !== 'string' || !ImageDocumentPolicy.SUFFIXES.includes(asset.extension))) ||
         typeof asset.data !== 'string' || asset.data.length > 24 * 1024 * 1024 || !asset.data.length ||
         asset.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(asset.data) ||
         assets.some((item: BackupAsset) => item.noteId === asset.noteId && item.kind === asset.kind)) { throw new Error('备份附件无效'); }
-      assets.push({ noteId: asset.noteId, kind: asset.kind, data: asset.data });
+      assets.push({ noteId: asset.noteId, kind: asset.kind, data: asset.data, extension: asset.kind === 'image' ? asset.extension : undefined });
     }
     if (notes.some((note: NoteItem) => note.sourceType === 'pdf' && !note.id.startsWith('note-seed-') &&
       !assets.some((asset: BackupAsset) => asset.noteId === note.id && asset.kind === 'pdf'))) {
       throw new Error('备份缺少原 PDF，无法完整恢复阅读资料');
+    }
+    if (notes.some((note: NoteItem) => note.sourceType === 'image' && !assets.some((asset: BackupAsset) => asset.noteId === note.id && asset.kind === 'image'))) {
+      throw new Error('备份缺少原始图片，无法完整恢复图片资料');
     }
     return { schemaVersion: 1, id: input.id, createdAt: input.createdAt, notes: notes, cards: cards, assets: assets };
   }

@@ -11,7 +11,7 @@ export struct NoteCoverSheet {
   onClose: () => void = () => {};
   onSave: (source: string) => Promise<void> = async () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
   @State draft: string = '';
   @State busy: boolean = false;
@@ -52,7 +52,7 @@ export struct NoteCoverSheet {
         .fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary)
       Text(preset.hint).fontSize(11).maxLines(2)
         .fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkSecondary)
-    }.layoutWeight(1).padding(8).borderRadius(12)
+    }.layoutWeight(1).padding(8).borderRadius(5)
       .backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).surfaceSubtle)
       .border({ width: this.draft === preset.id ? 2 : 1,
         color: this.draft === preset.id ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent : ThemeHelper.paletteOfDark(this.dark, this.themeStyle).border })
@@ -77,7 +77,7 @@ export struct NoteCoverSheet {
         Scroll() {
           Column({ space: 12 }) {
             if (this.draft.length > 0) {
-              NoteCoverVisual({ source: this.draft }).height(120).borderRadius(12).clip(true)
+              NoteCoverVisual({ source: this.draft }).height(120).borderRadius(5).clip(true)
             }
             Row({ space: 10 }) { this.presetCard(NOTE_COVER_PRESETS[0]); this.presetCard(NOTE_COVER_PRESETS[1]); }
             Row({ space: 10 }) { this.presetCard(NOTE_COVER_PRESETS[2]); this.presetCard(NOTE_COVER_PRESETS[3]); }

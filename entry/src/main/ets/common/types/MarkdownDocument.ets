@@ -28,5 +28,6 @@ export interface DocumentTransferResult {
   sourceUri?: string;
   sourceFileName?: string;
   pageCount?: number;
+  documentMeta?: string;
   message: string;
 }

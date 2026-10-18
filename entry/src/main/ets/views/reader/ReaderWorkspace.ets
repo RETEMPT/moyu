@@ -1,36 +1,30 @@
-/**
- * 研读工作台容器 (支持原生三层架构 PDF/试卷原盘批注、边读边写分屏与白纸底手写笔记)
- *
- * 智能路由：
- *   1. PDF / 试卷真题 (PDF / Doc / 试卷)：
- *      - ✎ 原盘批注 (默认)：原生三层架构，A4 物理排版 + 归一化矢量墨水 (u,v)，缩放平移零漂移
- *      - ◫ 边读边写：左侧试卷题干 (55%) + 右侧白纸草稿板 (45%)
- *      - ◎ 结构研读：纯文本 Markdown 大纲锚点与 [[双向链接]] 沉浸研读
- *   2. 纯文字随笔 (Markdown / Text)：
- *      - 沉浸式打字与阅读，支持一键呼出随堂草稿板
- *   3. 白纸底手写笔记 (Canvas / 白纸笔记 / 手写)：
- *      - 沉浸式白纸底色多色笔画板
- */
-import { curves } from '@kit.ArkUI';
-import { ColorPalette, LayoutTokens, TypographyTokens, AnimationTokens } from '../../common/constants/DesignTokens';
-import { ThemeHelper } from '../../common/theme/ThemeHelper';
+import { promptAction } from '@kit.ArkUI';
 import { NoteItem } from '../../common/types/NoteItem';
 import { ReaderSaveKind } from '../../common/types/ReaderSaveKind';
 import { MarkdownOutlineItem } from '../../common/types/MarkdownOutlineItem';
+import { SAVE_IDLE, SAVE_SAVING, SAVE_FAILED } from '../../common/constants/WorkspaceConstants';
+import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { MarkdownReader } from './MarkdownReader';
 import { HandwritingCanvas } from './HandwritingCanvas';
-import { PdfAnnotatorView } from './pdf/PdfAnnotatorView';
 
+/** Text-only reader. PDF, image and handwriting documents are routed by Index to HuaweiDocWorkspace. */
 @Component
 export struct ReaderWorkspace {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
+  @Prop backRequestToken: number = 0;
+  @Prop manageKeyboardMode: boolean = true;
+  @Prop compactPane: boolean = false;
+  @Prop companionPane: boolean = false;
+  @Prop paneMode: boolean = false;
+  @Prop @Watch('saveForHost') hostSaveToken: number = 0;
+  onHostSaveFinished: (ok: boolean, noteId: string, token: number) => void = () => {};
   @Prop annotationPaneOpen: boolean = false;
   @Prop jumpToken: number = 0;
   @Prop jumpLine: number = -1;
-  /** 当前笔记的收藏态，由 Index 依据 note.favorite 下发 */
   @Prop favorite: boolean = false;
-
   onBack: () => void = () => {};
+  onOpenCompanion: () => void = () => {};
+  @Prop showCompanionAction: boolean = false;
   onToggleAnnotation: () => void = () => {};
   onToggleFavorite: (note: NoteItem) => void = () => {};
   onDeleteNote: (note: NoteItem) => void = () => {};
@@ -39,317 +33,105 @@ export struct ReaderWorkspace {
   onSaveStateChange: (state: string) => void = () => {};
   onOutlineUpdated: (items: MarkdownOutlineItem[]) => void = () => {};
   onOpenNoteByTitle: (title: string) => void = () => {};
-
-  @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
-  @StorageProp('flowmindIsPhone') isPhone: boolean = false;
-  @State isSplitMode: boolean = false;
-  @State activeDocMode: string = 'annotator'; // 'annotator' | 'split' | 'reader'
-  /** 删除二次确认态：点「删除」后原地展开为「确认删除 / 取消」，避免误删当前文件 */
-  @State deleteArmed: boolean = false;
-  /** 上次装载的笔记 id：仅当切换到不同笔记时才重置阅读模式 */
+  @StorageProp('flowmindDarkMode') dark: boolean = false;
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
+  @State private inkExitToken: number = 0;
+  @State private closingInk: boolean = false;
+  @State private textSaveToken: number = 0;
+  @State private closingText: boolean = false;
   private lastNoteId: string = '';
+  private textState: string = SAVE_IDLE;
+  private inkState: string = SAVE_IDLE;
+  private inkDestination: string = '';
 
-  aboutToAppear(): void {
-    this.lastNoteId = this.note.id;
-    if (this.isDocumentOrExam()) {
-      this.activeDocMode = 'annotator';
-    } else {
-      this.activeDocMode = 'reader';
-    }
+  aboutToAppear(): void { this.lastNoteId = this.note.id; }
+  private onNoteChanged(): void {
+    if (this.lastNoteId === this.note.id) { return; }
+    this.lastNoteId = this.note.id; this.textState = SAVE_IDLE; this.inkState = SAVE_IDLE;
+    this.inkDestination = ''; this.closingInk = false;
   }
 
-  onNoteChanged(): void {
-    // 同一篇笔记的元数据刷新（如收藏/移动回写）不重置模式，避免把用户踢回默认档
-    if (this.note.id === this.lastNoteId) {
+  private updateSaveState(area: string, state: string): void {
+    if (area === 'text') { this.textState = state; } else { this.inkState = state; }
+    const failure = [this.textState, this.inkState].find((value: string) => value !== SAVE_IDLE && value !== SAVE_SAVING);
+    this.onSaveStateChange(failure || (this.textState === SAVE_SAVING || this.inkState === SAVE_SAVING ? SAVE_SAVING : SAVE_IDLE));
+  }
+
+  private requestClose(): void {
+    if (this.textState !== SAVE_IDLE) {
+      promptAction.showToast({ message: '请等待正文保存完成；失败时请先重试', duration: 2000 }); return;
+    }
+    if (this.annotationPaneOpen) { this.saveInkBeforeLeaving('reader'); }
+    else { this.onBack(); }
+  }
+
+  private saveForHost(): void {
+    if (this.closingText || this.closingInk) { this.onHostSaveFinished(false, this.note.id, this.hostSaveToken); return; }
+    this.closingText = true; this.textSaveToken++;
+  }
+
+  private textSaveFinished(ok: boolean, noteId: string, token: number): void {
+    if (!this.closingText || noteId !== this.note.id || token !== this.textSaveToken) { return; }
+    this.closingText = false;
+    if (!ok) { this.onHostSaveFinished(false, noteId, this.hostSaveToken); return; }
+    if (this.annotationPaneOpen) { this.saveInkBeforeLeaving('host'); }
+    else { this.onHostSaveFinished(true, noteId, this.hostSaveToken); }
+  }
+
+  private toggleAnnotation(): void {
+    if (this.annotationPaneOpen) { this.saveInkBeforeLeaving('pane'); }
+    else { this.onToggleAnnotation(); }
+  }
+
+  private requestCompanion(): void {
+    if (this.annotationPaneOpen) { this.saveInkBeforeLeaving('companion'); }
+    else { this.onOpenCompanion(); }
+  }
+
+  private saveInkBeforeLeaving(destination: string): void {
+    if (this.closingInk) { return; }
+    this.inkDestination = destination; this.closingInk = true; this.inkExitToken++;
+  }
+
+  private inkExitFinished(ok: boolean, noteId: string, token: number): void {
+    if (!this.closingInk || noteId !== this.note.id || token !== this.inkExitToken) { return; }
+    this.closingInk = false;
+    if (!ok) {
+      this.updateSaveState('ink', SAVE_FAILED);
+      if (this.inkDestination === 'host') { this.onHostSaveFinished(false, noteId, this.hostSaveToken); }
       return;
     }
-    this.lastNoteId = this.note.id;
-    this.deleteArmed = false;
-    if (this.isDocumentOrExam()) {
-      this.activeDocMode = 'annotator';
-    } else {
-      this.activeDocMode = 'reader';
-    }
-  }
-
-  private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
-  }
-
-  /** 是否为纯白纸手写型笔记 */
-  private isHandwritingNote(): boolean {
-    const t = this.note.type.toLowerCase();
-    return t === 'canvas' || t === '白板' || t === '白纸笔记' || t === 'handwriting';
-  }
-
-  /** 是否为 PDF / Word 试卷或参考资料 */
-  private isDocumentOrExam(): boolean {
-    const t = this.note.type.toLowerCase();
-    const cat = this.note.category;
-    return t === 'pdf' || t === 'doc' || t === 'docx' || cat === '试卷题库' || this.note.id === 'note-seed-exam';
-  }
-
-  /** 当前是否处于双开分屏状态 */
-  private isSplitActive(): boolean {
-    if (this.isDocumentOrExam()) {
-      return this.activeDocMode === 'split';
-    }
-    return this.isSplitMode;
+    this.updateSaveState('ink', SAVE_IDLE);
+    const destination = this.inkDestination; this.inkDestination = '';
+    if (destination === 'host') { this.onHostSaveFinished(true, noteId, this.hostSaveToken); }
+    else if (destination === 'reader') { this.onBack(); }
+    else if (destination === 'companion') { this.onOpenCompanion(); }
+    else { this.onToggleAnnotation(); }
   }
 
   build() {
-    Column() {
-      // ---- 顶层工作区微工具条：返回 + 模式分段选择器 ----
-      Row() {
-        // 返回按钮
-        Row({ space: 4 }) {
-          Text('❮')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkSecondary)
-          if (!this.isPhone) {
-            Text('返回')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkSecondary)
-          }
-        }
-        .padding({ left: 8, right: this.isPhone ? 8 : 10, top: 4, bottom: 4 })
-        .borderRadius(6)
-        .backgroundColor(this.palette().surfaceSubtle)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => this.onBack())
-
-        // 功能7：收藏切换，写回 note.favorite 并落盘（由 Index.toggleFavorite 处理）
-        Row({ space: 4 }) {
-          Text(this.favorite ? '★' : '☆')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.favorite ? this.palette().warning : this.palette().inkSecondary)
-          if (!this.isPhone) {
-            Text(this.favorite ? '已收藏' : '收藏')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.favorite ? this.palette().warning : this.palette().inkSecondary)
-          }
-        }
-        .margin({ left: 8 })
-        .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-        .borderRadius(6)
-        .backgroundColor(this.favorite ? this.palette().accentSoft : this.palette().surfaceSubtle)
-        .hoverEffect(HoverEffect.Highlight)
-        .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
-        .onClick(() => {
-          this.onToggleFavorite(this.note);
-        })
-
-        // 删除当前文件：与侧边栏「···」菜单一致，软删除进回收站、可在提示条撤销。
-        // 为避免误删，首次点击只「武装」，原地展开确认/取消。
-        if (this.deleteArmed) {
-          Row({ space: 6 }) {
-            Text('取消')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkSecondary)
-              .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-              .borderRadius(6)
-              .backgroundColor(this.palette().surfaceSubtle)
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => {
-                this.deleteArmed = false;
-              })
-            Text(this.isPhone ? '⌫ 确认' : '确认删除')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(Color.White)
-              .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-              .borderRadius(6)
-              .backgroundColor(this.palette().danger)
-              .hoverEffect(HoverEffect.Highlight)
-              .onClick(() => {
-                this.deleteArmed = false;
-                this.onDeleteNote(this.note);
-              })
-          }
-          .margin({ left: 8 })
-        } else {
-          Row({ space: 4 }) {
-            Text('⌫')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.palette().inkSecondary)
-            if (!this.isPhone) {
-              Text('删除')
-                .fontSize(TypographyTokens.CAPTION)
-                .fontColor(this.palette().inkSecondary)
-            }
-          }
-          .margin({ left: 8 })
-          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-          .borderRadius(6)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.deleteArmed = true;
-          })
-        }
-
-        Blank()
-
-        // 模式切换控制器
-        if (!this.isHandwritingNote()) {
-          if (this.isDocumentOrExam()) {
-            // PDF/试卷三模切换器：原盘批注 / 边读边写 / 结构研读
-            Row({ space: 4 }) {
-              // 1. 原盘批注
-              Text(this.isPhone ? '✎' : '✎ 原盘批注')
-                .fontSize(TypographyTokens.CAPTION)
-                .fontWeight(this.activeDocMode === 'annotator' ? FontWeight.Medium : FontWeight.Normal)
-                .fontColor(this.activeDocMode === 'annotator' ? this.palette().accent : this.palette().inkSecondary)
-                .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-                .borderRadius(6)
-                .backgroundColor(this.activeDocMode === 'annotator' ? this.palette().accentSoft : 'transparent')
-                .onClick(() => {
-                  animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-                    this.activeDocMode = 'annotator';
-                  });
-                })
-
-              // 2. 边读边写
-              Text(this.isPhone ? '◫' : '◫ 边读边写')
-                .fontSize(TypographyTokens.CAPTION)
-                .fontWeight(this.activeDocMode === 'split' ? FontWeight.Medium : FontWeight.Normal)
-                .fontColor(this.activeDocMode === 'split' ? this.palette().accent : this.palette().inkSecondary)
-                .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-                .borderRadius(6)
-                .backgroundColor(this.activeDocMode === 'split' ? this.palette().accentSoft : 'transparent')
-                .onClick(() => {
-                  animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-                    this.activeDocMode = 'split';
-                  });
-                })
-
-              // 3. 结构研读
-              Text(this.isPhone ? '◎' : '◎ 结构研读')
-                .fontSize(TypographyTokens.CAPTION)
-                .fontWeight(this.activeDocMode === 'reader' ? FontWeight.Medium : FontWeight.Normal)
-                .fontColor(this.activeDocMode === 'reader' ? this.palette().accent : this.palette().inkSecondary)
-                .padding({ left: 8, right: 8, top: 4, bottom: 4 })
-                .borderRadius(6)
-                .backgroundColor(this.activeDocMode === 'reader' ? this.palette().accentSoft : 'transparent')
-                .onClick(() => {
-                  animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-                    this.activeDocMode = 'reader';
-                  });
-                })
-            }
-            .padding(2)
-            .borderRadius(8)
-            .backgroundColor(this.palette().surfaceSubtle)
-          } else {
-            // 普通 Markdown 笔记：边读边写开关
-            Row({ space: 6 }) {
-              Text('◫')
-                .fontSize(TypographyTokens.CAPTION)
-                .fontColor(this.isSplitMode ? this.palette().accent : this.palette().inkSecondary)
-              if (!this.isPhone) {
-                Text(this.isSplitMode ? '收起草稿板' : '边读边写')
-                  .fontSize(TypographyTokens.CAPTION)
-                  .fontWeight(this.isSplitMode ? FontWeight.Medium : FontWeight.Normal)
-                  .fontColor(this.isSplitMode ? this.palette().accent : this.palette().inkSecondary)
-              }
-            }
-            .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-            .borderRadius(6)
-            .backgroundColor(this.isSplitMode ? this.palette().accentSoft : this.palette().surfaceSubtle)
-            .hoverEffect(HoverEffect.Highlight)
-            .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
-            .onClick(() => {
-              animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-                this.isSplitMode = !this.isSplitMode;
-              });
-            })
-          }
-        }
-      }
-      .width('100%')
-      .height(38)
-      .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone) })
-      .backgroundColor(this.palette().surface)
-      .border({ width: { bottom: 1 }, color: { bottom: this.palette().borderSubtle } })
-
-      // ---- 主工作区 ----
-      if (this.isHandwritingNote()) {
-        // 模式 1：纯白纸多色手写笔记
+    Row() {
+      Column() {
+        MarkdownReader({ note: this.note, compactPane: this.compactPane, companionPane: this.companionPane, showBackButton: !this.paneMode, manageKeyboardMode: this.manageKeyboardMode, backRequestToken: this.backRequestToken, inputLocked: this.closingInk || this.closingText,
+          saveRequestToken: this.textSaveToken, onSaveRequestFinished: (ok: boolean, noteId: string, token: number) => this.textSaveFinished(ok, noteId, token),
+          showCompanionAction: this.showCompanionAction, onOpenCompanion: () => this.requestCompanion(),
+          onRequestClose: () => this.requestClose(), onChooseCover: this.onChooseCover,
+          favorite: this.favorite, annotationPaneOpen: this.annotationPaneOpen,
+          onToggleFavorite: () => this.onToggleFavorite(this.note), onDeleteNote: () => this.onDeleteNote(this.note),
+          onToggleAnnotation: () => this.toggleAnnotation(), jumpToken: this.jumpToken, jumpLine: this.jumpLine,
+          onSaved: this.onSaved, onSaveStateChange: (state: string) => this.updateSaveState('text', state),
+          onOutlineUpdated: this.onOutlineUpdated, onOpenNoteByTitle: this.onOpenNoteByTitle })
+      }.height('100%').layoutWeight(this.annotationPaneOpen ? 55 : 100)
+      if (this.annotationPaneOpen) {
+        Divider().vertical(true).strokeWidth(1).height('100%').color(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).borderSubtle)
         Column() {
-          HandwritingCanvas({
-            note: this.note,
-            isScratchpad: false,
-            onSaved: this.onSaved,
-            onSaveStateChange: this.onSaveStateChange
-          })
-        }
-        .layoutWeight(1)
-        .width('100%')
-        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
-      } else if (this.isDocumentOrExam() && this.activeDocMode === 'annotator') {
-        // 模式 2：原生三层架构 PDF/试卷原盘手写批注
-        Column() {
-          PdfAnnotatorView({
-            note: this.note,
-            onSaved: this.onSaved,
-            onSaveStateChange: this.onSaveStateChange
-          })
-        }
-        .layoutWeight(1)
-        .width('100%')
-        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
-      } else {
-        // 模式 3：双开分屏 或 纯文本研读
-        Row() {
-          // 左侧研读区 (试卷 / 文献 / 随笔)
-          Column() {
-            MarkdownReader({
-              onChooseCover: this.onChooseCover,
-              note: this.note,
-              jumpToken: this.jumpToken,
-              jumpLine: this.jumpLine,
-              onSaved: this.onSaved,
-              onSaveStateChange: this.onSaveStateChange,
-              onOutlineUpdated: this.onOutlineUpdated,
-              onOpenNoteByTitle: this.onOpenNoteByTitle
-            })
-          }
-          .layoutWeight(this.isSplitActive() ? 55 : 100)
-          .height('100%')
-          .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
-
-          // 中间分割条 + 右侧随堂草稿板
-          if (this.isSplitActive()) {
-            Divider()
-              .vertical(true)
-              .strokeWidth(1)
-              .color(this.palette().borderSubtle)
-              .height('100%')
-
-            Column() {
-              HandwritingCanvas({
-                note: this.note,
-                isScratchpad: true,
-                onSaved: this.onSaved,
-                onSaveStateChange: this.onSaveStateChange
-              })
-            }
-            .layoutWeight(45)
-            .height('100%')
-            .transition(
-              TransitionEffect.move(TransitionEdge.END)
-                .combine(TransitionEffect.OPACITY)
-                .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
-            )
-          }
-        }
-        .layoutWeight(1)
-        .width('100%')
-        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
+          HandwritingCanvas({ note: this.note, isScratchpad: true, readOnly: this.closingInk,
+            onSaved: this.onSaved, onCommitForExit: this.onSaved, exitSaveToken: this.inkExitToken,
+            onDirtyChange: (dirty: boolean) => this.updateSaveState('ink', dirty ? SAVE_SAVING : SAVE_IDLE),
+            onExitSaveFinished: (ok: boolean, noteId: string, token: number) => this.inkExitFinished(ok, noteId, token),
+            onSaveStateChange: (state: string) => this.updateSaveState('ink', state) })
+        }.height('100%').layoutWeight(45)
       }
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(this.palette().canvas)
+    }.width('100%').height('100%').backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).canvas)
   }
 }

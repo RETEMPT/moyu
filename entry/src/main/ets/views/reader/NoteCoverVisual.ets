@@ -11,7 +11,7 @@ export struct NoteCoverVisual {
   }
 
   build() {
-    Image(this.imageSource()).width('100%').height('100%').objectFit(ImageFit.Cover)
+    Image(this.imageSource()).width('100%').height('100%').objectFit(ImageFit.Cover).sourceSize({ width: 512, height: 512 })
       .accessibilityText('笔记封面')
   }
 }

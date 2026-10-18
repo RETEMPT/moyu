@@ -1,2 +1,10 @@
 # PDF offsets and image streams must keep their bytes across Windows and Linux checkouts.
 *.pdf binary
+
+# Historical checksums describe the preserved bytes, including original line endings.
+archive/ai/** -text
+
+# Preserve upstream PDF.js and license bytes; whitespace checks still cover our host adapter.
+entry/src/main/resources/rawfile/offline-pdf/pdf.mjs -whitespace
+entry/src/main/resources/rawfile/offline-pdf/pdf.worker.mjs -whitespace
+entry/src/main/resources/rawfile/offline-pdf/**/LICENSE* -whitespace

@@ -3,6 +3,7 @@ import { window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
+import { AppIcon } from '../common/AppIcon';
 import { NAV_HOME, NAV_LIBRARY, NAV_TODO, NAV_GRAPH } from '../../common/constants/WorkspaceConstants';
 
 interface BottomTabItem {
@@ -17,14 +18,14 @@ export struct BottomNavBar {
   onSelectNav: (navKey: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @State private keyboardVisible: boolean = false;
 
   private windowInstance: window.Window | undefined = undefined;
   private active: boolean = false;
   private tabs: BottomTabItem[] = [
-    { icon: $r('app.media.ic_home'), label: '首页', navKey: NAV_HOME },
-    { icon: $r('app.media.ic_note'), label: '资料', navKey: NAV_LIBRARY },
+    { icon: $r('app.media.ic_home'), label: '记录', navKey: NAV_HOME },
+    { icon: $r('app.media.ic_read'), label: '资料', navKey: NAV_LIBRARY },
     { icon: $r('app.media.ic_check'), label: '待办', navKey: NAV_TODO },
     { icon: $r('app.media.ic_graph'), label: '图谱', navKey: NAV_GRAPH }
   ];
@@ -63,23 +64,19 @@ export struct BottomNavBar {
   @Builder
   tabItem(tab: BottomTabItem) {
     Column({ space: 2 }) {
-      Image(tab.icon)
-        .width(20)
-        .height(20)
-        .objectFit(ImageFit.Contain)
-        .fillColor(this.activeNav === tab.navKey ? this.palette().accent : this.palette().inkSecondary)
+      AppIcon({ source: tab.icon, iconSize: 20, tint: this.activeNav === tab.navKey ? this.palette().inkPrimary : this.palette().inkMuted })
       Text(tab.label)
         .fontSize(TypographyTokens.TINY)
         .fontWeight(this.activeNav === tab.navKey ? FontWeight.Bold : FontWeight.Normal)
-        .fontColor(this.activeNav === tab.navKey ? this.palette().accent : this.palette().inkSecondary)
+        .fontColor(this.activeNav === tab.navKey ? this.palette().inkPrimary : this.palette().inkMuted)
         .maxLines(1)
     }
     .layoutWeight(1)
     .height(LayoutTokens.BOTTOM_NAV_HEIGHT)
     .justifyContent(FlexAlign.Center)
     .alignItems(HorizontalAlign.Center)
-    .borderRadius(10)
-    .backgroundColor(this.activeNav === tab.navKey ? this.palette().accentSoft : Color.Transparent)
+    .borderRadius(5)
+    .backgroundColor(this.activeNav === tab.navKey ? this.palette().activeBg : Color.Transparent)
     .accessibilityText(tab.label)
     .onClick(() => {
       if (this.activeNav !== tab.navKey) { this.onSelectNav(tab.navKey); }

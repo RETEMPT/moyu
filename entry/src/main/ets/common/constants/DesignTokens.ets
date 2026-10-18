@@ -4,8 +4,8 @@
  * 设计准则：
  *   1. 正文/次级/提示文字与基础界面背景按 4.5:1 检查，设备字形与其他组合另行验收
  *   2. 触控目标 MIN_TOUCH_TARGET = 44vp，相邻控件保留间距
- *   3. 物理弹性微交互：150-300ms 阻尼过渡，按压回弹 0.97
- *   4. Bento Grid 容器与立体层级阴影系统
+ *   3. 动效复用 AnimationTokens，遵守减少动态设置
+ *   4. 中性层级、细线图标与统一书封，见 docs/DESIGN_REVIEW.md
  * 纯血鸿蒙 ArkTS 强类型约束
  */
 
@@ -21,100 +21,78 @@ export interface ColorPalette {
   inkMuted: string;        // 占位符、弱提示、时间戳
   hoverBg: string;         // 悬浮浅灰色
   activeBg: string;        // 激活选中背景色
-  link: string;            // Obsidian 标志性双向链接紫青色
+  link: string;            // 双向链接与正文链接
   accent: string;          // 主交互强调色 (按钮、激活图标)
   accentSoft: string;      // 主交互浅底色
   onAccent: string;        // 强调色按钮上的文字与图标
   success: string;         // 已保存、已同步、已完成
   warning: string;         // 正在保存、待复习、中优先级
   danger: string;          // 保存失败、删除、高优先级
-  // ---- UI/UX Pro Max 扩展语义色 ----
-  primary: string;         // 核心主色
-  primarySoft: string;     // 核心主色柔和浅底
-  accentPurple: string;    // 阅读与整理强调色
-  cardBackground: string;  // Bento 模块卡片底色
-  borderFocus: string;     // 聚焦光标外框色
-  statusPending: string;   // 待办/待处理状态色
-  statusCompleted: string; // 完结归档状态色
   tagBg: string;           // 标签徽标通用底色
 }
 
 // 浅色模式: 纯净高对比度学习阅读色阶
 export const LightColors: ColorPalette = {
-  canvas: '#F8F7FB',
-  sidebar: '#F1EFF6',
+  canvas: '#FFFFFF',
+  sidebar: '#F7F7F5',
   surface: '#FFFFFF',
-  surfaceSubtle: '#F1EFF6',
-  border: '#DDD9E7',
-  borderSubtle: '#E9E6EF',
-  inkPrimary: '#242033',
-  inkSecondary: '#575267',
-  inkMuted: '#625C70',
-  hoverBg: '#EAE5F4',
-  activeBg: '#E9E1FC',
-  link: '#6342D9',
-  accent: '#6842E3',
-  accentSoft: '#EEE8FC',
+  surfaceSubtle: '#F7F7F5',
+  border: '#DEDEDA',
+  borderSubtle: '#ECECE9',
+  inkPrimary: '#37352F',
+  inkSecondary: '#65635E',
+  inkMuted: '#66645E',
+  hoverBg: '#EFEFED',
+  activeBg: '#EAEAE7',
+  link: '#2567A8',
+  accent: '#37352F',
+  accentSoft: '#EFEFED',
   onAccent: '#FFFFFF',
-  success: '#059669',      // 翡翠绿
-  warning: '#D97706',      // 琥珀橙
-  danger: '#DC2626',       // 玫瑰红
-  primary: '#6842E3',
-  primarySoft: '#EEE8FC',
-  accentPurple: '#6842E3',
-  cardBackground: '#FFFFFF',
-  borderFocus: '#8566E9',
-  statusPending: '#6842E3',
-  statusCompleted: '#059669',
-  tagBg: '#F1EFF6'
+  success: '#337653',
+  warning: '#95620E',
+  danger: '#C43B36',
+  tagBg: '#F1F1EF'
 };
 
 // 深色模式: 优雅 OLED 曜石黑与深邃暗夜灰阶
 export const DarkColors: ColorPalette = {
-  canvas: '#15131C',
-  sidebar: '#1B1824',
-  surface: '#221E2D',
-  surfaceSubtle: '#2C2638',
-  border: '#40374E',
-  borderSubtle: '#332D40',
-  inkPrimary: '#F8FAFC',   // 纯净雪白 (对比度 15:1)
-  inkSecondary: '#B8B0C7',
-  inkMuted: '#A49AB6',
-  hoverBg: '#352E43',
-  activeBg: '#3B2D57',
-  link: '#C0ADFF',
-  accent: '#BBA4FF',
-  accentSoft: '#382A52',
-  onAccent: '#21172F',
-  success: '#34D399',
-  warning: '#FBBF24',
-  danger: '#F87171',
-  primary: '#BBA4FF',
-  primarySoft: '#382A52',
-  accentPurple: '#BBA4FF',
-  cardBackground: '#221E2D',
-  borderFocus: '#C8B6FF',
-  statusPending: '#BBA4FF',
-  statusCompleted: '#34D399',
-  tagBg: '#2C2638'
+  canvas: '#191919',
+  sidebar: '#202020',
+  surface: '#202020',
+  surfaceSubtle: '#262626',
+  border: '#41413F',
+  borderSubtle: '#30302E',
+  inkPrimary: '#EFEFEC',
+  inkSecondary: '#BCBCB5',
+  inkMuted: '#B3B3AC',
+  hoverBg: '#2C2C2A',
+  activeBg: '#333330',
+  link: '#8ABCF0',
+  accent: '#EFEFEC',
+  accentSoft: '#333330',
+  onAccent: '#202020',
+  success: '#8AC9A4',
+  warning: '#DFBB79',
+  danger: '#F3A49E',
+  tagBg: '#2C2C2A'
 };
 
 export class LayoutTokens {
-  static readonly SIDEBAR_WIDTH: number = 260;
+  static readonly SIDEBAR_WIDTH: number = 328;
   static readonly CONTEXT_PANEL_WIDTH: number = 280;
   static readonly CONTENT_MAX_WIDTH: number = 840;
 
-  // UI/UX Pro Max 触控与间距阶梯
+  // 触控与间距阶梯
   static readonly MIN_TOUCH_TARGET: number = 44;
   static readonly BOTTOM_NAV_HEIGHT: number = 56;
 
   // 响应式物理断点 (vp)
   static readonly BREAKPOINT_TABLET_LARGE: number = 1200; // 三栏 (侧边栏 + 正文 + 上下文面板)
   static readonly BREAKPOINT_TABLET_MEDIUM: number = 840;  // 双栏 (侧边栏/抽屉 + 正文)
-  static readonly BREAKPOINT_PHONE: number = 600;          // 手机紧凑态：收窄留白、抽屉改百分比宽
+  static readonly BREAKPOINT_PHONE: number = 840;          // 紧凑态：底栏/抽屉；小平板保持可用导航
 
   // 正文左右留白：宽屏舒展、手机紧凑
-  static readonly GUTTER_WIDE: number = 32;
+  static readonly GUTTER_WIDE: number = 40;
   static readonly GUTTER_COMPACT: number = 16;
 
   /** 手机紧凑态返回收窄后的左右留白，否则用宽屏留白。 */
@@ -124,13 +102,13 @@ export class LayoutTokens {
 }
 
 export class TypographyTokens {
-  static readonly TITLE_HERO: number = 28;
-  static readonly TITLE_SECTION: number = 20;
+  static readonly TITLE_HERO: number = 34;
+  static readonly TITLE_SECTION: number = 22;
   static readonly TITLE_SUB: number = 16;
-  static readonly BODY_LARGE: number = 15;
-  static readonly BODY_REGULAR: number = 13.5;
+  static readonly BODY_LARGE: number = 16;
+  static readonly BODY_REGULAR: number = 14;
   static readonly CAPTION: number = 12;
-  static readonly TINY: number = 10;
+  static readonly TINY: number = 11;
   
   static readonly LINE_HEIGHT_BODY: number = 1.6;
   static readonly LINE_HEIGHT_TITLE: number = 1.3;
@@ -138,20 +116,12 @@ export class TypographyTokens {
 
 export class AnimationTokens {
   static duration(milliseconds: number): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 0 : milliseconds; }
-  static get DURATION_FAST(): number { return AnimationTokens.duration(180); }
-  static get DURATION_NORMAL(): number { return AnimationTokens.duration(250); }
-  static get DURATION_SPLIT(): number { return AnimationTokens.duration(250); }
-  static get DURATION_PAGE_TRANSITION(): number { return AnimationTokens.duration(250); }
-  static get SCALE_PRESSED(): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 1 : 0.97; }
-  static get SCALE_LIFTED(): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 1 : 1.02; }
-  static get SCALE_MODAL_ENTER(): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 1 : 0.94; }
-  static readonly CURVE_STANDARD: Curve = Curve.EaseInOut;
-}
-
-export class ResourceTypeTokens {
-  static readonly COLOR_MARKDOWN: string = '#4F46E5'; // 经典靛蓝
-  static readonly COLOR_CANVAS: string = '#D97706';   // 琥珀橙
-  static readonly COLOR_DOC: string = '#059669';      // 森绿
-  static readonly COLOR_TASK: string = '#0284C7';     // 晴空蓝
-  static readonly COLOR_OTHER: string = '#6B7280';    // 中性灰
+  static get DURATION_FAST(): number { return AnimationTokens.duration(100); }
+  static get DURATION_NORMAL(): number { return AnimationTokens.duration(160); }
+  static get DURATION_MEDIUM(): number { return AnimationTokens.duration(200); }
+  static get DURATION_SPLIT(): number { return AnimationTokens.duration(200); }
+  static get DURATION_PAGE_TRANSITION(): number { return AnimationTokens.duration(200); }
+  static get SCALE_PRESSED(): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 1 : 0.995; }
+  static get SCALE_MODAL_ENTER(): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 1 : 0.99; }
+  static readonly CURVE_STANDARD: Curve = Curve.EaseOut;
 }

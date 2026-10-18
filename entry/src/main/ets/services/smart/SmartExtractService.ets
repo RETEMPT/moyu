@@ -15,7 +15,7 @@ export class SmartExtractService {
     if (raw.length > SMART_INPUT_LIMIT) { throw new Error(`内容超过 ${SMART_INPUT_LIMIT} 字，请分段整理`); }
     const result = SourceTextParser.fromSource(raw, fallbackTitle);
     result.formattedMarkdown = LocalTextFormatter.format(raw, result.title, style, mergeWrappedLines);
-    result.processingNotice = `本地整理：${style === 'study' ? '按明确标题和项目符号整理层级' : '保留原文顺序和段落'}。${mergeWrappedLines ? '已合并部分正文断行，请对照原文核对。' : ''}`;
+    result.processingNotice = `本地整理：${style === 'study' ? '按明确标题和项目符号整理层级' : '保留原文顺序和段落'}。${mergeWrappedLines ? '已合并部分正文断行，请对照原文核对。' : ''}待办建议 ${result.tasks.length} 项，可对照原文位置逐项选择。`;
     return result;
   }
 }

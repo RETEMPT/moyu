@@ -10,7 +10,7 @@ export interface TodoItem {
   id: string;
   /** 归属日期，格式 YYYY-MM-DD（本地时区） */
   date: string;
-  /** 标题：未完成显示红字，完成后显示绿字 */
+  /** 标题：未完成显示正文色，完成后弱化并加删除线 */
   title: string;
   /** 是否已完成 */
   done: boolean;

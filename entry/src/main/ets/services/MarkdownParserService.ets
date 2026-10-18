@@ -1,4 +1,5 @@
 import { MarkdownDocument } from '../common/types/MarkdownDocument';
+import { SourceTextStructure } from './document/SourceTextStructure';
 import {
   MarkdownHeading,
   MarkdownLink,
@@ -20,45 +21,28 @@ export class MarkdownParserService {
     const headings: MarkdownHeading[] = [];
     const tags: MarkdownTag[] = [];
     const links: MarkdownLink[] = [];
-    const lines: string[] = document.content.split('\n');
+    const lines = SourceTextStructure.scan(document.content);
     let firstHeading: string = '';
-    // 是否处于 ``` 围栏代码块内（与 MarkdownReader 的围栏判定保持一致）
-    let inFence: boolean = false;
-    // 缩进代码块不能打断段落：仅当前面是空行或同为缩进代码时才成立
-    let previousBlankOrCode: boolean = true;
-
     for (let index: number = 0; index < lines.length; index++) {
-      const line: string = lines[index];
+      const row = lines[index]; const line = row.text;
       const lineNumber: number = index + 1;
 
-      if (this.isFenceMarker(line)) {
-        inFence = !inFence;
-        previousBlankOrCode = false;
-        continue;
-      }
-      if (inFence) {
-        previousBlankOrCode = false;
-        continue;
-      }
-      if (line.trim().length === 0) {
-        previousBlankOrCode = true;
-        continue;
-      }
-      if (previousBlankOrCode && this.isIndentedCode(line)) {
-        previousBlankOrCode = true;
-        continue;
-      }
-      previousBlankOrCode = false;
+      if (row.kind === 'code' || row.kind === 'math' || row.kind === 'blank' || row.kind === 'reference') { continue; }
 
-      const heading: MarkdownHeading | null = this.parseHeading(line, lineNumber);
+      let heading: MarkdownHeading | null = this.parseHeading(line, lineNumber);
+      if (heading === null && row.kind === 'heading' && index + 1 < lines.length) {
+        const underline = lines[index + 1].text.match(/^ {0,3}(=+|-+)[ \t]*$/);
+        if (underline) { heading = { level: underline[1][0] === '=' ? 1 : 2, text: line.trim(), line: lineNumber }; }
+      }
       if (heading !== null) {
         headings.push(heading);
         if (firstHeading.length === 0 && heading.level === 1) {
           firstHeading = heading.text;
         }
       }
-      this.parseTags(line, lineNumber, tags);
-      this.parseLinks(line, lineNumber, links);
+      const inline = line.replace(/(`+).*?\1/g, '');
+      this.parseTags(inline, lineNumber, tags);
+      this.parseLinks(inline, lineNumber, links);
     }
 
     return {
@@ -69,26 +53,16 @@ export class MarkdownParserService {
     };
   }
 
-  /** 是否为代码围栏标记行（与 MarkdownReader.parseBlocks 的判定完全一致） */
-  private isFenceMarker(line: string): boolean {
-    return line.trim().startsWith('```');
-  }
-
-  /** 是否为缩进代码行（4 个空格或 1 个制表符起始） */
-  private isIndentedCode(line: string): boolean {
-    return line.startsWith('    ') || line.startsWith('\t');
-  }
-
   private parseHeading(line: string, lineNumber: number): MarkdownHeading | null {
     const trimmed: string = line.trim();
     let level: number = 0;
     while (level < trimmed.length && trimmed.charAt(level) === HEADING_PREFIX) {
       level++;
     }
-    if (level === 0 || level > 6 || trimmed.charAt(level) !== ' ') {
+    if (level === 0 || level > 6 || !/[ \t]/.test(trimmed.charAt(level))) {
       return null;
     }
-    const text: string = trimmed.substring(level).trim().replace(/#+$/, '').trim();
+    const text: string = trimmed.substring(level).trim().replace(/[ \t]+#+[ \t]*$/, '').trim();
     if (text.length === 0) {
       return null;
     }

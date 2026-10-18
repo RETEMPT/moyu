@@ -14,7 +14,7 @@ export struct IconButton {
   @Prop compact: boolean = false;
   onAction: () => void = () => {};
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
 
   private palette(): ColorPalette { return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle); }
 
@@ -29,7 +29,8 @@ export struct IconButton {
     .width(this.caption ? 56 : LayoutTokens.MIN_TOUCH_TARGET)
     .height(this.caption && !this.compact ? 56 : LayoutTokens.MIN_TOUCH_TARGET)
     .padding(0)
-    .borderRadius(12)
+    .borderRadius(5)
+    .hoverEffect(HoverEffect.Highlight)
     .backgroundColor(this.selected ? this.palette().accentSoft : Color.Transparent)
     .enabled(this.available)
     .opacity(this.available ? 1 : 0.4)

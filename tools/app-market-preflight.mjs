@@ -22,9 +22,7 @@ const expected = { bundleName: app.bundleName, versionName: app.versionName, ver
 record('identity', 'project', app.bundleName === config.bundleName && /^([A-Za-z][\w]*\.)+[A-Za-z][\w]*$/.test(app.bundleName), '统一应用身份与市场登记配置');
 record('upgrade_version', 'project', Number.isInteger(app.versionCode) && app.versionCode > config.previousReleaseCode && /^\d+\.\d+\.\d+$/.test(app.versionName), '候选版本高于登记的升级基线');
 record('devices', 'project', JSON.stringify([...devices].sort()) === JSON.stringify(['phone', 'tablet']), '首发统一手机与 Pad 应用包');
-record('permissions', 'project', JSON.stringify([...permissions].sort()) === JSON.stringify(['ohos.permission.DISTRIBUTED_DATASYNC']), '仅主动附近传递权限');
-const distributed = module.requestPermissions.find(p => p.name === 'ohos.permission.DISTRIBUTED_DATASYNC');
-record('permission_reason', 'project', !!distributed?.reason && distributed?.usedScene?.when === 'inuse' && distributed.usedScene.abilities.includes('EntryAbility'), '设备权限有用途说明，使用时申请');
+record('permissions', 'project', permissions.length === 0, '系统选择器和分享面板无需应用申请数据同步权限');
 record('backup', 'project', json('entry/src/main/resources/base/profile/backup_config.json').allowToBackupRestore === false, '关闭整包备份；保留应用内资料导出');
 const release = json('entry/build-profile.json5').buildOptionSet.find(p => p.name === 'release');
 const rules = read('entry/obfuscation-rules.txt');
@@ -40,7 +38,7 @@ record('release_debug_samples', 'project', ['**/debug-pdf-preview/**','**/exampl
   release?.resOptions?.ignoreResourcePattern?.includes(pattern)) &&
   read('entry/src/main/ets/services/NoteStorageService.ets').includes('if (!BuildProfile.DEBUG) { return notes; }'),
   '测试原件与预览图片仅用于调试，发布版不自动注入');
-record('local_rules_only', 'project', config.assistantMode === 'local-rules-only' &&
+record('local_rules_only', 'project', config.productMode === 'local-study' && config.systemOcr === true &&
   !permissions.includes('ohos.permission.INTERNET') &&
   !fs.existsSync(path.join(root, 'entry/src/main/ets/services/ai/ModelProvider.ets')) &&
   !read('entry/src/main/ets/services/smart/SmartExtractService.ets').includes('createProvider'), '本地规则整理；无模型服务或联网权限');

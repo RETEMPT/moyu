@@ -2,8 +2,8 @@
  * 待办日历视图（参考 Feenote 的日历式待办）
  *
  * 上半部：月历网格，可翻月；有待办的日期用红点（未完成）/绿点（已完成）标记。
- * 下半部：选中日期的详情——本日备忘（可编辑文本，显示最后编辑时间）、
- *         当日待办列表（未完成红字 / 完成绿字、点勾选切换、引用笔记可跳转、删除）、添加待办。
+ * 下半部：选中日期的详情——本日备忘（可编辑文本）、
+ *         当日待办列表（点勾选切换、完成后弱化、引用笔记可跳转、删除确认）、添加待办。
  *
  * 数据与副作用全部由上层 Index 处理，本组件只负责呈现与回调。
  */
@@ -13,9 +13,9 @@ import { NoteItem } from '../../common/types/NoteItem';
 import { CalendarCell, DayNote, TodoItem } from '../../common/types/TodoItem';
 import { CalendarUtil, WEEK_LABELS } from '../../common/utils/CalendarUtil';
 import { CalendarInfo } from '../../common/utils/CalendarInfo';
-import { TimeFormat } from '../../common/utils/TimeFormat';
 import { IconButton } from '../common/IconButton';
 import { TodoEditDialog } from './TodoEditDialog';
+import { promptAction } from '@kit.ArkUI';
 
 /** 备忘输入停止后延迟回写的毫秒数 */
 const MEMO_DEBOUNCE_MS: number = 600;
@@ -26,7 +26,7 @@ export struct TodoWorkspace {
   @Prop todos: TodoItem[] = [];
   @Prop notes: NoteItem[] = [];
 
-  onAddTodo: (dateKey: string, title: string, noteRefs: string[]) => void = () => {};
+  onAddTodo: (dateKey: string, title: string, noteRefs: string[]) => Promise<boolean> = async () => false;
   onToggleTodo: (todo: TodoItem) => void = () => {};
   onDeleteTodo: (todo: TodoItem) => void = () => {};
   onUpdateDayNote: (dateKey: string, text: string) => void = () => {};
@@ -37,13 +37,15 @@ export struct TodoWorkspace {
   @State selectedDate: string = CalendarUtil.todayKey();
   @State memoText: string = '';
   @State dialogVisible: boolean = false;
+  @State calendarExpanded: boolean = false;
+  private deletePromptOpen: boolean = false;
 
   /** 用户是否正在编辑备忘；编辑期间不被回流的 dayNotes 覆盖，避免光标跳动/丢字 */
   private memoTouched: boolean = false;
   private memoTimer: number = -1;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
@@ -74,22 +76,31 @@ export struct TodoWorkspace {
   }
 
   private gridRows(): number {
-    return Math.ceil(this.cells().length / 7);
+    return Math.ceil(this.visibleCells().length / 7);
+  }
+
+  private visibleCells(): CalendarCell[] {
+    const cells = this.cells();
+    if (!this.isPhone || this.calendarExpanded) { return cells; }
+    const selected = cells.findIndex((cell: CalendarCell) => cell.dateKey === this.selectedDate);
+    const start = Math.floor(Math.max(0, selected) / 7) * 7;
+    return cells.slice(start, start + 7);
+  }
+
+  private async requestDeleteTodo(todo: TodoItem): Promise<void> {
+    if (this.deletePromptOpen) { return; }
+    this.deletePromptOpen = true;
+    try {
+      const answer = await promptAction.showDialog({ title: '删除这条待办？', message: todo.title,
+        buttons: [{ text: '取消', color: this.palette().inkSecondary }, { text: '删除', color: this.palette().danger }] });
+      if (answer.index === 1 && this.todos.some((item: TodoItem) => item.id === todo.id)) { this.onDeleteTodo(todo); }
+    } catch {} finally { this.deletePromptOpen = false; }
   }
 
   private memoFor(dateKey: string): string {
     for (let i = 0; i < this.dayNotes.length; i++) {
       if (this.dayNotes[i].date === dateKey) {
         return this.dayNotes[i].text;
-      }
-    }
-    return '';
-  }
-
-  private memoUpdatedText(dateKey: string): string {
-    for (let i = 0; i < this.dayNotes.length; i++) {
-      if (this.dayNotes[i].date === dateKey && this.dayNotes[i].updatedAt > 0) {
-        return TimeFormat.format(new Date(this.dayNotes[i].updatedAt));
       }
     }
     return '';
@@ -156,16 +167,6 @@ export struct TodoWorkspace {
     } else {
       this.onOpenNote(ref);
     }
-  }
-
-  private selectedPendingTotal(): number {
-    let count: number = 0;
-    for (let i = 0; i < this.todos.length; i++) {
-      if (!this.todos[i].done) {
-        count++;
-      }
-    }
-    return count;
   }
 
   // ------------------------------------------------------------------
@@ -254,14 +255,7 @@ export struct TodoWorkspace {
           .fontSize(TypographyTokens.BODY_REGULAR)
           .fontWeight(cell.isToday ? FontWeight.Bold : FontWeight.Normal)
           .fontColor(cell.isToday ? this.palette().accent : this.palette().inkPrimary)
-        Text(CalendarInfo.forDate(cell.dateKey).festival || CalendarInfo.forDate(cell.dateKey).lunar)
-          .fontSize(10).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          .fontColor(CalendarInfo.forDate(cell.dateKey).festival ? this.palette().accent : this.palette().inkMuted)
         Row({ space: 3 }) {
-          if (CalendarInfo.forDate(cell.dateKey).schedule) {
-            Text(CalendarInfo.forDate(cell.dateKey).schedule).fontSize(9)
-              .fontColor(CalendarInfo.forDate(cell.dateKey).schedule === '休' ? this.palette().danger : this.palette().success)
-          }
           if (this.pendingCount(cell.dateKey) > 0) {
             Text('●').fontSize(8).fontColor(this.palette().danger)
           }
@@ -291,7 +285,7 @@ export struct TodoWorkspace {
   @Builder
   calendarGrid() {
     Grid() {
-      ForEach(this.cells(), (cell: CalendarCell, index: number) => {
+      ForEach(this.visibleCells(), (cell: CalendarCell, index: number) => {
         GridItem() {
           this.dayCell(cell)
         }
@@ -306,14 +300,16 @@ export struct TodoWorkspace {
 
   @Builder
   refChip(noteId: string) {
-    Text(`▤ ${this.noteTitle(noteId)}`)
+    Button({ type: ButtonType.Normal }) {
+      Text(`来源 · ${this.noteTitle(noteId)}`).fontSize(11).fontColor(this.palette().accent)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
       .fontSize(TypographyTokens.TINY)
       .fontColor(this.palette().accent)
       .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+      .height(44).accessibilityText(`打开来源笔记 ${this.noteTitle(noteId)}`)
       .borderRadius(4)
       .backgroundColor(this.palette().surfaceSubtle)
-      .maxLines(1)
-      .textOverflow({ overflow: TextOverflow.Ellipsis })
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => this.openReferencedNote(noteId))
   }
@@ -321,20 +317,21 @@ export struct TodoWorkspace {
   @Builder
   todoRow(todo: TodoItem) {
     Row({ space: 10 }) {
-      Text(todo.done ? '☑' : '☐')
-        .fontSize(TypographyTokens.TITLE_SUB)
-        .fontColor(todo.done ? this.palette().success : this.palette().danger)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => this.onToggleTodo(todo))
+      Button({ type: ButtonType.Normal }) {
+        Text(todo.done ? '✓' : '').fontSize(15).fontColor(this.palette().onAccent).width(24).height(24).textAlign(TextAlign.Center)
+          .borderRadius(5).border({ width: 1.5, color: todo.done ? this.palette().accent : this.palette().inkSecondary })
+          .backgroundColor(todo.done ? this.palette().accent : Color.Transparent)
+      }.width(44).height(44).padding(10).backgroundColor(Color.Transparent)
+        .accessibilityText(`${todo.done ? '标为未完成' : '完成待办'} ${todo.title}`).onClick(() => this.onToggleTodo(todo))
 
       Column({ space: 5 }) {
         Text(todo.title)
           .fontSize(TypographyTokens.BODY_LARGE)
           .fontWeight(FontWeight.Medium)
-          .fontColor(todo.done ? this.palette().success : this.palette().danger)
+          .fontColor(todo.done ? this.palette().inkMuted : this.palette().inkPrimary)
           .decoration({
             type: todo.done ? TextDecorationType.LineThrough : TextDecorationType.None,
-            color: this.palette().success
+            color: this.palette().inkMuted
           })
           .width('100%')
 
@@ -353,19 +350,13 @@ export struct TodoWorkspace {
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
 
-      Text('删除')
-        .fontSize(TypographyTokens.CAPTION)
-        .fontColor(this.palette().inkMuted)
-        .padding({ left: 8, right: 8, top: 5, bottom: 5 })
-        .borderRadius(6)
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => this.onDeleteTodo(todo))
+      IconButton({ icon: $r('app.media.ic_trash'), label: `删除待办 ${todo.title}`, onAction: () => this.requestDeleteTodo(todo) })
     }
     .width('100%')
-    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .padding({ left: 12, right: 12, top: 16, bottom: 16 })
     .borderRadius(8)
     .alignItems(VerticalAlign.Center)
-    .backgroundColor(this.palette().surfaceSubtle)
+    .backgroundColor(this.palette().surface).border({ width: 1, color: this.palette().borderSubtle })
   }
 
   @Builder
@@ -377,14 +368,9 @@ export struct TodoWorkspace {
           .fontWeight(FontWeight.Bold)
           .fontColor(this.palette().inkPrimary)
         Blank()
-        Text(`${this.todosFor(this.selectedDate).length} 项`)
-          .fontSize(TypographyTokens.CAPTION)
-          .fontColor(this.palette().inkMuted)
       }
       .width('100%')
 
-      Text(`${CalendarInfo.forDate(this.selectedDate).lunarLong} ${CalendarInfo.forDate(this.selectedDate).festival} ${CalendarInfo.forDate(this.selectedDate).schedule === '休' ? '放假' : CalendarInfo.forDate(this.selectedDate).schedule === '班' ? '调休上班' : ''}`.trim())
-        .fontSize(12).fontColor(this.palette().inkSecondary).width('100%')
 
       // ---- 本日备忘（可编辑文本 / 最后编辑文本）----
       Column({ space: 6 }) {
@@ -393,11 +379,6 @@ export struct TodoWorkspace {
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().inkSecondary)
           Blank()
-          if (this.memoUpdatedText(this.selectedDate).length > 0) {
-            Text(`最后编辑 ${this.memoUpdatedText(this.selectedDate)}`)
-              .fontSize(TypographyTokens.TINY)
-              .fontColor(this.palette().inkMuted)
-          }
         }
         .width('100%')
 
@@ -424,6 +405,7 @@ export struct TodoWorkspace {
           .fontSize(TypographyTokens.CAPTION)
           .fontColor(this.palette().onAccent)
           .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+          .height(44).constraintSize({ minWidth: 110 }).textAlign(TextAlign.Center)
           .borderRadius(6)
           .backgroundColor(this.palette().accent)
           .hoverEffect(HoverEffect.Highlight)
@@ -463,9 +445,12 @@ export struct TodoWorkspace {
             .fontSize(TypographyTokens.TITLE_HERO)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().inkPrimary)
-          Text(`${this.selectedPendingTotal()} 项未完成`)
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkMuted)
+          Blank()
+          if (this.isPhone) {
+            Button(this.calendarExpanded ? '收起月历' : '展开月历', { type: ButtonType.Normal }).height(44).padding({ left: 12, right: 12 })
+              .fontSize(12).fontColor(this.palette().accent).backgroundColor(this.palette().accentSoft).borderRadius(5)
+              .onClick(() => { this.calendarExpanded = !this.calendarExpanded; })
+          }
         }
         .width('100%')
         .margin({ bottom: 12 })
@@ -487,8 +472,6 @@ export struct TodoWorkspace {
 
         this.weekdayHeader()
         this.calendarGrid()
-        Text(this.year === 2026 ? '休：放假　班：调休上班 · 2026 年国务院安排' : '农历与节日 · 该年份调休安排尚未收录')
-          .fontSize(10).fontColor(this.palette().inkMuted).width('100%').padding({ top: 6 })
 
         Divider()
           .strokeWidth(1)
@@ -510,9 +493,10 @@ export struct TodoWorkspace {
           onClose: () => {
             this.dialogVisible = false;
           },
-          onSave: (title: string, noteRefs: string[]) => {
-            this.dialogVisible = false;
-            this.onAddTodo(this.selectedDate, title, noteRefs);
+          onSave: async (title: string, noteRefs: string[]): Promise<boolean> => {
+            const saved = await this.onAddTodo(this.selectedDate, title, noteRefs);
+            if (saved) { this.dialogVisible = false; }
+            return saved;
           }
         })
       }

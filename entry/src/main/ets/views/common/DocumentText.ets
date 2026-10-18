@@ -1,12 +1,15 @@
 import { DocumentTextParser, DocumentBlock, DocumentSpan } from '../../services/document/DocumentTextParser';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
+import { common } from '@kit.AbilityKit';
+import { promptAction } from '@kit.ArkUI';
+import { MarkdownLinkService } from '../../services/document/MarkdownLinkService';
 
 /** Source-preserving Markdown preview shared by the reader and local formatter. */
 @Component
 export struct DocumentText {
   @Prop @Watch('refresh') text: string = '';
   @StorageProp('flowmindDarkMode') dark: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @State blocks: DocumentBlock[] = [];
   aboutToAppear(): void { this.blocks = DocumentTextParser.parse(this.text); }
   private refresh(): void { this.blocks = DocumentTextParser.parse(this.text); }
@@ -18,9 +21,14 @@ export struct DocumentText {
           .fontStyle(span.style === 'italic' ? FontStyle.Italic : FontStyle.Normal)
           .fontFamily(span.style === 'code' ? 'monospace' : 'sans-serif')
           .decoration({ type: span.style === 'strike' ? TextDecorationType.LineThrough : TextDecorationType.None })
-          .fontColor(span.style === 'code' ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent : ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary)
+          .fontColor(span.style === 'link' ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).link : span.style === 'code' ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent : ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary)
+          .onClick(() => { if (span.target) { this.openLink(span.target); } })
       })
     }.fontSize(15).lineHeight(24).width('100%').copyOption(CopyOptions.LocalDevice)
+  }
+  private async openLink(target: string): Promise<void> {
+    try { await MarkdownLinkService.open(this.getUIContext().getHostContext() as common.UIAbilityContext, target); }
+    catch { promptAction.showToast({ message: '网页链接未能打开', duration: 2000 }); }
   }
   @Builder
   block(block: DocumentBlock) {
@@ -47,13 +55,13 @@ export struct DocumentText {
               .border({ width: { bottom: 1 }, color: ThemeHelper.paletteOfDark(this.dark, this.themeStyle).borderSubtle })
           })
         }
-      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto).width('100%').borderRadius(10)
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto).width('100%').borderRadius(5)
     } else if (block.kind === 'code' || block.kind === 'math') {
         Column({ space: 6 }) {
           if (block.language) { Text(block.language).fontSize(11).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkMuted).width('100%') }
           Text(block.text).fontFamily('monospace').fontSize(13).lineHeight(21).width('100%')
             .fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary).copyOption(CopyOptions.LocalDevice)
-        }.width('100%').padding(12).borderRadius(10).backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).surfaceSubtle)
+        }.width('100%').padding(12).borderRadius(5).backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).surfaceSubtle)
     } else if (block.kind === 'quote') {
       Column() { this.inline(block.text) }.width('100%').padding(10)
         .border({ width: { left: 3 }, color: ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent })

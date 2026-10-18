@@ -33,8 +33,13 @@ const UNCATEGORIZED: string = '未分类';
 export function buildSpaces(
   source: NoteItem[],
   customProjects: SpaceFolder[],
-  previous: SpaceFolder[]
+  previous: SpaceFolder[],
+  includeUnfiled: boolean = false
 ): SpaceFolder[] {
+  const previousByName: Map<string, SpaceFolder> = new Map();
+  for (const space of previous) {
+    if (!previousByName.has(space.name)) { previousByName.set(space.name, space); }
+  }
   const notesMap: Map<string, NoteItem[]> = new Map();
   for (let i = 0; i < source.length; i++) {
     const category: string = source[i].category.length === 0 ? UNCATEGORIZED : source[i].category;
@@ -57,7 +62,7 @@ export function buildSpaces(
       id: proj.id,
       name: proj.name,
       count: projNotes.length,
-      isOpen: findPrevious(previous, proj.name)?.isOpen ?? proj.isOpen,
+      isOpen: previousByName.get(proj.name)?.isOpen ?? false,
       children: [],
       color: proj.color || DEFAULT_PROJECT_COLOR,
       icon: proj.icon || DEFAULT_ICON,
@@ -68,15 +73,15 @@ export function buildSpaces(
 
   // 2) 其余分类（含从未注册过的、以及「未分类」）
   notesMap.forEach((notesList: NoteItem[], categoryName: string) => {
-    if (processedCategories.has(categoryName)) {
+    if (processedCategories.has(categoryName) || (categoryName === UNCATEGORIZED && !includeUnfiled)) {
       return;
     }
-    const last: SpaceFolder | undefined = findPrevious(previous, categoryName);
+    const last: SpaceFolder | undefined = previousByName.get(categoryName);
     result.push({
       id: `space-${categoryName}`,
       name: categoryName,
       count: notesList.length,
-      isOpen: last?.isOpen ?? true,
+      isOpen: last?.isOpen ?? false,
       children: [],
       color: pickNonEmpty(last?.color, DEFAULT_IMPLICIT_COLOR),
       icon: pickNonEmpty(last?.icon, DEFAULT_ICON),
@@ -85,21 +90,6 @@ export function buildSpaces(
   });
 
   return result;
-}
-
-/**
- * 在上一帧的树里按名字找同一个项目。
- *
- * 先取到局部变量再收窄：直接写 `previous[j].color` 无法让 ArkTS 认定其非空
- * （下标访问每次都会重新求值，同一性不被保证）。
- */
-function findPrevious(previous: SpaceFolder[], name: string): SpaceFolder | undefined {
-  for (let i = 0; i < previous.length; i++) {
-    if (previous[i].name === name) {
-      return previous[i];
-    }
-  }
-  return undefined;
 }
 
 function pickNonEmpty(value: string | undefined, fallback: string): string {

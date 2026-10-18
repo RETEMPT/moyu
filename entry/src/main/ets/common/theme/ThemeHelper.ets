@@ -36,7 +36,7 @@ export class ThemeHelper {
   }
 
   /** 布尔深色标记 -> 调色板（视图层的常用入口） */
-  static paletteOfDark(isDark: boolean, style: string = AppStorage.get<string>(THEME_STYLE_KEY) || 'ink'): ColorPalette {
+  static paletteOfDark(isDark: boolean, style: string = AppStorage.get<string>(THEME_STYLE_KEY) || 'mono'): ColorPalette {
     return paletteForStyle(isDark, style);
   }
 

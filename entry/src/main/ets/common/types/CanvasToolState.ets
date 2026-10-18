@@ -4,6 +4,7 @@ export interface CanvasToolState {
   color: string;
   fingerDrawing: boolean;
   eraserMode: string;
+  paperStyle?: string;
 }
 
 /** One command carries all its data; watchers never depend on sibling prop update order. */

@@ -38,3 +38,21 @@
 /release/reports/
 /release/evidence/
 /tmp/
+/.v/
+**/__pycache__/
+*.pyc
+
+# Private architecture notes and historical work stay local, outside published source.
+/PROJECT_MEMORY.md
+/TECH_STACK.md
+/CONTRIBUTING.md
+/SECURITY.md
+/PRODUCT_SCOPE.md
+/AI_AGENT_PLAN.md
+/design/
+/archive/
+/docs/*
+!/docs/USER_GUIDE.md
+!/docs/PRIVACY.md
+/release/*.md
+/release/*evidence.template.json

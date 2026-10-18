@@ -7,26 +7,28 @@ import { TodoItem } from '../../common/types/TodoItem';
 export class SmartNoteBuilder {
   static buildNote(content: SmartContent, tasks: SmartTask[]): NoteItem {
     const now = Date.now();
-    const body = SmartNoteBuilder.buildMarkdown(content, tasks, true);
+    const body = SmartNoteBuilder.buildMarkdown(content, tasks);
     return { id: `smart-note-${content.id}`, title: content.title.trim(), category: content.category || '未分类',
       type: 'Markdown', previewText: content.summary || body.slice(0, 100),
       tag: content.tags.join(', '), tagColor: '#4F46E5', updateTime: '刚刚', contentDetail: body,
-      tags: content.tags, aiSummary: content.summary, aiTags: content.tags,
+      tags: content.tags,
       createdAt: content.createdAt, updatedAt: now };
   }
 
-  static buildTodos(tasks: SmartTask[], noteId: string, now: Date = new Date()): TodoItem[] {
+  static buildTodos(tasks: SmartTask[], noteId: string, now: Date = new Date(), reference: Date = now): TodoItem[] {
     return tasks.map((task: SmartTask) => {
-      const deadline = task.deadline || '';
+      const deadline = (task.deadline || '').trim();
+      const resolved = SmartNoteBuilder.resolveDeadline(deadline, reference);
+      if (deadline && !resolved) { throw new Error(`待办「${task.title}」的日期尚未确认，请填写 YYYY-MM-DD，或清空日期加入今天。`); }
       const todo: TodoItem = { id: `${noteId}-todo-${task.id}`,
-        date: SmartNoteBuilder.resolveDeadline(deadline, now) || SmartNoteBuilder.dateKey(now),
+        date: resolved || SmartNoteBuilder.dateKey(now),
         title: task.title + (deadline.length > 0 ? ` [截止: ${deadline}]` : ''), done: false,
         noteRefs: [noteId], createdAt: now.getTime(), updatedAt: now.getTime() };
       return todo;
     });
   }
 
-  static buildMarkdown(content: SmartContent, tasks: SmartTask[], includeRelations: boolean = false): string {
+  static buildMarkdown(content: SmartContent, tasks: SmartTask[]): string {
     let body = (content.formattedMarkdown || content.rawMarkdown || '').trim();
     if (/^#\s+[^\n]*/.test(body)) {
       body = body.replace(/^#\s+[^\n]*/, () => `# ${content.title.trim()}`);
@@ -37,12 +39,6 @@ export class SmartNoteBuilder {
       body += '\n\n## 已选日历待办\n\n';
       for (const task of tasks) {
         body += `- [ ] ${task.title}${task.deadline ? '（' + task.deadline + '）' : ''}\n`;
-      }
-    }
-    if (includeRelations && content.relations.length > 0) {
-      body += '\n\n## 关联笔记\n\n';
-      for (const relation of content.relations) {
-        body += `- [[${relation.targetTitle}]]${relation.reason ? '：' + relation.reason : ''}\n`;
       }
     }
     if (content.rawMarkdown && content.rawMarkdown.length > 0) {

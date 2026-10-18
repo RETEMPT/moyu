@@ -10,7 +10,7 @@ export struct PrivacySheet {
   @Prop saving: boolean = false;
   onChoice: (agree: boolean) => void = () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
   @State version: string = '';
   aboutToAppear(): void {
@@ -49,7 +49,7 @@ export struct PrivacySheet {
           Button('同意隐私说明并继续').height(48).width('100%').enabled(!this.saving).onClick(() => this.onChoice(true))
           Button('暂不同意，离线使用').height(48).width('100%').enabled(!this.saving).onClick(() => this.onChoice(false))
         }
-      }.padding(20).width(this.phone ? '94%' : 640).height('86%').borderRadius(18).backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).surface)
+      }.padding(20).width(this.phone ? '94%' : 640).height('86%').borderRadius(8).backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).surface)
         .onClick(() => {})
     }.width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       .backgroundColor('rgba(0,0,0,0.4)').onClick(() => { if (!this.welcome) { this.onClose(); } })

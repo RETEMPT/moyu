@@ -1,6 +1,6 @@
 import { Context } from '@kit.AbilityKit';
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
-import { util } from '@kit.ArkTS';
+import { taskpool, util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { NoteItem } from '../../common/types/NoteItem';
 import { ReviewCard } from '../../common/types/StudyTypes';
@@ -8,24 +8,39 @@ import { StudyBackup, BackupAsset } from '../../common/types/StudyBackup';
 import { StudyBackupPolicy } from './StudyBackupPolicy';
 import { NoteCoverService } from '../NoteCoverService';
 import { PdfDocumentService } from '../document/PdfDocumentService';
+import { ImageDocumentPolicy } from '../document/ImageDocumentPolicy';
+import { ImageDocumentService } from '../document/ImageDocumentService';
+import { validateBackupData, encodeBackupData, decodeBackupData } from './BackupCodec';
 
 const MAX_BYTES: number = 32 * 1024 * 1024;
 
 export class StudyBackupService {
+  static async validate(input: StudyBackup): Promise<StudyBackup> {
+    return await taskpool.execute(validateBackupData, input) as StudyBackup;
+  }
   static async exportFile(context: Context, notes: NoteItem[], cards: ReviewCard[]): Promise<boolean> {
     const backup = await StudyBackupService.create(context, notes, cards);
-    const content = JSON.stringify(backup);
+    const buffer = await taskpool.execute(encodeBackupData, backup) as ArrayBuffer;
     const options = new picker.DocumentSaveOptions();
     options.newFileNames = [`墨语学习备份_${new Date().toISOString().slice(0, 10)}.flowmind.json`];
     options.fileSuffixChoices = ['墨语学习备份|.json'];
     const uris = await new picker.DocumentViewPicker(context).save(options);
     if (!uris.length) { return false; }
     const file = await fs.open(uris[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    let closed = false;
     try {
-      const expected = new util.TextEncoder().encodeInto(content).length;
-      if (await fs.write(file.fd, content) !== expected) { throw new Error('备份未完整写入，请重试'); }
+      let offset = 0;
+      while (offset < buffer.byteLength) {
+        const written = await fs.write(file.fd, buffer.slice(offset, Math.min(offset + 512 * 1024, buffer.byteLength)));
+        if (written <= 0) { throw new Error('备份未完整写入，请重试'); }
+        offset += written;
+      }
       await fs.fsync(file.fd);
-    } finally { await fs.close(file); }
+    } catch (error) {
+      try { await fs.close(file); closed = true; } catch { /* Best effort. */ }
+      try { await fs.unlink(uris[0]); } catch { /* Leave the partial file for manual cleanup if unlink fails. */ }
+      throw error instanceof Error ? error : new Error('备份写入失败');
+    } finally { if (!closed) { await fs.close(file); } }
     return true;
   }
 
@@ -35,7 +50,8 @@ export class StudyBackupService {
     let total = 0;
     for (const note of notes) {
       if (note.sourceType === 'pdf' && !note.sourceUri && !note.id.startsWith('note-seed-')) { throw new Error(`《${note.title}》缺少原 PDF，请重新导入后备份`); }
-      const paths: string[] = [note.sourceType === 'pdf' ? note.sourceUri || '' : '', note.coverUrl || ''];
+      if (note.sourceType === 'image' && !note.sourceUri) { throw new Error(`《${note.title}》缺少原始图片，请重新导入后备份`); }
+      const paths: string[] = [note.sourceType === 'pdf' || note.sourceType === 'image' ? note.sourceUri || '' : '', note.coverUrl || ''];
       for (let kind = 0; kind < paths.length; kind++) {
         const source = paths[kind];
         const allowed = kind === 0 ? StudyBackupService.documentPath(context, source) : NoteCoverService.isManaged(context, source);
@@ -49,16 +65,46 @@ export class StudyBackupService {
           const buffer = new ArrayBuffer(size);
           const read = await fs.read(file.fd, buffer);
           if (read !== size) { throw new Error('附件未完整读取，请重试'); }
-          assets.push({ noteId: note.id, kind: kind === 0 ? 'pdf' : 'cover', data: new util.Base64Helper().encodeToStringSync(new Uint8Array(buffer)) });
+          assets.push({ noteId: note.id, kind: kind === 0 ? note.sourceType === 'image' ? 'image' : 'pdf' : 'cover',
+            extension: kind === 0 && note.sourceType === 'image' ? ImageDocumentPolicy.extension(source) : undefined,
+            data: await new util.Base64Helper().encodeToString(new Uint8Array(buffer)) });
         } finally { await fs.close(file); }
       }
     }
     const backup: StudyBackup = { schemaVersion: 1, id: `${Date.now().toString(36)}${Math.floor(Math.random() * 1000000).toString(36)}`,
-      createdAt: Date.now(), notes: notes.map((note: NoteItem) => StudyBackupPolicy.note(note)),
+      createdAt: Date.now(), notes: notes,
       cards: cards.filter((card: ReviewCard) => notes.some((note: NoteItem) => note.id === card.noteId)), assets: assets };
-    const content = JSON.stringify(StudyBackupPolicy.validate(backup));
-    if (new util.TextEncoder().encodeInto(content).length > MAX_BYTES) { throw new Error('备份超过 32 MB，请按课程分批导出'); }
-    return StudyBackupPolicy.validate(backup);
+    return await StudyBackupService.validate(backup);
+  }
+
+  static async createShareFile(context: Context, notes: NoteItem[], cards: ReviewCard[]): Promise<string> {
+    if (notes.length === 0) { throw new Error('请先选择要发送的资料'); }
+    const backup = await StudyBackupService.create(context, notes, cards);
+    const buffer = await taskpool.execute(encodeBackupData, backup) as ArrayBuffer;
+    const directory = context.cacheDir + '/study-share';
+    if (!await fs.access(directory)) { await fs.mkdir(directory); }
+    for (const name of await fs.listFile(directory)) {
+      const match = /^study_(\d+)_([a-zA-Z0-9]+)\.flowmind\.json$/.exec(name);
+      if (match && Date.now() - Number(match[1]) > 86400000) {
+        try { await fs.unlink(directory + '/' + name); } catch { /* A file in use stays available to its receiver. */ }
+      }
+    }
+    const target = directory + '/study_' + Date.now() + '_' + backup.id + '.flowmind.json';
+    const file = await fs.open(target, fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    let complete = false;
+    try {
+      let offset = 0;
+      while (offset < buffer.byteLength) {
+        const written = await fs.write(file.fd, buffer.slice(offset, Math.min(offset + 512 * 1024, buffer.byteLength)));
+        if (written <= 0) { throw new Error('资料包未完整写入，请重试'); }
+        offset += written;
+      }
+      await fs.fsync(file.fd); complete = true;
+    } finally {
+      try { await fs.close(file); }
+      finally { if (!complete) { try { await fs.unlink(target); } catch { /* Only this failed package is eligible for cleanup. */ } } }
+    }
+    return target;
   }
   static async selectFile(context: Context): Promise<StudyBackup | null> {
     const options = new picker.DocumentSelectOptions(); options.maxSelectNumber = 1; options.fileSuffixFilters = ['.json'];
@@ -70,8 +116,7 @@ export class StudyBackupService {
       if (size > MAX_BYTES) { throw new Error('备份文件超过 32 MB'); }
       const buffer = new ArrayBuffer(size);
       if (await fs.read(file.fd, buffer) !== size) { throw new Error('备份文件未完整读取'); }
-      const raw = new util.TextDecoder().decodeToString(new Uint8Array(buffer));
-      return StudyBackupPolicy.validate(JSON.parse(raw) as StudyBackup);
+      return await taskpool.execute(decodeBackupData, buffer) as StudyBackup;
     } finally { await fs.close(file); }
   }
 
@@ -83,10 +128,10 @@ export class StudyBackupService {
     const created: string[] = [];
     try {
       for (const asset of backup.assets.filter((item: BackupAsset) => item.noteId === backup.notes[index].id)) {
-        const directory = `${context.filesDir}/${asset.kind === 'pdf' ? 'documents' : 'covers'}`;
+        const directory = `${context.filesDir}/${asset.kind === 'pdf' || asset.kind === 'image' ? 'documents' : 'covers'}`;
         if (!fs.accessSync(directory)) { fs.mkdirSync(directory); }
-        const target = `${directory}/${note.id}_${Date.now()}${asset.kind === 'pdf' ? '.pdf' : '.img'}`;
-        const bytes = new util.Base64Helper().decodeSync(asset.data);
+        const target = `${directory}/${note.id}_${Date.now()}${asset.kind === 'image' ? asset.extension : asset.kind === 'pdf' ? '.pdf' : '.img'}`;
+        const bytes = await new util.Base64Helper().decode(asset.data);
         const file = await fs.open(target, fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
         created.push(target);
         try {
@@ -97,6 +142,10 @@ export class StudyBackupService {
         if (asset.kind === 'pdf') {
           note.pageCount = (await PdfDocumentService.getInstance().validateImport(target)).pageCount;
           note.sourceUri = target; note.sourceFileName = target.split('/').pop(); note.sourceType = 'pdf';
+        } else if (asset.kind === 'image') {
+          const preview = await ImageDocumentService.preview(context, target);
+          try { note.documentMeta = JSON.stringify(preview.info); } finally { await preview.pixels.release(); }
+          note.type = 'Image'; note.sourceType = 'image'; note.sourceUri = target; note.sourceFileName = target.split('/').pop(); note.pageCount = 1;
         } else {
           const source = image.createImageSource(target);
           try { await source.getImageInfo(); } finally { await source.release(); }

@@ -9,12 +9,15 @@ import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/const
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { TimeFormat } from '../../common/utils/TimeFormat';
+import { TrashedProject } from '../../common/types/TrashedProject';
 
 const DAY_MS: number = 24 * 60 * 60 * 1000;
 
 @Component
 export struct TrashWorkspace {
   @Prop trash: NoteItem[] = [];
+  @Prop projects: TrashedProject[] = [];
+  onRestoreProject: (id: string) => void = () => {};
   @Prop retentionDays: number = 30;
 
   onRestore: (note: NoteItem) => void = () => {};
@@ -22,7 +25,7 @@ export struct TrashWorkspace {
   onEmpty: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
@@ -114,11 +117,11 @@ export struct TrashWorkspace {
             .fontSize(TypographyTokens.TITLE_HERO)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().inkPrimary)
-          Text(`${this.trash.length} 篇`)
+          Text(`${this.trash.length} 篇 · ${this.projects.length} 个项目`)
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().inkMuted)
           Blank()
-          if (this.trash.length > 0) {
+          if (this.trash.length > 0 || this.projects.length > 0) {
             Text('清空回收站')
               .fontSize(TypographyTokens.CAPTION)
               .fontColor(this.palette().danger)
@@ -146,7 +149,7 @@ export struct TrashWorkspace {
       .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 24 })
 
       // ---- 列表 ----
-      if (this.trash.length === 0) {
+      if (this.trash.length === 0 && this.projects.length === 0) {
         Column({ space: 8 }) {
           Text('回收站是空的')
             .fontSize(TypographyTokens.BODY_REGULAR)
@@ -163,6 +166,20 @@ export struct TrashWorkspace {
         .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone) })
       } else {
         List({ space: 6 }) {
+          ForEach(this.projects, (group: TrashedProject) => {
+            ListItem() {
+              Row({ space: 12 }) {
+                Text('▱').fontSize(22).fontColor(this.palette().inkMuted)
+                Column({ space: 4 }) {
+                  Text(group.project.name).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+                  Text(`${this.projectCount(group)} 份资料 · 可整项目恢复`).fontSize(12).fontColor(this.palette().inkMuted)
+                }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+                Button('恢复项目', { type: ButtonType.Normal }).height(44).fontSize(13)
+                  .fontColor(this.palette().accent).backgroundColor(this.palette().accentSoft)
+                  .accessibilityText('恢复项目 ' + group.project.name).onClick(() => this.onRestoreProject(group.id))
+              }.padding(12).width('100%').backgroundColor(this.palette().surfaceSubtle).borderRadius(8)
+            }
+          }, (group: TrashedProject) => `${group.id}-${this.projectCount(group)}`)
           ForEach(this.trash, (note: NoteItem) => {
             ListItem() {
               this.trashCard(note)
@@ -179,5 +196,10 @@ export struct TrashWorkspace {
     .height('100%')
     .constraintSize({ maxWidth: LayoutTokens.CONTENT_MAX_WIDTH + 160 })
     .backgroundColor(this.palette().canvas)
+  }
+
+  private projectCount(group: TrashedProject): number {
+    const ids = new Set(group.noteIds);
+    return this.trash.filter((note: NoteItem) => ids.has(note.id) && note.deletedAt === group.deletedAt).length;
   }
 }

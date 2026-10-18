@@ -1,5 +1,5 @@
 /**
- * 三栏工作台外壳 (Obsidian 工作台布局)
+ * 响应式工作台外壳
  *
  * 三级响应式：
  *   >= 1200vp  三栏（侧边栏 + 正文 + 上下文面板）
@@ -23,16 +23,12 @@ export struct AppShell {
   @Prop breadcrumb: string[] = [];
   @Prop saveState: string = SAVE_IDLE;
   @Prop spaces: SpaceFolder[] = [];
-  @Prop recentNotes: NoteItem[] = [];
+
   @Prop activeNav: string = '';
   @Prop activeSpaceId: string = '';
   @Prop activeNoteId: string = '';
   @Prop sidebarCollapsed: boolean = false;
   @Prop contextPanelOpen: boolean = false;
-  @Prop trashCount: number = 0;
-  @Prop todoPendingCount: number = 0;
-  @Prop favoriteCount: number = 0;
-  /** 侧栏中段模式：'tree' 项目资料树 | 'sessions' 对话记录 */
 
   onToggleSidebar: () => void = () => {};
   onToggleContext: () => void = () => {};
@@ -43,29 +39,17 @@ export struct AppShell {
   onCollapseAllSpaces: () => void = () => {};
   onSelectSpace: (spaceId: string) => void = () => {};
   onSelectNote: (note: NoteItem) => void = () => {};
-  onCreateNote: () => void = () => {};
-  onCreateNoteInProject: (title: string, projectName: string, type: string) => void = () => {};
-  onCreateFromTemplate: (templateName: string, projectName: string) => void = () => {};
-  onImportIntoProject: (projectName: string) => void = () => {};
-  onCreateProject: (name: string, color: string, icon: string) => void = () => {};
-  onRenameProject: (oldName: string, newName: string) => void = () => {};
-  onDeleteProject: (name: string) => void = () => {};
-  onDeleteNote: (noteId: string) => void = () => {};
-  onRenameNote: (note: NoteItem, newTitle: string) => void = () => {};
-  onMoveNote: (note: NoteItem, category: string) => void = () => {};
-  onApplyTags: (note: NoteItem, tags: string[]) => void = () => {};
   onOpenSettings: () => void = () => {};
   onBreadcrumbClick: (index: number, segment: string) => void = () => {};
   onOpenSheet: (type: string, project: SpaceFolder | null, note: NoteItem | null) => void = () => {};
   onOpenCreateProject: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
 
   @State isThreeColumn: boolean = false;
   @State isTwoColumn: boolean = false;
   @State isPhone: boolean = true;
-
 
   @Builder
   emptyPanel() {
@@ -108,41 +92,27 @@ export struct AppShell {
 
   /** 上下文面板是否常驻（仅三栏） */
   private isContextDocked(): boolean {
-    return this.activeNav !== NAV_SETTINGS && this.isThreeColumn && this.contextPanelOpen;
+    return this.activeNav !== NAV_SETTINGS && this.activeNoteId.length > 0 && this.isThreeColumn && this.contextPanelOpen;
   }
 
   /** 上下文面板是否以浮层形式呈现（单栏 / 双栏） */
   private isContextOverlay(): boolean {
-    return this.activeNav !== NAV_SETTINGS && !this.isThreeColumn && this.contextPanelOpen;
+    return this.activeNav !== NAV_SETTINGS && this.activeNoteId.length > 0 && !this.isThreeColumn && this.contextPanelOpen;
   }
 
   @Builder
   sidebarPanel() {
     Sidebar({
       spaces: this.spaces,
-      recentNotes: this.recentNotes,
+      onToggleSidebar: this.onToggleSidebar,
       activeNav: this.activeNav,
       activeSpaceId: this.activeSpaceId,
       activeNoteId: this.activeNoteId,
-      trashCount: this.trashCount,
-      todoPendingCount: this.todoPendingCount,
-      favoriteCount: this.favoriteCount,
       onToggleSpace: this.onToggleSpace,
       onCollapseAllSpaces: this.onCollapseAllSpaces,
       onSelectSpace: this.onSelectSpace,
       onOpenSearch: this.onOpenSearch,
       onSelectNote: this.onSelectNote,
-      onCreateNote: this.onCreateNote,
-      onCreateNoteInProject: this.onCreateNoteInProject,
-      onCreateFromTemplate: this.onCreateFromTemplate,
-      onImportIntoProject: this.onImportIntoProject,
-      onCreateProject: this.onCreateProject,
-      onRenameProject: this.onRenameProject,
-      onDeleteProject: this.onDeleteProject,
-      onDeleteNote: this.onDeleteNote,
-      onRenameNote: this.onRenameNote,
-      onMoveNote: this.onMoveNote,
-      onApplyTags: this.onApplyTags,
       onSelectNav: this.onSelectNav,
       onOpenSettings: this.onOpenSettings,
       onOpenSheet: this.onOpenSheet,
@@ -162,7 +132,7 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.START)
               .combine(TransitionEffect.OPACITY)
-              .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
+              .animation({ duration: AnimationTokens.duration(120), curve: Curve.EaseInOut })
           )
         }
 
@@ -171,7 +141,7 @@ export struct AppShell {
             breadcrumb: this.breadcrumb,
             saveState: this.saveState,
             contextPanelOpen: this.contextPanelOpen,
-            showContextToggle: this.activeNav !== NAV_SETTINGS && (this.isTwoColumn || this.isThreeColumn || this.isPhone),
+            showContextToggle: this.activeNav !== NAV_SETTINGS && this.activeNoteId.length > 0 && (this.isTwoColumn || this.isThreeColumn || this.isPhone),
             onToggleSidebar: this.onToggleSidebar,
             onToggleContext: this.onToggleContext,
             onOpenSearch: this.onOpenSearch,
@@ -204,7 +174,7 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.END)
               .combine(TransitionEffect.OPACITY)
-              .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
+              .animation({ duration: AnimationTokens.duration(120), curve: Curve.EaseInOut })
           )
         }
       }
@@ -223,19 +193,19 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.START)
               .combine(TransitionEffect.OPACITY)
-              .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
+              .animation({ duration: AnimationTokens.duration(120), curve: Curve.EaseInOut })
           )
 
           Column()
             .layoutWeight(1)
             .height('100%')
             .backgroundColor('rgba(0,0,0,0.25)')
-            .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
+            .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.duration(120), curve: Curve.EaseInOut }))
             .onClick(() => this.onToggleSidebar())
         }
         .width('100%')
         .height('100%')
-        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
+        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.duration(120), curve: Curve.EaseInOut }))
       }
 
       // ---- 单栏 / 双栏：上下文面板浮层 ----
@@ -245,7 +215,7 @@ export struct AppShell {
             .layoutWeight(1)
             .height('100%')
             .backgroundColor('rgba(0,0,0,0.25)')
-            .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
+            .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.duration(120), curve: Curve.EaseInOut }))
             .onClick(() => this.onToggleContext())
 
           Column() {
@@ -257,18 +227,18 @@ export struct AppShell {
           .transition(
             TransitionEffect.move(TransitionEdge.END)
               .combine(TransitionEffect.OPACITY)
-              .animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut })
+              .animation({ duration: AnimationTokens.duration(120), curve: Curve.EaseInOut })
           )
         }
         .width('100%')
         .height('100%')
-        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
+        .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.duration(120), curve: Curve.EaseInOut }))
       }
     }
     .width('100%')
     .height('100%')
     .onAreaChange((before: Area, after: Area) => this.updateLayout(Number(after.width)))
-    .keyboardShortcut('f', [ModifierKey.CTRL], () => this.onOpenSearch())
+    .keyboardShortcut('k', [ModifierKey.CTRL], () => this.onOpenSearch())
     .backgroundColor(this.palette().canvas)
   }
 }

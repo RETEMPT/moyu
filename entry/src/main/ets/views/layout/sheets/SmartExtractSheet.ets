@@ -22,7 +22,6 @@ interface SmartExtractDraft {
   body: string;
   tasks: SmartTask[];
   selectedTaskIds: string[];
-  includeRelations: boolean;
   style?: SmartLayoutStyle;
   mergeWrappedLines?: boolean;
 }
@@ -34,7 +33,7 @@ export struct SmartExtractSheet {
   onImportSource: (uri: string) => Promise<string> = async () => { throw new Error('资料库尚未就绪，请稍后重试'); };
   @Prop @Watch('requestClose') closeToken: number = 0;
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
   @State private step: string = 'input';
   @State private inputText: string = '';
@@ -52,7 +51,6 @@ export struct SmartExtractSheet {
   @State private resultTab: string = 'preview';
   @State private tasks: SmartTask[] = [];
   @State private selectedTaskIds: string[] = [];
-  @State private includeRelations: boolean = false;
   @State private errorMsg: string = '';
   private requestId: number = 0;
   private alive: boolean = true;
@@ -76,7 +74,6 @@ export struct SmartExtractSheet {
       this.body = draft.body;
       this.tasks = draft.tasks;
       this.selectedTaskIds = draft.selectedTaskIds;
-      this.includeRelations = draft.includeRelations;
       this.step = 'result';
     }
     this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
@@ -102,7 +99,7 @@ export struct SmartExtractSheet {
     const id = ++this.requestId; this.step = 'importing'; this.errorMsg = ''; this.sourceNotice = ''; this.importProgress = '选择文档…';
     try {
       const options = new picker.DocumentSelectOptions(); options.maxSelectNumber = 1;
-      options.fileSuffixFilters = ['文档与 Marker 结果|.pdf,.md,.txt,.json'];
+      options.fileSuffixFilters = ['学习文档|.pdf,.md,.markdown,.txt'];
       const selected = await new picker.DocumentViewPicker().select(options);
       if (!this.alive || id !== this.requestId || !selected.length) { return; }
       DocumentExtractService.validateInput(selected[0]);
@@ -131,7 +128,7 @@ export struct SmartExtractSheet {
     const draft: SmartExtractDraft = { input: this.inputText, imageUri: this.imageUri,
       result: this.step === 'result' ? this.result : null, title: this.title,
       category: this.category, body: this.body, tasks: this.tasks,
-      selectedTaskIds: this.selectedTaskIds, includeRelations: this.includeRelations,
+      selectedTaskIds: this.selectedTaskIds,
       style: this.layoutStyle, mergeWrappedLines: this.mergeWrappedLines };
     AppStorage.setOrCreate('smartExtractResultDraft', draft);
     this.requestId++;
@@ -159,13 +156,15 @@ export struct SmartExtractSheet {
         return;
       }
       // 追加而不是覆盖用户此前粘贴或校对的文字。
-      this.inputText = this.inputText.trim().length > 0 ? `${this.inputText}\n\n${text}` : text;
+      const appended = this.inputText.trim().length > 0 ? `${this.inputText}\n\n${text}` : text;
+      if (appended.length > SMART_INPUT_LIMIT) { throw new Error('追加后文字超过上限，请先整理当前内容，原输入已保留'); }
+      this.inputText = appended;
       this.imageUri = picked.photoUris[0];
       this.sourceNotice = '图片文字已追加，请先校对姓名、数字、日期，再开始排版。';
       AppStorage.setOrCreate('smartExtractDraft', this.inputText);
     } catch (error) {
       if (this.alive && id === this.requestId) {
-        this.errorMsg = error instanceof Error && error.message.includes('未识别到文字') ? error.message :
+      this.errorMsg = error instanceof Error && (error.message.includes('未识别到文字') || error.message.includes('超过上限')) ? error.message :
           '图片识别未成功：请检查图片是否清晰、设备是否支持 OCR，或直接粘贴文字。原输入已保留。';
       }
     } finally {
@@ -195,9 +194,8 @@ export struct SmartExtractSheet {
       this.title = extracted.title;
       this.body = extracted.formattedMarkdown || this.inputText;
       this.tasks = extracted.tasks.slice();
-      // 待办与关联由用户选择，避免把识别建议直接写入日历。
+      // 待办由用户选择，避免把识别建议直接写入日历。
       this.selectedTaskIds = [];
-      this.includeRelations = false;
       this.resultTab = 'preview';
       this.step = 'result';
     } catch {
@@ -218,7 +216,9 @@ export struct SmartExtractSheet {
       if (task.id !== taskId) {
         return task;
       }
-      const edited: SmartTask = { id: task.id, title: task.title, deadline: value, priority: task.priority };
+      const edited: SmartTask = { id: task.id, title: task.title, deadline: value, priority: task.priority,
+        sourceTitle: task.sourceTitle, sourceUri: task.sourceUri, sourceLine: task.sourceLine,
+        sourceText: task.sourceText, reminderTime: task.reminderTime, completed: task.completed };
       return edited;
     });
   }
@@ -227,18 +227,26 @@ export struct SmartExtractSheet {
     return this.tasks.filter((task: SmartTask) => this.selectedTaskIds.includes(task.id));
   }
 
+  private taskReferenceDate(): Date {
+    return new Date(this.result ? this.result.createdAt : Date.now());
+  }
+
+  private pendingDates(): boolean {
+    return this.chosenTasks().some((task: SmartTask) => (task.deadline || '').trim().length > 0 &&
+      !SmartNoteBuilder.resolveDeadline(task.deadline || '', this.taskReferenceDate()));
+  }
+
   private previewContent(): SmartContent {
     const data = this.result!;
     const content: SmartContent = { id: data.id, type: data.type, title: this.title.replace(/[\r\n]/g, ' ').trim(),
       category: this.category.trim() || '未分类', summary: data.summary, tags: data.tags,
-      entities: data.entities, tasks: this.tasks, relations: this.includeRelations ? data.relations : [],
-      keyPoints: data.keyPoints, rawMarkdown: data.rawMarkdown, formattedMarkdown: this.body,
+      tasks: this.tasks, rawMarkdown: data.rawMarkdown, formattedMarkdown: this.body,
       processingMode: data.processingMode, processingNotice: data.processingNotice, createdAt: data.createdAt };
     return content;
   }
 
   private previewBody(): string {
-    return this.result ? SmartNoteBuilder.buildMarkdown(this.previewContent(), this.chosenTasks(), this.includeRelations) : '';
+    return this.result ? SmartNoteBuilder.buildMarkdown(this.previewContent(), this.chosenTasks()) : '';
   }
 
   private async commit(): Promise<void> {
@@ -247,6 +255,10 @@ export struct SmartExtractSheet {
     }
     if (this.title.trim().length === 0 || this.body.trim().length === 0) {
       this.errorMsg = '标题和正文不能为空。';
+      return;
+    }
+    if (this.pendingDates()) {
+      this.errorMsg = '请先确认已勾选待办的日期，或取消勾选后只保存笔记。清空日期可加入今天。';
       return;
     }
     this.errorMsg = '';
@@ -280,7 +292,7 @@ export struct SmartExtractSheet {
       }.width('100%').height(48)
         .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle)
         .onClick(() => this.pickImageAndOcr())
-      Button('导入 PDF / 文字 / Marker 结果').width('100%').height(48)
+      Button('导入 PDF / Markdown / TXT').width('100%').height(48)
         .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle).onClick(() => this.pickDocument())
       Row({ space: 8 }) {
         Text('PDF 页范围').fontSize(12).fontColor(this.palette().inkSecondary)
@@ -290,7 +302,7 @@ export struct SmartExtractSheet {
         TextInput({ text: this.pdfEnd, placeholder: '结束页' }).layoutWeight(1).height(44)
           .onChange((value: string) => { this.pdfEnd = value; })
       }.width('100%')
-      this.hint('导入会保存到本机资料库「外部参考」。PDF 每次提取最多 5 页；支持 Marker Markdown 和响应 JSON。')
+      this.hint('导入会保存到本机资料库「外部参考」。PDF 每次提取最多 5 页；Markdown 和 TXT 可直接整理。')
       if (this.imageUri.length > 0) {
         Image(this.imageUri).width('100%').height(100).objectFit(ImageFit.Contain).borderRadius(8)
       }
@@ -330,6 +342,26 @@ export struct SmartExtractSheet {
   }
 
   @Builder
+  taskRow(index: number) {
+    Column({ space: 6 }) {
+      Row({ space: 8 }) {
+        Checkbox({ name: this.tasks[index].id }).select(this.selectedTaskIds.includes(this.tasks[index].id))
+          .width(24).height(24).onChange(() => this.toggleTask(this.tasks[index].id))
+        Text(this.tasks[index].title).layoutWeight(1).fontColor(this.palette().inkPrimary).fontSize(14)
+      }.width('100%').constraintSize({ minHeight: 44 })
+      TextInput({ text: this.tasks[index].deadline || '', placeholder: '日期：YYYY-MM-DD；留空放入今天' })
+        .height(44).fontSize(14).fontColor(this.palette().inkPrimary)
+        .backgroundColor(this.palette().surface)
+        .onChange((value: string) => this.editDeadline(this.tasks[index].id, value))
+      if (this.tasks[index].sourceLine && this.tasks[index].sourceText) {
+        this.hint(`原文第 ${this.tasks[index].sourceLine} 行：${this.tasks[index].sourceText}`)
+      }
+      this.hint(SmartNoteBuilder.resolveDeadline(this.tasks[index].deadline || '', this.taskReferenceDate()) ||
+        ((this.tasks[index].deadline || '').trim().length > 0 ? '日期待确认；请填写完整年月日，或清空日期加入今天。' : '无截止日期，将加入今天的待办。'))
+    }.width('100%').padding(10).borderRadius(5).backgroundColor(this.palette().surfaceSubtle)
+  }
+
+  @Builder
   resultPanel() {
     Column({ space: 12 }) {
       this.hint(this.result?.processingNotice || '')
@@ -358,35 +390,17 @@ export struct SmartExtractSheet {
         Text(this.result?.rawMarkdown || '').width('100%').fontSize(TypographyTokens.BODY_REGULAR)
           .fontColor(this.palette().inkPrimary).lineHeight(24).copyOption(CopyOptions.InApp)
       } else {
-        DocumentText({ text: this.previewBody() }).width('100%').padding(12).borderRadius(10).backgroundColor(this.palette().surfaceSubtle)
+        DocumentText({ text: this.previewBody() }).width('100%').padding(12).borderRadius(5).backgroundColor(this.palette().surfaceSubtle)
       }
       Text(`添加到日历 · 已选 ${this.selectedTaskIds.length} 项`)
         .fontSize(TypographyTokens.BODY_REGULAR).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
       if (this.tasks.length === 0) {
         this.hint('没有识别到明确的待办，可直接保存笔记。')
       }
-      ForEach(this.tasks, (task: SmartTask) => {
-        Column({ space: 6 }) {
-          Row({ space: 8 }) {
-            Checkbox({ name: task.id }).select(this.selectedTaskIds.includes(task.id))
-              .width(24).height(24).onChange(() => this.toggleTask(task.id))
-            Text(task.title).layoutWeight(1).fontColor(this.palette().inkPrimary).fontSize(14)
-          }.width('100%').constraintSize({ minHeight: 44 })
-          TextInput({ text: task.deadline || '', placeholder: '日期：YYYY-MM-DD；留空放入今天' })
-            .height(44).fontSize(14).fontColor(this.palette().inkPrimary)
-            .backgroundColor(this.palette().surface)
-            .onChange((value: string) => this.editDeadline(task.id, value))
-          this.hint(SmartNoteBuilder.resolveDeadline(task.deadline || '') ||
-            ((task.deadline || '').length > 0 ? '日期待确认；未修改时暂存今天并保留原截止说明。' : '无截止日期，将加入今天的待办。'))
-        }.width('100%').padding(10).borderRadius(10).backgroundColor(this.palette().surfaceSubtle)
-      }, (task: SmartTask) => task.id)
-      if (this.result && this.result.relations.length > 0) {
-        Row({ space: 8 }) {
-          Checkbox({ name: 'relations' }).select(this.includeRelations)
-            .onChange((value: boolean) => { this.includeRelations = value; })
-          Text('附上建议关联').layoutWeight(1).fontColor(this.palette().inkPrimary)
-        }.width('100%').constraintSize({ minHeight: 44 })
-      }
+      ForEach(this.tasks.map((task: SmartTask) => task.id), (taskId: string, index: number) => {
+        this.taskRow(index)
+      }, (taskId: string) => taskId)
+      if (this.pendingDates()) { this.hint('已选待办还有待确认日期，请修改日期或取消勾选。') }
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
@@ -394,7 +408,7 @@ export struct SmartExtractSheet {
     Column() {
       Column({ space: 12 }) {
         Row() {
-          Text('文字识别与智能排版').layoutWeight(1).fontSize(TypographyTokens.TITLE_SUB)
+          Text('文字识别与排版').layoutWeight(1).fontSize(TypographyTokens.TITLE_SUB)
             .fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
           IconButton({ icon: $r('app.media.ic_close'), label: '关闭，保留输入草稿', available: this.step !== 'saving', onAction: () => this.requestClose() })
         }.width('100%')

@@ -13,6 +13,9 @@ export interface NoteItem {
   coverUrl?: string;
   strokes?: string;
   scratchpadStrokes?: string;
+  /** Paper guides are presentation settings, independent of stored ink and source files. */
+  paperStyle?: string;
+  scratchpadPaperStyle?: string;
   pageAnnotations?: string;
   /** 软删除时间戳（毫秒）。存在且 > 0 表示该笔记在回收站中；未删除时省略。 */
   deletedAt?: number;
@@ -24,6 +27,10 @@ export interface NoteItem {
   createdAt?: number;
   /** 更新时间戳（毫秒，功能11 排序用）。旧数据缺失时由 bootstrap 回填。 */
   updatedAt?: number;
+  /** Most recent open/page visit; reading does not change updatedAt. */
+  lastReadAt?: number;
+  /** Last visible page, one-based. Optional for documents without pages. */
+  readPage?: number;
   /** 是否置顶在主页网格顶部。true 表示置顶。 */
   isPinned?: boolean;
   /** 当前运行环境中应用本机副本的完整路径；旧数据可能仍为外部 URI。 */
@@ -36,10 +43,6 @@ export interface NoteItem {
   pageCount?: number;
   /** 文档元数据 JSON（如尺寸、大小、原文件名等） */
   documentMeta?: string;
-  /** 资料的摘要 */
-  aiSummary?: string;
-  /** 用户确认的智能标签列表 */
-  aiTags?: string[];
   /** 已校对的 PDF 页文字，JSON 序列化 PdfTextPage[]；不替换批注正文。 */
   pdfTextJson?: string;
 }

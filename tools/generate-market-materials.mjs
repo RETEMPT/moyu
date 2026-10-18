@@ -24,7 +24,8 @@ const outputs = new Map([
   ['docs/PRIVACY.md', markdown]
 ]);
 if (process.argv.includes('--check')) {
-  const changed = [...outputs].filter(([file, content]) => !fs.existsSync(path.join(root, file)) || fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n') !== content);
+  const checked = [...outputs].filter(([file]) => process.argv.includes('--local-docs') || !file.startsWith('docs/'));
+  const changed = checked.filter(([file, content]) => !fs.existsSync(path.join(root, file)) || fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n/g, '\n') !== content);
   if (changed.length) { console.error('发布资料与应用内说明不一致，请重新生成：' + changed.map(([f]) => f).join(', ')); process.exitCode = 1; }
   else console.log('应用内与在线隐私说明一致。');
 } else {

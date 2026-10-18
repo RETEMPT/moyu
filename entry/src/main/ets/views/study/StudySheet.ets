@@ -16,7 +16,7 @@ export struct StudySheet {
   onSave: (cards: ReviewCard[]) => Promise<void> = async () => {};
   onSource: (noteId: string, pageNumber?: number) => void = () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
   @State noteId: string = '';
   @State tab: number = 0;
@@ -79,7 +79,7 @@ export struct StudySheet {
         } else { Button('先回忆，再查看答案').height(44).width('100%').onClick(() => { this.reveal = true; }) }
         Button(this.dueCards()[0].pageNumber ? `查看原文第 ${this.dueCards()[0].pageNumber} 页` : '查看来源资料')
           .height(44).enabled(!this.busy).onClick(() => { const card = this.dueCards()[0]; this.onClose(); this.onSource(card.noteId, card.pageNumber); })
-      }.padding(16).borderRadius(12).backgroundColor(this.palette().surfaceSubtle).width('100%')
+      }.padding(16).borderRadius(5).backgroundColor(this.palette().surfaceSubtle).width('100%')
     } else {
       Text(this.activeCards().length ? '本轮待复习已完成。下次到期后会出现在这里。' : '还没有题卡，先从一份课程资料创建。')
         .fontSize(15).fontColor(this.palette().inkSecondary).width('100%')
@@ -146,7 +146,7 @@ export struct StudySheet {
         Scroll() {
           Column({ space: 12 }) { if (this.tab === 0) { this.reviewPanel() } else { this.createPanel() } }.width('100%')
         }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
-      }.padding(18).width(this.phone ? '94%' : 620).height('88%').borderRadius(18).backgroundColor(this.palette().surface)
+      }.padding(18).width(this.phone ? '94%' : 620).height('88%').borderRadius(8).backgroundColor(this.palette().surface)
         .onClick(() => {})
     }.width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       .backgroundColor('rgba(0,0,0,0.4)').onClick(() => this.closeRequested())

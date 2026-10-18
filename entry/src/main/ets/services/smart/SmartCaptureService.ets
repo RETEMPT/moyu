@@ -16,6 +16,9 @@ export interface SmartCaptureStorage {
 export class SmartCaptureService {
   static async commit(content: SmartContent, tasks: SmartTask[], storage: SmartCaptureStorage): Promise<NoteItem> {
     const note = SmartNoteBuilder.buildNote(content, tasks);
+    // Validate every chosen date before the first write. Relative dates belong to the capture day,
+    // including when a draft is restored after midnight or a failed save is retried.
+    const plannedTodos = SmartNoteBuilder.buildTodos(tasks, note.id, new Date(), new Date(content.createdAt));
     try {
       await storage.writeDocument(note);
       await storage.writeNotes([note].concat(storage.currentNotes().filter((item: NoteItem) => item.id !== note.id)));
@@ -23,7 +26,7 @@ export class SmartCaptureService {
       throw new Error('笔记保存未成功，排版内容已保留，请重试。');
     }
     const currentTodos = storage.currentTodos();
-    const nextTodos = SmartNoteBuilder.buildTodos(tasks, note.id)
+    const nextTodos = plannedTodos
       .concat(currentTodos.filter((item: TodoItem) => !item.id.startsWith(note.id + '-todo-')));
     try {
       if (tasks.length > 0 || nextTodos.length !== currentTodos.length) {

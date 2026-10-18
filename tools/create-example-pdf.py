@@ -20,9 +20,9 @@ PAGES = [
         ('检查顺序', ['1. 在“示例资料”打开本文件，使用指引可导入额外副本。',
                     '2. 默认只读；点击批注，使用画笔、荧光笔和橡皮擦。',
                     '3. 批注中返回应先回到只读，再次返回才关闭资料。',
-                    '4. 提取并校对文字，然后在墨客引用此文件检索原文。']),
+                    '4. 提取并校对文字，然后在本地搜索中查找并返回原页。']),
         ('空白练习区域', ['在下方书写一段笔记，测试缩放、撤销与重做。']),
-        ('说明', ['此文档为墨语原创测试资料，不包含试卷、私人信息或模型密钥。',
+        ('说明', ['此文档为墨语原创测试资料，不包含试卷或私人信息。',
                 '调试版自动加入一份，发布版不附带阅读测试资料。'])])]
 
 def main():
@@ -31,7 +31,7 @@ def main():
     args = parser.parse_args()
     font = TTFont('FixtureText', args.font)
     text = ''.join(title + badge + ''.join(h + ''.join(lines) for h, lines in sections)
-                   for title, badge, sections in PAGES) + 'FlowMind - 1.0.3'
+                   for title, badge, sections in PAGES) + 'FlowMind - 1.0.5'
     missing = sorted(set(text) - {chr(c) for c in font.face.charToGlyph})
     if missing:
         raise ValueError('Missing test glyphs: ' + ''.join(missing))
@@ -68,7 +68,7 @@ def main():
             pdf.roundRect(48, 124, 499, 164, 12, stroke=1, fill=0)
         pdf.setFillColorRGB(.48, .45, .53)
         pdf.setFont('FixtureText', 10)
-        pdf.drawString(48, 55, 'FlowMind - 1.0.3')
+        pdf.drawString(48, 55, 'FlowMind - 1.0.5')
         pdf.drawRightString(547, 55, str(number) + ' / 2')
         pdf.showPage()
     pdf.save()

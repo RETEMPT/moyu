@@ -10,8 +10,10 @@
   "qualificationEvidence": "",
   "deviceEvidence": "",
   "screenshots": [],
-  "previousReleaseCode": 1001004,
+  "previousReleaseCode": 1001005,
   "signingEvidence": "",
-  "assistantMode": "local-rules-only",
+  "productMode": "local-study",
+  "scopeUpdatedAt": "2026-10-16",
+  "systemOcr": true,
   "featureScopeReviewEvidence": ""
 }

@@ -1,3 +1,4 @@
+import { copyNote } from '../common/utils/NoteSnapshot';
 import { AnimationTokens } from '../common/constants/DesignTokens';
 /**
  * 墨语 (FlowMind) 顶层装配器
@@ -8,7 +9,7 @@ import { AnimationTokens } from '../common/constants/DesignTokens';
  * 布局、样式与响应式决策一律下沉到 views/，此处不再出现大段 UI 构建代码。
  */
 import { common } from '@kit.AbilityKit';
-import { curves, promptAction } from '@kit.ArkUI';
+import { curves, KeyboardAvoidMode, promptAction } from '@kit.ArkUI';
 import { NoteItem } from '../common/types/NoteItem';
 import { ReaderSaveKind } from '../common/types/ReaderSaveKind';
 import { SerialTaskQueue } from '../services/storage/SerialTaskQueue';
@@ -37,8 +38,14 @@ import {
 } from '../common/constants/WorkspaceConstants';
 import { NoteStorageService } from '../services/NoteStorageService';
 import { PdfDocumentService } from '../services/document/PdfDocumentService';
+import { LocalPdfEngineHost } from '../views/reader/pdf/LocalPdfEngineHost';
 import { NoteCoverService } from '../services/NoteCoverService';
 import { NoteSearchService } from '../services/NoteSearchService';
+import { LibraryPolicy } from '../services/library/LibraryPolicy';
+import { LibraryPreferencesService, LibraryPreferences } from '../services/library/LibraryPreferencesService';
+import { ReadingProgressPolicy } from '../services/document/ReadingProgressPolicy';
+import { MemoDraftService } from '../services/library/MemoDraftService';
+import { QuickMemoService, MemoDraft } from '../services/library/QuickMemoService';
 import { TodoStorageService } from '../services/TodoStorageService';
 import { buildSpaces } from '../services/WorkspaceBuilder';
 import { templateBody } from '../common/templates/NoteTemplates';
@@ -47,12 +54,14 @@ import { AppShell } from '../views/layout/AppShell';
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
 import { LibraryWorkspace } from '../views/workspace/LibraryWorkspace';
 import { GraphWorkspace } from '../views/workspace/GraphWorkspace';
-import { HandwritingCanvas } from '../views/reader/HandwritingCanvas';
 import { TodoWorkspace } from '../views/workspace/TodoWorkspace';
+import { TrashedProject } from '../common/types/TrashedProject';
+import { WorkspaceLifecycle, WorkspaceState } from '../services/library/WorkspaceLifecycle';
 import { TrashWorkspace } from '../views/workspace/TrashWorkspace';
 import { FavoriteWorkspace } from '../views/workspace/FavoriteWorkspace';
-import { ReaderWorkspace } from '../views/reader/ReaderWorkspace';
-import { HuaweiDocWorkspace } from '../views/reader/huawei/HuaweiDocWorkspace';
+import { ReaderPairPolicy } from '../services/document/ReaderPairPolicy';
+import { ReaderPairPicker } from '../views/reader/ReaderPairPicker';
+import { ReaderSplitWorkspace } from '../views/reader/ReaderSplitWorkspace';
 import { ContextDrawer, CONTEXT_TAB_OUTLINE } from '../views/context/ContextDrawer';
 import { QuickSearchDialog } from '../views/explore/QuickSearchDialog';
 import { SettingsWorkspace } from '../views/settings/SettingsWorkspace';
@@ -131,6 +140,7 @@ struct Index {
   @State spaces: SpaceFolder[] = [];
   @State notes: NoteItem[] = [];
   @State trash: NoteItem[] = [];
+  @State trashedProjects: TrashedProject[] = [];
   @State linkGraph: LinkGraph = EMPTY_GRAPH;
   @State stats: WorkspaceStats = EMPTY_STATS;
 
@@ -143,7 +153,6 @@ struct Index {
   // ---- 研读态 (速记与 Markdown 随笔) ----
   @State readingOpen: boolean = false;
   @State readingNote: NoteItem = EMPTY_NOTE;
-  @State annotationPaneOpen: boolean = false;
   @State saveState: string = SAVE_IDLE;
   @State outlineItems: MarkdownOutlineItem[] = [];
   @State jumpToken: number = 0;
@@ -151,7 +160,16 @@ struct Index {
 
   // ---- 独立全屏文档态 (PDF / 试卷 / 稿纸手写) ----
   @State fullScreenDocOpen: boolean = false;
+  @State readerTabIds: string[] = [];
+  @State private companionNoteId: string = '';
+  @State private pairPickerSourceId: string = '';
+  @State private pairPickerCloseToken: number = 0;
   @State fullScreenDocNote: NoteItem = EMPTY_NOTE;
+  // Full-screen reader autosave must not rebuild AppShell/Library behind it. The reader owns
+  // its own busy/failed UI; this mirror is only consulted by navigation guards and on exit.
+  private readerSaveState: string = SAVE_IDLE;
+  private readingOpenTimer: number = -1;
+  private pendingReadOpenedAt: Map<string, number> = new Map();
 
   // ---- 全局浮层 ----
   @State searchVisible: boolean = false;
@@ -160,6 +178,7 @@ struct Index {
   @State coverNoteId: string = '';
   @State coverCloseToken: number = 0;
   @State documentBackToken: number = 0;
+  @State readerBackToken: number = 0;
   @State reviewCards: ReviewCard[] = [];
   @State studyVisible: boolean = false;
   @State studyCourse: string = '';
@@ -191,17 +210,32 @@ struct Index {
   @State activeSheet: string = '';
   @State sheetProject: SpaceFolder | null = null;
   @State sheetNote: NoteItem | null = null;
+  @State private sheetCloseToken: number = 0;
 
   private storage: NoteStorageService = new NoteStorageService();
   private readerCommits: ReaderCommitService = new ReaderCommitService();
+  private libraryPreferences: LibraryPreferencesService = new LibraryPreferencesService();
+  @State private libraryDisplay: LibraryPreferences = { view: 'shelf', sort: 'update', ascending: false };
+  @State private libraryDisplayBusy: boolean = false;
+  private memoDraftStore: MemoDraftService = new MemoDraftService();
+  private memoDraftId: string = `memo_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
+  private memoDraftRevision: number = 0;
+  private memoDraftTimer: number = -1;
+  @State private memoDraft: string = '';
+  @State private memoDraftStatus: string = '';
+  @State private memoSaving: boolean = false;
+  @State private memoReady: boolean = false;
+  @State private memoDateFilter: string = '';
+  @State private memoTagFilter: string = '';
   private searchService: NoteSearchService = new NoteSearchService();
+  private graphRequestId: number = 0;
   private todoStorage: TodoStorageService = new TodoStorageService();
   private toastTimer: number = -1;
   private bootstrapped: boolean = false;
+  @State private workspaceLoading: boolean = true;
 
   /**
-   * 最近一次可撤销的删除操作。删除是本地即刻生效、且会连带清掉沙箱 .md 的破坏性动作，
-   * 只有确认弹窗而没有后悔药的话，用户误触一次就永久丢数据。这里保留一个短时句柄，
+   * 最近一次可撤销的回收操作。原件在软删除阶段保留，状态事务成功后提供短时撤销句柄，
    * 由 Toast 上的「撤销」按钮触发还原；Toast 消失时句柄一并失效。
    */
   private undoAction: (() => void) | null = null;
@@ -220,12 +254,14 @@ struct Index {
   }
 
   onBackPress(): boolean {
+    if (this.pairPickerSourceId) { this.pairPickerCloseToken++; return true; }
     if (this.privacyVisible) { this.privacyVisible = false; return true; }
     if (this.backupVisible) { this.backupCloseToken++; return true; }
     if (this.studyVisible) { this.studyCloseToken++; return true; }
     if (this.pdfExtractNoteId) { this.pdfExtractCloseToken++; return true; }
     if (this.coverNoteId.length > 0) { this.coverCloseToken++; return true; }
-    if (this.activeSheet.length > 0) { this.activeSheet = ''; return true; }
+    if (this.activeSheet === 'rename_note' || this.activeSheet === 'move_note') { this.sheetCloseToken++; return true; }
+    if (this.activeSheet.length > 0) { this.closeSheet(); return true; }
     if (this.createProjectOpen) { this.createProjectOpen = false; return true; }
     if (this.pendingCreate !== null) { if (!this.noteCreateBusy) { this.pendingCreate = null; } return true; }
     if (this.smartExtractVisible) { this.smartExtractCloseToken++; return true; }
@@ -233,23 +269,37 @@ struct Index {
     if (this.fullScreenDocOpen) { this.documentBackToken++; return true; }
     if (this.singleColumn && this.contextPanelOpen) { this.contextPanelOpen = false; return true; }
     if (this.singleColumn && !this.sidebarCollapsed) { this.sidebarCollapsed = true; return true; }
-    if (this.readingOpen) { this.closeReading(); return true; }
+    if (this.readingOpen) { this.readerBackToken++; return true; }
     if (this.activeNav === NAV_SETTINGS) { this.settingsBackToken++; return true; }
     if (this.activeNav !== NAV_HOME) { this.activeNav = NAV_HOME; this.activeSpaceId = ''; return true; }
     return false;
   }
 
   private closeReading(): void {
-    if (this.saveState === SAVE_SAVING || this.saveState === SAVE_FAILED) {
+    if (this.saveState !== SAVE_IDLE) {
       this.notify(this.saveState === SAVE_SAVING ? '正在保存，请稍候再返回' : '保存失败，请先重试保存');
       return;
     }
     this.readingOpen = false;
     this.activeNoteId = '';
     this.outlineItems = [];
+    this.flushReadingOpens();
+    // Reader autosave mutates the shared note in place; refresh the collection identity once
+    // so the library/graph see the latest body and metadata.
+    this.notes = this.notes.slice();
+  }
+
+  private previousKeyboardMode: KeyboardAvoidMode = KeyboardAvoidMode.OFFSET;
+
+  aboutToDisappear(): void {
+    this.getUIContext().setKeyboardAvoidMode(this.previousKeyboardMode);
+    if (this.readingOpenTimer !== -1) { clearTimeout(this.readingOpenTimer); this.readingOpenTimer = -1; }
+    this.flushReadingOpens();
   }
 
   aboutToAppear(): void {
+    this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
+    this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
     if (!this.bootstrapped) {
       this.bootstrapped = true;
       this.bootstrap();
@@ -261,11 +311,27 @@ struct Index {
   // ==================================================================
 
   private async bootstrap(): Promise<void> {
+    try { await this.loadWorkspace(); }
+    catch { this.notify('本机资料初始化未完成，请保留原数据并重启重试'); }
+    finally { this.workspaceLoading = false; }
+  }
+
+  private async loadWorkspace(): Promise<void> {
     const context: common.UIAbilityContext = this.getAbilityContext();
     PdfDocumentService.getInstance().bindContext(context);
+    try { this.libraryDisplay = await this.libraryPreferences.load(context); }
+    catch { this.notify('资料库显示设置读取失败，已使用默认显示；原设置已保留'); }
+    let draftReady: boolean = true;
+    let notesReady: boolean = false;
     try {
+      const draft = await this.memoDraftStore.load(context);
+      if (draft) { this.memoDraft = draft.content; this.memoDraftId = draft.id; this.memoDraftStatus = draft.content ? '已恢复本机草稿' : ''; }
+    } catch { draftReady = false; this.memoDraftStatus = '草稿读取失败，原数据已保留'; }
+    try {
+      await this.storage.enableRelational(context);
       const loaded: NoteItem[] = await this.storage.load(context, []);
       this.notes = loaded;
+      notesReady = true;
       try { this.notes = await this.storage.ensureDebugPdf(context, loaded); }
       catch (error) {
         console.warn(`内置阅读示例加载失败: ${JSON.stringify(error)}`);
@@ -288,12 +354,13 @@ struct Index {
     this.backfillNoteMeta();
     this.rebuildSpaces();
     this.activeSpaceId = '';
-    this.persistSnapshot();
+    await this.persistSnapshot();
     this.refreshGraph();
     await this.loadTrash(context);
     await this.loadTodos(context);
     try { this.reviewCards = await this.reviewStorage.load(context); }
     catch { this.notify('复习记录读取失败，原数据已保留'); }
+    this.memoReady = draftReady && notesReady;
   }
 
   /**
@@ -331,12 +398,13 @@ struct Index {
   private async loadTrash(context: common.UIAbilityContext): Promise<void> {
     try {
       const stored: NoteItem[] = await this.storage.loadTrash(context);
+      this.trashedProjects = await this.storage.loadTrashedProjects(context);
       const now: number = Date.now();
       const keep: NoteItem[] = [];
       const expired: NoteItem[] = [];
       for (let i = 0; i < stored.length; i++) {
         const rawDeletedAt: number | undefined = stored[i].deletedAt;
-        const deletedAt: number = rawDeletedAt === undefined ? now : rawDeletedAt;
+        const deletedAt: number = Number.isFinite(rawDeletedAt) && (rawDeletedAt || 0) > 0 ? rawDeletedAt! : now;
         const ageDays: number = (now - deletedAt) / (24 * 60 * 60 * 1000);
         if (ageDays > TRASH_RETENTION_DAYS) {
           expired.push(stored[i]);
@@ -344,21 +412,21 @@ struct Index {
           keep.push(stored[i]);
         }
       }
-      for (let i = 0; i < expired.length; i++) {
-        try {
-          await this.storage.delete(context, expired[i].id, expired[i].sourceUri || '', expired[i].coverUrl || '');
-        } catch (error) {
-          keep.push(expired[i]);
-          console.error(`超期笔记文件清理失败 (${expired[i].id}): ${JSON.stringify(error)}`);
-        }
+      const retainedIds = new Set(keep.map((note: NoteItem) => note.id));
+      const groups = this.trashedProjects.filter((group: TrashedProject) =>
+        now - group.deletedAt <= TRASH_RETENTION_DAYS * 86400000 || group.noteIds.some((id: string) => retainedIds.has(id)));
+      if (expired.length > 0 || groups.length !== this.trashedProjects.length) {
+        await this.storage.saveWorkspace(context, this.notes, this.customProjects, keep, groups, expired);
       }
-      this.trash = keep;
-      if (expired.length > 0) {
-        await this.persistTrash();
-      }
+      this.trash = keep; this.trashedProjects = groups;
+      try {
+        const remaining = await this.storage.cleanupPendingDeletions(context, this.notes.concat(keep));
+        if (remaining > 0) { this.notify('部分过期文件尚未清理，将在下次启动时重试'); }
+      } catch { this.notify('待清理文件尚未处理，已保留清理记录供下次启动重试'); }
     } catch (error) {
       console.error(`回收站加载失败: ${JSON.stringify(error)}`);
       this.trash = [];
+      this.notify('回收站读取或清理失败，原记录已保留，请检查存储后重试');
     }
   }
 
@@ -371,17 +439,6 @@ struct Index {
       console.error(`待办数据加载失败: ${JSON.stringify(error)}`);
       this.todos = [];
       this.dayNotes = [];
-    }
-  }
-
-  /** 把项目列表落盘。所有增删改项目的操作都必须调它，否则重启即丢。 */
-  private async persistProjects(): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    try {
-      await this.storage.saveProjects(context, this.customProjects);
-    } catch (error) {
-      console.error(`项目列表保存失败: ${JSON.stringify(error)}`);
-      this.notify('项目列表保存失败');
     }
   }
 
@@ -404,12 +461,17 @@ struct Index {
   }
 
   private async refreshGraph(): Promise<void> {
+    const id = ++this.graphRequestId; const notes = this.notes;
+    const cancelled = (): boolean => id !== this.graphRequestId || notes !== this.notes;
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     try {
-      this.linkGraph = await this.searchService.buildLinkGraph(context, this.notes);
+      const graph = await this.searchService.buildLinkGraph(context, notes, cancelled);
+      if (cancelled()) { return; }
+      this.linkGraph = graph;
     } catch (error) {
+      if (cancelled()) { return; }
       console.error(`双链图谱构建失败: ${JSON.stringify(error)}`);
-      this.linkGraph = EMPTY_GRAPH;
+      this.notify('图谱暂时无法更新，已保留上次结果。请检查资料后重试。');
     }
     this.refreshStats();
   }
@@ -438,31 +500,19 @@ struct Index {
   // ==================================================================
 
   private filteredNotes(): NoteItem[] {
-    const keyword: string = this.searchText.trim().toLowerCase();
-    const spaceName: string = this.activeSpaceName();
-    const result: NoteItem[] = [];
-    for (let i = 0; i < this.notes.length; i++) {
-      const note: NoteItem = this.notes[i];
-      const type = note.type.toLowerCase();
-      const filterType = type === 'handwriting' || type === 'canvas' || type === '白板' || type === '白纸笔记' || type === '稿纸'
-        ? '手写' : type === 'doc' || type === 'docx' || type === 'word' ? 'Word' : type === 'pdf' ? 'PDF' : type === 'markdown' ? 'Markdown' : note.type;
-      if (this.activeFilter !== FILTER_ALL && filterType !== this.activeFilter) {
-        continue;
-      }
-      if (spaceName.length > 0 && note.category !== spaceName) {
-        continue;
-      }
-      if (keyword.length > 0) {
-        const hit: boolean = note.title.toLowerCase().includes(keyword)
-          || note.previewText.toLowerCase().includes(keyword)
-          || note.tag.toLowerCase().includes(keyword);
-        if (!hit) {
-          continue;
-        }
-      }
-      result.push(note);
+    return LibraryPolicy.query(this.notes, { keyword: this.searchText, category: this.activeSpaceName(), type: this.activeFilter });
+  }
+
+  private async updateLibraryDisplay(view: string, sort: string, ascending: boolean): Promise<void> {
+    if (this.libraryDisplayBusy) { return; }
+    this.libraryDisplayBusy = true;
+    const next: LibraryPreferences = { view, sort, ascending };
+    try {
+      await this.libraryPreferences.save(this.getAbilityContext(), next); this.libraryDisplay = next;
+      if (view === 'timeline') { this.activeFilter = 'Markdown'; }
     }
-    return result;
+    catch { this.notify('资料库显示设置未能保存，请重试'); }
+    finally { this.libraryDisplayBusy = false; }
   }
 
   private activeSpaceName(): string {
@@ -472,6 +522,57 @@ struct Index {
       }
     }
     return '';
+  }
+
+  private changeMemoDraft(value: string): void {
+    if (!this.memoReady || this.memoSaving) { return; }
+    this.memoDraft = value.slice(0, 12000); this.memoDraftRevision++;
+    this.memoDraftStatus = '草稿保存中';
+    if (this.memoDraftTimer !== -1) { clearTimeout(this.memoDraftTimer); }
+    this.memoDraftTimer = setTimeout(() => { this.persistMemoDraft().catch(() => {}); }, 500);
+  }
+
+  private async persistMemoDraft(): Promise<void> {
+    if (this.memoDraftTimer !== -1) { clearTimeout(this.memoDraftTimer); this.memoDraftTimer = -1; }
+    const revision = this.memoDraftRevision;
+    const draft: MemoDraft = { id: this.memoDraftId, content: this.memoDraft };
+    try {
+      await this.memoDraftStore.save(this.getAbilityContext(), draft);
+      if (revision === this.memoDraftRevision) { this.memoDraftStatus = draft.content ? '草稿已保存到本机' : ''; }
+    } catch {
+      if (revision === this.memoDraftRevision) { this.memoDraftStatus = '草稿未能保存'; }
+      throw new Error('草稿保存失败');
+    }
+  }
+
+  onPageHide(): void {
+    if (this.memoDraftTimer !== -1) { this.persistMemoDraft().catch(() => {}); }
+  }
+
+  private async saveQuickMemo(): Promise<void> {
+    if (!this.memoReady || this.memoSaving || !this.memoDraft.trim()) { return; }
+    this.memoSaving = true;
+    const draft: MemoDraft = { id: this.memoDraftId, content: this.memoDraft };
+    try {
+      await this.persistMemoDraft();
+      await this.noteMutationQueue.run<void>(() => QuickMemoService.commit(draft, {
+        notes: () => this.notes,
+        create: async (note: NoteItem) => { await this.storage.create(this.getAbilityContext(), note); },
+        saveNotes: (notes: NoteItem[]) => this.storage.save(notes),
+        publish: (notes: NoteItem[]) => { this.notes = notes; this.rebuildSpaces(); this.refreshGraph(); }
+      }));
+      this.memoDateFilter = ''; this.memoTagFilter = '';
+      this.memoDraft = ''; this.memoDraftRevision++;
+      this.memoDraftId = `memo_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
+      try { await this.persistMemoDraft(); this.memoDraftStatus = '已保存为本机笔记'; }
+      catch { this.notify('笔记已保存，草稿清理未完成；重试不会重复创建原记录'); }
+    } catch (error) { this.notify(error instanceof Error ? error.message : '记录保存失败，草稿已保留'); }
+    finally { this.memoSaving = false; }
+  }
+
+  private openMemoTag(tag: string): void {
+    this.searchText = '#' + tag; this.activeFilter = FILTER_ALL; this.activeSpaceId = '';
+    this.activeNav = NAV_LIBRARY;
   }
 
   private currentBacklinks(): Backlink[] {
@@ -509,29 +610,36 @@ struct Index {
     return [this.activeNav];
   }
 
-  /** Persist the image and metadata before publishing a changed cover. */
+  /** Prepare outside the queue, then merge the cover into the latest committed note. */
   private async updateNoteCover(noteId: string, uri: string): Promise<void> {
-    const note = this.notes.find((item: NoteItem) => item.id === noteId);
-    if (!note) { throw new Error('笔记已被移走，请重新打开'); }
     const context = this.getAbilityContext();
     const source = await NoteCoverService.prepare(context, noteId, uri);
-    const previous = note.coverUrl || '';
-    const updated = JSON.parse(JSON.stringify(note)) as NoteItem;
-    updated.coverUrl = source;
-    updated.updatedAt = Date.now(); updated.updateTime = '刚刚';
-    const next = this.notes.map((item: NoteItem) => item.id === noteId ? updated : item);
-    try { await this.storage.save(next); } catch {
-      if (source !== previous) { await NoteCoverService.removeManaged(context, source); }
+    let previous = '';
+    try {
+      await this.noteMutationQueue.run<void>(async () => {
+        const note = this.findNoteById(noteId);
+        if (!note) { throw new Error('资料已移走，请重新打开'); }
+        previous = note.coverUrl || '';
+        const updated = copyNote(note); updated.coverUrl = source;
+        updated.updatedAt = Date.now(); updated.updateTime = '刚刚';
+        await this.saveLinkedNote(updated);
+      });
+    } catch {
+      if (source && !this.notes.concat(this.trash).some((item: NoteItem) => item.coverUrl === source)) {
+        try { await NoteCoverService.removeManaged(context, source); } catch { /* Preserve the save error. */ }
+      }
       throw new Error('封面未能保存，请重试');
     }
-    this.notes = next;
-    this.rebuildSpaces();
-    if (this.readingNote.id === noteId) { this.readingNote = updated; }
-    if (this.fullScreenDocNote.id === noteId) { this.fullScreenDocNote = updated; }
     if (source !== previous && !this.notes.concat(this.trash).some((item: NoteItem) => item.coverUrl === previous)) {
       try { await NoteCoverService.removeManaged(context, previous); } catch { console.warn('旧封面清理失败'); }
     }
-    this.notify(source.length > 0 ? '封面已保存' : '封面已移除');
+    this.notify(source ? '封面已保存' : '封面已移除');
+  }
+
+  private openNoteMenu(note: NoteItem): void {
+    const current = this.notes.find((item: NoteItem) => item.id === note.id && !item.deletedAt);
+    if (!current) { this.notify('资料已移走，请刷新后重试'); return; }
+    this.sheetNote = current; this.sheetProject = null; this.activeSheet = 'note_menu';
   }
 
   closeSheet(): void {
@@ -619,20 +727,16 @@ struct Index {
       })
     } else if (this.activeSheet === 'rename_note' && this.sheetNote !== null) {
       RenameNoteSheet({
-        note: this.sheetNote,
+        note: this.sheetNote, closeToken: this.sheetCloseToken,
         onClose: () => this.closeSheet(),
-        onRenameNote: (note: NoteItem, newTitle: string) => {
-          this.commitRename(note, newTitle);
-        }
+        onRenameNote: (note: NoteItem, newTitle: string) => this.commitRename(note, newTitle)
       })
     } else if (this.activeSheet === 'move_note' && this.sheetNote !== null) {
       MoveNoteSheet({
-        note: this.sheetNote,
-        categories: this.spaces.map((s: SpaceFolder) => s.name),
+        note: this.sheetNote, closeToken: this.sheetCloseToken,
+        categories: this.allCategories(),
         onClose: () => this.closeSheet(),
-        onMoveNote: (note: NoteItem, category: string) => {
-          this.commitMove(note, category);
-        }
+        onMoveNote: (note: NoteItem, category: string) => this.commitMove(note, category)
       })
     }
   }
@@ -642,10 +746,10 @@ struct Index {
     if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.onBreadcrumbClick(index, segment)); return; }
     if (this.readingOpen || this.fullScreenDocOpen) {
       if (index === 0) {
+        if ((this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) { this.notify('请先完成或重试资料保存'); return; }
         // 点击分类名：关闭当前文档，回到资料库并选中该项目
-        this.readingOpen = false;
-        this.fullScreenDocOpen = false;
-        this.activeNoteId = '';
+        if (this.readingOpen) { this.readingOpen = false; this.activeNoteId = ''; this.notes = this.notes.slice(); }
+        else { this.closeFullScreenReader(); }
         this.activeNav = NAV_LIBRARY;
         // 尝试选中对应项目
         for (let i = 0; i < this.spaces.length; i++) {
@@ -733,22 +837,81 @@ struct Index {
   private isHeavyDocument(note: NoteItem): boolean {
     const t = note.type.toLowerCase();
     const cat = note.category;
-    return t === 'pdf' || t === 'doc' || t === 'docx' || t === 'canvas' || t === '白板' ||
+    return note.sourceType === 'pdf' || note.sourceType === 'image' || t === 'image' || t === 'pdf' || t === 'doc' || t === 'docx' || t === 'canvas' || t === '白板' ||
       t === '白纸笔记' || t === 'handwriting' || t === '稿纸' || cat === '试卷题库' ||
       note.id === 'note-seed-exam' || note.id === 'note-seed-pdf' || note.id === 'note-seed-handwriting';
   }
 
-  private openNote(note: NoteItem): void {
-    if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.openNote(note)); return; }
+  /**
+   * Opening a document is a navigation action, not an edit. Persist the "recently opened"
+   * timestamp after a short idle window and coalesce rapid tab clicks into one snapshot write
+   * instead of blocking the first PDF parse behind a full-library save.
+   */
+  private markReadingOpened(noteId: string): void {
+    this.pendingReadOpenedAt.set(noteId, Date.now());
+    if (this.readingOpenTimer !== -1) { clearTimeout(this.readingOpenTimer); }
+    this.readingOpenTimer = setTimeout(() => {
+      this.readingOpenTimer = -1;
+      this.flushReadingOpens();
+    }, 1200);
+  }
+
+  private flushReadingOpens(): void {
+    if (this.pendingReadOpenedAt.size === 0) { return; }
+    const pending: Map<string, number> = new Map();
+    for (const noteId of this.pendingReadOpenedAt.keys()) {
+      pending.set(noteId, this.pendingReadOpenedAt.get(noteId) || 0);
+    }
+    this.pendingReadOpenedAt.clear();
+    this.noteMutationQueue.run<void>(async () => {
+      let changed = false;
+      for (const noteId of Array.from(pending.keys())) {
+        const note = this.notes.find((item: NoteItem) => item.id === noteId);
+        const openedAt = pending.get(noteId) || 0;
+        if (note !== undefined && openedAt > (note.lastReadAt || 0)) {
+          note.lastReadAt = openedAt;
+          changed = true;
+        }
+      }
+      if (changed) { await this.storage.save(this.notes); }
+    }).catch(() => this.notify('阅读记录未能保存，请检查存储后重试'));
+  }
+
+  private closeFullScreenReader(): void {
+    this.flushReadingOpens();
+    this.readerSaveState = SAVE_IDLE;
+    this.saveState = SAVE_IDLE;
+    this.companionNoteId = '';
+    this.fullScreenDocOpen = false;
+    this.activeNoteId = '';
+    // Refresh collection identity once on exit so the library sees the annotations/readPage
+    // written through the in-place reader publish path.
+    this.notes = this.notes.slice();
+  }
+
+  private openNote(note: NoteItem, preserveCompanion: boolean = false): void {
+    if ((this.readingOpen || this.fullScreenDocOpen) && (this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) {
+      this.notify('请先完成或重试当前资料保存'); return;
+    }
+    if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.openNote(note, preserveCompanion)); return; }
     const current = this.notes.find((item: NoteItem) => item.id === note.id);
     if (!current) { this.notify('笔记已被移走'); return; }
     note = current;
-    this.sourcePage = 1;
+    if (!preserveCompanion || !ReaderPairPolicy.isReadable(note) || note.id === this.companionNoteId) { this.companionNoteId = ''; }
+    this.sourcePage = ReadingProgressPolicy.page(note);
+    if (!WorkspaceNotePolicy.isFreeCanvas(note)) {
+      if (this.markReadingOpened !== undefined) { this.markReadingOpened(note.id); }
+      else if (this.recordReading !== undefined) { this.recordReading(note.id).catch(() => {}); }
+    }
     this.dismissNavigationOverlay();
+    if (!WorkspaceNotePolicy.isFreeCanvas(note) && !this.readerTabIds.includes(note.id)) { this.readerTabIds = [...this.readerTabIds, note.id].slice(-8); }
     if (this.isHeavyDocument(note)) {
       // PDF / 试卷 / 稿纸手写：进入独立全屏华为风阅读器工作台
+      this.readerSaveState = SAVE_IDLE;
       this.fullScreenDocNote = note;
-      this.fullScreenDocOpen = true;
+      animateTo({ duration: WorkspaceNotePolicy.isFreeCanvas(note) ? AnimationTokens.DURATION_FAST : AnimationTokens.DURATION_PAGE_TRANSITION, curve: AnimationTokens.CURVE_STANDARD }, () => {
+        this.fullScreenDocOpen = true;
+      });
       this.activeNoteId = note.id;
       this.readingOpen = false;
       return;
@@ -759,18 +922,83 @@ struct Index {
     this.activeNoteId = note.id;
     this.outlineItems = [];
     this.saveState = SAVE_IDLE;
-    this.annotationPaneOpen = false;
+    this.readerSaveState = SAVE_IDLE;
     this.fullScreenDocOpen = false;
+    PdfDocumentService.getInstance().clearPageCache();
+    this.notes = this.notes.slice();
   }
 
-  private openNoteById(noteId: string): void {
+  private openNoteById(noteId: string, preserveCompanion: boolean = false): void {
     for (let i = 0; i < this.notes.length; i++) {
       if (this.notes[i].id === noteId) {
-        this.openNote(this.notes[i]);
+        this.openNote(this.notes[i], preserveCompanion);
         return;
       }
     }
     this.notify('目标笔记不存在');
+  }
+
+  private openPairPicker(sourceId: string): void {
+    if ((this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) { this.notify('请先完成或重试当前资料保存'); return; }
+    const source = this.notes.find((note: NoteItem) => note.id === sourceId);
+    if (!source || !ReaderPairPolicy.isReadable(source)) { this.notify('当前资料格式暂不支持分屏'); return; }
+    this.pairPickerSourceId = sourceId;
+  }
+
+  private async selectReaderPair(otherId: string, requestedSourceId: string = ''): Promise<boolean> {
+    if ((this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) { throw new Error('当前资料尚未保存，请先完成保存'); }
+    const sourceId = requestedSourceId || this.pairPickerSourceId;
+    const source = this.notes.find((note: NoteItem) => note.id === sourceId);
+    const other = this.notes.find((note: NoteItem) => note.id === otherId);
+    if (!source || !other) { throw new Error('资料已移走，请重新选择'); }
+    const pair = ReaderPairPolicy.pair(source, other);
+    await this.recordReading(pair.secondaryId);
+    const current = this.notes.find((note: NoteItem) => note.id === pair.primaryId);
+    const secondary = this.notes.find((note: NoteItem) => note.id === pair.secondaryId);
+    if (!current || !secondary) { throw new Error('资料已移走，请重新选择'); }
+    ReaderPairPolicy.pair(current, secondary);
+    if ((this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE || (requestedSourceId ? (this.readingOpen ? this.readingNote.id : this.fullScreenDocNote.id) !== sourceId : this.pairPickerSourceId !== sourceId)) {
+      throw new Error('阅读状态已改变，请重新选择');
+    }
+    if ((!this.fullScreenDocOpen || this.fullScreenDocNote.id !== current.id) && (!this.readingOpen || this.readingNote.id !== current.id)) { this.openNote(current); }
+    if ((!this.fullScreenDocOpen || this.fullScreenDocNote.id !== current.id) && (!this.readingOpen || this.readingNote.id !== current.id)) { return false; }
+    this.readerTabIds = ReaderPairPolicy.rememberTabs(this.readerTabIds, current.id, secondary.id);
+    this.companionNoteId = secondary.id;
+    return true;
+  }
+
+  private async splitReaderDocument(id: string): Promise<void> {
+    try { await this.selectReaderPair(id, this.readingOpen ? this.readingNote.id : this.fullScreenDocNote.id); }
+    catch (error) { this.notify(error instanceof Error ? error.message : '分屏未能打开，请重试'); }
+  }
+
+  private pairedDocument(): NoteItem | null {
+    return this.notes.find((note: NoteItem) => note.id === this.companionNoteId && note.id !== this.activeNoteId && ReaderPairPolicy.isReadable(note)) || null;
+  }
+
+  private readerDocuments(): NoteItem[] {
+    const tabs: NoteItem[] = [];
+    for (const id of this.readerTabIds) {
+      const note = this.notes.find((item: NoteItem) => item.id === id && !item.deletedAt);
+      if (note && ReaderPairPolicy.isReadable(note)) { tabs.push(note); }
+    }
+    return tabs;
+  }
+
+  private closeReaderTab(id: string): void {
+    if ((this.readingOpen || this.fullScreenDocOpen) && ((this.readingOpen ? this.readingNote.id : this.fullScreenDocNote.id) === id || this.companionNoteId === id) && (this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) {
+      this.notify('请先完成或重试当前资料保存'); return;
+    }
+    const index = this.readerTabIds.indexOf(id);
+    this.readerTabIds = this.readerTabIds.filter((value: string) => value !== id);
+    if (this.companionNoteId === id) { this.companionNoteId = ''; }
+    if ((this.readingOpen ? this.readingNote.id : this.fullScreenDocNote.id) !== id) { return; }
+    const tabs = this.readerDocuments();
+    const next = tabs[Math.max(0, Math.min(index, tabs.length - 1))];
+    if (next) { this.openNote(next, true); }
+    else if (this.readingOpen) { this.closeReading(); }
+    else if (this.closeFullScreenReader !== undefined) { this.closeFullScreenReader(); }
+    else { this.fullScreenDocOpen = false; this.readingOpen = false; this.activeNoteId = ''; this.companionNoteId = ''; }
   }
 
   private openStudySource(noteId: string, pageNumber?: number, line?: number): void {
@@ -786,14 +1014,11 @@ struct Index {
   }
 
   private async savePdfText(pages: PdfTextPage[]): Promise<void> {
-    const note = this.notes.find((item: NoteItem) => item.id === this.pdfExtractNoteId);
-    if (!note) { throw new Error('资料已移除'); }
-    const previous = note.pdfTextJson;
-    note.pdfTextJson = StudySourceService.merge(note, pages);
-    try { await this.storage.save(this.notes); }
-    catch { note.pdfTextJson = previous; throw new Error('文字索引保存失败'); }
-    this.notes = this.notes.slice();
-    if (this.fullScreenDocNote.id === note.id) { this.fullScreenDocNote = note; }
+    const id = this.pdfExtractNoteId;
+    const captured: PdfTextPage[] = pages.map((page: PdfTextPage): PdfTextPage => ({ pageNumber: page.pageNumber,
+      text: page.text, method: page.method, extractedAt: page.extractedAt }));
+    const saved = await this.updateNoteMetadata(id, (note: NoteItem) => { note.pdfTextJson = StudySourceService.merge(note, captured); });
+    if (!saved) { throw new Error('校对文字保存失败，输入已保留，请重试'); }
     this.notify('已保存校对文字，可用于搜索与课程自测');
   }
 
@@ -845,6 +1070,7 @@ struct Index {
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const now: Date = new Date();
     const category: string = projectName.trim();
+    const projectId = this.spaces?.find((space: SpaceFolder) => space.name === category)?.id || '';
     const cleanTitle = title.trim() || '未命名笔记';
     const handwriting = type.toLowerCase() === 'canvas' || type.toLowerCase() === 'handwriting';
     const note: NoteItem = {
@@ -863,10 +1089,13 @@ struct Index {
       updatedAt: now.getTime()
     };
     try {
-      await this.storage.create(context, note);
-      const next = [note].concat(this.notes);
-      await this.storage.save(next);
-      this.notes = next;
+      await this.noteMutationQueue.run<void>(async () => {
+        if (projectId) { note.category = this.spaces.find((space: SpaceFolder) => space.id === projectId)?.name || CATEGORY_UNFILED; }
+        await this.storage.create(context, note);
+        const next = [note].concat(this.notes);
+        await this.storage.save(next);
+        this.notes = next;
+      });
     } catch (error) {
       console.error(`Markdown 正文创建失败: ${JSON.stringify(error)}`);
       this.noteCreateError = '创建失败，请检查存储后重试';
@@ -904,9 +1133,12 @@ struct Index {
     };
     this.projectCreateBusy = true;
     try {
-      const next = [...this.customProjects, newProj];
-      await this.storage.saveProjects(this.getAbilityContext(), next);
-      this.customProjects = next;
+      await this.noteMutationQueue.run<void>(async () => {
+        if (this.customProjects.some((project: SpaceFolder) => project.name === trimmed)) { throw new Error('项目名称已存在'); }
+        const next = [...this.customProjects, newProj];
+        await this.storage.saveProjects(this.getAbilityContext(), next);
+        this.customProjects = next;
+      });
       this.rebuildSpaces();
       this.notify(`已创建项目「${trimmed}」`);
       return true;
@@ -914,85 +1146,59 @@ struct Index {
     finally { this.projectCreateBusy = false; }
   }
 
-  private renameProject(oldName: string, newName: string): void {
-    const trimmed = newName.trim();
-    if (trimmed.length === 0 || trimmed === oldName) {
-      return;
-    }
-    for (let i = 0; i < this.customProjects.length; i++) {
-      if (this.customProjects[i].name === oldName) {
-        this.customProjects[i].name = trimmed;
-        this.customProjects[i].id = `space-${trimmed}`;
-        break;
-      }
-    }
-    this.customProjects = this.customProjects.slice();
-    for (let i = 0; i < this.notes.length; i++) {
-      if (this.notes[i].category === oldName) {
-        this.notes[i].category = trimmed;
-      }
-    }
-    this.notes = this.notes.slice();
-    this.persistSnapshot();
-    this.rebuildSpaces();
-    this.persistProjects();
-    this.notify(`已将项目重命名为「${trimmed}」`);
+  private workspaceState(): WorkspaceState {
+    return { notes: this.notes, projects: this.customProjects, trash: this.trash, trashedProjects: this.trashedProjects };
   }
 
-  private deleteProject(projectName: string): void {
-    // 删除项目会连带把下辖资料改判到「未分类」。撤销必须把这两件事一起还原，
-    // 只还原项目壳子的话，原先归属它的笔记会散落在「未分类」里回不来。
-    const removedProjects: SpaceFolder[] = this.customProjects.filter(
-      (p: SpaceFolder) => p.name === projectName);
-    const movedNoteIds: string[] = [];
-    for (let i = 0; i < this.notes.length; i++) {
-      if (this.notes[i].category === projectName) {
-        movedNoteIds.push(this.notes[i].id);
-      }
+  private async commitWorkspace(next: WorkspaceState, purgeCandidates: NoteItem[] = []): Promise<void> {
+    await this.storage.saveWorkspace(this.getAbilityContext(), next.notes, next.projects, next.trash, next.trashedProjects, purgeCandidates);
+    this.notes = next.notes; this.customProjects = next.projects;
+    this.trash = next.trash; this.trashedProjects = next.trashedProjects;
+    this.readerTabIds = this.readerTabIds.filter((id: string) => next.notes.some((note: NoteItem) => note.id === id));
+    if (!next.notes.some((note: NoteItem) => note.id === this.companionNoteId)) { this.companionNoteId = ''; }
+    const reading = next.notes.find((note: NoteItem) => note.id === this.readingNote.id);
+    const document = next.notes.find((note: NoteItem) => note.id === this.fullScreenDocNote.id);
+    if (reading) { this.readingNote = reading; }
+    if (document) { this.fullScreenDocNote = document; }
+    if (!this.notes.some((note: NoteItem) => note.id === this.activeNoteId)) {
+      this.readingOpen = false; this.fullScreenDocOpen = false; this.activeNoteId = ''; this.outlineItems = [];
+      this.readerSaveState = SAVE_IDLE;
     }
-
-    this.customProjects = this.customProjects.filter((p: SpaceFolder) => p.name !== projectName);
-    // 下辖笔记移至未分类
-    for (let i = 0; i < this.notes.length; i++) {
-      if (this.notes[i].category === projectName) {
-        this.notes[i].category = '未分类';
-      }
-    }
-    this.notes = this.notes.slice();
-    this.persistSnapshot();
     this.rebuildSpaces();
-    this.persistProjects();
-
-    const message: string = movedNoteIds.length > 0
-      ? `已删除项目「${projectName}」，${movedNoteIds.length} 篇资料归入未分类`
-      : `已删除项目「${projectName}」`;
-    this.notifyUndoable(message, () => {
-      this.restoreProject(removedProjects, movedNoteIds, projectName);
-    });
+    if (!this.spaces.some((space: SpaceFolder) => space.id === this.activeSpaceId)) { this.activeSpaceId = ''; }
+    this.refreshGraph();
   }
 
-  /** 撤销删除项目：还原项目壳子，并把原先归属它的笔记改回该分类。 */
-  private restoreProject(projects: SpaceFolder[], noteIds: string[], projectName: string): void {
-    if (projects.length === 0) {
-      this.notify('项目已不存在');
-      return;
-    }
-    const idSet: Set<string> = new Set(noteIds);
-    for (let i = 0; i < this.notes.length; i++) {
-      if (idSet.has(this.notes[i].id)) {
-        this.notes[i].category = projectName;
-      }
-    }
-    this.notes = this.notes.slice();
-    this.customProjects = this.customProjects.concat(projects);
-    this.persistSnapshot();
-    this.rebuildSpaces();
-    this.persistProjects();
-    this.notify(`已恢复项目「${projectName}」`);
+  private async renameProject(oldName: string, newName: string): Promise<void> {
+    try {
+      await this.noteMutationQueue.run<void>(async () => {
+        const next = WorkspaceLifecycle.renameProject(this.workspaceState(), oldName, newName.trim());
+        await this.commitWorkspace(next);
+      });
+      this.notify(`已将项目重命名为「${newName.trim()}」`);
+    } catch (error) { this.notify(error instanceof Error ? error.message : '项目重命名失败，请重试'); }
   }
 
-  private async createNoteInProject(title: string, projectName: string, type: string): Promise<boolean> {
-    return this.createNote(title, type, projectName);
+  private async deleteProject(projectName: string): Promise<void> {
+    if (this.notes.some((note: NoteItem) => note.category === projectName && (note.id === this.activeNoteId || note.id === this.companionNoteId)) && this.saveState !== SAVE_IDLE) {
+      this.notify('请等待当前资料保存完成后再删除项目'); return;
+    }
+    try {
+      let groupId = '';
+      await this.noteMutationQueue.run<void>(async () => {
+        const next = WorkspaceLifecycle.deleteProject(this.workspaceState(), projectName, Date.now());
+        groupId = next.trashedProjects[0].id;
+        await this.commitWorkspace(next);
+      });
+      this.notifyUndoable(`已将项目「${projectName}」及其资料移入回收站`, () => { this.restoreTrashedProject(groupId); });
+    } catch (error) { this.notify(error instanceof Error ? error.message : '项目删除失败，请重试'); }
+  }
+
+  private async restoreTrashedProject(id: string): Promise<void> {
+    try {
+      await this.noteMutationQueue.run<void>(async () => { await this.commitWorkspace(WorkspaceLifecycle.restoreProject(this.workspaceState(), id)); });
+      this.notify('项目及其资料已恢复');
+    } catch (error) { this.notify(error instanceof Error ? error.message : '项目恢复失败，请重试'); }
   }
 
   private async createNoteFromTemplate(templateName: string, projectName: string): Promise<boolean> {
@@ -1000,114 +1206,49 @@ struct Index {
   }
 
   private async deleteNote(noteId: string): Promise<void> {
-    // 软删除：移入回收站（可恢复），保留沙箱 .md 文件——只有「彻底删除」才真正移除文件。
-    let removed: NoteItem | null = null;
-    let removedIndex: number = -1;
-    for (let i = 0; i < this.notes.length; i++) {
-      if (this.notes[i].id === noteId) {
-        removed = this.notes[i];
-        removedIndex = i;
-        break;
-      }
-    }
-    if (removed === null) {
-      this.notify('目标资料不存在');
-      return;
-    }
-    const trashed: NoteItem = removed;
-    trashed.deletedAt = Date.now();
-    this.notes = this.notes.filter((n: NoteItem) => n.id !== noteId);
-    this.trash = [trashed].concat(this.trash);
-    if (this.readingOpen && this.readingNote.id === noteId) {
-      this.readingOpen = false;
-      this.activeNoteId = '';
-      this.outlineItems = [];
-    }
-    if (this.fullScreenDocOpen && this.fullScreenDocNote.id === noteId) {
-      this.fullScreenDocOpen = false;
-      this.activeNoteId = '';
-    }
-    this.persistSnapshot();
-    this.persistTrash();
-    this.rebuildSpaces();
-    this.refreshGraph();
-
-    const restoreIndex: number = removedIndex;
-    this.notifyUndoable(`已将「${trashed.title}」移入回收站`, () => {
-      this.undoSoftDelete(trashed, restoreIndex);
-    });
-  }
-
-  /** 撤销软删除：从回收站移除并按原下标插回资料库，deletedAt 清空即恢复为正常笔记。 */
-  private undoSoftDelete(note: NoteItem, index: number): void {
-    this.trash = this.removeById(this.trash, note.id);
-    note.deletedAt = undefined;
-    const next: NoteItem[] = this.notes.slice();
-    const at: number = (index >= 0 && index <= next.length) ? index : next.length;
-    next.splice(at, 0, note);
-    this.notes = next;
-    this.persistSnapshot();
-    this.persistTrash();
-    this.rebuildSpaces();
-    this.refreshGraph();
-    this.notify(`已恢复「${note.title}」`);
-  }
-
-  /** 从回收站恢复到资料库（回收站视图的「恢复」按钮）。 */
-  private async restoreFromTrash(note: NoteItem): Promise<void> {
-    this.trash = this.removeById(this.trash, note.id);
-    note.deletedAt = undefined;
-    this.notes = [note].concat(this.notes);
-    this.persistSnapshot();
-    this.persistTrash();
-    this.rebuildSpaces();
-    this.refreshGraph();
-    this.notify(`已恢复「${note.title}」`);
-  }
-
-  /** 彻底删除单篇：先清理应用内文件，失败时保留回收站条目供重试。 */
-  private async purgeNote(note: NoteItem): Promise<void> {
-    const confirmed: boolean = await this.confirmDestructive(`彻底删除「${note.title}」？此操作不可恢复。`);
-    if (!confirmed) {
-      return;
-    }
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    if ((this.activeNoteId === noteId || this.companionNoteId === noteId) && this.saveState !== SAVE_IDLE) { this.notify('请等待资料保存完成后再删除'); return; }
     try {
-      await this.storage.delete(context, note.id, note.sourceUri || '', note.coverUrl || '');
-    } catch (error) {
-      console.error(`彻底删除失败 (${note.id}): ${JSON.stringify(error)}`);
-      this.notify('文件删除失败，已保留回收站条目，请重试');
-      return;
-    }
-    this.trash = this.removeById(this.trash, note.id);
-    await this.persistTrash();
-    this.notify('已彻底删除');
+      await this.noteMutationQueue.run<void>(async () => { await this.commitWorkspace(WorkspaceLifecycle.deleteNote(this.workspaceState(), noteId, Date.now())); });
+      this.notifyUndoable('已将资料移入回收站', () => { this.restoreFromTrashById(noteId); });
+    } catch (error) { this.notify(error instanceof Error ? error.message : '删除失败，请重试'); }
   }
 
-  /** 清空回收站（不可恢复，需二次确认）。 */
+  private async restoreFromTrashById(id: string): Promise<void> {
+    try {
+      await this.noteMutationQueue.run<void>(async () => { await this.commitWorkspace(WorkspaceLifecycle.restoreNote(this.workspaceState(), id)); });
+      this.notify('资料已恢复到资料库');
+    } catch (error) { this.notify(error instanceof Error ? error.message : '恢复失败，请重试'); }
+  }
+
+  private async restoreFromTrash(note: NoteItem): Promise<void> { await this.restoreFromTrashById(note.id); }
+
+  private async purgeNote(note: NoteItem): Promise<void> {
+    if (!await this.confirmDestructive(`彻底删除「${note.title}」？此操作不可恢复。`)) { return; }
+    try {
+      await this.noteMutationQueue.run<void>(async () => {
+        const current = this.trash.find((item: NoteItem) => item.id === note.id);
+        if (!current) { throw new Error('回收站记录已变更，请刷新后重试'); }
+        await this.commitWorkspace({ notes: this.notes, projects: this.customProjects,
+          trash: this.trash.filter((item: NoteItem) => item.id !== note.id), trashedProjects: this.trashedProjects }, [current]);
+        const remaining = await this.storage.cleanupPendingDeletions(this.getAbilityContext(), this.notes.concat(this.trash));
+        if (remaining > 0) { throw new Error('删除记录已提交，部分文件清理待下次启动重试'); }
+      });
+      this.notify('已彻底删除');
+    } catch (error) { this.notify(error instanceof Error ? error.message : '清理失败，已保留回收站记录供重试'); }
+  }
+
   private async emptyTrash(): Promise<void> {
-    if (this.trash.length === 0) {
-      return;
-    }
-    const confirmed: boolean =
-      await this.confirmDestructive(`清空回收站？${this.trash.length} 篇笔记将被彻底删除，不可恢复。`);
-    if (!confirmed) {
-      return;
-    }
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const pending: NoteItem[] = this.trash.slice();
-    const failed: NoteItem[] = [];
-    for (let i = 0; i < pending.length; i++) {
-      try {
-        await this.storage.delete(context, pending[i].id, pending[i].sourceUri || '', pending[i].coverUrl || '');
-      } catch (error) {
-        failed.push(pending[i]);
-        console.error(`清空回收站失败 (${pending[i].id}): ${JSON.stringify(error)}`);
-      }
-    }
-    this.trash = failed;
-    await this.persistTrash();
-    this.notify(failed.length === 0 ? '回收站已清空' : `有 ${failed.length} 篇文件清理失败，已保留供重试`);
+    if (this.trash.length === 0 && this.trashedProjects.length === 0) { return; }
+    if (!await this.confirmDestructive(`清空回收站？${this.trash.length} 篇资料和 ${this.trashedProjects.length} 个项目将被彻底删除，不可恢复。`)) { return; }
+    try {
+      let remaining = 0;
+      await this.noteMutationQueue.run<void>(async () => {
+        const removing = this.trash.slice();
+        await this.commitWorkspace({ notes: this.notes, projects: this.customProjects, trash: [], trashedProjects: [] }, removing);
+        remaining = await this.storage.cleanupPendingDeletions(this.getAbilityContext(), this.notes);
+      });
+      this.notify(remaining > 0 ? `有 ${remaining} 份文件清理尚未完成，下次启动时重试` : '回收站已清空');
+    } catch (error) { this.notify(error instanceof Error ? error.message : '回收站保存失败，请重试'); }
   }
 
   /** 不可恢复操作的二次确认；对话框不可用时按「取消」处理，绝不误删。 */
@@ -1129,26 +1270,6 @@ struct Index {
     }
   }
 
-  private async persistTrash(): Promise<void> {
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    try {
-      await this.storage.saveTrash(context, this.trash);
-    } catch (error) {
-      console.error(`回收站保存失败: ${JSON.stringify(error)}`);
-      this.notify('回收站保存失败');
-    }
-  }
-
-  private removeById(list: NoteItem[], id: string): NoteItem[] {
-    const result: NoteItem[] = [];
-    for (let i = 0; i < list.length; i++) {
-      if (list[i].id !== id) {
-        result.push(list[i]);
-      }
-    }
-    return result;
-  }
-
   private findNoteById(id: string): NoteItem | null {
     for (let i = 0; i < this.notes.length; i++) {
       if (this.notes[i].id === id) {
@@ -1167,15 +1288,11 @@ struct Index {
     return matches[0];
   }
 
-  private commitNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
-    return this.noteMutationQueue.run<void>(() => this.saveLinkedNote(note, writeBody));
-  }
-
   private async saveLinkedNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
     const previous = this.notes.find((item: NoteItem) => item.id === note.id);
     const context = this.getAbilityContext();
     if (writeBody && previous && ((this.readingOpen && this.readingNote.id === previous.id) ||
-      (this.fullScreenDocOpen && this.fullScreenDocNote.id === previous.id))) {
+      (this.fullScreenDocOpen && (this.fullScreenDocNote.id === previous.id || this.companionNoteId === previous.id)))) {
       throw new Error('请先结束当前笔记编辑并返回，再修改正文');
     }
     if (writeBody) { await this.storage.saveDocument(context, note, note.contentDetail); }
@@ -1211,8 +1328,11 @@ struct Index {
 
   /** 现有分类去重列表（含「未分类」兜底），供移动弹层选择目标。 */
   private allCategories(): string[] {
-    const seen: Set<string> = new Set();
-    const result: string[] = [];
+    const seen: Set<string> = new Set([CATEGORY_UNFILED]);
+    const result: string[] = [CATEGORY_UNFILED];
+    for (const space of this.spaces) {
+      if (!seen.has(space.name)) { seen.add(space.name); result.push(space.name); }
+    }
     for (let i = 0; i < this.notes.length; i++) {
       const category: string = this.notes[i].category.length === 0 ? CATEGORY_UNFILED : this.notes[i].category;
       if (!seen.has(category)) {
@@ -1223,77 +1343,35 @@ struct Index {
     return result;
   }
 
-  /** 把正文首个一级标题替换为新标题；无一级标题时在开头补一个。 */
-  private replaceLeadingHeading(content: string, title: string): string {
-    const lines: string[] = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim().startsWith('# ')) {
-        lines[i] = `# ${title}`;
-        return lines.join('\n');
-      }
-    }
-    return `# ${title}\n\n${content}`;
-  }
-
-  /** 确认重命名：更新标题元数据并同步正文首个 H1，落盘 .md 与快照。 */
-  private async commitRename(note: NoteItem, newTitle: string): Promise<void> {
-    const trimmed: string = newTitle.trim();
-    const target: NoteItem | null = this.findNoteById(note.id);
-    if (target === null) {
-      this.notify('目标笔记不存在');
-      return;
-    }
-    if (trimmed.length === 0 || trimmed === target.title) {
-      return;
-    }
-    const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const nextContent: string = this.replaceLeadingHeading(target.contentDetail, trimmed);
-    target.title = trimmed;
-    target.contentDetail = nextContent;
-    target.updateTime = this.formatTime(new Date());
-    this.notes = this.notes.slice();
-    if (this.readingOpen && this.readingNote.id === target.id) {
-      this.readingNote = target;
-    }
-    if (this.fullScreenDocOpen && this.fullScreenDocNote.id === target.id) {
-      this.fullScreenDocNote = target;
-    }
+  /** One metadata mutation reads the latest committed note inside the workspace queue. */
+  private async updateNoteMetadata(id: string, change: (note: NoteItem) => void): Promise<NoteItem | null> {
+    let saved: NoteItem | null = null;
     try {
-      await this.storage.saveDocument(context, target, nextContent);
-    } catch (error) {
-      console.error(`重命名后正文落盘失败 (${target.id}): ${JSON.stringify(error)}`);
-    }
-    await this.persistSnapshot();
-    this.rebuildSpaces();
-    this.notify(`已重命名为「${trimmed}」`);
+      await this.noteMutationQueue.run<void>(async () => {
+        const current = this.findNoteById(id);
+        if (!current) { throw new Error('目标资料已不存在'); }
+        const next = copyNote(current); change(next);
+        await this.saveLinkedNote(next);
+        saved = next;
+      });
+      return saved;
+    } catch (error) { this.notify(error instanceof Error ? error.message : '资料保存失败，请重试'); return null; }
   }
 
-  /** 确认移动：只更新分类元数据并重建项目树（正文不变，无需重写 .md）。 */
-  private async commitMove(note: NoteItem, category: string): Promise<void> {
-    const trimmed: string = category.trim();
-    const target: NoteItem | null = this.findNoteById(note.id);
-    if (target === null) {
-      this.notify('目标笔记不存在');
-      return;
-    }
-    if (trimmed.length === 0) {
-      return;
-    }
-    if (target.category === trimmed) {
-      this.notify(`「${target.title}」已在「${trimmed}」`);
-      return;
-    }
-    target.category = trimmed;
-    this.notes = this.notes.slice();
-    if (this.readingOpen && this.readingNote.id === target.id) {
-      this.readingNote = target;
-    }
-    if (this.fullScreenDocOpen && this.fullScreenDocNote.id === target.id) {
-      this.fullScreenDocNote = target;
-    }
-    await this.persistSnapshot();
-    this.rebuildSpaces();
-    this.notify(`已移动到「${trimmed}」`);
+  private async commitRename(note: NoteItem, newTitle: string): Promise<boolean> {
+    const title = newTitle.trim(); if (!title || title.length > 200 || /[\r\n]/.test(title)) { return false; }
+    const saved = await this.updateNoteMetadata(note.id, (next: NoteItem) => {
+      next.title = title; next.updateTime = this.formatTime(new Date()); next.updatedAt = Date.now();
+    });
+    if (saved) { this.notify(`已重命名为「${title}」`); }
+    return saved !== null;
+  }
+
+  private async commitMove(note: NoteItem, category: string): Promise<boolean> {
+    const name = category.trim() || CATEGORY_UNFILED;
+    const saved = await this.updateNoteMetadata(note.id, (next: NoteItem) => { next.category = name; });
+    if (saved) { this.notify(name === CATEGORY_UNFILED ? '已移回资料库' : `已移动到「${name}」`); }
+    return saved !== null;
   }
 
   // ==================================================================
@@ -1311,131 +1389,44 @@ struct Index {
     return result;
   }
 
-  /** 切换收藏态并落盘；同步刷新阅读器与侧栏角标。 */
   private async toggleFavorite(note: NoteItem): Promise<void> {
-    const target: NoteItem | null = this.findNoteById(note.id);
-    if (target === null) {
-      this.notify('目标笔记不存在');
-      return;
-    }
-    target.favorite = target.favorite !== true;
-    this.notes = this.notes.slice();
-    if (this.readingOpen && this.readingNote.id === target.id) {
-      this.readingNote = target;
-    }
-    await this.persistSnapshot();
-    this.notify(target.favorite ? `已收藏「${target.title}」` : `已取消收藏「${target.title}」`);
+    const saved = await this.updateNoteMetadata(note.id, (next: NoteItem) => { next.favorite = next.favorite !== true; });
+    if (saved) { this.notify(saved.favorite ? '已收藏' : '已取消收藏'); }
   }
 
-  /** 切换置顶状态并落盘 */
   private async togglePinNote(note: NoteItem): Promise<void> {
-    const target: NoteItem | null = this.findNoteById(note.id);
-    if (target === null) {
-      return;
-    }
-    target.isPinned = target.isPinned !== true;
-    this.notes = this.notes.slice();
-    await this.persistSnapshot();
-    this.notify(target.isPinned ? `已置顶「${target.title}」` : `已取消置顶「${target.title}」`);
+    const saved = await this.updateNoteMetadata(note.id, (next: NoteItem) => { next.isPinned = next.isPinned !== true; });
+    if (saved) { this.notify(saved.isPinned ? '已置顶' : '已取消置顶'); }
   }
 
-  // ==================================================================
-  // 多标签（功能6）
-  // ==================================================================
-
-  /**
-   * 写回一篇笔记的标签列表。
-   * 同时把单值 tag 同步为首个标签，卡片/侧栏的旧展示位无需改造即可跟着更新。
-   */
   private async applyTags(note: NoteItem, tags: string[]): Promise<void> {
-    const target: NoteItem | null = this.findNoteById(note.id);
-    if (target === null) {
-      this.notify('目标笔记不存在');
-      return;
-    }
-    const clean: string[] = [];
-    for (let i = 0; i < tags.length; i++) {
-      const t: string = tags[i].trim().replace(/^#/, '');
-      if (t.length === 0) {
-        continue;
-      }
-      let dup: boolean = false;
-      for (let j = 0; j < clean.length; j++) {
-        if (clean[j] === t) {
-          dup = true;
-          break;
-        }
-      }
-      if (!dup) {
-        clean.push(t);
-      }
-    }
-    target.tags = clean;
-    target.tag = clean.length > 0 ? clean[0] : '';
-    target.updatedAt = Date.now();
-    this.notes = this.notes.slice();
-    if (this.readingOpen && this.readingNote.id === target.id) {
-      this.readingNote = target;
-    }
-    await this.persistSnapshot();
-    this.rebuildSpaces();
-    this.refreshStats();
-    this.notify(`已更新「${target.title}」的标签`);
+    const clean = Array.from(new Set(tags.map((tag: string) => tag.trim().replace(/^#/, '')).filter((tag: string) => tag.length > 0))).slice(0, 12);
+    const saved = await this.updateNoteMetadata(note.id, (next: NoteItem) => {
+      next.tags = clean; next.tag = clean[0] || ''; next.updatedAt = Date.now();
+    });
+    if (saved) { this.notify('标签已保存'); }
   }
 
   // ==================================================================
   // 待办日历
   // ==================================================================
 
-  /** 全部未完成待办数量，用于侧边栏角标。 */
-  private todoPendingCount(): number {
-    let count: number = 0;
-    for (let i = 0; i < this.todos.length; i++) {
-      if (!this.todos[i].done) {
-        count++;
-      }
-    }
-    return count;
-  }
-
-  private async persistTodos(): Promise<void> {
-    const context: common.UIAbilityContext = this.getAbilityContext();
+  private async addTodo(dateKey: string, title: string, noteRefs: string[]): Promise<boolean> {
     try {
-      await this.todoStorage.saveTodos(context, this.todos);
-    } catch (error) {
-      console.error(`待办保存失败: ${JSON.stringify(error)}`);
-      this.notify('待办保存失败');
-    }
-  }
-
-  private async persistDayNotes(): Promise<void> {
-    const context: common.UIAbilityContext = this.getAbilityContext();
-    try {
-      await this.todoStorage.saveDayNotes(context, this.dayNotes);
-    } catch (error) {
-      console.error(`日期备忘保存失败: ${JSON.stringify(error)}`);
-    }
-  }
-
-  /** 新增一条待办到指定日期。 */
-  private async addTodo(dateKey: string, title: string, noteRefs: string[]): Promise<void> {
-    const now: number = Date.now();
-    const todo: TodoItem = {
-      id: `todo-${now}-${this.todos.length}`,
-      date: dateKey,
-      title: title,
-      done: false,
-      noteRefs: noteRefs.slice(),
-      createdAt: now,
-      updatedAt: now
-    };
-    this.todos = [todo].concat(this.todos);
-    await this.persistTodos();
-    this.notify('已添加待办');
+      await this.noteMutationQueue.run<void>(async () => {
+        if (!title.trim()) { throw new Error('请填写待办内容'); }
+        const now = Date.now();
+        const todo: TodoItem = { id: `todo-${now}-${Math.floor(Math.random() * 1000000)}`, date: dateKey,
+          title: title.trim(), done: false, noteRefs: noteRefs.slice(), createdAt: now, updatedAt: now };
+        const next = [todo].concat(this.todos);
+        await this.todoStorage.saveTodos(this.getAbilityContext(), next); this.todos = next;
+      });
+      this.notify('已添加待办'); return true;
+    } catch (error) { this.notify(error instanceof Error ? error.message : '待办保存失败，请重试'); return false; }
   }
 
   /**
-   * 黄金闭环：智能提取落地为双链知识卡并注入待办日程
+   * 将本地整理结果保存为笔记及用户选中的待办。
    */
   private async handleCommitSmartExtract(content: SmartContent, selectedTasks: SmartTask[]): Promise<void> {
     const context = this.getAbilityContext();
@@ -1453,90 +1444,69 @@ struct Index {
         this.todos = todos;
       }
     };
-    const note = await SmartCaptureService.commit(content, selectedTasks, persistence);
+    const note = await this.noteMutationQueue.run<NoteItem>(() => SmartCaptureService.commit(content, selectedTasks, persistence));
     this.refreshStats();
     await this.refreshGraph();
     this.openNote(note);
     this.notify('已保存「' + content.title + '」与 ' + selectedTasks.length + ' 条待办');
   }
 
-  /** 切换待办完成态：未完成（红）↔ 已完成（绿）。 */
   private async toggleTodo(todo: TodoItem): Promise<void> {
-    for (let i = 0; i < this.todos.length; i++) {
-      if (this.todos[i].id === todo.id) {
-        const current: TodoItem = this.todos[i];
-        const next: TodoItem = {
-          id: current.id,
-          date: current.date,
-          title: current.title,
-          done: !current.done,
-          noteRefs: current.noteRefs,
-          createdAt: current.createdAt,
-          updatedAt: Date.now()
-        };
-        this.todos[i] = next;
-        break;
-      }
-    }
-    this.todos = this.todos.slice();
-    await this.persistTodos();
+    try {
+      await this.noteMutationQueue.run<void>(async () => {
+        const next = this.todos.map((item: TodoItem): TodoItem => item.id !== todo.id ? item :
+          { id: item.id, date: item.date, title: item.title, done: !item.done, noteRefs: item.noteRefs.slice(), createdAt: item.createdAt, updatedAt: Date.now() });
+        await this.todoStorage.saveTodos(this.getAbilityContext(), next); this.todos = next;
+      });
+    } catch (error) { this.notify(error instanceof Error ? error.message : '待办保存失败，请重试'); }
   }
 
-  /** 删除一条待办。 */
   private async deleteTodo(todo: TodoItem): Promise<void> {
-    const result: TodoItem[] = [];
-    for (let i = 0; i < this.todos.length; i++) {
-      if (this.todos[i].id !== todo.id) {
-        result.push(this.todos[i]);
-      }
-    }
-    this.todos = result;
-    await this.persistTodos();
-    this.notify('已删除待办');
+    try {
+      await this.noteMutationQueue.run<void>(async () => {
+        const next = this.todos.filter((item: TodoItem) => item.id !== todo.id);
+        await this.todoStorage.saveTodos(this.getAbilityContext(), next); this.todos = next;
+      });
+      this.notify('已删除待办');
+    } catch (error) { this.notify(error instanceof Error ? error.message : '删除待办失败，请重试'); }
   }
 
-  /** 写入某日期的备忘文本（不存在则新建条目）。 */
   private async updateDayNote(dateKey: string, text: string): Promise<void> {
-    const now: number = Date.now();
-    const entry: DayNote = { date: dateKey, text: text, updatedAt: now };
-    let found: boolean = false;
-    for (let i = 0; i < this.dayNotes.length; i++) {
-      if (this.dayNotes[i].date === dateKey) {
-        this.dayNotes[i] = entry;
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      const next: DayNote[] = [entry];
-      this.dayNotes = next.concat(this.dayNotes);
-    } else {
-      this.dayNotes = this.dayNotes.slice();
-    }
-    await this.persistDayNotes();
+    try {
+      await this.noteMutationQueue.run<void>(async () => {
+        const entry: DayNote = { date: dateKey, text, updatedAt: Date.now() };
+        const next = [entry].concat(this.dayNotes.filter((item: DayNote) => item.date !== dateKey));
+        await this.todoStorage.saveDayNotes(this.getAbilityContext(), next); this.dayNotes = next;
+      });
+    } catch (error) { this.notify(error instanceof Error ? error.message : '日期备忘保存失败，请保留输入后重试'); }
   }
 
-  /** 获取或自动生成自由白板笔记，用于自由白板画卷常驻工作区 */
-  private getOrCreateCanvasNote(): NoteItem {
-    for (let i = 0; i < this.notes.length; i++) {
-      if (this.notes[i].type.toLowerCase() === 'canvas' || this.notes[i].id === 'note-seed-handwriting' || this.notes[i].title === '自由白板演算') {
-        return this.notes[i];
-      }
+  private freeCanvasOpening: boolean = false;
+
+  /** Dedicated canvas identity; an ordinary handwritten note is never used as the global board. */
+  private async openFreeCanvas(): Promise<void> {
+    if (this.freeCanvasOpening) { return; }
+    this.freeCanvasOpening = true;
+    const fromNav = this.activeNav; const fromNote = this.activeNoteId;
+    try {
+      const existing = this.notes.find((note: NoteItem) => WorkspaceNotePolicy.isFreeCanvas(note));
+      if (existing) { this.openNote(existing); return; }
+      const canvasNote = await this.noteMutationQueue.run<NoteItem>(async () => {
+        const current = this.notes.find((note: NoteItem) => WorkspaceNotePolicy.isFreeCanvas(note));
+        if (current) { return current; }
+        const occupied = this.notes.concat(this.trash).map((note: NoteItem) => note.id);
+        const created = WorkspaceNotePolicy.createFreeCanvas(occupied, Date.now());
+        await this.storage.create(this.getAbilityContext(), created);
+        const next = [created].concat(this.notes); await this.storage.save(next); this.notes = next;
+        return created;
+      });
+      this.rebuildSpaces(); this.refreshGraph();
+      if (this.activeNav === fromNav && this.activeNoteId === fromNote) { this.openNote(canvasNote); }
+    } catch (error) {
+      console.error('自由白板创建失败: ' + (error instanceof Error ? error.message : '本地存储不可用'));
+      this.notify('自由白板暂时无法打开，请检查存储后重试');
     }
-    const canvasNote: NoteItem = {
-      id: `canvas-global`,
-      title: '自由白板演算',
-      category: '速记灵感',
-      type: 'canvas',
-      previewText: '全功能多色自由手写草稿板',
-      tag: '手写',
-      tagColor: '#D97706',
-      updateTime: '刚刚',
-      contentDetail: '',
-      strokes: '[]'
-    };
-    this.notes = [canvasNote].concat(this.notes);
-    return canvasNote;
+    finally { this.freeCanvasOpening = false; }
   }
 
   /**
@@ -1547,40 +1517,66 @@ struct Index {
     selectedUri: string = ''): Promise<NoteItem | null> {
     if (this.documentImportBusy) { return null; }
     this.documentImportBusy = true;
+    const targetProjectId = this.spaces?.find((space: SpaceFolder) => space.name === targetCategory)?.id || '';
+    try {
+      const uris = example ? [''] : selectedUri ? [selectedUri] : await this.storage.selectDocumentUris(this.getAbilityContext());
+      let first: NoteItem | null = null; let imported: number = 0;
+      for (let index = 0; index < uris.length; index++) {
+        if (uris.length > 1) { this.notify(`正在导入 ${index + 1}/${uris.length} 份资料…`); }
+        const note = await this.importOneDocument(targetCategory, example, snapshot, uris[index], targetProjectId);
+        if (note) { imported++; if (first === null) { first = note; } }
+      }
+      if (uris.length > 1) { this.notify(`已导入 ${imported}/${uris.length} 份资料${imported < uris.length ? '，未完成的资料可重新选择导入' : ''}`); }
+      if (first && (first.category === CATEGORY_UNFILED || !targetCategory.trim() || targetCategory === CATEGORY_UNFILED)) {
+        this.activeNav = NAV_LIBRARY; this.activeSpaceId = ''; this.searchText = ''; this.activeFilter = FILTER_ALL;
+      }
+      return first;
+    } catch (error) { this.notify(error instanceof Error ? error.message : '文件选择失败，请重试'); return null; }
+    finally { this.documentImportBusy = false; }
+  }
+
+  private async importOneDocument(targetCategory: string, example: boolean, snapshot: boolean, selectedUri: string, targetProjectId: string = ''): Promise<NoteItem | null> {
     const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context, snapshot) :
-        (selectedUri ? await this.storage.importDocumentUri(context, selectedUri) : await this.storage.importDocument(context));
+        await this.storage.importDocumentUri(context, selectedUri);
       if (result.status === 'imported' && result.document !== undefined) {
         const document: MarkdownDocument = result.document;
         const now: Date = new Date();
         const isPdf: boolean = result.noteType === 'PDF' || document.title.toLowerCase().endsWith('.pdf');
+        const isImage: boolean = result.noteType === 'Image';
         const note: NoteItem = {
           id: document.id,
           title: document.title,
-          category: targetCategory,
+          category: targetCategory.trim() || CATEGORY_UNFILED,
           type: result.noteType !== undefined ? result.noteType : (isPdf ? 'PDF' : 'Markdown'),
-          sourceType: isPdf ? 'pdf' : 'document',
+          sourceType: isImage ? 'image' : isPdf ? 'pdf' : 'document',
           sourceUri: result.sourceUri,
           sourceFileName: result.sourceFileName,
+          documentMeta: result.documentMeta,
           pageCount: result.pageCount || 1,
-          pageInfo: isPdf ? (result.pageCount || 1) + ' 页' : '',
+          pageInfo: isImage ? '图片 · 独立批注' : isPdf ? (result.pageCount || 1) + ' 页' : '',
           previewText: document.content.length > 48 ? `${document.content.substring(0, 48)}…` : document.content,
-          tag: isPdf ? 'PDF文献' : '导入',
+          tag: isImage ? '图片资料' : isPdf ? 'PDF文献' : '导入',
           tagColor: isPdf ? '#E11D48' : '#2563EB',
           updateTime: this.formatTime(now),
           contentDetail: document.content,
-          tags: isPdf ? ['PDF文献', targetCategory] : ['导入'],
+          tags: isPdf ? ['PDF文献'] : ['导入'],
           createdAt: now.getTime(),
           updatedAt: now.getTime()
         };
-        const nextNotes = [note].concat(this.notes);
-        try { await this.storage.save(nextNotes); }
+        try {
+          await this.noteMutationQueue.run<void>(async () => {
+            if (targetProjectId) { note.category = this.spaces.find((space: SpaceFolder) => space.id === targetProjectId)?.name || CATEGORY_UNFILED; }
+            const nextNotes = [note].concat(this.notes);
+            await this.storage.save(nextNotes);
+            this.notes = nextNotes;
+          });
+        }
         catch (error) {
           try { await this.storage.delete(context, note.id, note.sourceUri || ''); } catch { /* Keep the original failure available for retry. */ }
           throw new Error(error instanceof Error ? error.message : '本机资料保存失败，请重试');
         }
-        this.notes = nextNotes;
         this.rebuildSpaces();
         this.refreshGraph();
         this.notify(`已保存到本机资料库：${result.fileName || document.title}`);
@@ -1591,32 +1587,82 @@ struct Index {
     } catch (error) {
       console.error(`文档导入失败: ${JSON.stringify(error)}`);
       this.notify('文档导入失败');
-    } finally {
-      this.documentImportBusy = false;
     }
     return null;
   }
 
+  /** Copy only the fields that the active reader edited, without replacing the notes array. */
+  private applyReaderSave(target: NoteItem, saved: NoteItem, kind: ReaderSaveKind): void {
+    if (kind === 'reading') {
+      if ((saved.lastReadAt || 0) >= (target.lastReadAt || 0)) {
+        target.lastReadAt = saved.lastReadAt;
+        if (Number.isInteger(saved.readPage) && (saved.readPage || 0) > 0) { target.readPage = saved.readPage; }
+      }
+    } else if (kind === 'pdf') {
+      target.pageAnnotations = saved.pageAnnotations;
+    } else if (kind === 'scratchpad') {
+      target.scratchpadStrokes = saved.scratchpadStrokes;
+      target.scratchpadPaperStyle = saved.scratchpadPaperStyle;
+    } else if (kind === 'handwriting') {
+      target.strokes = saved.strokes;
+      target.paperStyle = saved.paperStyle;
+      target.title = saved.title;
+      target.contentDetail = saved.contentDetail;
+      target.previewText = saved.previewText;
+    }
+    target.updatedAt = saved.updatedAt;
+    target.updateTime = saved.updateTime;
+  }
+
   private handleSaved(note: NoteItem, content: string, kind: ReaderSaveKind = 'markdown'): Promise<void> {
-    note.updateTime = this.formatTime(new Date());
-    return this.readerCommits.commit(note, content, {
+    const snapshot = copyNote(note);
+    if (kind !== 'reading') { snapshot.updateTime = this.formatTime(new Date()); }
+    return this.noteMutationQueue.run<void>(() => this.readerCommits.commit(snapshot, content, {
       notes: () => this.notes,
       saveDocument: async (item: NoteItem, text: string) => { await this.storage.saveDocument(this.getAbilityContext(), item, text); },
       saveNotes: (items: NoteItem[]) => this.storage.save(items),
       publish: (items: NoteItem[], saved: NoteItem) => {
-        this.notes = items;
-        if (this.readingNote.id === saved.id) { this.readingNote = saved; }
-        if (this.fullScreenDocNote.id === saved.id) { this.fullScreenDocNote = saved; }
-        this.refreshGraph();
+        const previous = this.notes.find((item: NoteItem) => item.id === saved.id);
+        const previousTitle = previous?.title;
+        const previousContent = previous?.contentDetail;
+        // Reader autosave is a hot path (annotation debounce / page turns). Replacing @State
+        // notes here rebuilt AppShell, the library and the reader on every save. The reader
+        // already owns the live copy, so mutate the shared note object and publish the array
+        // once when the reader closes.
+        const light = (kind === 'reading' || kind === 'pdf' || kind === 'scratchpad' || kind === 'handwriting') &&
+          (this.fullScreenDocOpen || this.readingOpen);
+        if (light) {
+          if (previous !== undefined) { this.applyReaderSave(previous, saved, kind); }
+          if (this.fullScreenDocNote.id === saved.id && this.fullScreenDocNote !== previous) {
+            this.applyReaderSave(this.fullScreenDocNote, saved, kind);
+          }
+          if (this.readingNote.id === saved.id && this.readingNote !== previous) {
+            this.applyReaderSave(this.readingNote, saved, kind);
+          }
+        } else {
+          this.notes = items;
+          if (this.readingNote.id === saved.id) { this.readingNote = saved; }
+          if (this.fullScreenDocNote.id === saved.id) { this.fullScreenDocNote = saved; }
+        }
+        if (kind === 'markdown' || (kind === 'handwriting' && (previousTitle !== saved.title || previousContent !== saved.contentDetail))) { this.refreshGraph(); }
       }
-    }, kind !== 'pdf-source', kind);
+    }, kind === 'markdown' || kind === 'handwriting', kind));
   }
 
-  private async restoreReaderPdfSource(): Promise<void> {
+  private recordReading(noteId: string, page?: number, visitedAt: number = Date.now()): Promise<void> {
+    const current = this.notes.find((note: NoteItem) => note.id === noteId);
+    if (!current) { return Promise.reject(new Error('资料已移除')); }
+    const snapshot = copyNote(current);
+    snapshot.lastReadAt = visitedAt;
+    if (page !== undefined) { snapshot.readPage = page; }
+    return this.handleSaved(snapshot, snapshot.contentDetail, 'reading');
+  }
+
+  private async restoreReaderPdfSource(note: NoteItem = this.fullScreenDocNote): Promise<void> {
     const context = this.getAbilityContext();
-    const originalId = this.fullScreenDocNote.id;
-    const previousSource = this.fullScreenDocNote.sourceUri || '';
-    const replacement = await this.storage.selectReplacementPdf(context, this.fullScreenDocNote);
+    const originalId = note.id;
+    const previousSource = note.sourceUri || '';
+    const replacement = await this.storage.selectReplacementPdf(context, note);
     if (!replacement) { return; }
     try {
       await this.handleSaved(replacement, replacement.contentDetail, 'pdf-source');
@@ -1636,7 +1682,7 @@ struct Index {
 
   /** Extraction uses the exact persisted source and never relies on a picker grant after import. */
   private async importExtractSource(uri: string): Promise<string> {
-    const note = await this.importDocument('外部参考', false, false, uri);
+    const note = await this.importDocument(CATEGORY_UNFILED, false, false, uri);
     if (!note) { throw new Error('资料未能保存到本机资料库，请重试'); }
     if (note.sourceType === 'pdf' && note.sourceUri) { return note.sourceUri; }
     return (await this.storage.read(this.getAbilityContext(), note)).filePath;
@@ -1651,16 +1697,19 @@ struct Index {
   }
 
   private openSettings(section: string = 'overview'): void {
-    if (this.saveState === SAVE_SAVING || this.saveState === SAVE_FAILED) {
+    if ((this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) {
       this.notify('请先完成或重试文档保存'); return;
     }
     this.readingOpen = false; this.fullScreenDocOpen = false; this.contextPanelOpen = false;
+    this.readerSaveState = SAVE_IDLE;
+    this.notes = this.notes.slice();
     this.activeSheet = ''; this.settingsSection = section;
     this.settingsOpenToken++;
     this.activeNav = NAV_SETTINGS; if (this.singleColumn) { this.sidebarCollapsed = true; }
   }
 
   private afterSettingsExit(action: () => void): void {
+    if ((this.readingOpen || this.fullScreenDocOpen) && (this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) { this.notify('请先完成或重试资料保存'); return; }
     if (this.activeNav !== NAV_SETTINGS) { action(); return; }
     this.settingsExitAction = action;
     this.settingsExitToken++;
@@ -1678,6 +1727,49 @@ struct Index {
   // ==================================================================
 
   @Builder
+  readerWorkspaceContent(readerNote: NoteItem) {
+    ReaderSplitWorkspace({
+      note: readerNote, manageKeyboardMode: false,
+      documentTabs: this.readerDocuments(),
+      secondaryNote: this.pairedDocument(),
+      onOpenSplitPicker: () => this.openPairPicker(readerNote.id),
+      onSecondaryClosed: () => { this.companionNoteId = ''; },
+      onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
+      onSplitDocument: (id: string) => { this.splitReaderDocument(id); },
+      onDeleteNote: (note: NoteItem) => { this.deleteNote(note.id); },
+      onChooseCover: (note: NoteItem) => { this.coverNoteId = note.id; },
+      onSelectDocument: (id: string) => this.openNoteById(id, true),
+      onCloseDocumentTab: (id: string) => this.closeReaderTab(id),
+      onCreateHandwriting: () => this.requestCreateNote('', 'Handwriting', '未命名手写笔记'),
+      onRestorePdfSource: (note: NoteItem) => this.restoreReaderPdfSource(note),
+      sourcePage: this.sourcePage,
+      onReadingPageChange: (noteId: string, page: number, visitedAt: number) => this.recordReading(noteId, page, visitedAt),
+      sourceJumpToken: this.sourceJumpToken,
+      onExtractPdfText: (noteId: string, page: number) => { this.pdfExtractNoteId = noteId; this.pdfExtractPage = page; },
+      backRequestToken: this.readingOpen ? this.readerBackToken : this.documentBackToken,
+      jumpToken: this.jumpToken, jumpLine: this.jumpLine, onOutlineUpdated: (items: MarkdownOutlineItem[]) => { this.outlineItems = items; },
+      onSmartExtract: () => { this.smartExtractVisible = true; },
+      onExportText: (note: NoteItem, extension: string) => this.storage.exportDocument(this.getAbilityContext(), note, extension),
+      onSearchNotes: () => { this.searchVisible = true; },
+      onClose: () => {
+        this.companionNoteId = '';
+        if (this.readingOpen) { this.closeReading(); }
+        else { this.closeFullScreenReader(); }
+      },
+      onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => this.handleSaved(note, content, kind),
+      onSaveStateChange: (state: string) => {
+        // The full-screen reader covers the shell. Updating a @State consumed by AppShell here
+        // rebuilt the entire workspace (library, sidebar, reader) on every 800 ms autosave.
+        if (this.fullScreenDocOpen) { this.readerSaveState = state; }
+        else { this.saveState = state; }
+      },
+      onToggleFavorite: (note: NoteItem) => {
+        this.toggleFavorite(note);
+      }
+    })
+  }
+
+  @Builder
   workspaceContent() {
     if (this.activeNav === NAV_SETTINGS) {
       SettingsWorkspace({ initialSection: this.settingsSection, noteCount: this.notes.length, projectCount: this.spaces.length,
@@ -1690,67 +1782,38 @@ struct Index {
         onOpenCapture: () => { this.smartExtractVisible = true; },
         onOpenBackup: () => { this.backupVisible = true; }, onOpenPrivacy: () => { this.privacyVisible = true; } })
     } else if (this.readingOpen) {
-      ReaderWorkspace({
-        note: this.readingNote,
-        annotationPaneOpen: this.annotationPaneOpen,
-        jumpToken: this.jumpToken,
-        jumpLine: this.jumpLine,
-        favorite: this.readingNote.favorite === true,
-        onChooseCover: () => { this.coverNoteId = this.readingNote.id; },
-        onToggleFavorite: (note: NoteItem) => {
-          this.toggleFavorite(note);
-        },
-        onDeleteNote: (note: NoteItem) => {
-          this.deleteNote(note.id);
-        },
-        onOutlineUpdated: (items: MarkdownOutlineItem[]) => {
-          this.outlineItems = items;
-        },
-        onOpenNoteByTitle: (title: string) => {
-          this.openNoteByTitle(title);
-        },
-        onBack: () => {
-          this.closeReading();
-        },
-        onToggleAnnotation: () => {
-          this.annotationPaneOpen = !this.annotationPaneOpen;
-        },
-        onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => this.handleSaved(note, content, kind),
-        onSaveStateChange: (state: string) => {
-          this.saveState = state;
-        }
-      })
+      this.readerWorkspaceContent(this.readingNote)
     } else if (this.activeNav === NAV_HOME) {
       HomeWorkspace({
-        stats: this.stats,
+        memoDraft: this.memoDraft, memoStatus: this.memoDraftStatus, memoSaving: this.memoSaving, memoReady: this.memoReady,
+        onMemoChange: (value: string) => this.changeMemoDraft(value),
+        onSaveMemo: () => { this.saveQuickMemo(); },
+        onRetryMemoDraft: () => { this.persistMemoDraft().catch(() => {}); },
+        selectedDate: this.memoDateFilter, selectedTag: this.memoTagFilter,
+        onSelectDate: (date: string) => { this.memoDateFilter = date; },
+        onOpenTag: (tag: string) => { this.memoTagFilter = tag; },
+        onClearFilters: () => { this.memoDateFilter = ''; this.memoTagFilter = ''; },
         recentNotes: this.notes,
-        unresolvedLinks: this.linkGraph.unresolvedLinks,
-        courses: ReviewPolicy.courses(this.notes, this.reviewCards, this.todos),
-        onOpenStudy: (course: string) => { this.studyCourse = course; this.studyVisible = true; },
+        onSearchNotes: () => { this.searchVisible = true; },
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onCreateHandwriting: () => this.requestCreateNote('', 'Handwriting', '未命名手写笔记'),
         onImportDocument: () => this.importDocument(),
-        onOpenGraph: () => {
-          this.activeNav = NAV_GRAPH;
-        },
-        onChooseCover: (noteId: string) => { this.coverNoteId = noteId; },
+        onSmartExtract: () => { this.smartExtractVisible = true; },
         onTogglePin: (note: NoteItem) => this.togglePinNote(note),
         onToggleFavorite: (note: NoteItem) => this.toggleFavorite(note),
         onDeleteNote: (noteId: string) => this.deleteNote(noteId),
-        onSmartExtract: () => {
-          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
-            this.smartExtractVisible = true;
-          });
-        },
-        onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
-        onNavigate: (navKey: string) => {
-          this.activeNav = navKey;
-        }
+        onNavigate: (navKey: string) => { this.activeNav = navKey; }
       })
     } else if (this.activeNav === NAV_LIBRARY) {
       LibraryWorkspace({
+        onOpenTag: (tag: string) => this.openMemoTag(tag),
         notes: this.filteredNotes(),
+        allNotes: this.notes,
+        viewMode: this.libraryDisplay.view, sortKey: this.libraryDisplay.sort, sortAsc: this.libraryDisplay.ascending,
+        onViewModeChange: (view: string) => { this.updateLibraryDisplay(view, this.libraryDisplay.sort, this.libraryDisplay.ascending); },
+        onSortChange: (sort: string, ascending: boolean) => { this.updateLibraryDisplay(this.libraryDisplay.view, sort, ascending); },
+        onResetFilters: () => { this.searchText = ''; this.activeFilter = FILTER_ALL; this.activeSpaceId = ''; },
         totalCount: this.notes.length,
         searchText: this.searchText,
         activeFilter: this.activeFilter,
@@ -1762,8 +1825,9 @@ struct Index {
           this.activeFilter = filter;
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
+        onOpenNoteMenu: (note: NoteItem) => this.openNoteMenu(note),
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
-        onImportDocument: () => this.importDocument()
+        onImportDocument: () => this.importDocument(this.activeSpaceName() || '未分类')
       })
     } else if (this.activeNav === NAV_GRAPH) {
       GraphWorkspace({
@@ -1784,9 +1848,7 @@ struct Index {
         dayNotes: this.dayNotes,
         todos: this.todos,
         notes: this.notes,
-        onAddTodo: (dateKey: string, title: string, noteRefs: string[]) => {
-          this.addTodo(dateKey, title, noteRefs);
-        },
+        onAddTodo: (dateKey: string, title: string, noteRefs: string[]) => this.addTodo(dateKey, title, noteRefs),
         onToggleTodo: (todo: TodoItem) => this.toggleTodo(todo),
         onDeleteTodo: (todo: TodoItem) => this.deleteTodo(todo),
         onUpdateDayNote: (dateKey: string, text: string) => {
@@ -1798,6 +1860,8 @@ struct Index {
     } else if (this.activeNav === NAV_TRASH) {
       TrashWorkspace({
         trash: this.trash,
+        projects: this.trashedProjects,
+        onRestoreProject: (id: string) => this.restoreTrashedProject(id),
         retentionDays: TRASH_RETENTION_DAYS,
         onRestore: (note: NoteItem) => this.restoreFromTrash(note),
         onPurge: (note: NoteItem) => this.purgeNote(note),
@@ -1810,19 +1874,7 @@ struct Index {
         onSelectNote: (note: NoteItem) => this.openNote(note)
       })
       .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
-    } else if (this.activeNav === NAV_CANVAS) {
-      HandwritingCanvas({
-        note: this.getOrCreateCanvasNote(),
-        isScratchpad: false,
-        persistOnDisappear: true,
-        onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => this.handleSaved(note, content, kind),
-        onSaveStateChange: (state: string) => {
-          this.saveState = state;
-        }
-      })
-      .width('100%')
-      .height('100%')
-      .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
+
     }
   }
 
@@ -1859,7 +1911,6 @@ struct Index {
         breadcrumb: this.breadcrumb(),
         saveState: this.saveState,
         spaces: this.spaces,
-        recentNotes: this.notes.slice(0, 8),
         activeNav: this.activeNav,
         activeSpaceId: this.activeSpaceId,
         activeNoteId: this.activeNoteId,
@@ -1881,7 +1932,7 @@ struct Index {
           this.contextPanelOpen = threeColumn;
         },
         onToggleSidebar: () => {
-          animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
+          animateTo({ duration: AnimationTokens.duration(120), curve: Curve.EaseInOut }, () => {
             this.sidebarCollapsed = !this.sidebarCollapsed;
             if (this.singleColumn && !this.sidebarCollapsed) { this.contextPanelOpen = false; }
           });
@@ -1900,9 +1951,10 @@ struct Index {
         onSelectNav: (navKey: string) => {
           this.afterSettingsExit(() => {
             this.dismissNavigationOverlay();
+            if (navKey === NAV_CANVAS) { this.openFreeCanvas(); return; }
             this.activeNav = navKey;
             this.readingOpen = false;
-            this.fullScreenDocOpen = false;
+            this.closeFullScreenReader();
             this.activeNoteId = '';
           });
         },
@@ -1931,25 +1983,10 @@ struct Index {
             this.activeSpaceId = this.activeSpaceId === spaceId ? '' : spaceId;
             this.activeNav = NAV_LIBRARY;
             this.readingOpen = false;
-            this.fullScreenDocOpen = false;
+            this.closeFullScreenReader();
           });
         },
         onSelectNote: (note: NoteItem) => this.openNote(note),
-        onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
-        onCreateNoteInProject: (title: string, projectName: string, type: string) => {
-          // 文档导入需要真实源文件，不能创建空 PDF 占位。
-          if (type === 'Doc') { this.importDocument(projectName); }
-          else { this.requestCreateNote(projectName, type, title); }
-        },
-        onCreateFromTemplate: (templateName: string, projectName: string) => {
-          this.createNoteFromTemplate(templateName, projectName);
-        },
-        onImportIntoProject: (projectName: string) => {
-          this.importDocument(projectName);
-        },
-        onCreateProject: (name: string, color: string, icon: string) => {
-          this.createProject(name, color, icon);
-        },
         onOpenCreateProject: () => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             this.createProjectOpen = true;
@@ -1962,74 +1999,33 @@ struct Index {
             this.sheetNote = note;
           });
         },
-        onRenameProject: (oldName: string, newName: string) => {
-          this.renameProject(oldName, newName);
-        },
-        onDeleteProject: (name: string) => {
-          this.deleteProject(name);
-        },
-        onDeleteNote: (noteId: string) => {
-          this.deleteNote(noteId);
-        },
-        trashCount: this.trash.length,
-        todoPendingCount: this.todoPendingCount(),
-        favoriteCount: this.favoriteNotes().length,
-        onRenameNote: (note: NoteItem, newTitle: string) => {
-          this.commitRename(note, newTitle);
-        },
-        onMoveNote: (note: NoteItem, category: string) => {
-          this.commitMove(note, category);
-        },
-        onApplyTags: (note: NoteItem, tags: string[]) => {
-          this.applyTags(note, tags);
-        },
         onOpenSettings: () => {
           this.openSettings('overview');
         }
-      })
+      }).enabled(!this.workspaceLoading)
+      if (this.workspaceLoading) { LoadingProgress().width(32).height(32).zIndex(1000).accessibilityText('正在读取本机资料') }
 
       // ---- 华为风独立全屏文档与稿纸工作台 (PDF / 试卷 / 稿纸手写) ----
       if (this.fullScreenDocOpen) {
-        HuaweiDocWorkspace({
-          note: this.fullScreenDocNote,
-          onRestorePdfSource: () => this.restoreReaderPdfSource(),
-          sourcePage: this.sourcePage,
-          sourceJumpToken: this.sourceJumpToken,
-          onExtractPdfText: (page: number) => { this.pdfExtractNoteId = this.fullScreenDocNote.id; this.pdfExtractPage = page; },
-          backRequestToken: this.documentBackToken,
-          onCommitForExit: async (note: NoteItem, content: string, kind?: ReaderSaveKind) => {
-            await this.handleSaved(note, content, kind);
-            this.saveState = SAVE_IDLE;
-          },
-          onSmartExtract: () => { this.smartExtractVisible = true; },
-          onExportText: async () => {
-            const result = await this.storage.exportDocument(this.getAbilityContext(), this.fullScreenDocNote);
-            if (result.status !== 'cancelled') { this.notify(result.message); }
-          },
-          onSearchNotes: () => { this.searchVisible = true; },
-          onClose: () => {
-            this.fullScreenDocOpen = false;
-            this.activeNoteId = '';
-          },
-          onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => this.handleSaved(note, content, kind),
-          onSaveStateChange: (state: string) => {
-            this.saveState = state;
-          },
-          onToggleFavorite: (note: NoteItem) => {
-            this.toggleFavorite(note);
-          }
-        })
+        Column() { this.readerWorkspaceContent(this.fullScreenDocNote) }
         .width('100%')
         .height('100%')
+        .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: WorkspaceNotePolicy.isFreeCanvas(this.fullScreenDocNote) ? 0 : 8 }))
+          .animation({ duration: WorkspaceNotePolicy.isFreeCanvas(this.fullScreenDocNote) ? AnimationTokens.DURATION_FAST : AnimationTokens.DURATION_PAGE_TRANSITION, curve: AnimationTokens.CURVE_STANDARD }))
       }
 
+      if (this.pairPickerSourceId && this.notes.some((note: NoteItem) => note.id === this.pairPickerSourceId)) {
+        ReaderPairPicker({ source: this.notes.find((note: NoteItem) => note.id === this.pairPickerSourceId)!, notes: this.notes,
+          closeToken: this.pairPickerCloseToken,
+          onClose: () => { this.pairPickerSourceId = ''; }, onSelect: (id: string) => this.selectReaderPair(id) })
+      }
       if (this.privacyVisible) {
         PrivacySheet({ onClose: () => { this.privacyVisible = false; } })
       }
       if (this.backupVisible) {
-        StudyBackupSheet({ notes: this.notes, cards: this.reviewCards, closeToken: this.backupCloseToken,
+        StudyBackupSheet({ notes: this.notes, spaces: this.spaces, cards: this.reviewCards, closeToken: this.backupCloseToken,
           onClose: () => { this.backupVisible = false; },
-          onRestore: (note: NoteItem, cards: ReviewCard[]) => StudyRestoreService.commit(note, cards, {
+          onRestore: (note: NoteItem, cards: ReviewCard[]) => this.noteMutationQueue.run<void>(() => StudyRestoreService.commit(note, cards, {
             notes: () => this.notes, cards: () => this.reviewCards,
             create: async (item: NoteItem) => { await this.storage.create(this.getAbilityContext(), item); },
             saveNotes: (notes: NoteItem[]) => this.storage.save(notes),
@@ -2037,15 +2033,17 @@ struct Index {
             remove: (item: NoteItem) => this.storage.delete(this.getAbilityContext(), item.id, item.sourceUri || '', item.coverUrl || ''),
             publishNotes: (notes: NoteItem[]) => { this.notes = notes; this.rebuildSpaces(); this.refreshStats(); this.refreshGraph(); },
             publishCards: (items: ReviewCard[]) => { this.reviewCards = items; }
-          }) })
+          })) })
       }
       if (this.studyVisible) {
         StudySheet({ notes: this.notes, cards: this.reviewCards, course: this.studyCourse,
           closeToken: this.studyCloseToken,
           onClose: () => { this.studyVisible = false; },
           onSave: async (cards: ReviewCard[]) => {
-            await this.reviewStorage.save(this.getAbilityContext(), cards);
-            this.reviewCards = cards;
+            const captured = ReviewPolicy.normalize(cards);
+            await this.noteMutationQueue.run<void>(async () => {
+              await this.reviewStorage.save(this.getAbilityContext(), captured); this.reviewCards = captured;
+            });
           },
           onSource: (noteId: string, page?: number) => this.openStudySource(noteId, page) })
       }
@@ -2127,6 +2125,8 @@ struct Index {
           onCreateProject: (name: string, color: string, icon: string) => this.createProject(name, color, icon)
         })
       }
+
+      LocalPdfEngineHost()
 
       // ---- 底部弹层（全屏遮罩，由 Sidebar 触发） ----
       this.activeSheetContent()

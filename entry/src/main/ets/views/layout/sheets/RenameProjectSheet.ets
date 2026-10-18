@@ -14,7 +14,7 @@ export struct RenameProjectSheet {
   onRenameProject: (oldName: string, newName: string) => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
 
   @State private draft: string = '';
 

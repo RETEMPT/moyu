@@ -17,6 +17,7 @@ import { Backlink, LinkGraph, UnresolvedLink } from '../../common/types/LinkGrap
 import { NoteItem } from '../../common/types/NoteItem';
 import { WorkspaceStats } from '../../common/types/WorkspaceStats';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
+import { AppIcon } from '../common/AppIcon';
 import { GraphTopicPolicy } from '../../services/GraphTopicPolicy';
 
 /** 纯白二叉拓扑节点 */
@@ -73,7 +74,7 @@ export struct GraphWorkspace {
   onCreateGalaxy: (galaxyName: string) => Promise<boolean> = async () => false;
 
   @StorageProp('flowmindDarkMode') @Watch('onGraphChanged') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') @Watch('onGraphChanged') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') @Watch('onGraphChanged') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -85,6 +86,8 @@ export struct GraphWorkspace {
   @State panX: number = 0;
   @State panY: number = 0;
   @State selectedNode: GraphNode | null = null;
+  @State expandedLinks: boolean = false;
+  @State expandedPending: boolean = false;
   @State filterMode: string = 'all'; // 'all' | 'notes' | 'unresolved'
   @State activeGalaxy: string = '__all_topics__'; // 'all' | 具体的分类名
 
@@ -215,7 +218,7 @@ export struct GraphWorkspace {
       const category: string = noteCategoryMap.get(noteId) ?? (noteCategoryMap.get(label) ?? '未分类');
       // 根据文字长度自适应卡片宽度
       const textLen: number = label.length;
-      const cardW: number = Math.max(96, Math.min(190, textLen * 11 + 54));
+      const cardW: number = Math.max(160, Math.min(224, textLen * 13 + 66));
 
       rawNodes.push({
         noteId: noteId,
@@ -225,7 +228,7 @@ export struct GraphWorkspace {
         x: 0,
         y: 0,
         w: cardW,
-        h: 32,
+        h: 44,
         degree: 0,
         level: 0,
         isRoot: false
@@ -389,41 +392,20 @@ export struct GraphWorkspace {
       levels.push(unvisited);
     }
 
-    // 4. 坐标计算：根节点在顶部偏上，子节点按二叉树分支左右舒展
-    const startY: number = cy - Math.min(h * 0.35, 135) * this.zoom;
-    const levelHeight: number = Math.max(76, Math.min(115, (h * 0.72) / Math.max(2, levels.length))) * this.zoom;
-
-    for (let l = 0; l < levels.length; l++) {
-      const levelNodes: number[] = levels[l];
-      const count: number = levelNodes.length;
-      const currentY: number = startY + l * levelHeight;
-
-      if (l === 0) {
-        // 核心根节点
-        const n: GraphNode = nodes[levelNodes[0]];
-        const custom: NodePoint | undefined = this.nodeCustomPositions.get(n.label);
-        n.x = custom ? custom.x : cx;
-        n.y = custom ? custom.y : currentY;
-      } else {
-        // 左右分支展开：保持合适卡片间距
-        const minGap: number = 110 * this.zoom;
-        const totalSpan: number = Math.max(minGap * (count - 1), Math.min(w * 0.88, count * 135 * this.zoom));
-        const step: number = count > 1 ? totalSpan / (count - 1) : 0;
-        const startX: number = cx - totalSpan / 2;
-
-        for (let idx = 0; idx < count; idx++) {
-          const nIdx: number = levelNodes[idx];
-          const n: GraphNode = nodes[nIdx];
-          const custom: NodePoint | undefined = this.nodeCustomPositions.get(n.label);
-          if (custom) {
-            n.x = custom.x;
-            n.y = custom.y;
-          } else {
-            n.x = count === 1 ? cx : (startX + idx * step);
-            n.y = currentY;
-          }
-        }
-      }
+    // Put the most connected note at the center and distribute readable cards in two columns.
+    const others: number[] = [];
+    for (let index = 0; index < nodes.length; index++) { if (index !== rootIdx) { others.push(index); } }
+    const columns = w < 580 ? 1 : 2;
+    const rows = Math.ceil(others.length / columns);
+    const gap = Math.max(68, Math.min(108, (h - 100) / Math.max(1, rows - 1))) * this.zoom;
+    const spread = Math.max(174, Math.min(350, w * 0.30)) * this.zoom;
+    const root = nodes[rootIdx]; const rootCustom = this.nodeCustomPositions.get(root.label);
+    root.x = rootCustom ? rootCustom.x : cx;
+    root.y = rootCustom ? rootCustom.y : columns === 1 ? cy - h * 0.32 : cy;
+    for (let index = 0; index < others.length; index++) {
+      const node = nodes[others[index]], custom = this.nodeCustomPositions.get(node.label);
+      node.x = custom ? custom.x : columns === 1 ? cx : cx + (index % 2 === 0 ? -spread : spread);
+      node.y = custom ? custom.y : columns === 1 ? root.y + (index + 1) * gap : cy - (rows - 1) * gap / 2 + Math.floor(index / 2) * gap;
     }
   }
 
@@ -491,21 +473,24 @@ export struct GraphWorkspace {
     c.stroke();
 
     // 4. 左侧图标与标题文字
-    const fontSize: number = Math.max(9, Math.min(13, 11 * this.zoom));
+    const fontSize: number = Math.max(11, Math.min(18, 13 * this.zoom));
     c.font = n.isRoot ? `bold ${fontSize}vp sans-serif` : `${fontSize}vp sans-serif`;
 
-    const icon: string = n.isRoot ? '🏷' : (n.unresolved ? '✦' : '📄');
-    const iconX: number = nx + 8 * this.zoom;
+    const iconX: number = nx + 12 * this.zoom;
     const textY: number = ny + nh / 2 + fontSize * 0.35;
-
-    c.fillStyle = n.unresolved ? this.palette().warning : (n.isRoot ? this.palette().accent : this.palette().inkMuted);
-    c.fillText(icon, iconX, textY);
-
-    // 文本标号截断
-    const labelX: number = iconX + 16 * this.zoom;
-    const maxChars: number = Math.max(5, Math.floor((nw - 48 * this.zoom) / (fontSize * 0.72)));
-    const displayLabel: string = n.label.length > maxChars ? `${n.label.substring(0, maxChars)}…` : n.label;
-
+    c.strokeStyle = n.unresolved ? this.palette().warning : this.palette().accent;
+    c.lineWidth = 1.5;
+    c.strokeRect(iconX, ny + 14 * this.zoom, 11 * this.zoom, 15 * this.zoom);
+    c.beginPath();
+    c.moveTo(iconX + 3 * this.zoom, ny + 20 * this.zoom); c.lineTo(iconX + 8 * this.zoom, ny + 20 * this.zoom);
+    c.moveTo(iconX + 3 * this.zoom, ny + 24 * this.zoom); c.lineTo(iconX + 8 * this.zoom, ny + 24 * this.zoom); c.stroke();
+    const labelX: number = iconX + 20 * this.zoom;
+    const available: number = nw - 66 * this.zoom;
+    let displayLabel: string = n.label;
+    if (c.measureText(displayLabel).width > available) {
+      while (displayLabel.length > 0 && c.measureText(displayLabel + '…').width > available) { displayLabel = displayLabel.substring(0, displayLabel.length - 1); }
+      displayLabel += '…';
+    }
     c.fillStyle = isDimmed ? this.palette().inkMuted : this.palette().inkPrimary;
     c.fillText(displayLabel, labelX, textY);
 
@@ -560,15 +545,19 @@ export struct GraphWorkspace {
       }
     }
 
-    const model: GraphModel = this.buildModel();
-    let nodes: GraphNode[] = model.nodes;
-
-    // 节点类型筛选
-    if (this.filterMode === 'notes') {
-      nodes = nodes.filter((n: GraphNode) => !n.unresolved);
-    } else if (this.filterMode === 'unresolved') {
-      nodes = nodes.filter((n: GraphNode) => n.unresolved);
+    const original: GraphModel = this.buildModel();
+    const nodes: GraphNode[] = [];
+    const mapping: Map<number, number> = new Map();
+    original.nodes.forEach((node: GraphNode, index: number) => {
+      if ((this.filterMode === 'notes' && node.unresolved) || (this.filterMode === 'unresolved' && !node.unresolved)) { return; }
+      mapping.set(index, nodes.length); nodes.push(node);
+    });
+    const edges: GraphEdge[] = [];
+    for (const edge of original.edges) {
+      const a = mapping.get(edge.a), b = mapping.get(edge.b);
+      if (a !== undefined && b !== undefined) { edges.push({ a, b }); }
     }
+    const model: GraphModel = { nodes, edges };
 
     if (nodes.length === 0) {
       c.font = '13vp sans-serif';
@@ -604,15 +593,15 @@ export struct GraphWorkspace {
         (a.label === selected.label || b.label === selected.label);
 
       c.beginPath();
-      // 从父节点底部中心优雅连向子节点顶部中心
-      const startX: number = parent.x;
-      const startY: number = parent.y + (parent.h * this.zoom) / 2;
-      const endX: number = child.x;
-      const endY: number = child.y - (child.h * this.zoom) / 2;
-
-      const deltaY: number = Math.max(22, (endY - startY) * 0.46);
+      const sideways: boolean = Math.abs(child.x - parent.x) > Math.abs(child.y - parent.y);
+      const direction: number = child.x >= parent.x ? 1 : -1;
+      const startX: number = sideways ? parent.x + direction * parent.w * this.zoom / 2 : parent.x;
+      const startY: number = sideways ? parent.y : parent.y + parent.h * this.zoom / 2;
+      const endX: number = sideways ? child.x - direction * child.w * this.zoom / 2 : child.x;
+      const endY: number = sideways ? child.y : child.y - child.h * this.zoom / 2;
       c.moveTo(startX, startY);
-      c.bezierCurveTo(startX, startY + deltaY, endX, endY - deltaY, endX, endY);
+      if (sideways) { const middle: number = (startX + endX) / 2; c.bezierCurveTo(middle, startY, middle, endY, endX, endY); }
+      else { const middle: number = (startY + endY) / 2; c.bezierCurveTo(startX, middle, endX, middle, endX, endY); }
 
       if (isConnectedToSelected) {
         // 选中高亮能量线
@@ -713,10 +702,10 @@ export struct GraphWorkspace {
   @Builder
   canvasControl(label: string, onClick: () => void) {
     Text(label)
-      .fontSize(TypographyTokens.BODY_REGULAR)
+      .fontSize(14)
       .fontColor(this.palette().inkPrimary)
-      .width(32)
-      .height(32)
+      .width(44)
+      .height(44)
       .textAlign(TextAlign.Center)
       .borderRadius(6)
       .backgroundColor(this.palette().surface)
@@ -730,15 +719,15 @@ export struct GraphWorkspace {
   filterPill(mode: string, label: string, count: number) {
     Row({ space: 4 }) {
       Text(label)
-        .fontSize(TypographyTokens.TINY)
+        .fontSize(12)
         .fontWeight(this.filterMode === mode ? FontWeight.Bold : FontWeight.Normal)
         .fontColor(this.filterMode === mode ? this.palette().accent : this.palette().inkMuted)
       Text(`${count}`)
-        .fontSize(TypographyTokens.TINY)
+        .fontSize(12)
         .fontColor(this.filterMode === mode ? this.palette().accent : this.palette().inkMuted)
     }
-    .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-    .borderRadius(14)
+    .padding({ left: 12, right: 12, top: 8, bottom: 8 }).constraintSize({ minHeight: 44 })
+    .borderRadius(5)
     .backgroundColor(this.filterMode === mode ? this.palette().accentSoft : this.palette().surfaceSubtle)
     .border({ width: 1, color: this.filterMode === mode ? this.palette().accent : Color.Transparent })
     .hoverEffect(HoverEffect.Highlight)
@@ -757,15 +746,15 @@ export struct GraphWorkspace {
         ForEach(this.getGalaxies(), (g: GalaxyCluster) => {
           Row({ space: 5 }) {
             Text(g.name)
-              .fontSize(TypographyTokens.TINY)
+              .fontSize(12)
               .fontWeight(this.activeGalaxy === g.id ? FontWeight.Bold : FontWeight.Normal)
               .fontColor(this.activeGalaxy === g.id ? this.palette().onAccent : this.palette().inkPrimary)
             Text(`${g.count}`)
-              .fontSize(TypographyTokens.TINY)
+              .fontSize(12)
               .fontColor(this.activeGalaxy === g.id ? 'rgba(255,255,255,0.85)' : this.palette().inkMuted)
           }
-          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-          .borderRadius(8)
+          .padding({ left: 12, right: 12, top: 8, bottom: 8 }).constraintSize({ minHeight: 44 })
+          .borderRadius(5)
           .backgroundColor(this.activeGalaxy === g.id ? this.palette().accent : this.palette().surfaceSubtle)
           .border({ width: 1, color: this.activeGalaxy === g.id ? this.palette().accent : this.palette().borderSubtle })
           .hoverEffect(HoverEffect.Highlight)
@@ -781,11 +770,11 @@ export struct GraphWorkspace {
         // + 新建主题分类
         Row({ space: 3 }) {
           Text('+')
-            .fontSize(TypographyTokens.TINY)
+            .fontSize(12)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().accent)
           Text('新建主题')
-            .fontSize(TypographyTokens.TINY)
+            .fontSize(12)
             .fontColor(this.palette().accent)
         }
         .padding({ left: 8, right: 8, top: 5, bottom: 5 })
@@ -803,6 +792,7 @@ export struct GraphWorkspace {
     }
     .scrollable(ScrollDirection.Horizontal)
     .scrollBar(BarState.Off)
+    .align(Alignment.Start)
     .width('100%')
   }
 
@@ -810,11 +800,11 @@ export struct GraphWorkspace {
   panelTitle(text: string, count: number) {
     Row({ space: 6 }) {
       Text(text)
-        .fontSize(TypographyTokens.TINY)
-        .fontColor(this.palette().inkMuted)
+        .fontSize(16)
+        .fontColor(this.palette().inkPrimary)
         .fontWeight(FontWeight.Medium)
       Text(`${count}`)
-        .fontSize(TypographyTokens.TINY)
+        .fontSize(12)
         .fontColor(this.palette().inkSecondary)
     }
     .width('100%')
@@ -846,18 +836,12 @@ export struct GraphWorkspace {
                   .fontSize(TypographyTokens.TITLE_HERO)
                   .fontWeight(FontWeight.Bold)
                   .fontColor(this.palette().inkPrimary)
-                Text('二叉链接版')
-                  .fontSize(TypographyTokens.TINY)
-                  .fontWeight(FontWeight.Bold)
-                  .fontColor(this.palette().accent)
-                  .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                  .borderRadius(4)
-                  .backgroundColor(this.palette().accentSoft)
+
               }
               .alignItems(VerticalAlign.Center)
 
-              Text(`共 ${this.stats.noteCount} 篇笔记 · ${this.stats.linkCount} 条已解析双链 · 可拖拽节点改变路径 · 点击两节点直接建立链接`)
-                .fontSize(TypographyTokens.BODY_REGULAR)
+              Text(`${this.stats.noteCount} 份资料 · ${this.stats.linkCount} 条连接`)
+                .fontSize(14)
                 .fontColor(this.palette().inkSecondary)
             }
             .alignItems(HorizontalAlign.Start)
@@ -868,8 +852,8 @@ export struct GraphWorkspace {
             // 过滤选择胶囊
             Row({ space: 6 }) {
               this.filterPill('all', '全部', this.stats.linkCount + this.stats.unresolvedCount)
-              this.filterPill('notes', '实体笔记', this.stats.linkCount)
-              this.filterPill('unresolved', '待创建概念', this.stats.unresolvedCount)
+              this.filterPill('notes', '笔记', this.stats.linkCount)
+              this.filterPill('unresolved', '待创建', this.stats.unresolvedCount)
             }
           }
           .width('100%')
@@ -886,13 +870,13 @@ export struct GraphWorkspace {
           if (this.isCreatingGalaxy) {
             Column({ space: 8 }) {
               Text('新建分类：')
-                .fontSize(TypographyTokens.TINY)
+                .fontSize(12)
                 .fontColor(this.palette().inkPrimary)
               TextInput({
                 text: this.newGalaxyName,
                 placeholder: '输入分类主题，如：操作系统 / 考研数学'
               })
-                .fontSize(TypographyTokens.TINY)
+                .fontSize(12)
                 .height(48)
                 .width('100%')
                 .maxLength(80)
@@ -911,7 +895,7 @@ export struct GraphWorkspace {
                 .layoutWeight(1)
                 .enabled(!this.galaxySaving)
                 .accessibilityText('确定新建主题')
-                .fontSize(TypographyTokens.TINY)
+                .fontSize(12)
                 .fontWeight(FontWeight.Bold)
                 .fontColor(this.palette().onAccent)
                 .padding({ left: 10, right: 10, top: 5, bottom: 5 })
@@ -923,7 +907,7 @@ export struct GraphWorkspace {
                 .height(48)
                 .layoutWeight(1)
                 .enabled(!this.galaxySaving)
-                .fontSize(TypographyTokens.TINY)
+                .fontSize(12)
                 .fontColor(this.palette().inkMuted)
                 .padding({ left: 8, right: 8, top: 5, bottom: 5 })
                 .onClick(() => {
@@ -944,14 +928,14 @@ export struct GraphWorkspace {
             Canvas(this.ctx)
               .width('100%')
               .height(440)
-              .borderRadius(14)
+              .borderRadius(5)
               .backgroundColor(this.isDarkMode ? '#0F172A' : '#FFFFFF')
               .border({ width: 1, color: this.palette().borderSubtle })
               .shadow({ radius: 8, color: 'rgba(0,0,0,0.04)', offsetY: 2 })
               .onReady(() => {
                 this.canvasReady = true;
                 this.drawGraph();
-              })
+              }).onAreaChange(() => { if (this.canvasReady) { this.drawGraph(); } })
               .onTouch((event: TouchEvent) => {
                 const touch = event.touches[0];
                 if (!touch) {
@@ -1030,11 +1014,11 @@ export struct GraphWorkspace {
                   .fontSize(13)
                   .fontColor(this.palette().accent)
                 Text(`已选「${this.linkSourceNode.label}」，点击任意节点建立链接`)
-                  .fontSize(TypographyTokens.TINY)
+                  .fontSize(12)
                   .fontColor(this.palette().inkPrimary)
                   .fontWeight(FontWeight.Medium)
                 Text('取消')
-                  .fontSize(TypographyTokens.TINY)
+                  .fontSize(12)
                   .fontColor(this.palette().inkMuted)
                   .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                   .borderRadius(4)
@@ -1046,7 +1030,7 @@ export struct GraphWorkspace {
                   })
               }
               .padding({ left: 12, right: 10, top: 6, bottom: 6 })
-              .borderRadius(18)
+              .borderRadius(8)
               .backgroundColor(this.palette().surface)
               .border({ width: 1, color: this.palette().borderSubtle })
               .shadow({ radius: 8, color: 'rgba(0,0,0,0.06)' })
@@ -1071,7 +1055,7 @@ export struct GraphWorkspace {
                     .fontSize(14)
                     .fontColor(this.selectedNode.unresolved ? '#D97706' : this.palette().accent)
                   Text(this.selectedNode.label)
-                    .fontSize(TypographyTokens.TINY)
+                    .fontSize(12)
                     .fontWeight(FontWeight.Bold)
                     .fontColor(this.palette().inkPrimary)
                     .maxLines(1)
@@ -1093,7 +1077,7 @@ export struct GraphWorkspace {
                 // 快捷直达笔记
                 Row({ space: 4 }) {
                   Text(this.selectedNode.unresolved ? '✦ 物化' : '进入笔记 →')
-                    .fontSize(TypographyTokens.TINY)
+                    .fontSize(12)
                     .fontWeight(FontWeight.Medium)
                     .fontColor(this.selectedNode.unresolved ? this.palette().inkPrimary : this.palette().onAccent)
                 }
@@ -1126,7 +1110,7 @@ export struct GraphWorkspace {
                   })
               }
               .padding({ left: 14, right: 10, top: 6, bottom: 6 })
-              .borderRadius(20)
+              .borderRadius(8)
               .backgroundColor(this.palette().surface)
               .border({ width: 1, color: this.palette().borderSubtle })
               .shadow({ radius: 12, color: 'rgba(0,0,0,0.08)', offsetY: 3 })
@@ -1145,15 +1129,15 @@ export struct GraphWorkspace {
           }) {
             // ---- 已解析引用 ----
             Column() {
-              this.panelTitle('已解析双链脉络', this.graph.backlinks.length)
+              this.panelTitle('已建立的连接', this.graph.backlinks.length)
               if (this.graph.backlinks.length === 0) {
                 this.emptyHint('还没有任何 [[双链]]。在正文中书写 [[笔记标题]] 即可建立连接。')
               } else {
-                ForEach(this.graph.backlinks, (link: Backlink) => {
+                ForEach(this.expandedLinks ? this.graph.backlinks : this.graph.backlinks.slice(0, 3), (link: Backlink) => {
                   Column({ space: 3 }) {
                     Row({ space: 6 }) {
                       Text(link.sourceTitle)
-                        .fontSize(TypographyTokens.BODY_REGULAR)
+                        .fontSize(14)
                         .fontColor(this.palette().inkPrimary)
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1163,7 +1147,7 @@ export struct GraphWorkspace {
                         .fontSize(TypographyTokens.CAPTION)
                         .fontColor(this.palette().inkMuted)
                       Text(link.targetTitle)
-                        .fontSize(TypographyTokens.BODY_REGULAR)
+                        .fontSize(14)
                         .fontColor(this.palette().link)
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1174,7 +1158,7 @@ export struct GraphWorkspace {
 
                     if (link.label.length > 0) {
                       Text(link.label)
-                        .fontSize(TypographyTokens.TINY)
+                        .fontSize(12)
                         .fontColor(this.palette().inkMuted)
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1187,41 +1171,37 @@ export struct GraphWorkspace {
                   .hoverEffect(HoverEffect.Highlight)
                 }, (link: Backlink, index: number) => `${index}-${link.sourceNoteId}-${link.targetNoteId}-${link.label}`)
               }
+              if (this.graph.backlinks.length > 3) {
+                Button(this.expandedLinks ? '收起连接' : '查看全部连接').height(44).fontSize(12).fontColor(this.palette().accent).backgroundColor(Color.Transparent)
+                  .onClick(() => { this.expandedLinks = !this.expandedLinks; })
+              }
             }
             .width(this.isPhone ? '100%' : undefined)
             .layoutWeight(this.isPhone ? 0 : 1)
             .alignItems(HorizontalAlign.Start)
             .padding(14)
-            .borderRadius(10)
+            .borderRadius(5)
             .backgroundColor(this.palette().surface)
             .border({ width: 1, color: this.palette().borderSubtle })
             .margin(this.isPhone ? { bottom: 14 } : { right: 12 })
 
             // ---- 原初星云（待创建概念） ----
             Column() {
-              this.panelTitle('待创建概念', this.graph.unresolvedLinks.length)
+              this.panelTitle('待创建的笔记', this.graph.unresolvedLinks.length)
               if (this.graph.unresolvedLinks.length === 0) {
                 this.emptyHint('所有双链都已指向真实笔记，知识网络闭合自洽。')
               } else {
-                ForEach(this.graph.unresolvedLinks, (link: UnresolvedLink) => {
+                ForEach(this.expandedPending ? this.graph.unresolvedLinks : this.graph.unresolvedLinks.slice(0, 3), (link: UnresolvedLink) => {
                   Row({ space: 8 }) {
                     Text('○')
-                      .fontSize(TypographyTokens.TINY)
+                      .fontSize(12)
                       .fontColor(this.palette().link)
-                    Text(link.target)
-                      .fontSize(TypographyTokens.BODY_REGULAR)
-                      .fontColor(this.palette().link)
-                      .maxLines(1)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis })
-                      .layoutWeight(1)
-                      .onClick(() => this.onOpenNoteByTitle(link.target))
-                    Text(`来自 ${link.sourceTitle}`)
-                      .fontSize(TypographyTokens.TINY)
-                      .fontColor(this.palette().inkMuted)
-                      .maxLines(1)
-                      .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    Text('＋ 物化')
-                      .fontSize(TypographyTokens.TINY)
+                    Column({ space: 5 }) {
+                      Text(link.target).fontSize(14).fontColor(this.palette().inkPrimary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+                      Text(`来自 ${link.sourceTitle}`).fontSize(12).fontColor(this.palette().inkMuted).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+                    }.layoutWeight(1).alignItems(HorizontalAlign.Start).onClick(() => this.onOpenNoteByTitle(link.target))
+                    Text('创建')
+                      .fontSize(12)
                       .fontColor(this.palette().accent)
                       .padding({ left: 6, right: 6, top: 2, bottom: 2 })
                       .borderRadius(4)
@@ -1234,12 +1214,16 @@ export struct GraphWorkspace {
                   .hoverEffect(HoverEffect.Highlight)
                 }, (link: UnresolvedLink, index: number) => `${index}-${link.sourceNoteId}-${link.target}`)
               }
+              if (this.graph.unresolvedLinks.length > 3) {
+                Button(this.expandedPending ? '收起待创建笔记' : '查看全部待创建笔记').height(44).fontSize(12).fontColor(this.palette().accent).backgroundColor(Color.Transparent)
+                  .onClick(() => { this.expandedPending = !this.expandedPending; })
+              }
             }
             .width(this.isPhone ? '100%' : undefined)
             .layoutWeight(this.isPhone ? 0 : 1)
             .alignItems(HorizontalAlign.Start)
             .padding(14)
-            .borderRadius(10)
+            .borderRadius(5)
             .backgroundColor(this.palette().surface)
             .border({ width: 1, color: this.palette().borderSubtle })
             .margin(this.isPhone ? undefined : { left: 12 })

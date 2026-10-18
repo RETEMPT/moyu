@@ -1,7 +1,7 @@
 import { Context } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { PdfDocumentService } from '../document/PdfDocumentService';
-import { MarkerImportPolicy } from './MarkerImportPolicy';
+import { TextImportPolicy } from './TextImportPolicy';
 import { SMART_INPUT_LIMIT } from '../../common/constants/ContentLimits';
 
 export interface DocumentExtractResult { text: string; notice: string; }
@@ -30,11 +30,11 @@ export class DocumentExtractService {
     if (cancelled()) { throw new Error('已取消导入'); }
     const pdf = DocumentExtractService.validateInput(uri);
     if (!pdf) {
-      if (!/\.(md|txt|json)$/i.test(name)) { throw new Error('支持 PDF、Markdown、TXT 和 Marker Markdown 响应 JSON'); }
+      if (!/\.(md|markdown|txt)$/i.test(name)) { throw new Error('支持 PDF、Markdown 和 TXT；学习备份请从备份页恢复'); }
       const raw = await fs.readText(uri);
       if (cancelled()) { throw new Error('已取消导入'); }
-      return { text: MarkerImportPolicy.parse(raw, /\.json$/i.test(name)),
-        notice: '文字已导入，请校对后整理。Marker 的表格与公式保留在 Markdown 中；配套图片须另外保管。' };
+      return { text: TextImportPolicy.parse(raw),
+        notice: '文字已导入，请校对后整理。Markdown 中的表格与公式保留；配套图片须另外保管。' };
     }
     if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end - start >= 5) {
       throw new Error('每次提取 1–5 页，请填写正确的 PDF 页范围');
@@ -48,7 +48,7 @@ export class DocumentExtractService {
       if (cancelled()) { throw new Error('已取消导入'); }
       const pages = await service.extractPages(copy, start, end, true, cancelled, progress);
       const text = pages.map(page => `## 第 ${page.pageNumber} 页\n\n${page.text || '（本页未识别到文字）'}`).join('\n\n');
-      if (!pages.some(page => page.text.trim())) { throw new Error('这些页面没有识别到文字，请检查扫描清晰度或使用 Marker 转换结果'); }
+      if (!pages.some(page => page.text.trim())) { throw new Error('这些页面没有识别到文字，请检查扫描清晰度、系统识别能力，或粘贴校对后的文字'); }
       if (text.length > SMART_INPUT_LIMIT) { throw new Error('页面文字过多，请缩小页范围，原输入已保留'); }
       return { text, notice: '使用本机 PDF 文字层与鸿蒙 OCR 提取，请核对阅读顺序、表格、公式及数字；扫描结果未自动视为已校对。' };
     } finally { if (!managed) { await service.removeManagedPdf(context, copy); } }

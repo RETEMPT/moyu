@@ -5,9 +5,9 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
 ];
 export const SETTINGS_ENTRIES: SettingsEntry[] = [
   { id: 'library', group: 'workspace', title: '资料库', detail: '本机资料与项目', keywords: '笔记 文件 PDF 存储' },
-  { id: 'theme', group: 'workspace', title: '外观与动效', detail: '配色、明暗与减少动态', keywords: '主题 颜色 黑白 浅蓝 蓝白 深色 浅色 系统' },
-  { id: 'capture', group: 'workspace', title: '文字识别与排版', detail: '图片转文字，默认本地整理', keywords: 'OCR 扫描 智能识别 学习笔记 本地规则' },
-  { id: 'backup', group: 'connection', title: '备份与传递', detail: '导出、恢复与附近设备', keywords: '数据 换机 同步 云盘 备份 恢复 云服务' },
+  { id: 'theme', group: 'workspace', title: '外观与动效', detail: '配色、明暗与减少动态', keywords: '主题 颜色 白蓝 蓝白 白青 青色 白绿 绿色 白玫 玫色 暖砂 墨紫 黑白 雾蓝 浅蓝 深色 浅色 系统' },
+  { id: 'capture', group: 'workspace', title: '文字识别与排版', detail: '系统识别与本地规则整理', keywords: 'OCR 扫描 文字识别 学习笔记 本地规则' },
+  { id: 'backup', group: 'connection', title: '备份与快传', detail: '导出、恢复与附近设备', keywords: '数据 换机 同步 云盘 备份 恢复 云服务' },
   { id: 'ecosystem', group: 'connection', title: '鸿蒙与设备', detail: '系统分享、手写笔与多端', keywords: '华为 Pad 平板 手机 星闪 Penkit 互通 权限' },
   { id: 'guide', group: 'help', title: '使用指引', detail: '从收集到阅读与复习', keywords: '教程 帮助 示例 测试 PDF' },
   { id: 'legal', group: 'help', title: '隐私与数据', detail: '数据去向、授权与协议', keywords: '安全 隐私 网络 删除' },

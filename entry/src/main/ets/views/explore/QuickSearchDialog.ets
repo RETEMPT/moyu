@@ -12,9 +12,12 @@ import { NoteItem } from '../../common/types/NoteItem';
 import { NoteSearchResult } from '../../common/types/NoteSearchResult';
 import { NoteSearchService } from '../../services/NoteSearchService';
 import { SearchHistoryService } from '../../services/SearchHistoryService';
+import { IconButton } from '../common/IconButton';
+import { AppIcon } from '../common/AppIcon';
 
 /** 输入停止后再发起检索，避免逐字符读盘 */
 const SEARCH_DEBOUNCE_MS: number = 260;
+const SEARCH_BATCH_SIZE: number = 30;
 
 /** 功能8：命中高亮的文本片段（视图用） */
 interface HighlightSeg {
@@ -32,7 +35,10 @@ export struct QuickSearchDialog {
 
   @State keyword: string = '';
   @State results: NoteSearchResult[] = [];
+  @State resultLimit: number = SEARCH_BATCH_SIZE;
   @State searching: boolean = false;
+  @State searchError: string = '';
+  @State searchNotice: string = '';
   /** 功能8：正则模式开关，开启后检索按正则匹配 */
   @State regexOn: boolean = false;
   /** 功能8：搜索历史（本地持久化，最新在前） */
@@ -41,9 +47,11 @@ export struct QuickSearchDialog {
   private searchService: NoteSearchService = new NoteSearchService();
   private historyService: SearchHistoryService = new SearchHistoryService();
   private searchTimer: number = -1;
+  private requestId: number = 0;
+  private alive: boolean = false;
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private palette(): ColorPalette {
@@ -51,10 +59,13 @@ export struct QuickSearchDialog {
   }
 
   aboutToAppear(): void {
+    this.alive = true;
     this.loadHistory();
   }
 
   aboutToDisappear(): void {
+    this.alive = false;
+    this.requestId++;
     if (this.searchTimer !== -1) {
       clearTimeout(this.searchTimer);
       this.searchTimer = -1;
@@ -93,8 +104,12 @@ export struct QuickSearchDialog {
 
   private onKeywordChanged(value: string): void {
     this.keyword = value;
+    this.requestId++;
+    this.results = []; this.searchError = ''; this.searchNotice = '';
+    this.resultLimit = SEARCH_BATCH_SIZE;
     if (this.searchTimer !== -1) {
       clearTimeout(this.searchTimer);
+      this.searchTimer = -1;
     }
     if (value.trim().length === 0) {
       this.results = [];
@@ -103,6 +118,7 @@ export struct QuickSearchDialog {
     }
     this.searching = true;
     this.searchTimer = setTimeout(() => {
+      this.searchTimer = -1;
       this.runSearch(value);
     }, SEARCH_DEBOUNCE_MS);
   }
@@ -110,6 +126,10 @@ export struct QuickSearchDialog {
   /** 切换正则开关后，若已有关键词则立即按新模式重检索 */
   private toggleRegex(): void {
     this.regexOn = !this.regexOn;
+    this.requestId++;
+    if (this.searchTimer !== -1) { clearTimeout(this.searchTimer); this.searchTimer = -1; }
+    this.results = []; this.searchError = ''; this.searchNotice = '';
+    this.resultLimit = SEARCH_BATCH_SIZE;
     if (this.keyword.trim().length > 0) {
       this.searching = true;
       this.runSearch(this.keyword);
@@ -117,24 +137,27 @@ export struct QuickSearchDialog {
   }
 
   private async runSearch(keyword: string): Promise<void> {
+    const id = ++this.requestId;
+    const active = (): boolean => this.alive && id === this.requestId;
+    let unreadable = 0;
     const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const useRegex: boolean = this.regexOn;
     try {
-      const found: NoteSearchResult[] = await this.searchService.search(context, this.notes, keyword, useRegex);
+      const found: NoteSearchResult[] = await this.searchService.search(context, this.notes, keyword, useRegex,
+        { cancelled: () => !active(), onUnreadable: () => { unreadable++; } });
       // 输入或模式可能已经变化，丢弃过期结果
-      if (this.keyword === keyword && this.regexOn === useRegex) {
+      if (active()) {
         this.results = found;
-        if (found.length > 0) {
-          this.recordHistory(keyword);
-        }
+        this.searchNotice = unreadable > 0 ? `${unreadable} 份正文暂时无法读取，其他结果仍可打开。` : '';
       }
     } catch (error) {
       console.error(`全文检索失败: ${JSON.stringify(error)}`);
-      if (this.keyword === keyword && this.regexOn === useRegex) {
+      if (active()) {
         this.results = [];
+        this.searchError = error instanceof Error ? error.message : '搜索未完成，请重试。';
       }
     } finally {
-      if (this.keyword === keyword && this.regexOn === useRegex) {
+      if (active()) {
         this.searching = false;
       }
     }
@@ -222,7 +245,7 @@ export struct QuickSearchDialog {
           .fontWeight(seg.hit ? FontWeight.Bold : FontWeight.Normal)
       }, (seg: HighlightSeg, index: number) => `${index}-${seg.hit ? 1 : 0}-${seg.text}`)
     }
-    .fontSize(TypographyTokens.TINY)
+    .fontSize(13)
     .maxLines(2)
     .textOverflow({ overflow: TextOverflow.Ellipsis })
     .width('100%')
@@ -231,12 +254,15 @@ export struct QuickSearchDialog {
   build() {
     Column() {
       Column() {
+        Row() {
+          Text('搜索资料').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
+          IconButton({ icon: $r('app.media.ic_close'), label: '关闭搜索', onAction: () => this.onClose() })
+        }.width('100%').padding({ left: 18, right: 12, top: 12, bottom: 4 })
         // ---- 搜索输入 ----
         Row({ space: 8 }) {
-          Text('⌕')
-            .fontSize(TypographyTokens.TITLE_SUB)
-            .fontColor(this.palette().inkMuted)
+          AppIcon({ source: $r('app.media.ic_search'), tint: this.palette().inkMuted })
           TextInput({ text: this.keyword, placeholder: '搜索笔记或标签…' })
+            .height(48).accessibilityText('输入搜索关键词')
             .fontSize(TypographyTokens.BODY_LARGE)
             .fontColor(this.palette().inkPrimary)
             .placeholderColor(this.palette().inkMuted)
@@ -245,11 +271,12 @@ export struct QuickSearchDialog {
             .layoutWeight(1)
             .onChange((value: string) => this.onKeywordChanged(value))
           // 功能8：正则模式开关
-          Text('.*')
+          Button('.*', { type: ButtonType.Normal })
             .fontSize(TypographyTokens.CAPTION)
             .fontWeight(FontWeight.Medium)
             .fontColor(this.regexOn ? this.palette().onAccent : this.palette().inkMuted)
-            .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+            .width(44).height(44).padding(0)
+            .accessibilityText(this.regexOn ? '关闭正则搜索' : '开启正则搜索')
             .borderRadius(6)
             .backgroundColor(this.regexOn ? this.palette().accent : this.palette().surfaceSubtle)
             .hoverEffect(HoverEffect.Highlight)
@@ -263,27 +290,28 @@ export struct QuickSearchDialog {
               .margin({ right: 4 })
           }
 
-          // 简洁 ✕ 关闭按钮
-          Row() {
-            Text('✕')
-              .fontSize(14)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(this.palette().inkMuted)
+          if (this.keyword.length > 0) {
+            IconButton({ icon: $r('app.media.ic_clear'), label: '清空搜索关键词', onAction: () => this.onKeywordChanged('') })
           }
-          .width(28)
-          .height(28)
-          .justifyContent(FlexAlign.Center)
-          .borderRadius(14)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => this.onClose())
         }
         .width('100%')
         .padding({ left: 14, right: 14, top: 12, bottom: 12 })
 
+        Text(this.keyword.trim() ? `${this.searching ? '正在搜索' : `${this.results.length} 条匹配`} · ${this.regexOn ? '正则搜索' : '标题、正文与标签'}` : '搜索仅在本机进行')
+          .fontSize(12).fontColor(this.palette().inkSecondary).width('100%').padding({ left: 18, right: 18, bottom: 12 })
+
         Divider()
           .strokeWidth(1)
           .color(this.palette().borderSubtle)
+
+        if (this.searchError || this.searchNotice) {
+          Text(this.searchError || this.searchNotice).fontSize(TypographyTokens.CAPTION)
+            .fontColor(this.searchError ? this.palette().danger : this.palette().inkSecondary)
+            .width('100%').padding(14)
+          Button('重新搜索', { type: ButtonType.Normal }).height(44).margin({ bottom: 8 })
+            .fontColor(this.palette().accent).backgroundColor(this.palette().surfaceSubtle)
+            .onClick(() => this.onKeywordChanged(this.keyword))
+        }
 
         // ---- 结果列表 ----
         if (this.keyword.trim().length === 0) {
@@ -294,9 +322,10 @@ export struct QuickSearchDialog {
                 .fontSize(TypographyTokens.TINY)
                 .fontColor(this.palette().inkMuted)
               Blank()
-              Text('清除')
+              Button('清除', { type: ButtonType.Normal })
                 .fontSize(TypographyTokens.TINY)
                 .fontColor(this.palette().inkMuted)
+                .height(44).backgroundColor(Color.Transparent).accessibilityText('清除搜索历史')
                 .onClick(() => this.clearHistory())
             }
             .width('100%')
@@ -311,15 +340,12 @@ export struct QuickSearchDialog {
               Flex({ wrap: FlexWrap.Wrap }) {
                 ForEach(this.history, (item: string) => {
                   Row({ space: 4 }) {
-                    Text('🕘')
-                      .fontSize(TypographyTokens.TINY)
-                      .fontColor(this.palette().inkMuted)
                     Text(item)
                       .fontSize(TypographyTokens.CAPTION)
                       .fontColor(this.palette().inkSecondary)
                   }
-                  .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-                  .borderRadius(12)
+                  .padding({ left: 10, right: 10, top: 5, bottom: 5 }).constraintSize({ minHeight: 44 })
+                  .borderRadius(5)
                   .backgroundColor(this.palette().surfaceSubtle)
                   .hoverEffect(HoverEffect.Highlight)
                   .margin({ right: 6, bottom: 6 })
@@ -332,20 +358,21 @@ export struct QuickSearchDialog {
           .width('100%')
           .padding({ left: 14, right: 14, top: 14, bottom: 18 })
           .alignItems(HorizontalAlign.Start)
-        } else if (this.results.length === 0) {
+        } else if (this.searching || this.results.length === 0) {
           Column() {
-            Text(this.searching ? '正在检索…' : '没有匹配的笔记')
+            Text(this.searching ? '正在检索…' : this.searchError ? '修改搜索条件后重试' : '没有匹配的笔记')
               .fontSize(TypographyTokens.CAPTION)
               .fontColor(this.palette().inkMuted)
           }
           .width('100%')
           .padding({ top: 22, bottom: 22 })
         } else {
-          List({ space: 2 }) {
-            ForEach(this.results, (result: NoteSearchResult) => {
+          List({ space: 10 }) {
+            ForEach(this.results.slice(0, this.resultLimit), (result: NoteSearchResult) => {
               ListItem() {
-                Column({ space: 3 }) {
+                Column({ space: 8 }) {
                   Row({ space: 8 }) {
+                    AppIcon({ source: $r('app.media.ic_note'), iconSize: 20, tint: this.palette().accent })
                     Text(result.title)
                       .fontSize(TypographyTokens.BODY_REGULAR)
                       .fontColor(this.palette().inkPrimary)
@@ -367,29 +394,37 @@ export struct QuickSearchDialog {
                   }
                 }
                 .width('100%')
-                .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-                .borderRadius(6)
+                .padding(16)
+                .borderRadius(5).backgroundColor(this.palette().surfaceSubtle)
                 .hoverEffect(HoverEffect.Highlight)
                 .onClick(() => {
                   const note: NoteItem | undefined = this.resolveNote(result.noteId);
                   if (note !== undefined) {
+                    this.recordHistory(this.keyword);
                     if (result.pageNumber) { this.onSelectSource(note, result.pageNumber); } else { this.onSelectNote(note); }
                   }
                 })
               }
             }, (result: NoteSearchResult) => result.noteId)
+            if (this.resultLimit < this.results.length) {
+              ListItem() {
+                Button(`显示更多结果 · 已显示 ${this.resultLimit} / ${this.results.length}`, { type: ButtonType.Normal })
+                  .width('100%').height(48).fontColor(this.palette().accent).backgroundColor(this.palette().surfaceSubtle)
+                  .onClick(() => { this.resultLimit = Math.min(this.results.length, this.resultLimit + SEARCH_BATCH_SIZE); })
+              }
+            }
           }
           .width('100%')
-          .constraintSize({ maxHeight: 360 })
-          .padding({ left: 6, right: 6, top: 6, bottom: 6 })
+          .constraintSize({ maxHeight: this.isPhone ? 420 : 480 })
+          .padding({ left: 14, right: 14, top: 12, bottom: 14 })
           .scrollBar(BarState.Auto)
         }
       }
       .width('100%')
       .constraintSize({ maxWidth: 560 })
-      .borderRadius(10)
+      .borderRadius(8)
       .backgroundColor(this.palette().surface)
-      .shadow({ radius: 32, color: 'rgba(0,0,0,0.22)' })
+      .shadow({ radius: 20, color: 'rgba(0,0,0,0.12)', offsetY: 6 })
       .border({ width: 1, color: this.palette().border })
       .transition(
         TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
@@ -404,7 +439,7 @@ export struct QuickSearchDialog {
     .height('100%')
     .justifyContent(FlexAlign.Start)
     .alignItems(HorizontalAlign.Center)
-    .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: this.isPhone ? 48 : 96 })
+    .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: this.isPhone ? 24 : 64, bottom: 20 })
     .backgroundColor('rgba(0,0,0,0.25)')
     .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }))
     .onClick(() => this.onClose())

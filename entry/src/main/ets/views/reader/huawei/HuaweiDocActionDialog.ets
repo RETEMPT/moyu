@@ -1,335 +1,102 @@
-/**
- * 华为风文档工作台统一顶层操作弹窗 (HuaweiDocActionDialog)
- *
- * 统一承接：
- *   1. 「另存为」：重命名、归属项目、格式选择 (PDF / Word / Markdown)
- *   2. 「格式转换」：导出为目标格式 (PDF / Markdown / Docx / TXT)
- *   3. 「输出为长图 / 逐页输出」：图片清晰度、分页范围、加盖水印
- *   4. 「打印设置」：纸张尺寸 (A4 / A3)、打印方向、双面打印
- *
- * 视觉规范：半透明暗化遮罩 + 居中毛玻璃圆角卡片 + 品牌强调色 + 暗黑模式适配。
- */
-import { ColorPalette, TypographyTokens, LayoutTokens, AnimationTokens } from '../../../common/constants/DesignTokens';
-import { ThemeHelper } from '../../../common/theme/ThemeHelper';
+/** Output actions describe their scope before opening a system picker or share panel. */
+import { ColorPalette } from '../../../common/constants/DesignTokens';
+import { ReaderTheme } from '../../../common/theme/ReaderTheme';
+import { AppIcon } from '../../common/AppIcon';
 import { NoteItem } from '../../../common/types/NoteItem';
+import { IconButton } from '../../common/IconButton';
 
-export type HuaweiDocDialogType = 'save_as' | 'convert' | 'export_image' | 'print' | '';
+export type HuaweiDocDialogType = 'export_text' | 'export_image' | 'share_pdf' | 'share_text' | 'share_image' | 'export_original' | '';
 
 @Component
 export struct HuaweiDocActionDialog {
   @Require @Prop note: NoteItem;
+  @Prop documentTitle: string = '';
   @Require @Prop dialogType: HuaweiDocDialogType = '';
+  @Prop busy: boolean = false;
+  @Prop resultMessage: string = '';
+  @Prop failed: boolean = false;
   onClose: () => void = () => {};
-  onConfirm: (actionType: string, payload: string) => void = () => {};
-
+  onConfirm: (extension: string) => void = () => {};
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
+  @State extension: string = '.md';
 
-  // 表单状态
-  @State fileName: string = '';
-  @State targetFormat: string = 'PDF';
-  @State imageResolution: string = '高清 (2x)';
-  @State paperSize: string = 'A4';
-  @State printCopies: number = 1;
-
-  private palette(): ColorPalette {
-    return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
-  }
-
-  aboutToAppear(): void {
-    this.fileName = this.note.title;
-    if (this.dialogType === 'convert') {
-      this.targetFormat = this.note.type.toUpperCase() === 'PDF' ? 'Markdown' : 'PDF';
-    }
-  }
-
+  private palette(): ColorPalette { return ReaderTheme.palette(this.isDarkMode, this.themeStyle); }
   private dialogTitle(): string {
-    if (this.dialogType === 'save_as') {
-      return '另存为';
-    }
-    if (this.dialogType === 'convert') {
-      return '格式转换';
-    }
-    if (this.dialogType === 'export_image') {
-      return '输出为图片';
-    }
-    if (this.dialogType === 'print') {
-      return '打印文档';
-    }
-    return '操作';
+    if (this.resultMessage && !this.failed) { return this.dialogType.startsWith('share_') ? '已打开分享面板' : '已保存'; }
+    if (this.dialogType === 'share_image') { return '分享原文件'; }
+    if (this.dialogType === 'export_original') { return '导出原图'; }
+    if (this.dialogType === 'export_image') { return '保存截图'; }
+    if (this.dialogType === 'share_pdf') { return '分享原文件'; }
+    if (this.dialogType === 'share_text') { return '分享笔记文字'; }
+    return '导出文字';
   }
-
-  private submitAction(): void {
-    let payload: string = this.fileName;
-    if (this.dialogType === 'convert') {
-      payload = this.targetFormat;
-    } else if (this.dialogType === 'export_image') {
-      payload = this.imageResolution;
-    } else if (this.dialogType === 'print') {
-      payload = `${this.paperSize}, ${this.printCopies}份`;
+  private description(): string {
+    if (this.dialogType === 'share_image' || this.dialogType === 'share_pdf') {
+      return '分享原文件，不含新增笔迹\n通过系统面板选择接收方';
     }
-    this.onConfirm(this.dialogType, payload);
-    this.onClose();
+    if (this.dialogType === 'export_original') { return '完整原图，不含新增笔迹'; }
+    if (this.dialogType === 'export_image') { return '当前可见页面与笔迹\n不含屏幕外内容与随堂稿纸'; }
+    if (this.dialogType === 'share_text') { return '仅正文，不包含图片与笔迹'; }
+    return '仅正文，不包含图片与笔迹';
+  }
+  private confirmLabel(): string {
+    if (this.busy) { return '处理中…'; }
+    if (this.failed) { return '重试'; }
+    return this.dialogType === 'share_pdf' || this.dialogType === 'share_text' || this.dialogType === 'share_image' ? '继续分享' : this.dialogType === 'export_image' ? '保存 PNG' : '选择位置';
   }
 
   @Builder
-  formatOption(name: string) {
-    Text(name)
-      .fontSize(TypographyTokens.CAPTION)
-      .fontColor(this.targetFormat === name ? this.palette().accent : this.palette().inkSecondary)
-      .fontWeight(this.targetFormat === name ? FontWeight.Medium : FontWeight.Normal)
-      .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-      .borderRadius(6)
-      .backgroundColor(this.targetFormat === name ? this.palette().accentSoft : this.palette().surfaceSubtle)
-      .onClick(() => {
-        this.targetFormat = name;
-      })
-  }
-
-  @Builder
-  dialogBody() {
-    if (this.dialogType === 'save_as') {
-      Column({ space: 10 }) {
-        Text('文档名称')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .width('100%')
-
-        TextInput({ text: this.fileName })
-          .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontColor(this.palette().inkPrimary)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .borderRadius(8)
-          .height(38)
-          .width('100%')
-          .onChange((v: string) => {
-            this.fileName = v;
-          })
-
-        Text('保存格式')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .width('100%')
-          .margin({ top: 4 })
-
-        Row({ space: 8 }) {
-          this.formatOption('PDF')
-          this.formatOption('Word')
-          this.formatOption('Markdown')
-        }
-        .width('100%')
-      }
-      .width('100%')
-    } else if (this.dialogType === 'convert') {
-      Column({ space: 10 }) {
-        Text('转换为目标格式')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .width('100%')
-
-        Row({ space: 8 }) {
-          this.formatOption('Markdown')
-          this.formatOption('PDF')
-          this.formatOption('Docx')
-          this.formatOption('TXT')
-        }
-        .width('100%')
-
-        Text('转换后将自动提取原盘文本、批注与手写草稿，生成新格式副本存入当前项目。')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .margin({ top: 6 })
-      }
-      .width('100%')
-    } else if (this.dialogType === 'export_image') {
-      Column({ space: 10 }) {
-        Text('输出画质')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .width('100%')
-
-        Row({ space: 8 }) {
-          Text('标清 (1x)')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.imageResolution.includes('1x') ? this.palette().accent : this.palette().inkSecondary)
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .borderRadius(6)
-            .backgroundColor(this.imageResolution.includes('1x') ? this.palette().accentSoft : this.palette().surfaceSubtle)
-            .onClick(() => { this.imageResolution = '标清 (1x)'; })
-
-          Text('高清 (2x)')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.imageResolution.includes('2x') ? this.palette().accent : this.palette().inkSecondary)
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .borderRadius(6)
-            .backgroundColor(this.imageResolution.includes('2x') ? this.palette().accentSoft : this.palette().surfaceSubtle)
-            .onClick(() => { this.imageResolution = '高清 (2x)'; })
-
-          Text('超清 (4x 适合打印)')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.imageResolution.includes('4x') ? this.palette().accent : this.palette().inkSecondary)
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .borderRadius(6)
-            .backgroundColor(this.imageResolution.includes('4x') ? this.palette().accentSoft : this.palette().surfaceSubtle)
-            .onClick(() => { this.imageResolution = '超清 (4x 适合打印)'; })
-        }
-        .width('100%')
-
-        Text('包含页面矢量笔迹与答题批改，输出为纵向长图并保存至相册。')
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .margin({ top: 4 })
-      }
-      .width('100%')
-    } else if (this.dialogType === 'print') {
-      Column({ space: 10 }) {
-        Row() {
-          Text('纸张尺寸')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().inkPrimary)
-          Blank()
-          Row({ space: 6 }) {
-            Text('A4')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.paperSize === 'A4' ? this.palette().accent : this.palette().inkSecondary)
-              .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-              .borderRadius(6)
-              .backgroundColor(this.paperSize === 'A4' ? this.palette().accentSoft : this.palette().surfaceSubtle)
-              .onClick(() => { this.paperSize = 'A4'; })
-
-            Text('A3 试卷')
-              .fontSize(TypographyTokens.CAPTION)
-              .fontColor(this.paperSize === 'A3' ? this.palette().accent : this.palette().inkSecondary)
-              .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-              .borderRadius(6)
-              .backgroundColor(this.paperSize === 'A3' ? this.palette().accentSoft : this.palette().surfaceSubtle)
-              .onClick(() => { this.paperSize = 'A3'; })
-          }
-        }
-        .width('100%')
-
-        Row() {
-          Text('打印份数')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().inkPrimary)
-          Blank()
-          Row({ space: 8 }) {
-            Text('－')
-              .fontSize(TypographyTokens.BODY_REGULAR)
-              .fontColor(this.palette().inkSecondary)
-              .width(28)
-              .height(28)
-              .textAlign(TextAlign.Center)
-              .borderRadius(6)
-              .backgroundColor(this.palette().surfaceSubtle)
-              .onClick(() => {
-                if (this.printCopies > 1) {
-                  this.printCopies--;
-                }
-              })
-
-            Text(`${this.printCopies}`)
-              .fontSize(TypographyTokens.BODY_REGULAR)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.palette().inkPrimary)
-              .width(28)
-              .textAlign(TextAlign.Center)
-
-            Text('＋')
-              .fontSize(TypographyTokens.BODY_REGULAR)
-              .fontColor(this.palette().inkSecondary)
-              .width(28)
-              .height(28)
-              .textAlign(TextAlign.Center)
-              .borderRadius(6)
-              .backgroundColor(this.palette().surfaceSubtle)
-              .onClick(() => {
-                this.printCopies++;
-              })
-          }
-        }
-        .width('100%')
-      }
-      .width('100%')
-    }
+  formatOption(value: string, title: string, detail: string) {
+    Button({ type: ButtonType.Normal }) {
+      Column({ space: 4 }) {
+        Text(title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+        Text(detail).fontSize(12).fontColor(this.palette().inkSecondary)
+      }.width('100%').alignItems(HorizontalAlign.Start)
+    }.layoutWeight(1).height(64).padding(12).borderRadius(5)
+      .backgroundColor(this.extension === value ? this.palette().accentSoft : this.palette().surfaceSubtle)
+      .border({ width: 1, color: this.extension === value ? this.palette().accent : this.palette().borderSubtle, radius: 5 })
+      .accessibilityText(`导出格式 ${title}`).accessibilityDescription(this.extension === value ? '已选中' : '')
+      .enabled(!this.busy).onClick(() => { this.extension = value; })
   }
 
   build() {
     Column() {
-      Column({ space: 14 }) {
-        // 卡片标题
-        Row() {
-          Text(this.dialogTitle())
-            .fontSize(TypographyTokens.TITLE_SUB)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.palette().inkPrimary)
-
-          Blank()
-
-          Button('✕')
-            .type(ButtonType.Normal)
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkMuted)
-            .width(44)
-            .height(44)
-            .padding(0)
-            .borderRadius(22)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .onClick(() => this.onClose())
+      Column({ space: 16 }) {
+        Row({ space: 8 }) {
+          AppIcon({ source: this.resultMessage && !this.failed ? $r('app.media.ic_check') : this.dialogType.startsWith('share_') ? $r('app.media.ic_share') : this.dialogType === 'export_image' ? $r('app.media.ic_screenshot') : $r('app.media.ic_export'), iconSize: 22, tint: this.palette().accent })
+          Text(this.dialogTitle()).fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).layoutWeight(1)
+          IconButton({ icon: $r('app.media.ic_close'), label: '关闭操作弹窗', available: !this.busy, onAction: () => this.onClose() })
+        }.width('100%')
+        Text(this.documentTitle || this.note.title).fontSize(14).fontColor(this.palette().inkSecondary).maxLines(2).width('100%')
+        if (!this.resultMessage || this.failed) {
+          if (this.dialogType === 'export_text') {
+            Row({ space: 10 }) {
+              this.formatOption('.md', 'Markdown', '.md')
+              this.formatOption('.txt', '纯文本', '.txt')
+            }.width('100%')
+          }
+          Text(this.description()).fontSize(13).lineHeight(21).fontColor(this.palette().inkSecondary).width('100%')
         }
-        .width('100%')
-
-        // 内容插槽
-        this.dialogBody()
-
-        // 底部确认 / 取消按钮
-        Row({ space: 10 }) {
-          Button('取消')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().inkSecondary)
-            .backgroundColor(this.palette().surfaceSubtle)
-            .height(34)
-            .layoutWeight(1)
-            .borderRadius(8)
-            .onClick(() => this.onClose())
-
-          Button('确定')
-            .fontSize(TypographyTokens.CAPTION)
-            .fontColor(this.palette().onAccent)
-            .backgroundColor(this.palette().accent)
-            .height(34)
-            .layoutWeight(1)
-            .borderRadius(8)
-            .onClick(() => this.submitAction())
+        if (this.resultMessage) {
+          Text(this.resultMessage).fontSize(14).lineHeight(22).fontColor(this.failed ? this.palette().danger : this.palette().inkPrimary)
+            .width('100%').padding(12).borderRadius(5).backgroundColor(this.palette().surfaceSubtle)
         }
-        .width('100%')
-        .margin({ top: 6 })
-      }
-      .width('88%')
-      .constraintSize({ maxWidth: 360 })
-      .padding(18)
-      .borderRadius(16)
-      .backgroundColor(this.palette().surface)
-      .shadow({ radius: 24, color: this.isDarkMode ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.18)', offsetY: 6 })
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .onClick(() => {
-        // 消费卡片点击，防止冒泡到遮罩关闭
-      })
-      .transition(
-        TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER })
-          .combine(TransitionEffect.OPACITY)
-          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
-      )
-    }
-    .width('100%')
-    .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.35)')
-    .transition(
-      TransitionEffect.OPACITY
-        .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD })
-    )
-    .onClick(() => this.onClose())
+        if (this.resultMessage && !this.failed) {
+          Button('完成').height(48).width('100%').borderRadius(5).backgroundColor(this.palette().accent).fontColor(this.palette().onAccent)
+            .onClick(() => this.onClose())
+        } else {
+          Row({ space: 10 }) {
+            Button('取消').height(48).layoutWeight(1).borderRadius(5).enabled(!this.busy).backgroundColor(this.palette().surfaceSubtle)
+              .fontColor(this.palette().inkSecondary).onClick(() => this.onClose())
+            Button(this.confirmLabel()).height(48).layoutWeight(1).borderRadius(5).enabled(!this.busy).backgroundColor(this.palette().accent)
+              .fontColor(this.palette().onAccent).onClick(() => this.onConfirm(this.extension))
+          }.width('100%')
+        }
+      }.width('90%').constraintSize({ maxWidth: 400 }).padding(24).borderRadius(8).backgroundColor(this.palette().surface)
+        .border({ width: 1, color: this.palette().borderSubtle }).shadow({ radius: 20, color: 'rgba(0,0,0,0.12)', offsetY: 6 }).onClick(() => {})
+    }.width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
+      .backgroundColor('rgba(0,0,0,0.18)').zIndex(250)
+      .onClick(() => { if (!this.busy) { this.onClose(); } })
   }
 }

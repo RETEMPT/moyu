@@ -1,14 +1,12 @@
 /**
- * 原文结构化整理核心成果 (SmartContent)
+ * 本地规则整理结果 (SmartContent)
  *
  * 用户输入图片、PDF、文档或碎片文字后，
- * 本地规则提取此结构化数据，闭环转为：知识卡、待办行动、关联图谱。
+ * 保留原文与排版正文，供用户核对后保存笔记和明确待办。
  */
-import { SmartEntity } from './SmartEntity';
 import { SmartTask } from './SmartTask';
-import { SmartRelation } from './SmartRelation';
 
-export type SmartContentType = 'exam_notice' | 'paper_summary' | 'course_notes' | 'task_memo' | 'concept_card' | 'general';
+export type SmartContentType = 'general';
 
 export interface SmartContent {
   id: string;
@@ -18,10 +16,7 @@ export interface SmartContent {
   title: string;
   summary: string;
   tags: string[];
-  entities: SmartEntity[];
   tasks: SmartTask[];
-  relations: SmartRelation[];
-  keyPoints?: string[];
   rawMarkdown?: string;
   /** 排版正文与原文分开保留。 */
   formattedMarkdown?: string;

@@ -3,53 +3,102 @@ import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { ReviewCard } from '../../common/types/StudyTypes';
 import { StudyBackup } from '../../common/types/StudyBackup';
+import { SpaceFolder } from '../../common/types/SpaceFolder';
+import { buildSpaces } from '../../services/WorkspaceBuilder';
+import { projectIcon } from '../../common/utils/ProjectIcons';
 import { StudyBackupService } from '../../services/study/StudyBackupService';
 import { StudyImportService } from '../../services/study/StudyImportService';
-import { HarmonyNearbyService, NearbyDevice } from '../../services/sync/HarmonyNearbyService';
+import { SystemShareService } from '../../services/SystemShareService';
+import { AppIcon } from '../common/AppIcon';
+import { IconButton } from '../common/IconButton';
+
+interface ShareFolder { id: string; name: string; icon?: string; notes: NoteItem[]; }
 
 @Component
 export struct StudyBackupSheet {
-  @Prop notes: NoteItem[] = [];
+  @Prop @Watch('onNotesChanged') notes: NoteItem[] = [];
   @Prop cards: ReviewCard[] = [];
+  @Prop spaces: SpaceFolder[] = [];
   @Prop @Watch('closeRequested') closeToken: number = 0;
   onClose: () => void = () => {};
   onRestore: (note: NoteItem, cards: ReviewCard[]) => Promise<void> = async () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
-  @StorageProp('flowmindThemeStyle') themeStyle: string = 'ink';
+  @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
-  @State course: string = '';
+  @State selectedIds: string[] = [];
+  @State visibleCount: number = 40;
+  @State visibleFolderCount: number = 40;
+  @State openFolderId: string = '';
   @State backup: StudyBackup | null = null;
   @State busy: boolean = false;
   @State status: string = '';
-  @State nearby: boolean = false;
-  @State devices: NearbyDevice[] = [];
-  @State deviceId: string = '';
-  @State receiveCode: string = '';
-  @State sentCode: string = '';
-  private transfer: HarmonyNearbyService = new HarmonyNearbyService();
   private alive: boolean = true;
+  private cachedNotes: NoteItem[] | null = null;
+  private cachedSpaces: SpaceFolder[] | null = null;
+  private cachedFolders: ShareFolder[] = [];
   aboutToAppear(): void { this.alive = true; }
-  aboutToDisappear(): void { this.alive = false; this.transfer.close(); }
+  aboutToDisappear(): void { this.alive = false; }
   private closeRequested(): void { if (!this.busy) { this.onClose(); } }
   private palette() { return ThemeHelper.paletteOfDark(this.dark, this.themeStyle); }
+  private onNotesChanged(): void {
+    const available = new Set(this.notes.map((note: NoteItem) => note.id));
+    this.selectedIds = this.selectedIds.filter((id: string) => available.has(id));
+  }
+  private selectedNotes(): NoteItem[] {
+    const selected = new Set(this.selectedIds);
+    return this.notes.filter((note: NoteItem) => selected.has(note.id));
+  }
+  private folders(): ShareFolder[] {
+    if (this.cachedNotes !== this.notes || this.cachedSpaces !== this.spaces) {
+      this.cachedFolders = buildSpaces(this.notes, this.spaces, [], true).filter((folder: SpaceFolder) => (folder.notes || []).length > 0)
+        .map((folder: SpaceFolder): ShareFolder => ({ id: folder.id, name: folder.name, icon: folder.icon, notes: folder.notes || [] }));
+      this.cachedNotes = this.notes; this.cachedSpaces = this.spaces;
+    }
+    return this.cachedFolders;
+  }
+  private folderSelectedCount(folder: ShareFolder): number {
+    const selected = new Set(this.selectedIds);
+    return folder.notes.filter((note: NoteItem) => selected.has(note.id)).length;
+  }
+  private toggleFolder(folder: ShareFolder): void {
+    if (this.busy) { return; }
+    const selected = new Set(this.selectedIds);
+    const all = folder.notes.every((note: NoteItem) => selected.has(note.id));
+    folder.notes.forEach((note: NoteItem) => { if (all) { selected.delete(note.id); } else { selected.add(note.id); } });
+    this.selectedIds = Array.from(selected);
+  }
+  private toggleNote(id: string): void {
+    if (this.busy) { return; }
+    this.selectedIds = this.selectedIds.includes(id) ? this.selectedIds.filter((value: string) => value !== id) : this.selectedIds.concat(id);
+  }
   private async exportFile(): Promise<void> {
-    if (this.busy) { return; } this.busy = true;
+    if (this.busy || this.selectedNotes().length === 0) { return; }
+    this.busy = true; this.status = '正在准备所选资料…';
     try {
-      const notes = this.notes.filter((note: NoteItem) => !this.course || (note.category || '未分类') === this.course);
-      if (!notes.length) { throw new Error('此课程没有资料，请核对分类名'); }
-      const ok = await StudyBackupService.exportFile(getContext(this) as common.UIAbilityContext, notes, this.cards);
-      if (this.alive) { this.status = ok ? '学习资料备份已导出。建议先在另一设备验证恢复。' : '已取消导出'; }
-    } catch (error) { if (this.alive) { this.status = (error as Error).message || '导出失败'; } }
+      const ok = await StudyBackupService.exportFile(getContext(this) as common.UIAbilityContext, this.selectedNotes(), this.cards);
+      if (this.alive) { this.status = ok ? '资料包已保存' : ''; }
+    } catch (error) { if (this.alive) { this.status = (error as Error).message || '导出失败，请重试'; } }
+    finally { if (this.alive) { this.busy = false; } }
+  }
+  private async shareSelected(): Promise<void> {
+    if (this.busy || this.selectedNotes().length === 0) { return; }
+    this.busy = true; this.status = '正在准备所选资料…';
+    const notes = this.selectedNotes();
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const source = await StudyBackupService.createShareFile(context, notes, this.cards);
+      if (!this.alive) { return; }
+      await SystemShareService.shareBackup(context, source, notes.length);
+      if (this.alive) { this.status = '已打开系统分享，请选择接收设备并确认。'; }
+    } catch (error) { if (this.alive) { this.status = (error as Error).message || '无法打开系统分享，请重试'; } }
     finally { if (this.alive) { this.busy = false; } }
   }
   private async selectFile(): Promise<void> {
-    if (this.busy) { return; } this.busy = true;
-    this.backup = null;
+    if (this.busy) { return; } this.busy = true; this.backup = null; this.status = '';
     try {
       const backup = await StudyBackupService.selectFile(getContext(this) as common.UIAbilityContext);
-      if (this.alive) { this.backup = backup; this.status = backup ? '请核对数量，确认后按副本导入。' : '已取消选择'; }
-    }
-    catch (error) { this.status = (error as Error).message || '备份无法读取'; }
+      if (this.alive) { this.backup = backup; }
+    } catch (error) { if (this.alive) { this.status = (error as Error).message || '资料包无法读取'; } }
     finally { if (this.alive) { this.busy = false; } }
   }
   private async restore(): Promise<void> {
@@ -59,97 +108,95 @@ export struct StudyBackupSheet {
       const result = await StudyImportService.restore(getContext(this) as common.UIAbilityContext, backup, {
         notes: () => this.notes, commit: this.onRestore, progress: (message: string) => { if (this.alive) { this.status = message; } }
       });
-      if (this.alive) { this.status = `已导入 ${result.imported} 份资料，跳过 ${result.skipped} 份已恢复资料。原资料保留。`; }
+      if (this.alive) { this.status = `已导入 ${result.imported} 份资料，跳过 ${result.skipped} 份已导入资料`; this.backup = null; }
     } catch (error) { if (this.alive) { this.status = (error as Error).message || '导入中断，可重试'; } }
     finally { if (this.alive) { this.busy = false; } }
   }
-
-  private async connectDevices(): Promise<void> {
-    if (this.busy) { return; } this.busy = true; this.nearby = true; this.sentCode = '';
-    try {
-      await this.transfer.close(); if (!this.alive) { return; } this.transfer = new HarmonyNearbyService();
-      const devices = await this.transfer.connect(getContext(this) as common.UIAbilityContext);
-      if (this.alive) {
-        this.devices = devices; this.deviceId = devices.length ? devices[0].id : '';
-        this.status = devices.length ? '请选择目标设备；两端均需打开本页并连接。' : '未发现可用可信设备，请核对系统设备连接后刷新。';
-      }
-    } catch (error) { if (this.alive) { this.devices = []; this.deviceId = ''; this.status = (error as Error).message || '连接失败'; } }
-    finally { if (this.alive) { this.busy = false; } }
+  @Builder
+  folderRow(folder: ShareFolder) {
+    Row({ space: 2 }) {
+      Button({ type: ButtonType.Normal }) {
+        AppIcon({ source: this.folderSelectedCount(folder) === folder.notes.length ? $r('app.media.ic_check') :
+          this.folderSelectedCount(folder) > 0 ? $r('app.media.ic_checkbox_partial') : $r('app.media.ic_checkbox_empty'),
+          iconSize: 22, tint: this.palette().inkSecondary })
+      }.width(44).height(48).padding(0).backgroundColor(Color.Transparent).enabled(!this.busy)
+        .accessibilityText('选择整个文件夹 ' + folder.name)
+        .accessibilityDescription(this.folderSelectedCount(folder) === folder.notes.length ? '全部已选' : this.folderSelectedCount(folder) > 0 ? '部分已选' : '未选择')
+        .onClick(() => this.toggleFolder(folder))
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 9 }) {
+          AppIcon({ source: projectIcon(folder.icon || ''), iconSize: 20, tint: this.palette().inkSecondary })
+          Text(folder.name).fontSize(15).fontColor(this.palette().inkPrimary).layoutWeight(1).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).textAlign(TextAlign.Start)
+          Text(`${folder.notes.length}`).fontSize(13).fontColor(this.palette().inkMuted)
+          AppIcon({ source: this.openFolderId === folder.id ? $r('app.media.ic_chevron_up') : $r('app.media.ic_chevron_right'), iconSize: 15, tint: this.palette().inkMuted })
+        }.width('100%')
+      }.layoutWeight(1).height(48).padding({ left: 0, right: 8 }).backgroundColor(Color.Transparent).enabled(!this.busy)
+        .accessibilityText('展开分享文件夹 ' + folder.name).accessibilityDescription(this.openFolderId === folder.id ? '已展开' : '已收起')
+        .onClick(() => { this.openFolderId = this.openFolderId === folder.id ? '' : folder.id; this.visibleCount = 40; })
+    }.width('100%').borderRadius(5).backgroundColor(this.folderSelectedCount(folder) > 0 ? this.palette().activeBg : Color.Transparent)
   }
-
-  private async sendNearby(): Promise<void> {
-    if (this.busy || !this.deviceId) { return; } this.busy = true; this.sentCode = '';
-    try {
-      const notes = this.notes.filter((note: NoteItem) => !this.course || (note.category || '未分类') === this.course);
-      const backup = await StudyBackupService.create(getContext(this) as common.UIAbilityContext, notes, this.cards);
-      if (!this.alive) { return; }
-      this.status = '正在传递完整资料，请保持两端连接…';
-      const code = await this.transfer.send(this.deviceId, backup);
-      if (this.alive) { this.sentCode = code; this.status = '资料已传递，请在对端填写传递码并确认导入。保持本页打开；15 分钟内有效。'; }
-    } catch (error) { if (this.alive) { this.status = (error as Error).message || '传递未完成'; } }
-    finally { if (this.alive) { this.busy = false; } }
-  }
-
-  private async receiveNearby(): Promise<void> {
-    if (this.busy || !this.deviceId) { return; } this.busy = true; this.backup = null;
-    try {
-      this.status = '正在接收并核验资料…';
-      const backup = await this.transfer.receive(this.deviceId, this.receiveCode);
-      if (this.alive) { this.backup = backup; this.status = '完整性校验通过，请核对资料并确认导入为副本。'; }
-    } catch (error) { if (this.alive) { this.status = (error as Error).message || '接收未完成'; } }
-    finally { if (this.alive) { this.busy = false; } }
+  @Builder
+  noteRow(note: NoteItem) {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 12 }) {
+        AppIcon({ source: this.selectedIds.includes(note.id) ? $r('app.media.ic_check') : $r('app.media.ic_checkbox_empty'), iconSize: 22, tint: this.palette().inkSecondary })
+        Text(note.title || '未命名资料').fontSize(15).fontColor(this.palette().inkPrimary).layoutWeight(1).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis }).textAlign(TextAlign.Start)
+      }.width('100%')
+    }.width('100%').height(48).padding({ left: 38, right: 8 }).borderRadius(5)
+      .backgroundColor(this.selectedIds.includes(note.id) ? this.palette().activeBg : Color.Transparent).enabled(!this.busy)
+      .accessibilityText('选择快传资料 ' + note.title).accessibilityDescription(this.selectedIds.includes(note.id) ? '已选择' : '未选择')
+      .onClick(() => this.toggleNote(note.id))
   }
   build() {
     Column() {
-      Column({ space: 12 }) {
+      Column({ space: 14 }) {
         Row() {
-          Text('备份与附近传递').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
-          Button('关闭').height(44).enabled(!this.busy).onClick(() => this.onClose())
+          Text('备份与快传').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
+          IconButton({ icon: $r('app.media.ic_close'), label: '关闭资料快传', available: !this.busy, onAction: this.onClose })
         }.width('100%')
-        Scroll() {
-        Column({ space: 12 }) {
-        Text('包含笔记、原 PDF、自定义封面、笔迹、已提取页面和复习题卡。日历与回收站不在此备份内。')
-          .fontSize(14).fontColor(this.palette().inkSecondary).width('100%')
-        Text('文件未加密，请保存到可信位置；可自行存到系统文件选择器支持的网盘。恢复会创建副本，每份资料独立保存。')
-          .fontSize(13).fontColor(this.palette().inkSecondary).width('100%')
-        Text('随包示例只备份现有正文与笔迹，恢复后仍标为示例，不包含原 PDF。').fontSize(12).fontColor(this.palette().inkSecondary).width('100%')
-        Text('单个附件最多 16 MB，备份文件最多 32 MB。资料较多时可按课程分批导出。').fontSize(12).fontColor(this.palette().inkSecondary).width('100%')
-        TextInput({ text: this.course, placeholder: '只备份某课程：填写分类名；留空备份全部' }).enabled(!this.busy).onChange((value: string) => { this.course = value.trim(); })
-        Button('导出学习资料').height(44).width('100%').enabled(!this.busy).onClick(() => this.exportFile())
-        Button('选择备份文件').height(44).width('100%').enabled(!this.busy).onClick(() => this.selectFile())
-        Button('附近传递（试用）· 连接设备').height(44).width('100%').enabled(!this.busy).onClick(() => this.connectDevices())
-        if (this.nearby) {
-          Text('附近传递（试用）').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).width('100%')
-          Text('两端需安装同一来源、相同版本的墨语，并在系统中建立可信连接。建议同一华为帐号、同一网络；两端保持本页打开。')
-            .fontSize(13).fontColor(this.palette().inkSecondary).width('100%')
-          Text('手动传递学习资料并导入副本；暂不自动合并修改、同步删除或传递日历、会话、密钥。大批资料请使用文件备份。')
-            .fontSize(13).fontColor(this.palette().inkSecondary).width('100%')
-          ForEach(this.devices, (device: NearbyDevice) => {
-            Button(`${this.deviceId === device.id ? '已选择 · ' : ''}${device.name}`).height(44).width('100%').enabled(!this.busy)
-              .onClick(() => { this.deviceId = device.id; })
-          }, (device: NearbyDevice) => device.id)
-          Button('发送所选课程资料').height(44).width('100%').enabled(!this.busy && !!this.deviceId).onClick(() => this.sendNearby())
-          if (this.sentCode) {
-            Text(`传递码：${this.sentCode}`).fontSize(16).fontColor(this.palette().inkPrimary).copyOption(CopyOptions.InApp).width('100%')
+        Text('按文件夹选择资料，再通过系统分享面板选择设备。').fontSize(14).fontColor(this.palette().inkSecondary).width('100%')
+        Row() {
+          Text(`已选 ${this.selectedIds.length} 份`).fontSize(14).fontColor(this.palette().inkPrimary).layoutWeight(1)
+          Button(this.selectedIds.length === this.notes.length && this.notes.length > 0 ? '取消全选' : '全选', { type: ButtonType.Normal })
+            .height(44).backgroundColor(Color.Transparent).fontColor(this.palette().inkSecondary).enabled(!this.busy)
+            .onClick(() => { this.selectedIds = this.selectedIds.length === this.notes.length ? [] : this.notes.map((note: NoteItem) => note.id); })
+        }.width('100%')
+        List() {
+          ForEach(this.folders().slice(0, this.visibleFolderCount), (folder: ShareFolder) => {
+            ListItem() { this.folderRow(folder) }
+            if (this.openFolderId === folder.id) {
+              ForEach(folder.notes.slice(0, this.visibleCount), (note: NoteItem) => {
+                ListItem() { this.noteRow(note) }
+              }, (note: NoteItem) => note.id)
+              if (this.visibleCount < folder.notes.length) {
+                ListItem() { Button('显示更多资料').height(44).width('100%').onClick(() => { this.visibleCount += 40; }) }
+              }
+            }
+          }, (folder: ShareFolder) => folder.id)
+          if (this.visibleFolderCount < this.folders().length) {
+            ListItem() { Button('显示更多文件夹').height(44).width('100%').onClick(() => { this.visibleFolderCount += 40; }) }
           }
-          TextInput({ text: this.receiveCode, placeholder: '接收：填写另一设备显示的传递码' }).enabled(!this.busy)
-            .onChange((value: string) => { this.receiveCode = value.trim(); })
-          Button('接收并核对资料').height(44).width('100%').enabled(!this.busy && !!this.deviceId && !!this.receiveCode).onClick(() => this.receiveNearby())
-          if (this.busy) {
-            Button('取消附近连接').height(44).width('100%').onClick(() => { this.transfer.close(); })
+          if (this.notes.length === 0) {
+            ListItem() { Text('还没有可分享的资料').fontSize(14).fontColor(this.palette().inkMuted).padding(16) }
           }
-        }
+        }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+        Row({ space: 10 }) {
+          Button('导出文件', { type: ButtonType.Normal }).height(44).layoutWeight(1).borderRadius(5).fontColor(this.palette().inkPrimary)
+            .backgroundColor(this.palette().surfaceSubtle).enabled(!this.busy && this.selectedIds.length > 0).onClick(() => this.exportFile())
+          Button('附近快传', { type: ButtonType.Normal }).height(44).layoutWeight(1).borderRadius(5).fontColor(this.palette().onAccent)
+            .backgroundColor(this.palette().accent).enabled(!this.busy && this.selectedIds.length > 0).onClick(() => this.shareSelected())
+        }.width('100%')
+        Button('导入收到的资料包', { type: ButtonType.Normal }).height(44).width('100%').borderRadius(5)
+          .fontColor(this.palette().inkSecondary).backgroundColor(Color.Transparent).enabled(!this.busy).onClick(() => this.selectFile())
         if (this.backup) {
-          Text(`${this.backup.notes.length} 份资料 · ${this.backup.cards.length} 道题卡 · ${this.backup.assets.length} 个附件`)
-            .fontSize(14).fontColor(this.palette().inkPrimary).width('100%')
+          Text(`${this.backup.notes.length} 份资料，确认后导入为副本`).fontSize(14).fontColor(this.palette().inkPrimary).width('100%')
           Button('确认导入为副本').height(44).width('100%').enabled(!this.busy).onClick(() => this.restore())
         }
-        if (this.status) { Text(this.status).fontSize(13).fontColor(this.palette().accent).width('100%') }
-        }.width('100%')
-        }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
-      }.padding(20).width(this.phone ? '94%' : 580).height('86%').borderRadius(18).backgroundColor(this.palette().surface)
-        .onClick(() => {})
+        if (this.status) { Text(this.status).fontSize(13).fontColor(this.palette().inkSecondary).width('100%').maxLines(3) }
+      }.padding(24).width(this.phone ? '94%' : 560).height('86%').borderRadius(8).backgroundColor(this.palette().surface).onClick(() => {})
     }.width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
-      .backgroundColor('rgba(0,0,0,0.4)').onClick(() => { if (!this.busy) { this.onClose(); } })
+      .backgroundColor('rgba(0,0,0,0.18)').onClick(() => { if (!this.busy) { this.onClose(); } })
   }
 }

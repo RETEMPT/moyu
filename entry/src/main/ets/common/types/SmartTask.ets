@@ -8,6 +8,9 @@ export interface SmartTask {
   priority: 'high' | 'medium' | 'low';
   sourceTitle?: string;
   sourceUri?: string;
+  /** 1-based line in rawMarkdown; optional for drafts from older versions. */
+  sourceLine?: number;
+  sourceText?: string;
   reminderTime?: string;
   completed?: boolean;
 }
