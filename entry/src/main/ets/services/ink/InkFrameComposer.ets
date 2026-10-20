@@ -18,7 +18,11 @@ export class InkFrameComposer {
     context.clearRect(0, 0, w, h);
     paint(context);
     const frame = this.canvas.transferToImageBitmap();
-    try { target.transferFromImageBitmap(frame); }
+    try {
+      // Some devices composite instead of replacing on transfer, stacking ghost copies on every pan redraw.
+      target.clearRect(0, 0, width, height);
+      target.transferFromImageBitmap(frame);
+    }
     finally { frame.close(); }
   }
 

@@ -8,21 +8,15 @@
  *   2. 应用资源限定符 —— 调 applicationContext.setColorMode(...)，
  *      让 $r('app.color.x')、系统弹窗、状态栏等跟随同一套深浅色。
  *      传 COLOR_MODE_NOT_SET 表示「跟随系统」。
- *   3. 桌面图标 —— 调 bundleManager.setAlternateIcon('theme_dark' | '')，
- *      切换 app.json5 里 alternateIcons 声明的备用图标。
+ *
+ * 桌面图标不跟随主题切换：华为审核指南 1.20 要求商店图标与终端显示图标一致，
+ * 备用图标会让深色模式下的终端图标与商店素材不符，故始终使用默认图标。
  *
  * 主题选择存在 Preferences 的 'flowmind_theme' / 'themeMode' 下，
  * 在 EntryAbility.onCreate 里于首帧渲染之前 restore()，避免浅色闪一下再变深色。
- *
- * 能力边界（SDK 接口与版本保护，当前发布仍需真机验收）：
- *   setAlternateIcon 自 API 26 起提供。本项目 compatibleSdkVersion 为 24，
- *   因此低版本设备上这一步会被 deviceInfo.sdkApiVersion 拦下并静默跳过 —— 图标
- *   不会跟着变，但应用内配色照常切换，不会崩。
  */
-import { bundleManager, common, ConfigurationConstant } from '@kit.AbilityKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { DARK_MODE_KEY } from './ThemeHelper';
 import { normalizeThemeMode, ThemeMode } from './ThemeMode';
 import { normalizeThemeStyle, THEME_STYLE_KEY } from './ThemeStyle';
@@ -30,12 +24,6 @@ import { normalizeThemeStyle, THEME_STYLE_KEY } from './ThemeStyle';
 /** Preferences 实例名与键名 */
 const PREFERENCES_NAME: string = 'flowmind_theme';
 const THEME_MODE_KEY: string = 'themeMode';
-
-/** app.json5 中 alternateIcons[].name，深色备用图标 */
-const DARK_ALTERNATE_ICON: string = 'theme_dark';
-
-/** setAlternateIcon / getAlternateIcons 起始可用版本 */
-const ALTERNATE_ICON_MIN_API: number = 26;
 
 export class ThemeManager {
   /** 用户当前选择的模式，未 restore 前按「跟随系统」处理 */
@@ -52,8 +40,6 @@ export class ThemeManager {
    * setColorMode 本来就挂在 ApplicationContext 上，用它足够了。
    */
   private static appContext: common.ApplicationContext | null = null;
-  /** 备用图标能力是否可用，避免每次切换都重复判断 */
-  private static alternateIconSupported: boolean = deviceInfo.sdkApiVersion >= ALTERNATE_ICON_MIN_API;
   /**
    * 正在执行 setColorMode 的标记。setColorMode 会同步回调 onConfigurationUpdate，
    * 用它把那次回声与「系统真的换肤了」区分开，避免无限递归。
@@ -96,7 +82,7 @@ export class ThemeManager {
       AppStorage.setOrCreate<boolean>('flowmindReduceMotion', false);
     }
     AppStorage.setOrCreate<string>(THEME_STYLE_KEY, ThemeManager.style);
-    ThemeManager.apply(true);
+    ThemeManager.apply();
   }
 
   /** 用户在设置里切换模式：立即生效并落盘。无需传 Context，restore 时已缓存。 */
@@ -105,7 +91,7 @@ export class ThemeManager {
       const next = normalizeThemeMode(mode);
       await ThemeManager.persist(THEME_MODE_KEY, next as number, ThemeManager.mode as number);
       ThemeManager.mode = next;
-      ThemeManager.apply(true);
+      ThemeManager.apply();
     });
   }
 
@@ -185,8 +171,8 @@ export class ThemeManager {
     return ThemeManager.systemIsDark;
   }
 
-  /** 把当前模式落到三处：AppStorage 调色板、应用色彩模式、桌面图标 */
-  private static apply(syncIcon: boolean): void {
+  /** 把当前模式落到两处：AppStorage 调色板、应用色彩模式 */
+  private static apply(): void {
     const isDark: boolean = ThemeManager.resolveIsDark(ThemeManager.mode);
 
     // 1) 视图层调色板：这一步决定界面是否立刻变色
@@ -203,11 +189,6 @@ export class ThemeManager {
         ThemeManager.applyingColorMode = false;
       }
     }
-
-    // 3) 桌面图标
-    if (syncIcon) {
-      ThemeManager.syncLauncherIcon(isDark);
-    }
   }
 
   private static colorModeOf(mode: ThemeMode): ConfigurationConstant.ColorMode {
@@ -218,37 +199,5 @@ export class ThemeManager {
       return ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT;
     }
     return ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET;
-  }
-
-  /**
-   * 让桌面图标与当前主题一致。
-   *
-   * 先查 getAlternateIcons() 的 enabled 标记，只有确实需要变时才调用
-   * setAlternateIcon —— 避免每次冷启动都去打扰启动器。
-   */
-  private static async syncLauncherIcon(isDark: boolean): Promise<void> {
-    if (!ThemeManager.alternateIconSupported) {
-      console.info(`当前 API ${deviceInfo.sdkApiVersion} 不支持备用图标，跳过桌面图标切换`);
-      return;
-    }
-    try {
-      const icons: bundleManager.AlternateIconInfo[] = await bundleManager.getAlternateIcons();
-      let darkEnabled: boolean = false;
-      for (let i = 0; i < icons.length; i++) {
-        if (icons[i].iconName === DARK_ALTERNATE_ICON && icons[i].enabled) {
-          darkEnabled = true;
-          break;
-        }
-      }
-      if (darkEnabled === isDark) {
-        return;
-      }
-      // 传空串即取消备用图标，恢复 app.json5 里的默认图标
-      await bundleManager.setAlternateIcon(isDark ? DARK_ALTERNATE_ICON : '');
-      console.info(`桌面图标已切换为${isDark ? '深色' : '默认'}`);
-    } catch (error) {
-      const failure: BusinessError = error as BusinessError;
-      console.error(`桌面图标切换失败 (code=${failure.code}): ${failure.message}`);
-    }
   }
 }
