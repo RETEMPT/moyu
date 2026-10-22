@@ -16,11 +16,17 @@ const suites = [
   ['repository', 'verify-rdb-repository.mjs', ...compiler],
   ['editor-lifecycle', 'verify-editor-lifecycle.mjs', ...compiler],
   ['market', 'verify-app-market.mjs'],
+  ['documentation', 'verify-documentation.mjs'],
   ['scope', 'verify-local-release.mjs'],
   ['icons', 'generate-ui-icons.mjs', '--check'],
   ['materials', 'generate-market-materials.mjs', '--check'],
   ['preflight', 'app-market-preflight.mjs', '--project-only']
 ];
+if (process.argv.includes('--local-docs')) suites.push(
+  ['local-docs', 'verify-local-release.mjs', '--local-docs'],
+  ['competition', 'verify-competition.mjs'],
+  ['competition-materials', 'competition-preflight.mjs', '--project-only', '--report', 'tmp/competition-project-latest.json']
+);
 if (process.argv.includes('--compiled')) suites.push(['compiled-ui', 'verify-compiled-ui.mjs', ...compiler]);
 const results = [];
 for (const [name, script, ...args] of suites) {

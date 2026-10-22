@@ -35,14 +35,17 @@ for(const file of files(sourceRoot)) {
     assert.ok(fs.existsSync(dependency),`Missing import in ${file}: ${m[1]}`);
   }
 }
-// Developer documents and historical inventories remain local and are optional audits.
+// Operational records and historical inventories are optional local audits.
 let archivedCount=0;
 if(process.argv.includes('--local-docs')) {
 const currentDocs=['README.md','TECH_STACK.md','PROJECT_MEMORY.md','SECURITY.md','CONTRIBUTING.md','design/ICON_SYSTEM.md',
   ...files(path.join(root,'docs')).filter(file=>file.endsWith('.md')).map(file=>path.relative(root,file)),
   ...fs.readdirSync(path.join(root,'release')).filter(file=>file.endsWith('.md')).map(file=>`release/${file}`)];
-for(const file of [...currentDocs,'release/site/privacy.html']) {
-  const source=fs.readFileSync(path.join(root,file),'utf8');
+// Current product copy stays local-only; developer documents may describe planned cloud services.
+// Source, permissions and archive isolation checks above remain mandatory for every release.
+for(const file of ['README.md','docs/USER_GUIDE.md','docs/PRIVACY.md','release/STORE_LISTING.md','release/site/privacy.html']) {
+  let source=fs.readFileSync(path.join(root,file),'utf8');
+  if(file==='README.md')source=source.split('## 发展方向（规划）')[0];
   assert.ok(!forbidden.test(source),`Retired product copy remains in ${file}`);
 }
 for(const file of [...currentDocs,'PRODUCT_SCOPE.md']) {

@@ -42,17 +42,33 @@
 **/__pycache__/
 *.pyc
 
-# Private architecture notes and historical work stay local, outside published source.
+# Local operational records, unpublished references and historical work.
 /PROJECT_MEMORY.md
-/TECH_STACK.md
-/CONTRIBUTING.md
-/SECURITY.md
-/PRODUCT_SCOPE.md
 /AI_AGENT_PLAN.md
 /design/
 /archive/
 /docs/*
+!/docs/README.md
+!/docs/BUSINESS_PLAN.md
+!/docs/CLOUD_AI_BUSINESS.md
+!/docs/CLOUD_AI_DESIGN.md
+!/docs/WEB_PLATFORM_PLAN.md
+!/docs/INNOVATION.md
+!/docs/DEVELOPMENT_GUIDE.md
+!/docs/CODE_STANDARDS.md
+!/docs/ARCHITECTURE.md
+!/docs/DESIGN_REVIEW.md
+!/docs/FEATURE_PARITY.md
+!/docs/KOODO_REFERENCE.md
+!/docs/LOCAL_TEXT_LAYOUT.md
+!/docs/DEPENDENCIES.md
+!/docs/reference-contracts.json
 !/docs/USER_GUIDE.md
 !/docs/PRIVACY.md
 /release/*.md
 /release/*evidence.template.json
+# Competition submission rules, dates, checklists and evidence tools stay local.
+/release/competition.json
+/tools/competition-policy.mjs
+/tools/competition-preflight.mjs
+/tools/verify-competition.mjs
