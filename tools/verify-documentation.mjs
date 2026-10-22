@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 const root = path.resolve(import.meta.dirname, '..');
 const documents = [
   'README.md', 'PRODUCT_SCOPE.md', 'TECH_STACK.md', 'CONTRIBUTING.md', 'SECURITY.md',
-  ...['README', 'BUSINESS_PLAN', 'CLOUD_AI_BUSINESS', 'CLOUD_AI_DESIGN', 'WEB_PLATFORM_PLAN', 'INNOVATION',
+  ...['README', 'ROADMAP', 'BUSINESS_PLAN', 'CLOUD_AI_BUSINESS', 'CLOUD_AI_DESIGN', 'WEB_PLATFORM_PLAN', 'INNOVATION',
     'DEVELOPMENT_GUIDE', 'CODE_STANDARDS', 'ARCHITECTURE', 'DESIGN_REVIEW', 'FEATURE_PARITY',
     'KOODO_REFERENCE', 'LOCAL_TEXT_LAYOUT', 'DEPENDENCIES', 'USER_GUIDE', 'PRIVACY'].map(name => `docs/${name}.md`)
 ];
@@ -19,6 +19,7 @@ for (const file of documents) {
   assert.ok(fs.existsSync(absolute), `Missing public document: ${file}`);
   const source = fs.readFileSync(absolute, 'utf8');
   assert.ok(source.trim().length > 0, `Empty public document: ${file}`);
+  assert.doesNotMatch(source, /赛道|评分|评审|参赛|比赛|初赛|决赛|答辩/, `Public document contains internal evaluation context: ${file}`);
   for (const match of source.matchAll(/!?\[[^\]]*\]\(([^)]+)\)/g)) {
     const link = match[1].replace(/^<|>$/g, '').split('#')[0];
     if (!link || /^[a-z][a-z\d+.-]*:/i.test(link)) continue;
@@ -33,5 +34,5 @@ for (const file of documents) {
 const scope = fs.readFileSync(path.join(root, 'PRODUCT_SCOPE.md'), 'utf8');
 assert.ok(scope.includes('未实现') && scope.includes('不调用云端生成模型'), 'Product scope must distinguish cloud plans from the current local application');
 const business = fs.readFileSync(path.join(root, 'docs/CLOUD_AI_BUSINESS.md'), 'utf8');
-assert.ok(business.includes('团队托管') && business.includes('价格假设'), 'Cloud AI documentation must state its service model and pricing assumptions');
+assert.ok(business.includes('团队托管') && business.includes('未来'), 'Cloud AI documentation must describe the proposed service as a future direction');
 console.log(`Public documentation passed: ${documents.length} documents, ${links} repository links; local operational materials excluded.`);

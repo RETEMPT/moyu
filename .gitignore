@@ -49,6 +49,7 @@
 /archive/
 /docs/*
 !/docs/README.md
+!/docs/ROADMAP.md
 !/docs/BUSINESS_PLAN.md
 !/docs/CLOUD_AI_BUSINESS.md
 !/docs/CLOUD_AI_DESIGN.md
