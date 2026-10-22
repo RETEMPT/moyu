@@ -42,6 +42,10 @@
 **/__pycache__/
 *.pyc
 
+# Standalone AI learning data contains private source text and job previews.
+/cloud/ai/.data/
+/cloud/ai/.venv/
+
 # Local operational records, unpublished references and historical work.
 /PROJECT_MEMORY.md
 /AI_AGENT_PLAN.md
@@ -53,6 +57,8 @@
 !/docs/BUSINESS_PLAN.md
 !/docs/CLOUD_AI_BUSINESS.md
 !/docs/CLOUD_AI_DESIGN.md
+!/docs/AI_REFERENCES.md
+!/docs/LEARNING_INTEGRATION.md
 !/docs/WEB_PLATFORM_PLAN.md
 !/docs/INNOVATION.md
 !/docs/DEVELOPMENT_GUIDE.md

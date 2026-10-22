@@ -17,6 +17,7 @@ const suites = [
   ['editor-lifecycle', 'verify-editor-lifecycle.mjs', ...compiler],
   ['market', 'verify-app-market.mjs'],
   ['documentation', 'verify-documentation.mjs'],
+  ['standalone-ai', 'verify-ai.mjs'],
   ['scope', 'verify-local-release.mjs'],
   ['icons', 'generate-ui-icons.mjs', '--check'],
   ['materials', 'generate-market-materials.mjs', '--check'],

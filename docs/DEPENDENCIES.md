@@ -10,6 +10,8 @@ Koodo Reader 2.4.7（提交 `2ac731c5f6b2baa37da9db4c2bacd0c0519a7ae9`）用于�
 
 Memos 提交 `1a51572406e1db3e97c24b2497013c8005e88317`（MIT）用于随手记、草稿、时间流及前后端契约研究；本轮未包含其源码和素材，未引入服务器依赖。两套参考均在上述记录中注明具体源文件。
 
+独立 AI 原型仅依赖 Python 3.10+ 标准库（含 sqlite3），生成任务通过用户部署的 Ollama 服务调用实际模型。DeepTutor、learn-claude-code、Open Notebook、Filee 仅作为思路参考，没有复制代码、资源或引入其依赖，详见[来源与边界](AI_REFERENCES.md)。Ollama 服务与模型不随仓库或 HarmonyOS 安装包分发，模型权重许可需按用户实际选型另行核验。
+
 ## 离线 PDF 兼容组件
 
 内置 [Mozilla PDF.js](https://github.com/mozilla/pdf.js/releases/tag/v6.4.299) 6.4.299 legacy 发行资产，采用 Apache-2.0 许可证。文件位于 `entry/src/main/resources/rawfile/offline-pdf`，保留原发行 LICENSE；仅打包核心模块、worker、字符映射、标准字体、Wasm 与 ICC 支持文件，不包含官方 viewer 或示例资料。`host.html` 和 `host.mjs` 为本项目适配代码。

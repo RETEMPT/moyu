@@ -1,6 +1,6 @@
 # 墨语开发指南
 
-更新：2026-10-22。基线：1.1.0（1010000），HarmonyOS 手机／平板原生应用。接手前阅读[产品范围](../PRODUCT_SCOPE.md)、[代码规范](CODE_STANDARDS.md)和[架构](ARCHITECTURE.md)。
+更新：2026-10-22。基线：1.1.1（1010001），HarmonyOS 手机／平板原生应用。接手前阅读[产品范围](../PRODUCT_SCOPE.md)、[代码规范](CODE_STANDARDS.md)和[架构](ARCHITECTURE.md)。
 
 ## 环境与可复现构建
 
@@ -21,6 +21,8 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 
 命令中的路径是需替换的占位符。默认检测可用时可省略 `--typescript`。构建产物为 `build/outputs/default/apps-default-unsigned.app` 与 `entry/build/default/outputs/default/entry-default-unsigned.hap`；`unsigned`表示没有发布签名，不能当作可直接安装的正式包。
 
+成功构建后，`python tools/package-github-release.py` 核对 APP 的包名、版本、正式模式、设备范围、权限及资源，并生成仅含 APP、匹配 HAP 与包内校验文件的 ZIP。版本直接读取 `AppScope/app.json5`，旧版本产物拒绝打包；外部 `SHA256SUMS.txt` 用于校验 ZIP。产物与审计报告在被忽略的本地目录，不随源码提交。
+
 构建与设备运行是独立步骤，不把自动编译当作真实设备交互验证。
 
 ## 工程地图
@@ -36,6 +38,7 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 | `tools/` | 自动回归、构建、生成物与公开文档检查 |
 | `release/` | 工程发布配置与生成物；操作性材料另在本地维护 |
 | `docs/` | 产品、商业、创新、架构、开发与用户说明，入口为README |
+| `cloud/ai/` | 独立 Python CLI、自己的 SQLite 与 Ollama 适配，不参与主应用构建 |
 | `archive/` | 历史暂停功能，禁止编译、导入和计入当前能力 |
 | 后续云服务 | 托管AI网关、任务与用量账本目前只有设计，没有服务端实现 |
 | `tmp/`、`release/reports/`、`release/evidence/` | 本地生成结果和真实证据，不公开提交 |
@@ -80,5 +83,11 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 | PDF 慢、笔迹迟到或保存失败 | 保留原件与日志，定位后台任务／主线程绘制／任务代次／提交队列；先复现再修改，禁止清数据掩盖问题 |
 
 ## 关联质量与云服务设计
+
+独立 AI 原型需要 Python 3.10+ 与 sqlite3，无第三方 Python 包。运行方式与数据边界见[原型说明](../cloud/ai/README.md)，专项检查为 `node tools/verify-ai.mjs`，已加入统一入口；CI 显式准备 Python。测试使用临时数据库和模拟模型，不调用真实推理服务。原型数据默认在被忽略的 `cloud/ai/.data/`，不可作为源码或 APP／HAP 资源打包。主应用源码或权限没有变化时，不因独立原型变动重编译或安装应用。
+
+本地学习增强位于 `services/study/LearningProgressPolicy.ets` 和 `views/study/StudySheet.ets`，使用显式时钟与已提交资料／题卡，不新增库表。代码修改后仍需 release 编译、工作流与编译后接线检查；后者仅验证 SDK 生成事件，不替代实际手机和平板的字号、键盘、布局和触控验收。云业务暂不开放，不预埋自动启用开关。
+
+离线交换准备层见[接入契约](LEARNING_INTEGRATION.md)。修改 `LearningResultPolicy` 或 Python `exchange.py` 时同步共享样本并运行两端回归；生产入口不引用准备策略，单纯 release 构建不会编译它。使用已配置的 DevEco 环境执行 `hvigorw assembleHap --no-daemon --mode module -p module=entry@ohosTest -p product=default -p buildMode=debug`，验证测试目标内的 ArkTS 编译；该步骤不安装、不运行测试包。未来接线必须同时更新明确隔离的源码范围规则、隐私与用户行为文档，不能只删除检查。
 
 保存与迁移修改应记录版本、真实测试和未覆盖边界，不复用旧结果。托管云AI按[技术方案](CLOUD_AI_DESIGN.md)组织网关、任务、引用验证和用量账本，面向的学习场景见[服务方向](CLOUD_AI_BUSINESS.md)。新增网络与云处理时同步产品范围、权限、隐私与凭据管理，让实现、用户说明和数据边界保持一致。

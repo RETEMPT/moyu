@@ -1,4 +1,4 @@
-"""Produce only release APP, matching HAP and checksums; keep audit evidence local."""
+"""Package release APP/HAP with checksums in a ZIP; keep audit evidence local."""
 import argparse
 import hashlib
 import importlib.util
@@ -29,8 +29,14 @@ def main():
     module = report['modules'][0]
     metadata = module['app']
     version = metadata['versionName']
-    if version != '1.1.0' or metadata['versionCode'] != 1010000:
-        raise ValueError('Release identity does not match 1.1.0')
+    expected = json.loads(subprocess.check_output([
+        'node', '--input-type=module', '-e',
+        "import fs from 'node:fs'; import { parseJsonc } from './tools/app-market-policy.mjs'; "
+        "console.log(JSON.stringify(parseJsonc(fs.readFileSync('AppScope/app.json5', 'utf8')).app));"
+    ], cwd=ROOT, text=True))
+    for field in ('bundleName', 'versionName', 'versionCode'):
+        if metadata[field] != expected[field]:
+            raise ValueError(f'Release {field} does not match AppScope/app.json5')
     if metadata['buildMode'] != 'release' or metadata['debug'] is not False or module['debugResources']:
         raise ValueError('Debug build or sample resources found')
     if sorted(module['module']['deviceTypes']) != ['phone', 'tablet']:
@@ -51,15 +57,20 @@ def main():
     files = {f'Moyu-{version}-HarmonyOS-unsigned.app': app.read_bytes(),
              f'Moyu-{version}-HarmonyOS-unsigned.hap': hap_bytes}
     checksums = ''.join(f'{sha256(data)}  {name}\n' for name, data in files.items())
-    for name, data in files.items():
-        (output / name).write_bytes(data)
-    (output / 'SHA256SUMS.txt').write_text(checksums, encoding='utf-8')
+    zip_name = f'Moyu-{version}-HarmonyOS-unsigned.zip'
+    zip_path = output / zip_name
+    with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+        archive.writestr('SHA256SUMS.txt', checksums)
+    files[zip_name] = zip_path.read_bytes()
+    (output / 'SHA256SUMS.txt').write_text(f'{sha256(files[zip_name])}  {zip_name}\n', encoding='utf-8')
     report['sourceCommit'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     report['nonProductionPayload'] = forbidden
     report['signature'] = 'unsigned'
     report['files'] = {name: {'bytes': len(data), 'sha256': sha256(data)} for name, data in files.items()}
-    (ROOT / 'tmp/release-1.1.0-audit.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    print(json.dumps({'output': str(output), 'version': version, 'files': list(files) + ['SHA256SUMS.txt'],
+    (ROOT / f'tmp/release-{version}-audit.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    print(json.dumps({'output': str(output), 'version': version, 'files': [zip_name, 'SHA256SUMS.txt'],
                       'testResources': [], 'developerDocuments': [], 'signature': 'unsigned'}, ensure_ascii=False))
 
 

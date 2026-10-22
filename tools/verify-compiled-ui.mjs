@@ -146,7 +146,7 @@ function renderer() {
     'GestureMode', 'GestureDirection', 'GesturePriority', 'GestureJudgeResult', 'ScrollAlign', 'TransitionEdge', 'ModifierKey', 'ImageFit', 'ImageInterpolation', 'SliderStyle', 'FlexWrap', 'FlexDirection', 'ItemAlign', 'ResponseType', 'VerticalAlign', 'InputType', 'FontStyle', 'TextDecorationType', 'CopyOptions', 'ToggleType', 'SafeAreaType', 'KeyType']) globals[name] = enums;
   const realViews = new Set(['views/layout/sheets/NewProjectSheet', 'views/common/IconButton', 'views/common/AppIcon', 'views/common/InkWidthSlider', 'views/common/DocumentText',
     'views/reader/HandwritingCanvas', 'views/reader/InkCanvasSurface', 'views/common/DocumentPreview', 'views/common/DocumentCover', 'views/workspace/GraphWorkspace', 'views/layout/BottomNavBar', 'views/settings/SettingsWorkspace',
-    'views/reader/huawei/HuaweiDocWorkspace', 'views/reader/ReaderPairPicker', 'views/reader/ReaderSplitWorkspace', 'views/reader/ReaderWorkspace', 'views/layout/sheets/NoteMenuSheet', 'views/layout/sheets/RenameNoteSheet', 'views/layout/sheets/MoveNoteSheet', 'views/layout/sheets/SheetScaffold', 'views/reader/huawei/HuaweiDocActionDialog', 'views/reader/MarkdownReader', 'views/reader/pdf/PdfAnnotatorView', 'views/reader/pdf/PdfPageCanvas', 'views/layout/AppShell', 'views/layout/GlobalTopBar', 'views/layout/Sidebar', 'views/brand/BrandMark', 'views/workspace/HomeWorkspace', 'views/workspace/LibraryWorkspace', 'views/workspace/TodoWorkspace', 'views/workspace/TrashWorkspace', 'views/explore/QuickSearchDialog', 'views/layout/sheets/SmartExtractSheet', 'views/study/StudyBackupSheet']);
+    'views/reader/huawei/HuaweiDocWorkspace', 'views/reader/ReaderPairPicker', 'views/reader/ReaderSplitWorkspace', 'views/reader/ReaderWorkspace', 'views/layout/sheets/NoteMenuSheet', 'views/layout/sheets/RenameNoteSheet', 'views/layout/sheets/MoveNoteSheet', 'views/layout/sheets/SheetScaffold', 'views/reader/huawei/HuaweiDocActionDialog', 'views/reader/MarkdownReader', 'views/reader/pdf/PdfAnnotatorView', 'views/reader/pdf/PdfPageCanvas', 'views/layout/AppShell', 'views/layout/GlobalTopBar', 'views/layout/Sidebar', 'views/brand/BrandMark', 'views/workspace/HomeWorkspace', 'views/workspace/LibraryWorkspace', 'views/workspace/TodoWorkspace', 'views/workspace/TrashWorkspace', 'views/explore/QuickSearchDialog', 'views/layout/sheets/SmartExtractSheet', 'views/study/StudyBackupSheet', 'views/study/StudySheet']);
   function load(relative, compiled = realViews.has(relative)) {
     const key = `${compiled}:${relative}`; if (modules.has(key)) return modules.get(key).exports;
     const file = path.join(compiled ? cacheRoot : path.join(root, 'entry/src/main/ets'), relative + (compiled ? '.ts' : '.ets'));
@@ -168,7 +168,7 @@ function renderer() {
       if (serviceAdapters.has(dependency)) return serviceAdapters.get(dependency);
       if (dependency === 'views/reader/pdf/PdfPageCanvas') return { PdfPageCanvas: PdfPageAdapter };
       if (realViews.has(dependency) || ['views/common/QuickMemoComposer', 'views/common/MemoTimelineCard', 'views/common/MemoCalendar'].includes(dependency)) return load(dependency, true);
-      if (dependency.startsWith('common/') || dependency.startsWith('services/ink/') || dependency.startsWith('services/library/') || dependency === 'services/WorkspaceNotePolicy' || dependency === 'services/WorkspaceBuilder' || dependency === 'services/study/StudySourceService' || dependency === 'services/document/ReadingProgressPolicy' || dependency === 'services/document/PdfPageDataSource' || dependency === 'services/GraphTopicPolicy' || dependency === 'services/document/ReaderPairPolicy' || dependency === 'services/document/MarkdownEditing' || dependency === 'services/document/DocumentTextParser' || dependency === 'services/document/SourceTextStructure' || dependency === 'services/smart/SmartNoteBuilder') {
+      if (dependency.startsWith('common/') || dependency.startsWith('services/ink/') || dependency.startsWith('services/library/') || dependency === 'services/WorkspaceNotePolicy' || dependency === 'services/WorkspaceBuilder' || ['services/study/StudySourceService','services/study/LearningProgressPolicy','services/study/ReviewPolicy'].includes(dependency) || dependency === 'services/document/ReadingProgressPolicy' || dependency === 'services/document/PdfPageDataSource' || dependency === 'services/GraphTopicPolicy' || dependency === 'services/document/ReaderPairPolicy' || dependency === 'services/document/MarkdownEditing' || dependency === 'services/document/DocumentTextParser' || dependency === 'services/document/SourceTextStructure' || dependency === 'services/smart/SmartNoteBuilder') {
         if (dependency.endsWith('StylusShortcutService')) return { StylusShortcutService: inert };
         return load(dependency, false);
       }
@@ -206,6 +206,40 @@ function assertIconTint(node, hex) {
     red: parseInt(hex.slice(1, 3), 16), green: parseInt(hex.slice(3, 5), 16), blue: parseInt(hex.slice(5, 7), 16), alpha: 255
   });
 }
+
+for (const phone of [false, true]) {
+  test(`compiled ${phone ? 'phone' : 'tablet'} study overview stays local and card editing preserves feedback`, async () => {
+    const ui = renderer(), notes = [{id:'source',title:'力学讲义',category:'力学',lastReadAt:1,pageCount:10,readPage:3}];
+    ui.storage.setOrCreate('flowmindIsPhone', phone);
+    const { ReviewPolicy } = ui.load('services/study/ReviewPolicy', false);
+    const card = {...ReviewPolicy.create(notes[0],{question:'加速度是什么？',answer:'速度的变化率。',sourceText:'原文'},1),lastRating:'hard',reviewCount:2};
+    let view, saved, fail = true;
+    view = ui.mount('views/study/StudySheet','StudySheet',{notes,cards:[card],course:'力学',onSave:async cards=>{
+      if(fail)throw Error('disk');saved=cards;view.cards=cards;
+    }},'initialRender',v=>v.aboutToAppear());
+    ui.click('学习概况');assert.ok(ui.find('资料 1 份 · 已打开 1 份'));assert.ok(ui.find('第 3 / 10 页 · 1 题 · 到期 1 · 待巩固 1'));
+    ui.click('开始复习');ui.click('只看待巩固');assert.equal(view.weakOnly,true);
+    ui.click('编辑');assert.equal(view.editingId,card.id);assert.ok(ui.find('保存题卡修改'));
+    view.question='校对后的问题';ui.flush();
+    await ui.click('保存题卡修改');ui.flush();assert.equal(view.question,'校对后的问题');assert.match(view.status,/保存失败/);
+    fail=false;await ui.click('保存题卡修改');ui.flush();assert.equal(view.editingId,'');assert.equal(saved[0].question,'校对后的问题');
+    assert.equal(saved[0].lastRating,'hard');assert.equal(saved[0].reviewCount,2);assert.equal(saved[0].dueAt,card.dueAt);
+  });
+}
+
+test('compiled study editor protects unsaved input when closing or changing cards and requires deliberate discard', () => {
+  const ui=renderer();let closed=0;
+  const notes=[{id:'source',title:'讲义',category:'力学'}];
+  const {ReviewPolicy}=ui.load('services/study/ReviewPolicy',false);
+  const card=ReviewPolicy.create(notes[0],{question:'原问题',answer:'原答案',sourceText:''},1);
+  const view=ui.mount('views/study/StudySheet','StudySheet',{notes,cards:[card],onClose:()=>closed++},'initialRender',v=>v.aboutToAppear());
+  ui.click('创建题卡');view.question='未保存的问题';ui.flush();ui.click('关闭');
+  assert.equal(closed,0);assert.equal(view.question,'未保存的问题');assert.equal(view.tab,1);
+  ui.click('开始复习');ui.click('编辑');assert.equal(view.editingId,'');assert.equal(view.question,'未保存的问题');assert.equal(view.tab,1);
+  ui.click('放弃本次输入');assert.equal(view.question,'未保存的问题');
+  ui.click('确认放弃本次输入');assert.equal(view.question,'');
+  ui.click('关闭');assert.equal(closed,1);
+});
 
 test('compiled whiteboard click updates the actual eraser button, icon and pen selection', () => {
   const ui = renderer(); const view = ui.mount('views/reader/HandwritingCanvas', 'HandwritingCanvas', { note: { id: 'ink', title: '课堂' } });

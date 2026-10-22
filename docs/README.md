@@ -2,6 +2,8 @@
 
 墨语围绕课程资料的阅读、书写、整理和复习构建学习工作台。文档介绍产品解决的问题、已有设计、商业价值，以及云AI、跨设备资料管理和内容生态的发展方向。
 
+当前版本为 1.1.1，主应用新增本地复习增强。独立 AI 学习实验未接入主软件，离线结果准备层尚无导入入口；团队托管云AI、收费云盘和公开资料库仍为规划。各项状态与数据边界统一以[产品范围](../PRODUCT_SCOPE.md)为准。
+
 ## 产品与商业
 
 | 文档 | 内容 |
@@ -9,6 +11,7 @@
 | [产品范围](../PRODUCT_SCOPE.md) | 当前功能、明确限制与后续产品方向 |
 | [商业价值与服务模式](BUSINESS_PLAN.md) | 使用场景、用户价值与可持续的服务模式 |
 | [云 AI 学习服务](CLOUD_AI_BUSINESS.md) | 摘要、资料问答、题卡候选与云端辅助方向 |
+| [独立 AI 学习实验](../cloud/ai/README.md) | 独立 CLI、资料检索、学习记忆、Ollama 草稿与人工采纳；未接入主软件 |
 | [收费云盘与公开资料库](WEB_PLATFORM_PLAN.md) | 私人存储、授权公开资料、网站权益及应用衔接 |
 | [产品特点与创新方向](INNOVATION.md) | 跨格式研读、原文追溯、人工采纳与资料关联 |
 | [未来开发方向](ROADMAP.md) | 阅读体验、数据可靠性、云AI与内容生态的演进 |
@@ -22,9 +25,11 @@
 | [代码规范](CODE_STANDARDS.md) | 格式、命名、依赖、异步、数据归属与审查准则 |
 | [架构](ARCHITECTURE.md)／[技术栈](../TECH_STACK.md) | 当前原生客户端架构、持久化和平台能力 |
 | [云服务与云 AI 设计](CLOUD_AI_DESIGN.md) | 托管网关、任务、引用、用量、账本与数据边界 |
+| [学习结果交换与接入准备](LEARNING_INTEGRATION.md) | 离线结果 v1、两端校验、题卡候选转换与后续接入条件 |
 | [界面规范](DESIGN_REVIEW.md) | 中性主题、响应式布局、触控、阅读工具与无障碍 |
 | [本地整理规则](LOCAL_TEXT_LAYOUT.md) | OCR校对、原文结构和确定性排版 |
 | [参考研究](KOODO_REFERENCE.md)／[依赖与素材](DEPENDENCIES.md) | 上游参考边界、运行依赖与许可证 |
+| [AI 参考记录](AI_REFERENCES.md) | DeepTutor、learn-claude-code、Open Notebook、Filee 的借鉴与当前实现边界 |
 | [贡献指南](../CONTRIBUTING.md)／[安全政策](../SECURITY.md) | 协作规则、数据处理与问题反馈 |
 | [使用说明](USER_GUIDE.md)／[隐私说明](PRIVACY.md) | 当前应用的用户行为与数据说明 |
 

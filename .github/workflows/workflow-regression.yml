@@ -18,6 +18,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install service test compiler
         run: npm install --no-save --ignore-scripts typescript@4.9.5
       - name: Verify workflows, PDF, source management and release rules

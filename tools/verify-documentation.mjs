@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 const root = path.resolve(import.meta.dirname, '..');
 const documents = [
   'README.md', 'PRODUCT_SCOPE.md', 'TECH_STACK.md', 'CONTRIBUTING.md', 'SECURITY.md',
+  'cloud/ai/README.md', 'docs/AI_REFERENCES.md', 'docs/LEARNING_INTEGRATION.md',
   ...['README', 'ROADMAP', 'BUSINESS_PLAN', 'CLOUD_AI_BUSINESS', 'CLOUD_AI_DESIGN', 'WEB_PLATFORM_PLAN', 'INNOVATION',
     'DEVELOPMENT_GUIDE', 'CODE_STANDARDS', 'ARCHITECTURE', 'DESIGN_REVIEW', 'FEATURE_PARITY',
     'KOODO_REFERENCE', 'LOCAL_TEXT_LAYOUT', 'DEPENDENCIES', 'USER_GUIDE', 'PRIVACY'].map(name => `docs/${name}.md`)
