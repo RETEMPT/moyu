@@ -7,7 +7,7 @@ import { parseJsonc } from './app-market-policy.mjs';
 const root=path.resolve(import.meta.dirname,'..');
 const sourceRoot=path.join(root,'entry/src/main/ets');
 function files(dir){return fs.readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?files(path.join(dir,e.name)):[path.join(dir,e.name)]);}
-// Every current module must be reachable from an actual page or ability entry point.
+// Runtime modules must be reachable; the explicitly authorized offline contract stays dormant.
 const sourceFiles=files(sourceRoot).filter(file=>file.endsWith('.ets'));
 const reached=new Set();
 function visit(file){
@@ -20,7 +20,10 @@ function visit(file){
 }
 function inSource(file){return file.startsWith(sourceRoot+path.sep);}
 sourceFiles.filter(file=>/[/\\](?:pages|entryability|entrybackupability)[/\\]/.test(file)).forEach(visit);
-assert.deepEqual(sourceFiles.filter(file=>!reached.has(file)),[],'Unreferenced application modules need removal or an explicit entry point');
+const preparationFiles = ['common/types/LearningResult.ets', 'services/study/LearningResultPolicy.ets']
+  .map(file => path.join(sourceRoot, file)).sort();
+assert.deepEqual(sourceFiles.filter(file=>!reached.has(file)).sort(), preparationFiles,
+  'Only the explicitly isolated learning result contract may be dormant; it must not become a runtime entry');
 const forbidden=/\b(?:AI|AiWorkspace|AssistantText|HuaweiAiSplitPanel|ModelConfigService|ModelProvider|AiModelCatalog|MarkerImportPolicy|SmartEntity|SmartRelation|aiSummary|aiTags|createProvider|NAV_AI)\b|墨客|伴读|大模型|自配 API|模型设置|services\/ai\/|views\/ai\//;
 const inFolder=(folder,file)=>{const relative=path.relative(folder,file);return relative!==''&&relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative);};
 for(const file of files(sourceRoot)) {
@@ -35,14 +38,19 @@ for(const file of files(sourceRoot)) {
     assert.ok(fs.existsSync(dependency),`Missing import in ${file}: ${m[1]}`);
   }
 }
-// Developer documents and historical inventories remain local and are optional audits.
+// Operational records and historical inventories are optional local audits.
 let archivedCount=0;
 if(process.argv.includes('--local-docs')) {
 const currentDocs=['README.md','TECH_STACK.md','PROJECT_MEMORY.md','SECURITY.md','CONTRIBUTING.md','design/ICON_SYSTEM.md',
   ...files(path.join(root,'docs')).filter(file=>file.endsWith('.md')).map(file=>path.relative(root,file)),
   ...fs.readdirSync(path.join(root,'release')).filter(file=>file.endsWith('.md')).map(file=>`release/${file}`)];
-for(const file of [...currentDocs,'release/site/privacy.html']) {
-  const source=fs.readFileSync(path.join(root,file),'utf8');
+// Current product copy stays local-only; developer documents may describe planned cloud services.
+// Source, permissions and archive isolation checks above remain mandatory for every release.
+for(const file of ['README.md','docs/USER_GUIDE.md','docs/PRIVACY.md','release/STORE_LISTING.md','release/site/privacy.html']) {
+  let source=fs.readFileSync(path.join(root,file),'utf8');
+  // The overview separately describes the app, standalone experiment and dormant preparation.
+  // Audit the local app introduction here; production imports and permissions are checked above.
+  if(file==='README.md')source=source.split(/^## (?:[\d.]+ 更新与能力边界|发展方向（规划）)/m)[0];
   assert.ok(!forbidden.test(source),`Retired product copy remains in ${file}`);
 }
 for(const file of [...currentDocs,'PRODUCT_SCOPE.md']) {

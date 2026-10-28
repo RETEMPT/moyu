@@ -49,6 +49,16 @@ export class ReviewPolicy {
       createdAt: card.createdAt, updatedAt: now, lastRating: rating };
   }
 
+  static edit(card: ReviewCard, draft: ReviewDraft, now: number): ReviewCard {
+    if (!draft.question.trim() || draft.question.length > 4000 || !draft.answer.trim() || draft.answer.length > 12000 ||
+      draft.sourceText.length > 20000) { throw new Error('请填写问题和参考答案，并控制长度'); }
+    // Editing content does not turn into a review or erase the user's feedback/schedule.
+    return { id: card.id, noteId: card.noteId, course: card.course, question: draft.question.trim(),
+      answer: draft.answer.trim(), sourceText: draft.sourceText, pageNumber: card.pageNumber,
+      dueAt: card.dueAt, intervalDays: card.intervalDays, repetitions: card.repetitions, reviewCount: card.reviewCount,
+      lapses: card.lapses, createdAt: card.createdAt, updatedAt: now, lastRating: card.lastRating };
+  }
+
   static courses(notes: NoteItem[], cards: ReviewCard[], todos: TodoItem[], now: number = Date.now()): CourseSummary[] {
     const grouped: Map<string, CourseSummary> = new Map();
     const noteCourses: Map<string, string> = new Map();
