@@ -6,6 +6,7 @@ import { THEME_STYLE_OPTIONS, ThemeStyleOption, paletteForStyle } from '../../co
 import { ColorPalette } from '../../common/constants/DesignTokens';
 import { SETTINGS_GROUPS, SettingsGroup, SettingsEntry, SettingsCatalog } from '../../common/constants/SettingsCatalog';
 import { AppIcon } from '../common/AppIcon';
+import { AI_FEATURES_VISIBLE } from '../../common/constants/RuntimeCapabilities';
 import { IconButton } from '../common/IconButton';
 import { BrandMark } from '../brand/BrandMark';
 import { GUIDE_STEPS, GuideStep } from './UsageGuideSheet';
@@ -240,7 +241,7 @@ export struct SettingsWorkspace {
       this.heading('数据存放在哪里')
       this.paragraph('资料保存在应用沙箱。卸载前或换机前，请导出本地备份；重新安装不会自动找回旧资料。')
       this.action('备份与快传', () => this.navigate('backup'))
-    } else if (this.section === 'capture') {
+    } else if (AI_FEATURES_VISIBLE && this.section === 'capture') {
       this.heading('收集和整理原文')
       this.paragraph('图片由鸿蒙系统文字识别处理，识别后先校对，再使用本地规则排版。粘贴文字也可以直接整理，在本机完成。')
       this.action('识别与整理文字', this.onOpenCapture, true)
@@ -268,7 +269,9 @@ export struct SettingsWorkspace {
       this.paragraph(canIUse('SystemCapability.AI.OCR.TextRecognition') ? '系统声明支持文字识别；可以从图片提取文字，实际效果与图片清晰度有关。' : '此设备未声明系统文字识别能力，可粘贴文字进行本地排版。')
       this.paragraph('资料快传调用系统分享，不申请应用级设备数据同步权限。')
       this.action('备份与快传', () => this.navigate('backup'))
-      this.action('文字识别与排版', () => this.navigate('capture'))
+      if (AI_FEATURES_VISIBLE) {
+        this.action('文字识别与排版', () => this.navigate('capture'))
+      }
     } else if (this.section === 'guide') {
       ForEach(GUIDE_STEPS, (step: GuideStep) => {
         Column({ space: 8 }) { this.heading(step.title); this.paragraph(step.text) }

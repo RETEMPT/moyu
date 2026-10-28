@@ -7,6 +7,7 @@ import { ReaderTheme } from '../../../common/theme/ReaderTheme';
 import { ImageDocumentService } from '../../../services/document/ImageDocumentService';
 import { NoteItem } from '../../../common/types/NoteItem';
 import { ReaderSaveKind } from '../../../common/types/ReaderSaveKind';
+import { AI_FEATURES_VISIBLE } from '../../../common/constants/RuntimeCapabilities';
 import { CanvasToolState, CanvasToolCommand } from '../../../common/types/CanvasToolState';
 import { AnnotationTool } from '../../../common/types/PdfAnnotationTypes';
 import { PdfAnnotatorView } from '../pdf/PdfAnnotatorView';
@@ -1019,7 +1020,9 @@ export struct HuaweiDocWorkspace {
       }
       MenuItem({ content: this.usesCanvasTools() ? '清空当前稿纸笔迹' : '清空本页笔迹' }).enabled(this.isAnnotateMode && !this.exitSaving)
         .onClick(() => { this.documentMenuOpen = false; this.requestClearInk(); })
-      MenuItem({ content: '提取图片或文字' }).onClick(() => { this.documentMenuOpen = false; this.openSmartExtract(); })
+      if (AI_FEATURES_VISIBLE) {
+        MenuItem({ content: '提取图片或文字' }).onClick(() => { this.documentMenuOpen = false; this.openSmartExtract(); })
+      }
       if (!this.isHandwritingNote() && !this.isImageDocument()) {
         MenuItem({ content: '导出笔记文字', startIcon: $r('app.media.ic_export') }).onClick(() => this.openOutput('export_text'))
       }

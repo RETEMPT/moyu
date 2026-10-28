@@ -1,19 +1,20 @@
 # 墨语
 
-HarmonyOS 手机与平板上的本地课程资料和笔记应用。
+HarmonyOS 手机与平板上的本地资料库与笔记工具。
 
 [下载 1.1.1](https://github.com/RETEMPT/moyu/releases/tag/v1.1.1) · [使用说明](docs/USER_GUIDE.md) · [隐私说明](docs/PRIVACY.md)
 
 [文档总览](docs/README.md) · [开发指南](docs/DEVELOPMENT_GUIDE.md) · [代码规范](docs/CODE_STANDARDS.md)
 
-- 阅读 PDF、Markdown、TXT 与图片，多份资料可通过顶栏标签拖放分屏。
-- 手写批注、随堂稿纸、撤销重做，以及区域／整笔橡皮。
-- 项目分类、资料菜单、回收站、搜索、双链与图谱。
-- 待办、复习题卡、本地文字识别和人工校对。
-- 文件备份恢复及主动系统分享。
+- 阅读 PDF、Markdown、TXT 与图片，支持顶栏标签拖放分屏
+- 手写批注、随堂稿纸、区域/整笔橡皮
+- 项目分类、双链图谱、搜索、回收站
+- 待办、复习题卡、本地文字识别
+- 资料备份与快传
 
-资料保存在本机，无需账号。当前版本不提供自动云同步。
+资料保存在本地，无需账号，不联网。
 
+> 商店版本为离线版，AI 功能显示"即将上线"，后续版本开放。
 ## 1.1.1 更新与能力边界
 
 当前版本为 1.1.1（1010001）。本版增强本地课程复习，同时在仓库中提供独立 AI 实验与离线接入准备；三者的使用范围如下，完整边界以[产品范围](PRODUCT_SCOPE.md)为准。
@@ -36,4 +37,25 @@ HarmonyOS 手机与平板上的本地课程资料和笔记应用。
 
 Release 附件为手机和平板共用的正式模式构建，不包含调试示例或测试资源。附件名标注 `unsigned` 时尚未配置发布签名，须签名后安装；升级时应保持签名一致，卸载前请先备份资料。
 
-Mozilla PDF.js 离线引擎采用 Apache-2.0 许可证，原许可证保留在其资源目录中。
+## 技术栈
+
+- 语言：ArkTS
+- UI：HarmonyOS Declarative UI
+- 最低 API：24
+- PDF：Mozilla PDF.js（离线）
+- 存储：Preferences + 应用内文件目录
+
+## 团队
+
+- **孟博航** — 主导开发与架构设计
+- **宋瑞博** — 功能开发与测试、商店发布
+
+开源鸿蒙大赛参赛项目。
+
+## 开源协议
+
+MIT License. 内置 PDF.js 保留原 Apache-2.0 许可证。
+
+## 反馈
+
+问题与建议：[GitHub Issues](https://github.com/RETEMPT/moyu/issues)
