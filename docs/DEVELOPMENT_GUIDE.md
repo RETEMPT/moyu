@@ -1,27 +1,22 @@
 # 墨语开发指南
 
-更新：2026-10-22。基线：1.1.1（1010001），HarmonyOS 手机／平板原生应用。接手前阅读[产品范围](../PRODUCT_SCOPE.md)、[代码规范](CODE_STANDARDS.md)和[架构](ARCHITECTURE.md)。
+基线：1.1.1，HarmonyOS 手机／平板原生应用。接手前阅读[代码规范](CODE_STANDARDS.md)和[架构](ARCHITECTURE.md)。
 
-## 环境与可复现构建
+## 环境与构建
 
-工程使用ArkTS／ArkUI、Hvigor、HarmonyOS RDB。`oh-package.json5`为modelVersion 26.0.0，目标SDK 26.0.0，兼容6.1.1（API 24）；这些是当前工程配置，不自动升级。
+工程使用ArkTS／ArkUI、Hvigor、HarmonyOS RDB。`oh-package.json5`为modelVersion 26.0.0，目标SDK 26.0.0，兼容6.1.1（API 24）。
 
-使用匹配 SDK 的 DevEco Studio，在本机配置 `DEVECO_STUDIO_HOME`，由工程依赖锁定文件恢复依赖。平台无关回归使用 Node 22 系列或兼容运行时；SQLite 测试还需要含 sqlite3 的 Python，按测试夹具支持配置 `PYTHON`。当前测试复用 DevEco 的 TypeScript；无 IDE 的 CI 使用 workflow 中锁定的测试编译器，不能将其当作 ArkTS SDK。
+使用匹配 SDK 的 DevEco Studio，在本机配置 `DEVECO_STUDIO_HOME`，由工程依赖锁定文件恢复依赖。
 
 ```powershell
-# 无设备操作：构建 release APP 和 HAP
+# 构建 release APP 和 HAP
 .\build_hap.bat -BuildMode release -AppPackage -Clean
 
-# 源码、策略、数据仓储和公开文档回归
-node tools/verify-project.mjs --typescript "<DevEco 中的 typescript.js 绝对路径>"
-
-# 只有本轮成功构建后，再检查当前 SDK 生成的事件接线
-node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescript.js 绝对路径>"
+# 安装到已连接设备
+.\deploy_hap.bat
 ```
 
-命令中的路径是需替换的占位符。默认检测可用时可省略 `--typescript`。构建产物为 `build/outputs/default/apps-default-unsigned.app` 与 `entry/build/default/outputs/default/entry-default-unsigned.hap`；`unsigned`表示没有发布签名，不能当作可直接安装的正式包。
-
-成功构建后，`python tools/package-github-release.py` 核对 APP 的包名、版本、正式模式、设备范围、权限及资源，并生成仅含 APP、匹配 HAP 与包内校验文件的 ZIP。版本直接读取 `AppScope/app.json5`，旧版本产物拒绝打包；外部 `SHA256SUMS.txt` 用于校验 ZIP。产物与审计报告在被忽略的本地目录，不随源码提交。
+构建产物为 `build/outputs/default/` 下的 APP 与 `entry/build/default/outputs/default/` 下的 HAP；`unsigned`表示没有发布签名，不能当作可直接安装的正式包。
 
 构建与设备运行是独立步骤，不把自动编译当作真实设备交互验证。
 
@@ -35,13 +30,10 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 | `entry/src/main/ets/services/` | 存储、导入、保存、识别、规则、分享与系统适配 |
 | `entry/src/main/ets/common/` | 共享类型、主题、常量、无上层依赖工具 |
 | `entry/src/main/resources/` | 字符串、图标、离线 PDF 引擎及其许可证 |
-| `tools/` | 自动回归、构建、生成物与公开文档检查 |
-| `release/` | 工程发布配置与生成物；操作性材料另在本地维护 |
-| `docs/` | 产品、商业、创新、架构、开发与用户说明，入口为README |
-| `cloud/ai/` | 独立 Python CLI、自己的 SQLite 与 Ollama 适配，不参与主应用构建 |
-| `archive/` | 历史暂停功能，禁止编译、导入和计入当前能力 |
-| 后续云服务 | 托管AI网关、任务与用量账本目前只有设计，没有服务端实现 |
-| `tmp/`、`release/reports/`、`release/evidence/` | 本地生成结果和真实证据，不公开提交 |
+| `tools/` | 构建、部署与图标生成脚本 |
+| `release/` | 发布配置与隐私政策页面 |
+| `docs/` | 商业、创新、架构、开发与用户说明 |
+| `materials/` | 参赛项目展示 PPT 与技术可行性说明 |
 
 ## 关键用例如何走通
 
@@ -51,7 +43,7 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 
 **资料与项目回收**：`WorkspaceLifecycle` 生成计划 → 同一 RDB 事务保存资料、项目及两类回收记录 → 发布新状态。彻底删除先写 pending deletion 记录，再幂等清理文件；失败下次重试，不删除仍有引用的附件。
 
-**OCR 与整理**：系统能力检测 → 页／图片文字识别 → 人工校对 → 规则结构化 → 原文和预览 → 用户选择待办 → 保存。提取页数与字数限制见[排版规则](LOCAL_TEXT_LAYOUT.md)；不是云端生成。
+**OCR 与整理**：系统能力检测 → 页／图片文字识别 → 人工校对 → 规则结构化 → 原文和预览 → 用户选择待办 → 保存。PDF 提取每次 1–5 页，整理输入上限 12000 字；全部本地处理，不是云端生成。
 
 **备份与分享**：明确选择资料 → 按允许字段组装 → TaskPool 编解码与校验 → 生成临时资料包 → 系统分享面板 → 接收方确认导入副本。当前上限为包 32 MB、单附件 16 MB；面板打开不等于送达。备份不包括日历待办和回收站。
 
@@ -63,31 +55,22 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 
 ## 修改与验证顺序
 
-1. 先看现有差异、调用方和失败路径，明确本轮负责的字段和系统资源。
+1. 先看现有差异、调用方和失败路径，明确本次修改涉及的字段和系统资源。
 2. 修改最小用例；业务规则留在纯策略，平台 API 留在服务适配。
-3. 数据一致性、取消、迁移或新提交门槛需要对应行为回归；简单文案和可逆样式不增加镜像测试。
-4. 运行相应专项，再运行统一检查；应用源码变化后执行 release 构建及编译事件检查。只改文档或发布脚本时，不复用旧编译产物宣称本轮 SDK 构建成功。
-5. 记录真实命令、运行日期、结果、包摘要、未验收项；截图和设备反馈绑定同一候选。
-
-`tmp/verification-latest/results.json`是最近一次本机回归结果，不能长期把历史通过数当作当前状态。默认入口检查公开文档链接与发布边界，CI克隆不依赖私有材料。`--local-docs`只供持有完整本地记录的维护环境使用，不是公开贡献者的必需步骤。
+3. 数据一致性、取消、迁移或新提交门槛需要对应行为验证；简单文案和可逆样式从简。
+4. 应用源码变化后执行 release 构建，再在真实设备上验证对应功能。
+5. 记录实际验证结果与未验收项；截图和设备反馈绑定同一候选版本。
 
 ## 常见故障
 
 | 现象 | 处理 |
 | --- | --- |
-| TypeScript unavailable | 设置 DevEco 路径或显式 `--typescript`，不安装任意版本替代当前 SDK |
-| SQLite 测试无法启动 | 按 `tools/fixtures/rdb-fixture.mjs` 检查 Python 路径及 sqlite3，不能跳过后记为通过 |
-| 编译事件检查缺产物 | 先对同一源码完成 release 构建，再执行 `--compiled` |
-| 回归通过、设备行为仍失败 | 区分纯策略、平台适配、SDK事件接线和真实设备，按实际失败路径复现 |
-| 文档检查提到历史功能 | 当前用户文案仍受本地范围约束；规划文档允许讨论未来云 AI，不能解除应用源码边界 |
+| 构建失败 | 确认 DevEco Studio 与 SDK 版本匹配，依赖由锁定文件恢复 |
+| 编译通过、设备行为仍失败 | 区分纯策略、平台适配和真实设备差异，按实际失败路径复现 |
 | PDF 慢、笔迹迟到或保存失败 | 保留原件与日志，定位后台任务／主线程绘制／任务代次／提交队列；先复现再修改，禁止清数据掩盖问题 |
 
-## 关联质量与云服务设计
+## 本地学习增强
 
-独立 AI 原型需要 Python 3.10+ 与 sqlite3，无第三方 Python 包。运行方式与数据边界见[原型说明](../cloud/ai/README.md)，专项检查为 `node tools/verify-ai.mjs`，已加入统一入口；CI 显式准备 Python。测试使用临时数据库和模拟模型，不调用真实推理服务。原型数据默认在被忽略的 `cloud/ai/.data/`，不可作为源码或 APP／HAP 资源打包。主应用源码或权限没有变化时，不因独立原型变动重编译或安装应用。
+本地学习增强位于 `services/study/LearningProgressPolicy.ets` 和 `views/study/StudySheet.ets`，使用显式时钟与已提交资料／题卡，不新增库表。代码修改后仍需 release 编译和实际手机、平板的字号、键盘、布局和触控验收。云业务暂不开放，不预埋自动启用开关。
 
-本地学习增强位于 `services/study/LearningProgressPolicy.ets` 和 `views/study/StudySheet.ets`，使用显式时钟与已提交资料／题卡，不新增库表。代码修改后仍需 release 编译、工作流与编译后接线检查；后者仅验证 SDK 生成事件，不替代实际手机和平板的字号、键盘、布局和触控验收。云业务暂不开放，不预埋自动启用开关。
-
-离线交换准备层见[接入契约](LEARNING_INTEGRATION.md)。修改 `LearningResultPolicy` 或 Python `exchange.py` 时同步共享样本并运行两端回归；生产入口不引用准备策略，单纯 release 构建不会编译它。使用已配置的 DevEco 环境执行 `hvigorw assembleHap --no-daemon --mode module -p module=entry@ohosTest -p product=default -p buildMode=debug`，验证测试目标内的 ArkTS 编译；该步骤不安装、不运行测试包。未来接线必须同时更新明确隔离的源码范围规则、隐私与用户行为文档，不能只删除检查。
-
-保存与迁移修改应记录版本、真实测试和未覆盖边界，不复用旧结果。托管云AI按[技术方案](CLOUD_AI_DESIGN.md)组织网关、任务、引用验证和用量账本，面向的学习场景见[服务方向](CLOUD_AI_BUSINESS.md)。新增网络与云处理时同步产品范围、权限、隐私与凭据管理，让实现、用户说明和数据边界保持一致。
+保存与迁移修改应记录版本、真实测试和未覆盖边界，不复用旧结果。新增网络与云处理时同步权限、隐私与凭据管理，让实现、用户说明和数据边界保持一致。
