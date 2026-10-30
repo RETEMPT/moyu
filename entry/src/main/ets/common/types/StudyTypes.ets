@@ -36,3 +36,27 @@ export interface ReviewDraft {
   sourceText: string;
   pageNumber?: number;
 }
+
+/** Derived local records, never a claim of measured learning or mastery. */
+export interface MaterialLearningProgress {
+  noteId: string;
+  title: string;
+  course: string;
+  readingLabel: string;
+  cardCount: number;
+  dueCount: number;
+  newCount: number;
+  weakCount: number;
+  goodCount: number;
+}
+export interface LearningOverview {
+  noteCount: number;
+  openedCount: number;
+  cardCount: number;
+  dueCount: number;
+  newCount: number;
+  weakCount: number;
+  weakDueCount: number;
+  goodCount: number;
+  materials: MaterialLearningProgress[];
+}

@@ -1,0 +1,63 @@
+{
+  "result": {
+    "format": "moyu.learning-result",
+    "version": 1,
+    "job_id": "fixture_quiz",
+    "operation": "quiz",
+    "title": "力学自测 🧭",
+    "sources": [{
+      "id": "source1",
+      "name": "自编力学示例.md",
+      "text": "合外力决定加速度，F = ma。\n速度方向可以变化。",
+      "revision": 1,
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "line_start": 1,
+      "line_end": 2
+    }],
+    "sections": [{
+      "heading": "核心关系",
+      "body": "结合质量与合外力分析加速度。",
+      "citations": [{"source_id": "source1", "quote": "合外力决定加速度"}]
+    }],
+    "cards": [{
+      "question": "什么决定加速度？",
+      "answer": "结合合外力和质量判断。",
+      "citations": [{"source_id": "source1", "quote": "合外力决定加速度，F = ma。"}]
+    }],
+    "warnings": ["该样本为契约测试手工编写，摘要仅用于格式测试。"]
+  },
+  "cases": [
+    {"name":"quiz", "valid":true, "changes":[]},
+    {"name":"integer JSON notation", "valid":true, "changes":[["version",1.0],["sources.0.revision",1e0]]},
+    {"name":"blank Unicode title", "valid":false, "changes":[["title","\ufeff\u3000"]]},
+    {"name":"summary", "valid":true, "changes":[["operation","summary"],["cards",[]]]},
+    {"name":"qa", "valid":true, "changes":[["operation","qa"],["cards",[]]]},
+    {"name":"report", "valid":true, "changes":[["operation","report"],["cards",[]]]},
+    {"name":"plan", "valid":true, "changes":[["operation","plan"],["cards",[]]]},
+    {"name":"future version", "valid":false, "changes":[["version",2]]},
+    {"name":"boolean version", "valid":false, "changes":[["version",true]]},
+    {"name":"unknown format", "valid":false, "changes":[["format","backup"]]},
+    {"name":"unexpected credentials", "valid":false, "changes":[["api_key","fake"]]},
+    {"name":"unexpected tools", "valid":false, "changes":[["sections.0.tools",[]]]},
+    {"name":"invalid identity", "valid":false, "changes":[["job_id","../file"]]},
+    {"name":"identity final newline", "valid":false, "changes":[["job_id","job\n"]]},
+    {"name":"source final newline", "valid":false, "changes":[["sources.0.id","source1\n"]]},
+    {"name":"digest final newline", "valid":false, "changes":[["sources.0.digest","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"]]},
+    {"name":"unknown operation", "valid":false, "changes":[["operation","shell"]]},
+    {"name":"invalid source digest", "valid":false, "changes":[["sources.0.digest","unknown"]]},
+    {"name":"boolean revision", "valid":false, "changes":[["sources.0.revision",true]]},
+    {"name":"fractional line", "valid":false, "changes":[["sources.0.line_start",1.5]]},
+    {"name":"reversed lines", "valid":false, "changes":[["sources.0.line_start",3]]},
+    {"name":"oversized integer", "valid":false, "changes":[["sources.0.revision",2147483648]]},
+    {"name":"missing source", "valid":false, "changes":[["sources",[]]]},
+    {"name":"missing quote", "valid":false, "changes":[["cards.0.citations.0.quote","不存在的引文"]]},
+    {"name":"missing source ref", "valid":false, "changes":[["sections.0.citations.0.source_id","other"]]},
+    {"name":"short quote", "valid":false, "changes":[["cards.0.citations.0.quote","外力"]]},
+    {"name":"no quiz cards", "valid":false, "changes":[["cards",[]]]},
+    {"name":"non quiz cards", "valid":false, "changes":[["operation","summary"]]},
+    {"name":"null section", "valid":false, "changes":[["sections.0",null]]},
+    {"name":"null warnings", "valid":false, "changes":[["warnings",null]]},
+    {"name":"lone surrogate", "valid":false, "changes":[["title","bad\ud800"]]},
+    {"name":"literal markup", "valid":true, "changes":[["cards.0.answer","<script>example</script> [text](https://example.invalid)"]]}
+  ]
+}

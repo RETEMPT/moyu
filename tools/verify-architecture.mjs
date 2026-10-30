@@ -30,10 +30,19 @@ test('application source has no circular relative imports', () => {
 });
 
 test('reader ownership and note identity policies have no platform, clock or persistence side effects', () => {
-  for (const file of ['services/document/ReaderCommitPolicy.ets', 'services/storage/NoteIdentity.ets']) {
+  for (const file of ['services/document/ReaderCommitPolicy.ets', 'services/storage/NoteIdentity.ets', 'services/study/LearningProgressPolicy.ets', 'services/study/LearningResultPolicy.ets']) {
     const text = source.get(file);
     assert.ok(!/@kit\.|@ohos\.|AppStorage|Date\.now\(|new Date\(|getContext\(|setTimeout\(|fileIo|relationalStore/.test(text), file);
   }
+});
+
+test('offline result preparation remains dormant with no main app network or UI entry', () => {
+  const policy = 'services/study/LearningResultPolicy.ets';
+  for (const [file, imports] of dependencies) {
+    assert.ok(!imports.includes(policy), `${file} unexpectedly activates the preparation layer`);
+  }
+  const moduleFile = path.resolve(root, '../module.json5');
+  assert.ok(!fs.readFileSync(moduleFile, 'utf8').includes('ohos.permission.INTERNET'));
 });
 
 test('release resource policy excludes debugging samples and production bootstrap starts with no seed library', () => {

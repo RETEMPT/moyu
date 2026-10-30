@@ -661,6 +661,95 @@ test('course summaries exclude removed source notes and count only linked unfini
     [{ done: false, noteRefs: [card.noteId] }, { done: true, noteRefs: [card.noteId] }, { done: false, noteRefs: [] }], 10)[0];
   assert.equal(summary.noteCount, 1); assert.equal(summary.dueCount, 1); assert.equal(summary.cardCount, 1); assert.equal(summary.todoCount, 1);
 });
+const { LearningProgressPolicy } = load(`${base}services/study/LearningProgressPolicy.ets`);
+const { LearningResultPolicy } = load(`${base}services/study/LearningResultPolicy.ets`);
+const exchangeFixture = JSON.parse(fs.readFileSync(path.join(root, 'tools/fixtures/learning-result.json'), 'utf8'));
+for (const scenario of exchangeFixture.cases) {
+  test(`offline learning result contract: ${scenario.name}`, () => {
+    const value = structuredClone(exchangeFixture.result);
+    for (const [key, replacement] of scenario.changes) {
+      const parts = key.split('.'); let current = value;
+      for (const part of parts.slice(0, -1)) current = current[part];
+      current[parts.at(-1)] = replacement;
+    }
+    if (scenario.valid) assert.deepEqual(plain(LearningResultPolicy.parse(JSON.stringify(value))), value);
+    else assert.throws(() => LearningResultPolicy.parse(JSON.stringify(value)));
+  });
+}
+
+test('offline result enforces byte, UTF-16 and duplicate source bounds', () => {
+  const value = structuredClone(exchangeFixture.result);
+  value.title = '🧭'.repeat(100);
+  LearningResultPolicy.parse(JSON.stringify(value));
+  value.title += '🧭';
+  assert.throws(() => LearningResultPolicy.parse(JSON.stringify(value)));
+  assert.throws(() => LearningResultPolicy.parse(' '.repeat(131073)));
+  assert.throws(() => LearningResultPolicy.parse('中'.repeat(50000)));
+  const duplicate = structuredClone(exchangeFixture.result);
+  duplicate.sources.push(duplicate.sources[0]);
+  assert.throws(() => LearningResultPolicy.parse(JSON.stringify(duplicate)));
+});
+
+test('offline card candidate requires exact live fragment and keeps local identity and scheduling unset', () => {
+  const value = structuredClone(exchangeFixture.result), raw = JSON.stringify(value);
+  const draft = LearningResultPolicy.cardDraft(raw, 0, 'source1', value.sources[0].text);
+  assert.deepEqual(plain(draft), { question: value.cards[0].question, answer: value.cards[0].answer,
+    sourceText: value.cards[0].citations[0].quote });
+  for (const index of [-1, 0.5, 1]) assert.throws(() => LearningResultPolicy.cardDraft(raw, index, 'source1', value.sources[0].text));
+  assert.throws(() => LearningResultPolicy.cardDraft(raw, 0, 'missing', value.sources[0].text));
+  assert.throws(() => LearningResultPolicy.cardDraft(raw, 0, 'source1', value.sources[0].text + '已修订'));
+  value.sources.push({ ...value.sources[0], id: 'source2' });
+  value.cards[0].citations.push({ ...value.cards[0].citations[0], source_id: 'source2' });
+  assert.throws(() => LearningResultPolicy.cardDraft(JSON.stringify(value), 0, 'source1', value.sources[0].text));
+});
+test('local learning overview follows live course membership and separates self-ratings from reading', () => {
+  const notes = [studyNote({id:'a',category:'数学',lastReadAt:100,pageCount:20,readPage:20}),
+    studyNote({id:'b',category:'数学'}),studyNote({id:'other',category:'物理'}),studyNote({id:'trash',category:'数学',deletedAt:1})];
+  const make=(id,noteId,extra={})=>({...ReviewPolicy.create(notes[0],{question:'Q',answer:'A',sourceText:''},1),id,noteId,course:'旧分类',...extra});
+  const cards=[make('new','a'),make('weak','a',{lastRating:'again',reviewCount:2,dueAt:20}),
+    make('good','b',{lastRating:'good',reviewCount:3,lapses:2}),make('future','b',{lastRating:'hard',reviewCount:1,dueAt:99}),
+    make('other','other'),make('trash','trash'),make('missing','missing')];
+  const before=JSON.stringify({notes,cards});
+  const overview=LearningProgressPolicy.overview(notes,cards,'数学',50);
+  assert.equal(overview.noteCount,2);assert.equal(overview.openedCount,1);assert.equal(overview.cardCount,4);
+  assert.equal(overview.newCount,1);assert.equal(overview.weakCount,2);assert.equal(overview.goodCount,1);
+  assert.equal(overview.dueCount,3);assert.equal(overview.weakDueCount,1);
+  assert.equal(overview.materials[0].readingLabel,'第 20 / 20 页');
+  assert.equal(overview.materials[0].course,'数学');
+  assert.match(LearningProgressPolicy.suggestion(overview),/3 道到期题卡/);
+  assert.equal(JSON.stringify({notes,cards}),before);
+});
+test('local review queue prioritizes due weak cards and never brings forward future reviews', () => {
+  const note=studyNote();const baseCard=ReviewPolicy.create(note,{question:'Q',answer:'A',sourceText:''},1);
+  const cards=[{...baseCard,id:'old',dueAt:1},{...baseCard,id:'weakB',lastRating:'hard',dueAt:20},
+    {...baseCard,id:'weakA',lastRating:'again',dueAt:20},{...baseCard,id:'future',lastRating:'again',dueAt:100}];
+  assert.deepEqual(plain(LearningProgressPolicy.queue([note],cards,'',50)).map(c=>c.id),['weakA','weakB','old']);
+  assert.deepEqual(plain(LearningProgressPolicy.queue([note],cards,'',50,true)).map(c=>c.id),['weakA','weakB']);
+  assert.deepEqual(plain(LearningProgressPolicy.queue([note],cards,'另一个课程',50)),[]);
+  assert.match(LearningProgressPolicy.suggestion(LearningProgressPolicy.overview([note],[], '',50)),/手动建立题卡/);
+});
+test('editing a local card preserves its identity, source, feedback and scheduled review', () => {
+  const note=studyNote();const card={...ReviewPolicy.create(note,{question:'Q',answer:'A',sourceText:'原文',pageNumber:3},1),
+    lastRating:'hard',reviewCount:3,intervalDays:7,dueAt:100,lapses:2};
+  const updated=ReviewPolicy.edit(card,{question:'新问题',answer:'新答案',sourceText:'校对原文'},200);
+  for(const key of ['id','noteId','course','pageNumber','dueAt','intervalDays','reviewCount','repetitions','lastRating','lapses','createdAt'])assert.equal(updated[key],card[key],key);
+  assert.equal(updated.question,'新问题');assert.equal(updated.updatedAt,200);assert.equal(card.question,'Q');
+  assert.throws(()=>ReviewPolicy.edit(card,{question:'',answer:'A',sourceText:''},200));
+});
+test('local card editor keeps the draft when persistence fails and clears it only after a successful save', async () => {
+  const card=ReviewPolicy.create(studyNote(),{question:'旧问题',answer:'旧答案',sourceText:''},1);
+  let fail=true, saved;
+  const view={busy:false,alive:true,editingId:card.id,question:'修正问题',answer:'修正答案',sourceText:'原文',cards:[card],
+    status:'',reveal:true,selectedNote:()=>studyNote(),activeCards:()=>[card],
+    onSave:async next=>{if(fail)throw Error('disk');saved=next;},switchTab(tab){this.tab=tab;},
+    cancelEdit(){this.editingId='';this.question='';this.answer='';this.sourceText='';}};
+  view.commit=viewMethod('views/study/StudySheet.ets','commit');
+  const save=viewMethod('views/study/StudySheet.ets','manual',{ReviewPolicy});
+  await save.call(view);assert.equal(view.question,'修正问题');assert.equal(view.editingId,card.id);assert.equal(view.busy,false);
+  assert.match(view.status,/保存失败/);assert.equal(saved,undefined);
+  fail=false;await save.call(view);assert.equal(saved[0].question,'修正问题');assert.equal(saved[0].reviewCount,card.reviewCount);
+  assert.equal(view.editingId,'');assert.equal(view.question,'');assert.equal(view.tab,0);
+});
 const studyBackup = () => ({ schemaVersion: 1, id: 'backup123', createdAt: 1, notes: [studyNote()], cards: [], assets: [] });
 test('study backup rejects duplicate IDs, traversal IDs, invalid assets and orphaned cards', () => {
   const backup = studyBackup();
