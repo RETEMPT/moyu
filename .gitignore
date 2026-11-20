@@ -2,6 +2,7 @@
 /oh_modules
 /local.properties
 /.idea
+/.vscode
 **/build
 /.hvigor
 .cxx
@@ -14,14 +15,8 @@
 /.tmp-icons
 /.build.log
 /.release-build.log
-/.workflow-tests.log
-/.design-qa/
-/.codegenie/
-# Local task attachments and generated package metadata are not release sources
-/.codex-remote-attachments/
 /pack.info
-# 本地敏感凭据与测试备忘
-/moyu_text.txt
+# 本地敏感凭据
 *.local
 .env*
 *.key
@@ -42,40 +37,12 @@
 **/__pycache__/
 *.pyc
 
-# Standalone AI learning data contains private source text and job previews.
-/cloud/ai/.data/
-/cloud/ai/.venv/
-
-# Local operational records, unpublished references and historical work.
-/PROJECT_MEMORY.md
-/AI_AGENT_PLAN.md
-/design/
-/archive/
 /docs/*
-!/docs/README.md
-!/docs/ROADMAP.md
 !/docs/BUSINESS_PLAN.md
-!/docs/CLOUD_AI_BUSINESS.md
-!/docs/CLOUD_AI_DESIGN.md
-!/docs/AI_REFERENCES.md
-!/docs/LEARNING_INTEGRATION.md
-!/docs/WEB_PLATFORM_PLAN.md
 !/docs/INNOVATION.md
 !/docs/DEVELOPMENT_GUIDE.md
 !/docs/CODE_STANDARDS.md
 !/docs/ARCHITECTURE.md
-!/docs/DESIGN_REVIEW.md
-!/docs/FEATURE_PARITY.md
-!/docs/KOODO_REFERENCE.md
-!/docs/LOCAL_TEXT_LAYOUT.md
-!/docs/DEPENDENCIES.md
-!/docs/reference-contracts.json
 !/docs/USER_GUIDE.md
 !/docs/PRIVACY.md
 /release/*.md
-/release/*evidence.template.json
-# Competition submission rules, dates, checklists and evidence tools stay local.
-/release/competition.json
-/tools/competition-policy.mjs
-/tools/competition-preflight.mjs
-/tools/verify-competition.mjs
