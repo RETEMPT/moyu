@@ -66,11 +66,15 @@ export class DocumentTextParser {
   }
 
   static spans(text: string): DocumentSpan[] {
-    const result: DocumentSpan[] = []; const pattern = /(`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\)|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*)/g;
+    const result: DocumentSpan[] = []; const pattern = /(\\[\\`*_{}\[\]<>|#!~$.+)-]|`[^`\n]+`|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\)|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*)/g;
     let cursor = 0; let match: RegExpExecArray | null = pattern.exec(text);
     while (match) {
       if (match.index > cursor) { result.push({ text: text.slice(cursor, match.index), style: 'plain' }); }
       const token = match[0]; const double = token.startsWith('**') || token.startsWith('__') || token.startsWith('~~');
+      if (token.startsWith('\\')) {
+        result.push({ text: token.slice(1), style: 'plain' });
+        cursor = match.index + token.length; match = pattern.exec(text); continue;
+      }
       if (token.startsWith('[')) {
         const separator = token.indexOf('](');
         result.push({ text: token.slice(1, separator), style: 'link', target: token.slice(separator + 2, -1) });

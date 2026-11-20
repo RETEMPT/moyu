@@ -62,6 +62,7 @@ export struct HandwritingCanvas {
   onShowTools: () => void = () => {};
   onToolStateChange: (state: CanvasToolState) => void = () => {};
   onContentReady: (ready: boolean) => void = () => {};
+  onStrokeCompleted: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') @Watch('requestRedraw') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') @Watch('requestRedraw') themeStyle: string = 'mono';
@@ -394,7 +395,10 @@ export struct HandwritingCanvas {
       this.liveContext.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
       this.liveContext.save(); this.liveContext.translate(this.panX, this.panY); this.liveContext.scale(this.zoomScale, this.zoomScale);
       InkRenderer.stroke(this.liveContext, stroke.points, this.style(stroke)); this.liveContext.restore();
-      if (batch.phase === 'end') { this.finishStroke(); }
+      if (batch.phase === 'end') {
+        this.finishStroke();
+        if (stroke.points.length > 0) { this.onStrokeCompleted(); }
+      }
       return;
     }
     const target = stroke.isEraser ? this.context : this.liveContext;
@@ -416,6 +420,7 @@ export struct HandwritingCanvas {
     if (batch.phase === 'end') {
       this.finishStroke();
       if (!stroke.isEraser && !this.isScratchpad) { this.revealWritingSpace(); }
+      if (!stroke.isEraser && stroke.points.length > 0) { this.onStrokeCompleted(); }
     }
   }
 

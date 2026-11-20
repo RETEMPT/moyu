@@ -60,6 +60,7 @@ export struct PdfAnnotatorView {
   onSourceReady: (ready: boolean) => void = () => {};
   onAnnotationError: (message: string) => void = () => {};
   onFocused: () => void = () => {};
+  onStrokeCompleted: () => void = () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
@@ -525,6 +526,7 @@ export struct PdfAnnotatorView {
       selectedWidth: this.selectedWidth,
       isDarkMode: this.isDarkMode,
       onStrokeAdded: (stroke: PageAnnotationStroke) => this.handleStrokeAdded(stroke),
+      onStrokeCompleted: () => this.onStrokeCompleted(),
       fingerDrawing: this.fingerDrawing,
       onPenActive: (pen: boolean) => { this.penContact = pen; this.shortcuts.claim(); this.onFocused(); },
       onActiveFinisherChange: (finish: (() => void) | null) => this.setActiveInputFinisher(pm.pageIndex, finish),

@@ -1,7 +1,7 @@
 import { image } from '@kit.ImageKit';
 import { PdfDocumentService } from '../../../services/document/PdfDocumentService';
 import { ImageDocumentService } from '../../../services/document/ImageDocumentService';
-import { pdfFailureKind, PdfFailureKind } from '../../../services/document/LocalPdfEngine';
+import { LocalPdfEngine, pdfFailureKind, PdfFailureKind } from '../../../services/document/LocalPdfEngine';
 
 /** 只保留可见页的位图，离开视口即释放，控制手机端内存。 */
 @Component
@@ -25,12 +25,12 @@ export struct PdfPageBackground {
 
   aboutToDisappear(): void {
     this.visible = false;
-    this.releaseBitmap(false);
+    this.releaseBitmap(true);
   }
 
-  /** Only a missing original can be repaired by picking the file again. */
   private canRestore(): boolean {
-    return this.sourceType !== 'image' && this.failure === 'missing';
+    return this.sourceType !== 'image' &&
+      (this.failure === 'missing' || this.failure === 'damaged' || this.failure === 'password');
   }
 
   /**
@@ -124,10 +124,11 @@ export struct PdfPageBackground {
           .constraintSize({ maxWidth: 560 }).textAlign(TextAlign.Center)
         if (this.canRestore()) {
           Button('重新关联原 PDF').height(44).onClick(() => this.onRestoreSource())
-        }
-        if (this.sourceUri.length > 0) {
-          Button('重试读取').height(44).type(ButtonType.Normal).backgroundColor('#F3F4F6')
-            .fontColor('#374151').onClick(() => this.reload())
+        } else if (this.sourceUri.length > 0) {
+          Button('重试读取').height(44).onClick(() => {
+            if (this.failure === 'engine') { LocalPdfEngine.getInstance().retryStartup(); }
+            this.reload();
+          })
         }
       } else {
         LoadingProgress().width(40).height(40)

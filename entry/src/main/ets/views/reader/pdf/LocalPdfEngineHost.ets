@@ -61,7 +61,10 @@ export struct LocalPdfEngineHost {
 
   aboutToAppear(): void {
     this.registerScheme();
-    LocalPdfEngine.getInstance().attach({ execute: (script: string): Promise<string> => this.controller.runJavaScript(script) });
+    LocalPdfEngine.getInstance().attach({
+      execute: (script: string): Promise<string> => this.controller.runJavaScript(script),
+      refresh: () => this.controller.refresh()
+    });
   }
   aboutToDisappear(): void { LocalPdfEngine.getInstance().detach(); }
   build() {

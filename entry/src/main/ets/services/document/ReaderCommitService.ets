@@ -16,12 +16,15 @@ export class ReaderCommitService {
   private queue: SerialTaskQueue = new SerialTaskQueue();
 
   commit(input: NoteItem, content: string, ports: ReaderCommitPorts, writeDocument: boolean = false,
-    kind: ReaderSaveKind = 'markdown'): Promise<void> {
+    kind: ReaderSaveKind = 'markdown', previousPdfSource?: string): Promise<void> {
     const snapshot = copyNote(input);
     snapshot.contentDetail = content;
     return this.queue.run<void>(async () => {
       const existing = ports.notes().find((note: NoteItem) => note.id === snapshot.id);
       if (!existing) { throw new Error('目标笔记已移除，请先恢复资料再保存'); }
+      if (kind === 'pdf-source' && previousPdfSource !== undefined && (existing.sourceUri || '') !== previousPdfSource) {
+        throw new Error('原 PDF 关联已更新，请重新打开资料后重试');
+      }
       const now = Date.now();
       let merged = ReaderCommitPolicy.merge(existing, snapshot, kind, now);
       if (writeDocument) { await ports.saveDocument(merged, merged.contentDetail); }

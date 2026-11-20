@@ -22,7 +22,9 @@ export class ReaderCommitPolicy {
     else if (kind === 'pdf') { result.pageAnnotations = input.pageAnnotations; }
     else if (kind === 'pdf-source') {
       result.sourceUri = input.sourceUri; result.sourceFileName = input.sourceFileName; result.sourceType = input.sourceType;
-      result.pageCount = input.pageCount; result.type = input.type; result.pdfTextJson = input.pdfTextJson;
+      result.sourceSha256 = input.sourceSha256;
+      result.pageCount = input.pageCount; result.type = input.type;
+      if (input.pdfTextJson === undefined) { result.pdfTextJson = undefined; }
       result.pageInfo = input.pageInfo; result.documentMeta = input.documentMeta;
     }
     else if (kind === 'scratchpad') { result.scratchpadStrokes = input.scratchpadStrokes; result.scratchpadPaperStyle = input.scratchpadPaperStyle; }

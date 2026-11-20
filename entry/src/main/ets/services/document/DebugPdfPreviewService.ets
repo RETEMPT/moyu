@@ -6,7 +6,10 @@ import { image } from '@kit.ImageKit';
 export interface DebugPdfPage {
   pixelMap: image.PixelMap;
   aspectRatio: number;
+  pageCount: number;
 }
+
+const BUNDLED_PAGE_COUNT: number = 2;
 
 /** Exact renders of our own bundled PDFs; never substitutes pages for another document. */
 export class DebugPdfPreviewService {
@@ -37,18 +40,18 @@ export class DebugPdfPreviewService {
     return '';
   }
 
-  pageCount(filePath: string): number { return this.kindOf(filePath) ? 2 : 0; }
+  pageCount(filePath: string): number { return this.kindOf(filePath) ? BUNDLED_PAGE_COUNT : 0; }
 
   async renderPage(filePath: string, pageIndex: number): Promise<DebugPdfPage | null> {
     const kind = this.kindOf(filePath);
     if (!kind || this.context === null) { return null; }
-    if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= 2) { throw new Error('PDF 页码超出范围'); }
+    if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= BUNDLED_PAGE_COUNT) { throw new Error('PDF 页码超出范围'); }
     const bytes = await this.context.resourceManager.getRawFileContent(`debug-pdf-preview/${kind}-${pageIndex + 1}.png`);
     const source = image.createImageSource(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
     try {
       const info = await source.getImageInfo();
       const pixelMap = await source.createPixelMap({ editable: false, desiredPixelFormat: image.PixelMapFormat.RGBA_8888 });
-      return { pixelMap: pixelMap, aspectRatio: info.size.width / info.size.height };
+      return { pixelMap: pixelMap, aspectRatio: info.size.width / info.size.height, pageCount: BUNDLED_PAGE_COUNT };
     } finally { await source.release(); }
   }
 }

@@ -29,6 +29,7 @@ export struct HuaweiDocWorkspace {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
   @Prop @Watch('handleBackRequest') backRequestToken: number = 0;
   @Prop paneMode: boolean = false;
+  @Prop compactPane: boolean = false;
   @Prop @Watch('saveForHost') hostSaveToken: number = 0;
   onHostSaveFinished: (ok: boolean, noteId: string, token: number) => void = () => {};
   @Prop sourcePage: number = 1;
@@ -48,6 +49,8 @@ export struct HuaweiDocWorkspace {
   onSaveStateChange: (state: string) => void = () => {};
   onToggleFavorite: (note: NoteItem) => void = () => {};
   onRestorePdfSource: () => Promise<void> = async () => {};
+  onOutputDialogChange: (open: boolean) => void = () => {};
+  onVisiblePageChange?: (noteId: string, page: number) => void;
   onReadingPageChange: (noteId: string, page: number, visitedAt: number) => Promise<void> = async () => {};
   private readingTimer: number = -1;
   private pendingReadingPage: number = 0;
@@ -57,10 +60,16 @@ export struct HuaweiDocWorkspace {
   private readingWritePending: boolean = false;
 
   private handleBackRequest(): void {
-    if (this.shapeOptionsOpen || this.paperOptionsOpen) { this.shapeOptionsOpen = false; this.paperOptionsOpen = false; return; }
+    if (this.activeModal.length > 0) { this.closeOutput(); return; }
+    if (this.shapeOptionsOpen || this.paperOptionsOpen || this.drawingSettingsOpen || this.addContentModalOpen ||
+      this.pageOverviewOpen) {
+      this.shapeOptionsOpen = false; this.paperOptionsOpen = false;
+      this.drawingSettingsOpen = false; this.addContentModalOpen = false;
+      this.pageOverviewOpen = false;
+      return;
+    }
     if (this.scratchpadMenuOpen) { this.scratchpadMenuOpen = false; return; }
     if (this.documentMenuOpen) { this.documentMenuOpen = false; return; }
-    if (this.activeModal.length > 0) { this.closeOutput(); return; }
     if (this.penOptionsOpen) { this.penOptionsOpen = false; return; }
     if (this.clearDialogOpen) { this.clearDialogOpen = false; return; }
     if (this.jumpDialogOpen) { this.jumpDialogOpen = false; return; }
@@ -124,7 +133,7 @@ export struct HuaweiDocWorkspace {
 
   // 导航与功能区状态
   @State splitMode: SplitModeType = 'none';
-  @State activeModal: HuaweiDocDialogType = '';
+  @State @Watch('outputDialogChanged') activeModal: HuaweiDocDialogType = '';
   @State outputBusy: boolean = false;
   @State outputMessage: string = '';
   @State outputFailed: boolean = false;
@@ -144,7 +153,10 @@ export struct HuaweiDocWorkspace {
   @State jumpDialogOpen: boolean = false;
   @State jumpPageInput: string = '';
   @State pageOverviewOpen: boolean = false;
-  @State annotationMoreOpen: boolean = false;
+  @State drawingSettingsOpen: boolean = false;
+  @State addContentModalOpen: boolean = false;
+  @State toolbarMinimized: boolean = false;
+  @State autoMinimizeToolbar: boolean = false;
 
   // 轻量提示
   private toastText: string = '';
@@ -161,6 +173,7 @@ export struct HuaweiDocWorkspace {
   private rememberReadingPage(page: number): void {
     this.currentPage = page;
     if (this.isFreeCanvas || this.isHandwritingNote() || page === this.lastRecordedPage) { return; }
+    this.onVisiblePageChange?.(this.note.id, page);
     this.lastRecordedPage = page; this.pendingReadingPage = page; this.pendingReadingAt = Date.now();
     if (this.readingTimer !== -1) { clearTimeout(this.readingTimer); }
     this.readingTimer = setTimeout(() => {
@@ -189,6 +202,7 @@ export struct HuaweiDocWorkspace {
   }
 
   aboutToDisappear(): void {
+    if (this.activeModal) { this.onOutputDialogChange(false); }
     this.flushReadingProgress().catch(() => this.onSaveStateChange('阅读位置保存失败'));
   }
 
@@ -217,9 +231,11 @@ export struct HuaweiDocWorkspace {
     this.loadedNoteId = this.note.id;
     this.lastRecordedPage = this.note.readPage || 0;
     this.activeModal = ''; this.documentMenuOpen = false; this.scratchpadMenuOpen = false; this.inkTarget = 'document';
-    this.outputBusy = false; this.outputMessage = ''; this.pendingOutput = '';
+    this.outputBusy = false; this.restoreSourceBusy = false; this.outputMessage = ''; this.pendingOutput = '';
     this.jumpDialogOpen = false;
     this.penOptionsOpen = false; this.shapeOptionsOpen = false; this.paperOptionsOpen = false; this.clearDialogOpen = false;
+    this.drawingSettingsOpen = false; this.addContentModalOpen = false; this.toolbarMinimized = false;
+    this.pageOverviewOpen = false;
     this.documentDirty = false; this.scratchpadDirty = false; this.isAnnotateMode = false;
     this.pdfSourceReady = false; this.whiteboardReady = false; this.annotationError = '';
     this.exitDialogOpen = false; this.splitMode = 'none';
@@ -325,21 +341,10 @@ export struct HuaweiDocWorkspace {
     }
   }
 
-  private async restorePdfSource(): Promise<void> {
-    if (this.restoreSourceBusy || this.exitSaving) { return; }
-    if (this.isAnnotateMode || this.documentDirty || this.scratchpadDirty) {
-      this.showToast('请先返回阅读并保存批注，再重新关联原 PDF'); return;
-    }
-    this.restoreSourceBusy = true;
-    const originalId = this.note.id;
-    try {
-      const answer = await promptAction.showDialog({ title: '重新关联原 PDF',
-        message: `请选择《${this.note.title}》原来的 PDF。现有批注会保留；相同页数不代表相同内容，关联后请检查笔迹是否对应。旧页面文字索引将清除，可重新提取。`,
-        buttons: [{ text: '取消', color: this.palette().inkSecondary }, { text: '选择原文件', color: this.palette().accent }] });
-      if (answer.index === 1 && this.note.id === originalId) { await this.onRestorePdfSource(); }
-    }
-    catch (error) { this.showToast(error instanceof Error ? error.message : '原 PDF 未能关联，请重试'); }
-    finally { this.restoreSourceBusy = false; }
+  private restorePdfSource(): void {
+    if (this.restoreSourceBusy || this.exitSaving || this.outputBusy || this.activeModal ||
+      this.isHandwritingNote() || this.isImageDocument()) { return; }
+    this.openOutput('restore_pdf');
   }
 
   private switchSplitMode(mode: SplitModeType): void {
@@ -509,10 +514,15 @@ export struct HuaweiDocWorkspace {
         this.documentActions()
       }.width('100%').height(52).backgroundColor(this.palette().canvas)
       }
-      this.annotationToolbar()
-    }.width('100%').padding({ left: this.isPhone ? 4 : 12, right: this.isPhone ? 4 : 12 }).backgroundColor(this.palette().surface)
-      .border({ width: { bottom: 1 }, color: this.palette().borderSubtle })
+      if (this.toolbarMinimized) {
+        this.floatingStylusDock()
+      } else {
+        this.annotationToolbar()
+      }
+    }.width('100%').alignItems(HorizontalAlign.Center)
+      .padding({ left: this.compactTools() ? 4 : 12, right: this.compactTools() ? 4 : 12 }).backgroundColor(this.palette().canvas)
   }
+
 
   @Builder
   documentActions() {
@@ -534,6 +544,7 @@ export struct HuaweiDocWorkspace {
   // 笔工具的二级参数面板
   // ------------------------------------------------------------------
 
+  private compactTools(): boolean { return this.isPhone || this.compactPane; }
   private usesCanvasTools(): boolean { return this.inkTarget === 'scratchpad' || this.isHandwritingNote(); }
   private canvasState(): CanvasToolState { return this.inkTarget === 'scratchpad' ? this.scratchpadInk : this.documentInk; }
   private activeTool(): string { return this.usesCanvasTools() ? this.canvasState().tool : this.currentTool; }
@@ -616,6 +627,7 @@ export struct HuaweiDocWorkspace {
   private openToolSettings(tool: AnnotationTool): void {
     if (tool === 'pan' || !this.prepareInkAction()) { return; }
     this.selectInkTool(tool);
+    this.toolbarMinimized = false;
     this.colorInput = this.activeColor().toUpperCase();
     this.penOptionsOpen = true;
   }
@@ -626,6 +638,12 @@ export struct HuaweiDocWorkspace {
     const color = (value.startsWith('#') ? value : '#' + value).toUpperCase();
     this.colorInput = color;
     this.changeInkColor(color);
+  }
+
+  private collapseInkDockAfterStroke(): void {
+    if (!this.autoMinimizeToolbar || this.toolbarMinimized || !this.isAnnotateMode || this.exitSaving) { return; }
+    this.penOptionsOpen = false;
+    this.toolbarMinimized = true;
   }
 
   private widthPresets(): number[] {
@@ -661,9 +679,14 @@ export struct HuaweiDocWorkspace {
       .id(`ink-tool-${tool}`)
       .backgroundColor(this.isAnnotateMode && this.activeTool() === tool ? this.palette().accentSoft : Color.Transparent)
       .enabled(!this.exitSaving && !this.restoreSourceBusy)
-      .accessibilityText(label).accessibilityDescription('轻触进入批注并选择，双击打开设置')
+      .accessibilityText(label)
+      .accessibilityDescription(this.isAnnotateMode && this.activeTool() === tool ? '已选中，再点按可打开设置' : '点按选用')
       .bindTips(label)
-      .onClick(() => { if (this.prepareInkAction()) { this.selectInkTool(tool); } })
+      .onClick(() => {
+        if (this.isAnnotateMode && this.activeTool() === tool) {
+          if (this.penOptionsOpen) { this.penOptionsOpen = false; } else { this.openToolSettings(tool); }
+        } else if (this.prepareInkAction()) { this.selectInkTool(tool); }
+      })
       .parallelGesture(TapGesture({ count: 2, fingers: 1 }).onAction(() => this.openToolSettings(tool)))
       .bindPopup(this.penOptionsOpen && this.isAnnotateMode && this.activeTool() === tool, {
         builder: this.penSettingsPanel, placement: Placement.Bottom, popupColor: this.palette().surface,
@@ -673,54 +696,41 @@ export struct HuaweiDocWorkspace {
   }
 
   @Builder
-  annotationOverflowMenu() {
-    Menu() {
-      MenuItem({ content: '图形工具' }).onClick(() => { this.penOptionsOpen = false; this.shapeOptionsOpen = true; })
-      if (this.usesCanvasTools()) {
-        MenuItem({ content: '纸张与视图' }).onClick(() => { this.penOptionsOpen = false; this.paperOptionsOpen = true; })
-      }
-      MenuItem({ content: '页面总览' }).enabled(this.totalPages > 1).onClick(() => { this.pageOverviewOpen = true; })
-      MenuItem({ content: this.usesCanvasTools() ? '清空当前稿纸笔迹' : '清空本页笔迹' })
-        .enabled(this.isAnnotateMode && !this.exitSaving).onClick(() => this.requestClearInk())
-    }
-  }
-
-  @Builder
   annotationToolbar() {
     Row({ space: 2 }) {
       Scroll() {
-        Row({ space: this.isPhone ? 0 : 4 }) {
-          Button({ type: ButtonType.Normal }) { AppIcon({ source: $r('app.media.ic_undo'), tint: this.palette().inkSecondary }) }
-            .width(44).height(44).padding(0).backgroundColor(Color.Transparent).enabled(this.isAnnotateMode && !this.exitSaving)
-            .opacity(this.isAnnotateMode ? 1 : 0.65).accessibilityText('撤销当前批注').id('reader-undo').onClick(() => this.undoInk())
-          Button({ type: ButtonType.Normal }) { AppIcon({ source: $r('app.media.ic_redo'), tint: this.palette().inkSecondary }) }
-            .width(44).height(44).padding(0).backgroundColor(Color.Transparent).enabled(this.isAnnotateMode && !this.exitSaving)
-            .opacity(this.isAnnotateMode ? 1 : 0.65).accessibilityText('重做当前批注').id('reader-redo').onClick(() => this.redoInk())
-          Divider().vertical(true).height(22).color(this.palette().borderSubtle).margin({ left: 5, right: 5 })
+        Row({ space: this.compactTools() ? 0 : 3 }) {
           this.toolButton('pen', $r('app.media.ic_pen'), '普通笔')
           this.toolButton('highlighter', $r('app.media.ic_highlighter'), '荧光笔')
           this.toolButton('eraser', $r('app.media.ic_eraser'), '橡皮')
+          if (this.compactTools()) { this.addContentButton() }
+          this.inkHistoryButton(false)
+          this.inkHistoryButton(true)
+          Divider().vertical(true).height(22).color(this.palette().borderSubtle).margin({ left: 5, right: 5 })
           if (this.activeTool() === 'eraser') {
             Button((this.activeEraserMode() === 'area' ? '区域擦除' : '笔画擦除') + ' ▾', { type: ButtonType.Normal })
-              .height(44).padding({ left: 10, right: 10 }).borderRadius(5).fontSize(12)
+              .height(44).padding({ left: 10, right: 10 }).borderRadius(6).fontSize(12)
               .fontColor(this.palette().inkSecondary).backgroundColor(this.palette().surfaceSubtle)
               .enabled(!this.exitSaving && !this.restoreSourceBusy).accessibilityText('选择橡皮擦除方式')
               .onClick(() => this.openToolSettings('eraser'))
           }
           Button({ type: ButtonType.Normal }) {
             AppIcon({ source: $r('app.media.ic_hand'), tint: !this.isAnnotateMode || this.activeTool() === 'pan' ? this.palette().accent : this.palette().inkSecondary })
-          }.width(44).height(44).padding(0).borderRadius(5).enabled(!this.exitSaving)
+          }.width(44).height(44).padding(0).borderRadius(6).enabled(!this.exitSaving)
             .backgroundColor(!this.isAnnotateMode || this.activeTool() === 'pan' ? this.palette().accentSoft : Color.Transparent)
             .accessibilityText('拖动页面').onClick(() => { if (this.isAnnotateMode) { this.selectInkTool('pan'); } })
           Button({ type: ButtonType.Normal }) {
             AppIcon({ source: $r('app.media.ic_shape'), iconSize: 23, tint: this.isAnnotateMode && InkShapePolicy.isShape(this.activeTool()) ? this.palette().accent : this.palette().inkPrimary })
-          }.width(44).height(44).padding(0).borderRadius(5).id('ink-shapes')
+          }.width(44).height(44).padding(0).borderRadius(6).id('ink-shapes')
             .enabled(!this.exitSaving && !this.restoreSourceBusy).accessibilityText('图形工具')
             .backgroundColor(this.isAnnotateMode && InkShapePolicy.isShape(this.activeTool()) ? this.palette().accentSoft : Color.Transparent)
-            .onClick(() => { this.penOptionsOpen = false; this.paperOptionsOpen = false; this.shapeOptionsOpen = !this.shapeOptionsOpen; })
+            .onClick(() => { this.penOptionsOpen = false; this.paperOptionsOpen = false; this.drawingSettingsOpen = false; this.shapeOptionsOpen = !this.shapeOptionsOpen; })
             .bindPopup(this.shapeOptionsOpen, { builder: this.shapeSettingsPanel, placement: Placement.Bottom,
-              popupColor: this.palette().surface, radius: 8, shadow: { radius: 16, color: 'rgba(0,0,0,0.10)', offsetY: 4 },
+              popupColor: this.palette().surface, radius: 12, shadow: { radius: 18, color: 'rgba(0,0,0,0.12)', offsetY: 4 },
               onStateChange: (event) => { if (!event.isVisible) { this.shapeOptionsOpen = false; } } })
+          if (this.isAnnotateMode && this.activeTool() !== 'eraser' && this.activeTool() !== 'pan') {
+            ForEach(this.inkColors().slice(0, 3), (color: string) => { this.colorOption(color, true) }, (color: string) => color)
+          }
           if (this.splitMode === 'scratchpad') {
             Divider().vertical(true).height(22).color(this.palette().borderSubtle).margin({ left: 6, right: 6 })
             Button('正文', { type: ButtonType.Normal }).height(44).fontSize(12)
@@ -730,86 +740,200 @@ export struct HuaweiDocWorkspace {
               .backgroundColor(this.inkTarget === 'scratchpad' ? this.palette().accentSoft : Color.Transparent).fontColor(this.palette().inkPrimary)
               .accessibilityText('操作随堂稿纸').onClick(() => { this.penOptionsOpen = false; this.inkTarget = 'scratchpad'; })
           }
-        }
-      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1).height(52).align(Alignment.Start).id('reader-ink-tools')
-      if (this.usesCanvasTools()) {
-        Button({ type: ButtonType.Normal }) { AppIcon({ source: $r('app.media.ic_page'), tint: this.palette().inkPrimary }) }
-          .width(44).height(44).padding(0).borderRadius(5).id('ink-paper').backgroundColor(Color.Transparent)
-          .enabled(!this.exitSaving && !this.restoreSourceBusy).accessibilityText('纸张与视图')
-          .onClick(() => { this.penOptionsOpen = false; this.shapeOptionsOpen = false; this.paperOptionsOpen = !this.paperOptionsOpen; })
-          .bindPopup(this.paperOptionsOpen, { builder: this.paperSettingsPanel, placement: Placement.Bottom,
-            popupColor: this.palette().surface, radius: 8, shadow: { radius: 16, color: 'rgba(0,0,0,0.10)', offsetY: 4 },
-            onStateChange: (event) => { if (!event.isVisible) { this.paperOptionsOpen = false; } } })
-      }
-      if (!this.isPhone) {
-        Button({ type: ButtonType.Normal }) {
-          AppIcon({ source: $r('app.media.ic_split'), tint: this.splitMode === 'scratchpad' ? this.palette().accent : this.palette().inkSecondary })
-        }.width(44).height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText('切换随堂稿纸')
-          .enabled(!this.exitSaving).onClick(() => this.switchSplitMode(this.splitMode === 'scratchpad' ? 'none' : 'scratchpad'))
-      }
-      Divider().vertical(true).height(22).color(this.palette().borderSubtle).margin({ left: 4, right: 4 })
-      if (this.isPhone) {
-        Button({ type: ButtonType.Normal }) {
-          AppIcon({ source: $r('app.media.ic_more'), iconSize: 20, tint: this.palette().inkSecondary })
-        }.width(44).height(44).padding(0).borderRadius(5).backgroundColor(Color.Transparent)
-          .accessibilityText('更多批注工具')
-          .onClick(() => { this.annotationMoreOpen = !this.annotationMoreOpen; })
-          .bindMenu(this.annotationMoreOpen, this.annotationOverflowMenu, {
-            onDisappear: () => { this.annotationMoreOpen = false; }
-          })
-      }
-      if (this.totalPages > 1) {
-        Button({ type: ButtonType.Normal }) {
-          AppIcon({ source: $r('app.media.ic_list'), iconSize: 20, tint: this.palette().inkSecondary })
-        }.width(44).height(44).padding(0).borderRadius(5).backgroundColor(Color.Transparent)
-          .accessibilityText('页面总览')
-          .onClick(() => { this.pageOverviewOpen = !this.pageOverviewOpen; })
-          .bindPopup(this.pageOverviewOpen, {
-            builder: this.pageOverviewPanel, placement: Placement.Bottom, popupColor: this.palette().surface,
-            radius: 18, shadow: { radius: 16, color: 'rgba(0,0,0,0.10)', offsetY: 4 },
-            onStateChange: (event) => { if (!event.isVisible) { this.pageOverviewOpen = false; } }
-          })
-      }
-      if (this.paneMode) { this.documentActions() }
-      Button({ type: ButtonType.Normal }) {
-        Row({ space: 6 }) {
-          AppIcon({ source: this.isAnnotateMode ? $r('app.media.ic_unlock') : $r('app.media.ic_lock'), iconSize: 20, tint: this.palette().accent })
-          if (!this.isPhone) {
-            Text(this.exitSaving ? '保存中' : this.isAnnotateMode ? '可批注' : '只读').fontSize(12).fontColor(this.palette().inkPrimary)
+          if (this.usesCanvasTools()) {
+            Button({ type: ButtonType.Normal }) { AppIcon({ source: $r('app.media.ic_page'), tint: this.palette().inkPrimary }) }
+              .width(44).height(44).padding(0).borderRadius(6).id('ink-paper').backgroundColor(Color.Transparent)
+              .enabled(!this.exitSaving && !this.restoreSourceBusy).accessibilityText('纸张与视图')
+              .onClick(() => { this.penOptionsOpen = false; this.shapeOptionsOpen = false; this.drawingSettingsOpen = false; this.paperOptionsOpen = !this.paperOptionsOpen; })
+              .bindPopup(this.paperOptionsOpen, { builder: this.paperSettingsPanel, placement: Placement.Bottom,
+                popupColor: this.palette().surface, radius: 12, shadow: { radius: 18, color: 'rgba(0,0,0,0.12)', offsetY: 4 },
+                onStateChange: (event) => { if (!event.isVisible) { this.paperOptionsOpen = false; } } })
+          }
+          if (!this.compactTools()) {
+            Button({ type: ButtonType.Normal }) {
+              AppIcon({ source: $r('app.media.ic_split'), tint: this.splitMode === 'scratchpad' ? this.palette().accent : this.palette().inkSecondary })
+            }.width(44).height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText('切换随堂稿纸')
+              .enabled(!this.exitSaving).onClick(() => this.switchSplitMode(this.splitMode === 'scratchpad' ? 'none' : 'scratchpad'))
           }
         }
-      }.height(44).width(this.isPhone ? 44 : undefined).constraintSize({ minWidth: 44 }).padding({ left: 10, right: 10 }).borderRadius(5).backgroundColor(Color.Transparent)
-        .accessibilityText(this.isAnnotateMode ? '锁定只读并保存批注' : '解锁批注').enabled(!this.exitSaving && !this.restoreSourceBusy)
-        .id('ink-mode-toggle')
-        .onClick(() => this.setAnnotationMode(!this.isAnnotateMode))
-    }.width('100%').height(54).backgroundColor(this.palette().surface)
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto).layoutWeight(1).height(48)
+        .align(Alignment.Start).id('reader-ink-tools')
+      if (!this.compactTools()) { this.addContentButton() }
+      Button({ type: ButtonType.Normal }) {
+        AppIcon({ source: $r('app.media.ic_settings'), iconSize: 21,
+          tint: this.drawingSettingsOpen ? this.palette().accent : this.palette().inkSecondary })
+      }
+      .width(44).height(44).padding(0).borderRadius(6)
+      .backgroundColor(this.drawingSettingsOpen ? this.palette().accentSoft : Color.Transparent)
+      .enabled(!this.exitSaving && !this.restoreSourceBusy)
+      .accessibilityText('画笔设置')
+      .bindTips('画笔设置')
+      .onClick(() => {
+        this.penOptionsOpen = false; this.shapeOptionsOpen = false; this.paperOptionsOpen = false;
+        this.drawingSettingsOpen = !this.drawingSettingsOpen;
+      })
+      .bindPopup(this.drawingSettingsOpen, {
+        builder: this.drawingSettingsPanel, placement: Placement.Bottom,
+        popupColor: this.palette().surface, radius: 12,
+        shadow: { radius: 18, color: 'rgba(0,0,0,0.12)', offsetY: 4 },
+        onStateChange: (event) => { if (!event.isVisible) { this.drawingSettingsOpen = false; } }
+      })
+      if (this.paneMode) { this.documentActions() }
+      this.annotationModeButton()
+    }.width('100%').constraintSize({ maxWidth: 920 }).height(52)
+      .padding({ left: 4, right: 4 }).borderRadius(16).backgroundColor(this.palette().surface)
+      .border({ width: 1, color: this.palette().borderSubtle })
+      .shadow({ radius: 12, color: 'rgba(0,0,0,0.08)', offsetY: 3 })
+      .margin({ top: 5, bottom: 5 }).id('reader-ink-dock')
   }
 
   @Builder
-  shapeOption(tool: AnnotationTool, icon: Resource, label: string) {
+  annotationModeButton() {
     Button({ type: ButtonType.Normal }) {
-      Column({ space: 10 }) {
-        AppIcon({ source: icon, iconSize: 26, tint: this.activeTool() === tool ? this.palette().accent : this.palette().inkPrimary })
-        Text(label).fontSize(12).fontColor(this.palette().inkSecondary)
-      }.width('100%').height('100%').justifyContent(FlexAlign.Center)
-    }.width(60).height(84).padding(0).border({ width: 1, radius: 5, color: this.activeTool() === tool ? this.palette().accent : this.palette().borderSubtle })
-      .backgroundColor(this.activeTool() === tool ? this.palette().accentSoft : this.palette().surface).id('ink-shape-' + tool)
-      .accessibilityText('绘制' + label).onClick(() => {
+      Row({ space: 6 }) {
+        AppIcon({ source: this.isAnnotateMode ? $r('app.media.ic_check') : $r('app.media.ic_lock'), iconSize: 20, tint: this.palette().accent })
+        if (!this.compactTools()) {
+          Text(this.exitSaving ? '保存中' : this.isAnnotateMode ? '完成' : '批注').fontSize(12)
+            .fontWeight(FontWeight.Medium).fontColor(this.palette().accent)
+        }
+      }
+    }.height(44).width(this.compactTools() ? 44 : undefined).constraintSize({ minWidth: 44 })
+      .padding({ left: 10, right: 10 }).borderRadius(12).backgroundColor(this.palette().accentSoft)
+      .accessibilityText(this.isAnnotateMode ? '锁定只读并保存批注' : '解锁批注').enabled(!this.exitSaving && !this.restoreSourceBusy)
+      .id('ink-mode-toggle')
+      .onClick(() => this.setAnnotationMode(!this.isAnnotateMode))
+  }
+
+  @Builder
+  shapeOption(tool: AnnotationTool, path: string, label: string) {
+    Button({ type: ButtonType.Normal }) {
+      Column({ space: 4 }) {
+        Path().commands(path).width(24).height(24).fill(Color.Transparent)
+          .stroke(this.activeTool() === tool ? this.palette().accent : this.palette().inkPrimary)
+          .strokeWidth(1.5).strokeLineCap(LineCapStyle.Round).strokeLineJoin(LineJoinStyle.Round)
+        Text(label).fontSize(10).maxLines(1).fontColor(this.palette().inkSecondary)
+      }.width('100%').justifyContent(FlexAlign.Center)
+    }.layoutWeight(1).height(56).padding(0).borderRadius(9)
+      .backgroundColor(this.activeTool() === tool ? this.palette().accentSoft : this.palette().surfaceSubtle)
+      .id('ink-shape-' + tool).accessibilityText('绘制' + label)
+      .accessibilityDescription(this.activeTool() === tool ? '已选中' : '')
+      .onClick(() => {
         if (this.prepareInkAction()) { this.selectInkTool(tool); this.shapeOptionsOpen = false; }
       })
   }
 
   @Builder
   shapeSettingsPanel() {
-    Column({ space: 18 }) {
-      Text('图形').fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).width('100%')
-      Row({ space: 8 }) {
-        this.shapeOption('line', $r('app.media.ic_line'), '直线')
-        this.shapeOption('rectangle', $r('app.media.ic_rectangle'), '矩形')
-        this.shapeOption('ellipse', $r('app.media.ic_ellipse'), '椭圆')
-        this.shapeOption('arrow', $r('app.media.ic_arrow'), '箭头')
+    Column({ space: 8 }) {
+      Row() {
+        Text('图形工具').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary).layoutWeight(1)
+        IconButton({ icon: $r('app.media.ic_close'), label: '收起形状设置', onAction: () => { this.shapeOptionsOpen = false; } })
+      }.width('100%')
+      Row({ space: 4 }) {
+        this.shapeOption('line', 'M4 20 L20 4', '直线')
+        this.shapeOption('arrow', 'M4 20 L20 4 M12 4 H20 V12', '箭头')
+        this.shapeOption('double_arrow', 'M4 20 L20 4 M12 4 H20 V12 M4 12 V20 H12', '双箭头')
+        this.shapeOption('rectangle', 'M4 6 H20 V18 H4 Z', '矩形')
+        this.shapeOption('ellipse', 'M3 12 A9 6 0 1 0 21 12 A9 6 0 1 0 3 12 Z', '椭圆')
+      }.width('100%')
+      Row({ space: 4 }) {
+        this.shapeOption('triangle', 'M12 4 L21 20 H3 Z', '三角形')
+        this.shapeOption('right_triangle', 'M5 4 L21 20 H5 Z', '直角三角')
+        this.shapeOption('parallelogram', 'M7 6 H21 L17 18 H3 Z', '平行四边')
+        this.shapeOption('pentagon', 'M12 3 L21 10 L17 21 H7 L3 10 Z', '五边形')
+        this.shapeOption('star', 'M12 3 L15 9 L22 10 L17 15 L18 22 L12 18 L6 22 L7 15 L2 10 L9 9 Z', '五角星')
+      }.width('100%')
+      if (this.isAnnotateMode && InkShapePolicy.isShape(this.activeTool())) {
+        InkWidthSlider({ tool: this.activeTool(), value: this.activeWidth(), accentColor: this.palette().accent,
+          onChange: (value: number) => this.changeInkWidth(value) })
+        Row({ space: 4 }) {
+          ForEach(this.inkColors().slice(0, 5), (color: string) => { this.colorOption(color) }, (color: string) => color)
+        }.width('100%')
       }
-    }.padding(20).width(304).alignItems(HorizontalAlign.Start)
+    }.width(288).padding({ left: 12, right: 12, bottom: 12 })
+      .backgroundColor(this.palette().surface).alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  drawingSettingsPanel() {
+    Column({ space: 14 }) {
+      Row() {
+        Text('画笔设置')
+          .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+          .layoutWeight(1)
+        Button({ type: ButtonType.Normal }) {
+          AppIcon({ source: $r('app.media.ic_close'), iconSize: 16, tint: this.palette().inkMuted })
+        }
+        .width(44).height(44).padding(0).backgroundColor(Color.Transparent)
+        .accessibilityText('收起画笔设置')
+        .onClick(() => { this.drawingSettingsOpen = false; })
+      }.width('100%')
+
+      Row() {
+        Column({ space: 2 }) {
+          Text('用手指涂鸦').fontSize(14).fontColor(this.palette().inkPrimary)
+          Text('开启后支持手指书写，关闭仅手写笔').fontSize(11).fontColor(this.palette().inkMuted)
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.activeFingerDrawing() })
+          .selectedColor(this.palette().accent)
+          .accessibilityText('用手指涂鸦')
+          .onChange((value: boolean) => {
+            if (value !== this.activeFingerDrawing()) { this.toggleInkFinger(); }
+          })
+      }.width('100%').padding({ top: 4, bottom: 4 })
+
+      Divider().color(this.palette().borderSubtle)
+
+      Row() {
+        Column({ space: 2 }) {
+          Text('书写后自动收起').fontSize(14).fontColor(this.palette().inkPrimary)
+          Text('抬笔后收起工具栏').fontSize(11).fontColor(this.palette().inkMuted)
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Toggle({ type: ToggleType.Switch, isOn: this.autoMinimizeToolbar })
+          .selectedColor(this.palette().accent)
+          .accessibilityText('书写后自动收起工具栏')
+          .onChange((value: boolean) => { this.autoMinimizeToolbar = value; })
+      }.width('100%').padding({ top: 4, bottom: 4 })
+
+      Divider().color(this.palette().borderSubtle)
+
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 8 }) {
+          AppIcon({ source: $r('app.media.ic_panel'), iconSize: 18, tint: this.palette().inkPrimary })
+          Text('折叠工具栏为笔坞')
+            .fontSize(13).fontColor(this.palette().inkPrimary)
+        }
+      }
+      .height(44).width('100%').backgroundColor(Color.Transparent)
+      .accessibilityText('折叠工具栏为笔坞')
+      .onClick(() => {
+        this.drawingSettingsOpen = false;
+        this.toolbarMinimized = true;
+      })
+
+      Divider().color(this.palette().borderSubtle)
+
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 8 }) {
+          AppIcon({ source: $r('app.media.ic_trash'), iconSize: 18, tint: this.palette().danger })
+          Text(this.usesCanvasTools() ? '清空当前稿纸笔迹' : '清空本页笔迹')
+            .fontSize(13).fontColor(this.palette().danger)
+        }
+      }
+      .height(44).width('100%').backgroundColor(Color.Transparent)
+      .enabled(this.isAnnotateMode && !this.exitSaving)
+      .onClick(() => {
+        this.drawingSettingsOpen = false;
+        this.requestClearInk();
+      })
+    }
+    .padding(18)
+    .width(296)
+    .borderRadius(12)
+    .backgroundColor(this.palette().surface)
+    .border({ width: 1, color: this.palette().borderSubtle })
+    .shadow({ radius: 18, color: 'rgba(0,0,0,0.12)', offsetY: 4 })
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -854,13 +978,13 @@ export struct HuaweiDocWorkspace {
   }
 
   @Builder
-  colorOption(color: string) {
+  colorOption(color: string, quick: boolean = false) {
     Button({ type: ButtonType.Normal }) {
       Circle({ width: 25, height: 25 }).fill(color).stroke(this.activeColor().toUpperCase() === color ? this.palette().accent : this.palette().border)
         .strokeWidth(this.activeColor().toUpperCase() === color ? 3 : 1)
     }.width(52).height(44).padding(0).borderRadius(5)
       .backgroundColor(this.activeColor().toUpperCase() === color ? this.palette().accentSoft : Color.Transparent)
-      .accessibilityText(`批注颜色 ${color}`).onClick(() => { this.colorInput = color; this.changeInkColor(color); })
+      .accessibilityText((quick ? '快捷颜色 ' : '批注颜色 ') + color).onClick(() => { this.colorInput = color; this.changeInkColor(color); })
   }
 
   @Builder
@@ -872,7 +996,7 @@ export struct HuaweiDocWorkspace {
         Button({ type: ButtonType.Normal }) {
           AppIcon({ source: $r('app.media.ic_close'), iconSize: 16, tint: this.palette().inkMuted })
         }.width(44).height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText('收起笔设置').onClick(() => { this.penOptionsOpen = false; })
-      }.width('100%').height(32)
+      }.width('100%')
       if (this.activeTool() === 'eraser') {
         Row({ space: 10 }) {
           ForEach(['area', 'stroke'], (mode: string) => {
@@ -950,6 +1074,8 @@ export struct HuaweiDocWorkspace {
     this.activeModal = ''; this.outputMessage = ''; this.outputFailed = false;
   }
 
+  private outputDialogChanged(): void { this.onOutputDialogChange(this.activeModal.length > 0); }
+
   private openOutput(action: HuaweiDocDialogType): void {
     if (this.exitSaving || this.restoreSourceBusy || this.outputBusy) { return; }
     this.documentMenuOpen = false; this.penOptionsOpen = false;
@@ -964,8 +1090,12 @@ export struct HuaweiDocWorkspace {
     const noteId = this.note.id;
     const action = this.activeModal;
     this.outputBusy = true; this.outputMessage = ''; this.outputFailed = false;
+    this.restoreSourceBusy = action === 'restore_pdf';
     try {
-      if (action === 'share_pdf' || action === 'share_image') {
+      if (action === 'restore_pdf') {
+        await this.onRestorePdfSource();
+        if (this.note.id === noteId) { this.activeModal = ''; }
+      } else if (action === 'share_pdf' || action === 'share_image') {
         if (action === 'share_image') {
           await SystemShareService.shareImage(this.getUIContext().getHostContext() as common.UIAbilityContext, this.note.title, this.note.sourceUri || '');
         } else {
@@ -985,12 +1115,16 @@ export struct HuaweiDocWorkspace {
       }
     } catch (error) {
       if (this.note.id === noteId) { this.outputMessage = error instanceof Error ? error.message : '操作未完成，请重试'; this.outputFailed = true; }
-    } finally { if (this.note.id === noteId) { this.outputBusy = false; } }
+    } finally {
+      if (this.note.id === noteId) { this.outputBusy = false; this.restoreSourceBusy = false; }
+    }
   }
 
   @Builder
   documentMenu() {
     Menu() {
+      MenuItem({ content: '添加内容', startIcon: $r('app.media.ic_plus') })
+        .onClick(() => { this.documentMenuOpen = false; this.addContentModalOpen = true; })
       MenuItem({ content: this.note.favorite ? '取消收藏' : '收藏资料', startIcon: $r('app.media.ic_star') })
         .onClick(() => { this.documentMenuOpen = false; this.onToggleFavorite(this.note); })
 
@@ -1058,6 +1192,15 @@ export struct HuaweiDocWorkspace {
         .enabled(this.pdfSourceReady && !this.exitSaving && this.currentPage < this.totalPages)
         .accessibilityText('下一页').onClick(() => this.jumpToPage(this.currentPage + 1))
       if (!this.isImageDocument()) {
+        if (this.totalPages > 1) {
+          Button({ type: ButtonType.Normal }) { AppIcon({ source: $r('app.media.ic_list'), iconSize: 18, tint: this.palette().inkSecondary }) }
+            .width(44).height(44).padding(0).backgroundColor(Color.Transparent).borderRadius(6)
+            .enabled(this.pdfSourceReady && !this.exitSaving).accessibilityText('页面总览')
+            .onClick(() => { this.pageOverviewOpen = !this.pageOverviewOpen; })
+            .bindPopup(this.pageOverviewOpen, { builder: this.pageOverviewPanel, placement: Placement.Top,
+              popupColor: this.palette().surface, radius: 14,
+              onStateChange: (event) => { if (!event.isVisible) { this.pageOverviewOpen = false; } } })
+        }
         Divider().vertical(true).height(18).color(this.palette().borderSubtle)
         Button(this.isContinuousScroll ? '连续' : '逐页', { type: ButtonType.Normal }).height(44).fontSize(12)
           .padding({ left: 12, right: 12 }).backgroundColor(Color.Transparent).fontColor(this.palette().inkSecondary)
@@ -1176,6 +1319,7 @@ export struct HuaweiDocWorkspace {
           note: this.note,
           isScratchpad: true,
           showToolbar: false,
+          onStrokeCompleted: () => this.collapseInkDockAfterStroke(),
           toolCommand: this.canvasCommand,
           onFocused: () => { this.inkTarget = 'scratchpad'; this.ensureCanvasTool('scratchpad'); },
           onShowTools: () => { this.inkTarget = 'scratchpad'; this.openToolSettings(this.activeTool() === 'eraser' ? 'eraser' : this.activeTool() === 'highlighter' ? 'highlighter' : 'pen'); },
@@ -1223,8 +1367,94 @@ export struct HuaweiDocWorkspace {
   }
 
   // ------------------------------------------------------------------
-  // 主布局构建
+  // 添加内容弹窗与悬浮便签笔坞（Screenshot 2 & 4）
   // ------------------------------------------------------------------
+
+  @Builder
+  addContentButton() {
+    IconButton({ icon: $r('app.media.ic_plus'), label: '添加与提取', available: !this.exitSaving && !this.restoreSourceBusy && !this.outputBusy,
+      onAction: () => { this.addContentModalOpen = true; } })
+  }
+
+  @Builder
+  addContentModal() {
+    Column() {
+      Column({ space: 12 }) {
+        Row() {
+          Text('添加与提取').fontSize(19).fontWeight(FontWeight.Medium)
+            .fontColor(this.palette().inkPrimary).layoutWeight(1)
+          IconButton({ icon: $r('app.media.ic_close'), label: '关闭添加弹窗', onAction: () => { this.addContentModalOpen = false; } })
+        }.width('100%')
+        Scroll() {
+          Flex({ wrap: FlexWrap.Wrap }) {
+            this.addGridCard('新建手写', $r('app.media.ic_pen'), () => this.createDocument())
+            if (this.splitMode === 'none') {
+              this.addGridCard('随堂稿纸', $r('app.media.ic_canvas'), () => this.switchSplitMode('scratchpad'))
+            }
+            this.addGridCard('图片提取文字', $r('app.media.ic_note'), () => this.openSmartExtract())
+            if (!this.isHandwritingNote() && !this.isImageDocument() && this.pdfSourceReady) {
+              this.addGridCard('提取本页文字', $r('app.media.ic_text_page'), () => this.onExtractPdfText(this.currentPage))
+            }
+          }.width('100%')
+        }.width('100%').constraintSize({ maxHeight: 176 }).scrollBar(BarState.Auto)
+      }.width('94%').constraintSize({ maxWidth: 440 }).padding(16).borderRadius(20)
+        .backgroundColor(this.palette().surface).border({ width: 1, color: this.palette().borderSubtle })
+        .shadow({ radius: 24, color: 'rgba(0,0,0,0.18)', offsetY: 6 })
+    }.width('100%').height('100%').justifyContent(this.compactTools() ? FlexAlign.End : FlexAlign.Center)
+      .padding({ bottom: this.compactTools() ? 12 : 0 }).alignItems(HorizontalAlign.Center)
+      .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.20)')
+      .zIndex(260).transition(TransitionEffect.OPACITY
+        .animation({ duration: AnimationTokens.DURATION_FAST, curve: AnimationTokens.CURVE_STANDARD }))
+  }
+
+  @Builder
+  addGridCard(title: string, icon: Resource, onAction: () => void) {
+    Button({ type: ButtonType.Normal }) {
+      Column({ space: 7 }) {
+        AppIcon({ source: icon, iconSize: 22, tint: this.palette().accent })
+        Text(title).fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+          .maxLines(2).textAlign(TextAlign.Center)
+      }.width('100%').padding(4).justifyContent(FlexAlign.Center)
+    }.width('31%').height(74).padding(0).margin({ right: '2%', bottom: 6 }).borderRadius(11)
+      .backgroundColor(this.palette().surfaceSubtle).accessibilityText(title)
+      .onClick(() => { this.addContentModalOpen = false; onAction(); })
+  }
+
+  @Builder
+  inkHistoryButton(redo: boolean) {
+    Button({ type: ButtonType.Normal }) {
+      AppIcon({ source: redo ? $r('app.media.ic_redo') : $r('app.media.ic_undo'), tint: this.palette().inkSecondary })
+    }.width(44).height(44).padding(0).backgroundColor(Color.Transparent)
+      .enabled(this.isAnnotateMode && !this.exitSaving && !this.restoreSourceBusy)
+      .opacity(this.isAnnotateMode ? 1 : 0.65)
+      .accessibilityText(redo ? '重做当前批注' : '撤销当前批注').id(redo ? 'reader-redo' : 'reader-undo')
+      .onClick(() => { if (redo) { this.redoInk(); } else { this.undoInk(); } })
+  }
+
+  @Builder
+  floatingStylusDock() {
+    Row({ space: 4 }) {
+      if (this.isAnnotateMode || this.exitSaving) {
+        Scroll() {
+          Row() {
+            this.inkHistoryButton(false)
+            this.inkHistoryButton(true)
+          }
+        }.layoutWeight(1).height(44).align(Alignment.Start)
+          .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+      } else {
+        Blank()
+      }
+      this.addContentButton()
+      if (this.paneMode) { this.documentActions() }
+      IconButton({ icon: $r('app.media.ic_pen'), label: '展开批注工具栏', selected: this.isAnnotateMode,
+        onAction: () => { this.toolbarMinimized = false; } })
+      this.annotationModeButton()
+    }.width('100%').constraintSize({ maxWidth: 920 }).height(52)
+      .padding({ left: 4, right: 4 }).borderRadius(22).backgroundColor(this.palette().surface)
+      .border({ width: 1, color: this.palette().borderSubtle })
+      .margin({ top: 5, bottom: 5 }).id('reader-ink-dock-collapsed')
+  }
 
   build() {
     Stack({ alignContent: Alignment.TopStart }) {
@@ -1243,6 +1473,7 @@ export struct HuaweiDocWorkspace {
                 note: this.note,
                 isScratchpad: false,
                 showToolbar: false,
+                onStrokeCompleted: () => this.collapseInkDockAfterStroke(),
                 toolCommand: this.canvasCommand,
                 onFocused: () => { this.inkTarget = 'document'; this.ensureCanvasTool('document'); },
                 onShowTools: () => { this.inkTarget = 'document'; this.openToolSettings(this.activeTool() === 'eraser' ? 'eraser' : this.activeTool() === 'highlighter' ? 'highlighter' : 'pen'); },
@@ -1261,6 +1492,7 @@ export struct HuaweiDocWorkspace {
               PdfAnnotatorView({
                 note: this.note,
                 onRestoreSource: () => this.restorePdfSource(),
+                onStrokeCompleted: () => this.collapseInkDockAfterStroke(),
                 onSourceReady: (ready: boolean) => { this.pdfSourceReady = ready; if (ready) { this.rememberReadingPage(this.currentPage); } },
                 onAnnotationError: (message: string) => { this.annotationError = message; },
                 onDirtyChange: (dirty: boolean) => { this.documentDirty = dirty; },
@@ -1342,6 +1574,10 @@ export struct HuaweiDocWorkspace {
           onClose: () => this.closeOutput(),
           onConfirm: (extension: string) => this.performOutput(extension)
         })
+      }
+
+      if (this.addContentModalOpen) {
+        this.addContentModal()
       }
 
       // 保存失败时保留原页面并允许重试；正常返回不弹确认框。

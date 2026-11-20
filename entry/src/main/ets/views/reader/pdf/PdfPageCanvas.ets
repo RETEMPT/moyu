@@ -49,6 +49,7 @@ export struct PdfPageCanvas {
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
 
   onStrokeAdded: (stroke: PageAnnotationStroke) => void = () => {};
+  onStrokeCompleted: () => void = () => {};
   onEraseTrail: (trail: NormalizedPoint[], width: number, height: number) => boolean = () => false;
   onEraseStarted: () => void = () => {};
   onEraseFinished: (commit: boolean) => void = () => {};
@@ -248,7 +249,10 @@ export struct PdfPageCanvas {
         });
       }
       this.liveContext.clearRect(0, 0, this.pageWidth, this.pageHeight); this.renderStroke(stroke, this.liveContext);
-      if (batch.phase === 'end') { this.finishInput(true); }
+      if (batch.phase === 'end') {
+        this.finishInput(true);
+        if (stroke.points.length > 0) { this.onStrokeCompleted(); }
+      }
       return;
     }
     for (const sample of batch.samples) {
@@ -274,6 +278,7 @@ export struct PdfPageCanvas {
     }
     if (batch.phase === 'end') {
       this.finishInput(true);
+      if (stroke && !stroke.isEraser && stroke.points.length > 0) { this.onStrokeCompleted(); }
     }
   }
 

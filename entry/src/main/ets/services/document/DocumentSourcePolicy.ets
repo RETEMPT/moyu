@@ -14,6 +14,7 @@ export interface DocumentSourceLocation {
   path: string;
   fileName: string;
   kind: DocumentSourceKind;
+  sha256?: string;
 }
 
 /**

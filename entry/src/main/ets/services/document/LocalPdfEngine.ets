@@ -3,7 +3,10 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { taskpool, util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 
-export interface PdfEnginePort { execute: (script: string) => Promise<string>; }
+export interface PdfEnginePort {
+  execute: (script: string) => Promise<string>;
+  refresh?: () => void;
+}
 export interface LocalPdfResult {
   pageCount?: number;
   width?: number;
@@ -15,6 +18,7 @@ export interface LocalPdfResult {
   errorKind?: string;
 }
 export interface LocalPdfBitmap { pixelMap: image.PixelMap; aspectRatio: number; }
+export interface LocalPdfCover extends LocalPdfBitmap { pageCount: number; }
 export type PdfFailureKind = 'missing' | 'password' | 'damaged' | 'engine' | 'other';
 interface PdfPending {
   resolve: (value: LocalPdfResult) => void;
@@ -39,7 +43,7 @@ export function parsePdfReply(json: string): LocalPdfResult {
   return JSON.parse(json) as LocalPdfResult;
 }
 
-/** Reader-facing classification. Only a missing original may offer re-linking. */
+/** Reader-facing classification for retrying the engine or replacing an unusable source. */
 export function pdfFailureKind(message: string): PdfFailureKind {
   if (message.indexOf('离线阅读组件') >= 0 || message.indexOf('PDF 阅读组件') >= 0 ||
     message.indexOf('未就绪') >= 0 || message.indexOf('阅读组件连接失败') >= 0) {
@@ -48,6 +52,7 @@ export function pdfFailureKind(message: string): PdfFailureKind {
   if (message.indexOf('密码') >= 0) { return 'password'; }
   if (message.indexOf('损坏') >= 0 || message.indexOf('格式不受支持') >= 0) { return 'damaged'; }
   if (message.indexOf('原文件不存在') >= 0 || message.indexOf('缺少 PDF 原文件') >= 0 ||
+    message.indexOf('原文件读取失败') >= 0 ||
     message.indexOf('重新关联') >= 0) {
     return 'missing';
   }
@@ -86,6 +91,12 @@ export class LocalPdfEngine {
   reloaded(): void {
     this.ready = false;
     this.failPending('阅读组件已重新加载，请重试');
+  }
+  retryStartup(): void {
+    const port = this.port;
+    if (port?.refresh === undefined) { return; }
+    this.reloaded();
+    try { port.refresh(); } catch { /* Retry will report the engine failure. */ }
   }
   detach(): void {
     this.ready = false;
@@ -206,13 +217,15 @@ export class LocalPdfEngine {
     }
   }
 
-  private request(path: string, action: string, page: number, cancelled: () => boolean): Promise<LocalPdfResult> {
+  private async request(path: string, action: string, page: number, cancelled: () => boolean): Promise<LocalPdfResult> {
+    // Visible pages can wait for the same host in parallel. A failed startup must not
+    // consume the full readiness timeout again for every queued page.
+    await this.waitForReady(cancelled);
+    if (!this.ready || this.port === null) { throw new Error(ENGINE_MESSAGE); }
     const running = this.tail.then(async (): Promise<LocalPdfResult> => {
       if (cancelled()) { throw new Error('页面已离开'); }
-      await this.waitForReady(cancelled);
       const port = this.port;
       if (!this.ready || port === null) { throw new Error(ENGINE_MESSAGE); }
-      if (cancelled()) { throw new Error('页面已离开'); }
       const source = this.source(path);
       const id = 'pdf_' + (++this.sequence);
       const payload: PdfEngineRequest = { id: id, token: source.token, length: source.length, action: action, page: page };
@@ -260,16 +273,30 @@ export class LocalPdfEngine {
   async inspect(path: string, cancelled: () => boolean = () => false): Promise<LocalPdfResult> {
     return await this.request(path, 'info', 0, cancelled);
   }
+  async cover(path: string): Promise<LocalPdfCover> {
+    const result = await this.request(path, 'cover', 0, () => false);
+    const pageCount = result.pageCount ?? 0;
+    if (!Number.isInteger(pageCount) || pageCount < 1 || pageCount > 10000) {
+      throw new Error('PDF 页数无效或超过 10000 页');
+    }
+    const bitmap = await this.decodeBitmap(result, () => false);
+    return { pageCount, pixelMap: bitmap.pixelMap, aspectRatio: bitmap.aspectRatio };
+  }
   async text(path: string, page: number, cancelled: () => boolean): Promise<string> {
     return (await this.request(path, 'text', page, cancelled)).text || '';
   }
   async render(path: string, page: number, cancelled: () => boolean = () => false): Promise<LocalPdfBitmap> {
     const result = await this.request(path, 'page', page, cancelled);
+    return this.decodeBitmap(result, cancelled);
+  }
+  private async decodeBitmap(result: LocalPdfResult, cancelled: () => boolean): Promise<LocalPdfBitmap> {
     if (cancelled()) { throw new Error('页面已离开'); }
     if (!result.data || result.data.length > 12 * 1024 * 1024) { throw new Error('页面图像无效'); }
     const bytes = await new util.Base64Helper().decode(result.data);
     if (cancelled()) { throw new Error('页面已离开'); }
-    const decoder = image.createImageSource(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    const buffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ?
+      bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const decoder = image.createImageSource(buffer);
     try {
       const pixels = await decoder.createPixelMap();
       if (cancelled()) { await pixels.release(); throw new Error('页面已离开'); }

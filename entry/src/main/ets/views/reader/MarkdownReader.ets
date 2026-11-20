@@ -28,6 +28,9 @@ import { ReaderOutputService } from '../../services/document/ReaderOutputService
 import { MarkdownEditing, MarkdownEdit, MarkdownHistory } from '../../services/document/MarkdownEditing';
 import { copyNote } from '../../common/utils/NoteSnapshot';
 import { MarkdownLinkService } from '../../services/document/MarkdownLinkService';
+import { LibraryPolicy } from '../../services/library/LibraryPolicy';
+import { NoteTagPresentation } from '../../services/library/NoteTagPresentation';
+import { NoteTagBadge } from '../common/NoteTagBadge';
 
 /** 输入停止后延迟落盘的毫秒数 */
 const AUTOSAVE_DELAY_MS: number = 800;
@@ -78,6 +81,28 @@ interface MarkdownBlock {
   marker?: string;
 }
 
+class MarkdownBlockDataSource implements IDataSource {
+  private blocks: MarkdownBlock[] = [];
+  private listeners: DataChangeListener[] = [];
+  private revision: number = 0;
+
+  totalCount(): number { return this.blocks.length; }
+  getData(index: number): MarkdownBlock { return this.blocks[index]; }
+  key(index: number): string { return `${this.revision}:${index}`; }
+  reset(blocks: MarkdownBlock[]): void {
+    this.blocks = blocks;
+    this.revision++;
+    this.listeners.forEach((listener: DataChangeListener) => listener.onDataReloaded());
+  }
+  registerDataChangeListener(listener: DataChangeListener): void {
+    if (!this.listeners.includes(listener)) { this.listeners.push(listener); }
+  }
+  unregisterDataChangeListener(listener: DataChangeListener): void {
+    const index = this.listeners.indexOf(listener);
+    if (index >= 0) { this.listeners.splice(index, 1); }
+  }
+}
+
 /** 待办行解析结果 */
 interface TaskParse {
   checked: boolean;
@@ -119,7 +144,6 @@ export struct MarkdownReader {
 
   @State title: string = '';
   @State content: string = '';
-  @State blocks: MarkdownBlock[] = [];
   @State isEditing: boolean = false;
   @State saveState: string = SAVE_IDLE;
   @State editorFocused: boolean = false;
@@ -136,6 +160,9 @@ export struct MarkdownReader {
 
   private storage: NoteStorageService = new NoteStorageService();
   private scroller: Scroller = new Scroller();
+  private blockData: MarkdownBlockDataSource = new MarkdownBlockDataSource();
+  private jumpTimer: number = -1;
+  private lastJumpToken: number = 0;
   private textAreaController: TextAreaController = new TextAreaController();
   private saveTimer: number = -1;
   private loadedNoteId: string = '';
@@ -176,6 +203,7 @@ export struct MarkdownReader {
   }
 
   aboutToDisappear(): void {
+    if (this.jumpTimer !== -1) { clearTimeout(this.jumpTimer); this.jumpTimer = -1; }
     if (this.manageKeyboardMode) { this.getUIContext().setKeyboardAvoidMode(this.previousKeyboardMode); }
     // 离开研读页时立即落盘，避免 800ms 窗口内的输入丢失
     this.flushSave();
@@ -221,18 +249,26 @@ export struct MarkdownReader {
 
   /** 大纲点击后由父组件递增 jumpToken 触发平滑锚点定位 */
   onJumpRequest(propName: string): void {
-    if (this.jumpLine < 0 || this.blocks.length === 0) {
-      return;
-    }
-    let target: number = 0;
-    for (let i = 0; i < this.blocks.length; i++) {
-      if (this.blocks[i].line <= this.jumpLine) {
-        target = i;
-      } else {
-        break;
+    this.scheduleJump();
+  }
+
+  private scheduleJump(): void {
+    if (this.jumpTimer >= 0) { clearTimeout(this.jumpTimer); }
+    this.jumpTimer = setTimeout(() => {
+      this.jumpTimer = -1;
+      if (this.jumpToken === this.lastJumpToken || this.jumpLine < 0 || this.documentLoading ||
+        this.loadedNoteId !== this.note.id || this.blockData.totalCount() === 0 ||
+        (this.isEditing && !this.previewVisible)) { return; }
+      let low = 0;
+      let high = this.blockData.totalCount();
+      while (low < high) {
+        const midpoint = Math.floor((low + high) / 2);
+        if (this.blockData.getData(midpoint).line <= this.jumpLine) { low = midpoint + 1; }
+        else { high = midpoint; }
       }
-    }
-    this.scroller.scrollToIndex(target, true, ScrollAlign.START);
+      this.lastJumpToken = this.jumpToken;
+      this.scroller.scrollToIndex(Math.max(0, low - 1), false, ScrollAlign.START);
+    }, 0);
   }
 
   // ------------------------------------------------------------------
@@ -264,6 +300,7 @@ export struct MarkdownReader {
     // Reading is the default even for a newly created blank document.
     this.documentLoading = false;
     this.isEditing = false;
+    this.scheduleJump();
   }
 
   /** 复制笔记元数据，用于把「正文归属」与可变的 @Prop note 彻底解耦 */
@@ -275,10 +312,15 @@ export struct MarkdownReader {
     this.history.reset(); this.canUndo = false; this.canRedo = false;
     this.selStart = 0; this.selEnd = 0; this.previewVisible = false;
     this.content = next;
-    this.blocks = this.parseBlocks(next);
+    this.updateBlocks(next);
     this.saveState = SAVE_IDLE;
     this.onSaveStateChange(SAVE_IDLE);
-    this.onOutlineUpdated(this.collectOutline(this.blocks));
+  }
+
+  private updateBlocks(content: string): void {
+    const blocks = this.parseBlocks(NoteTagPresentation.displayBody(content, LibraryPolicy.tags(this.note)));
+    this.blockData.reset(blocks);
+    this.onOutlineUpdated(this.collectOutline(blocks));
   }
 
   /** 从块列表中抽取标题，生成大纲 */
@@ -414,8 +456,7 @@ export struct MarkdownReader {
   private setContent(next: string): void {
     if (next === this.content) { return; }
     this.content = next;
-    this.blocks = this.parseBlocks(next);
-    this.onOutlineUpdated(this.collectOutline(this.blocks));
+    this.updateBlocks(next);
     this.scheduleSave();
   }
 
@@ -427,6 +468,11 @@ export struct MarkdownReader {
 
     while (index < line.length) {
       const char: string = line.charAt(index);
+      if (char === '\\' && index + 1 < line.length) {
+        buffer += line.slice(index, index + 2);
+        index += 2;
+        continue;
+      }
       if (char === '`') {
         const ending = line.indexOf('`', index + 1);
         if (ending > index) { buffer += line.slice(index, ending + 1); index = ending + 1; continue; }
@@ -641,13 +687,10 @@ export struct MarkdownReader {
         .padding({ left: 8, right: 8, top: 2, bottom: 2 })
         .borderRadius(4)
         .backgroundColor(this.palette().surfaceSubtle)
-      Text(this.note.tag)
-        .fontSize(TypographyTokens.CAPTION)
-        .fontColor(this.note.tagColor.length === 0 ? this.palette().inkSecondary : this.note.tagColor)
       Text(`更新于 ${this.displayUpdateTime.length === 0 ? this.note.updateTime : this.displayUpdateTime}`)
         .fontSize(TypographyTokens.CAPTION)
         .fontColor(this.palette().inkMuted)
-      Text(`#${this.note.category}`)
+      Text(this.note.category)
         .fontSize(TypographyTokens.CAPTION)
         .fontColor(this.palette().inkMuted)
     }
@@ -860,7 +903,7 @@ export struct MarkdownReader {
             })
             .onFocus(() => { this.editorFocused = true; }).onBlur(() => { this.editorFocused = false; })
         } else {
-          Text(this.title.length === 0 ? '无标题' : this.title)
+          Text(NoteTagPresentation.displayTitle(this.title, LibraryPolicy.tags(this.note)) || '无标题')
             .fontSize(this.compactPane ? 22 : TypographyTokens.TITLE_HERO)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.palette().inkPrimary)
@@ -870,6 +913,16 @@ export struct MarkdownReader {
         }
 
         if (!this.compactPane) { this.metaRow() }
+        if (LibraryPolicy.tags(this.note).length > 0) {
+          Scroll() {
+            Row({ space: 6 }) {
+              ForEach(LibraryPolicy.tags(this.note), (tag: string) => {
+                NoteTagBadge({ tag, compact: true })
+              }, (tag: string) => tag)
+            }
+          }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+            .align(Alignment.Start).margin({ top: 8 })
+        }
       }
       .width('100%')
 
@@ -955,13 +1008,14 @@ export struct MarkdownReader {
   @Builder
   documentBody(preview: boolean) {
     List({ space: 0, scroller: this.scroller }) {
-      ForEach(this.blocks, (block: MarkdownBlock, index: number) => {
+      LazyForEach(this.blockData, (block: MarkdownBlock) => {
         ListItem() {
           Column() { this.blockView(block) }.width('100%').alignItems(HorizontalAlign.Start)
             .padding({ left: this.isPhone ? 20 : 28, right: this.isPhone ? 20 : 28 })
         }
-      }, (block: MarkdownBlock, index: number) => `${index}-${block.kind}-${block.line}-${block.text}-${block.checked === true ? 1 : 0}`)
+      }, (block: MarkdownBlock, index: number) => this.blockData.key(index))
     }.layoutWeight(1).height('100%').scrollBar(BarState.Auto)
+      .cachedCount(2).onAppear(() => this.scheduleJump())
       .id(preview ? `markdown-preview-${this.note.id}` : `markdown-body-${this.note.id}`)
       .backgroundColor(this.palette().surface).clip(true).onClick(() => {})
   }

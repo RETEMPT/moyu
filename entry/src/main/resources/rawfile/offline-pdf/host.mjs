@@ -4,6 +4,7 @@ GlobalWorkerOptions.workerSrc = new URL('./pdf.worker.mjs', import.meta.url).hre
 
 const CACHE_LIMIT = 2;
 const RANGE_LIMIT = 8 * 1024 * 1024;
+const BRIDGE_CHUNK_BYTES = 128 * 1024;
 const IDLE_RELEASE_MS = 20000;
 const MESSAGES = {
   password: '此 PDF 需要密码，请先解锁后再导入',
@@ -38,14 +39,20 @@ class NativeRanges extends PDFDataRangeTransport {
         throw new Error('PDF 读取范围无效');
       }
       const result = new Uint8Array(size);
-      for (let offset = begin; offset < end; offset += 131072) {
+      for (let offset = begin; offset < end; offset += BRIDGE_CHUNK_BYTES) {
         if (this.stopped) { return; }
-        const text = await nativePdf.read(this.token, offset, Math.min(end, offset + 131072));
+        const next = Math.min(end, offset + BRIDGE_CHUNK_BYTES);
+        const text = await nativePdf.read(this.token, offset, next);
         if (this.stopped) { return; }
-        const decoded = atob(text);
-        for (let i = 0; i < decoded.length; i++) { result[offset - begin + i] = decoded.charCodeAt(i); }
-        // Yield between native reads so a cancelled page stops asking for further ranges.
-        await new Promise(resolve => setTimeout(resolve, 0));
+        if (typeof Uint8Array.fromBase64 === 'function') {
+          const decoded = Uint8Array.fromBase64(text);
+          if (decoded.length !== next - offset) { throw new Error(MESSAGES.read); }
+          result.set(decoded, offset - begin);
+        } else {
+          const decoded = atob(text);
+          if (decoded.length !== next - offset) { throw new Error(MESSAGES.read); }
+          for (let i = 0; i < decoded.length; i++) { result[offset - begin + i] = decoded.charCodeAt(i); }
+        }
       }
       if (!this.stopped) { this.onDataRange(begin, result); }
     }).catch(error => {
@@ -117,7 +124,7 @@ async function createDocument(request, key) {
   transport = new NativeRanges(request.token, request.length, onFailure);
   const task = getDocument({
     range: transport, length: request.length,
-    disableAutoFetch: true, disableStream: true, rangeChunkSize: 65536, isEvalSupported: false,
+    disableAutoFetch: true, disableStream: true, rangeChunkSize: BRIDGE_CHUNK_BYTES, isEvalSupported: false,
     useWorkerFetch: false, cMapUrl: new URL('./cmaps/', import.meta.url).href, cMapPacked: true,
     standardFontDataUrl: new URL('./standard_fonts/', import.meta.url).href,
     wasmUrl: new URL('./wasm/', import.meta.url).href, iccUrl: new URL('./iccs/', import.meta.url).href,
@@ -200,7 +207,9 @@ window.moyuPdf = {
           await renderTask.promise;
           if (state.cancelled) { return; }
           const data = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-          reply(id, {width: original.width, height: original.height, data: data});
+          const result = {width: original.width, height: original.height, data: data};
+          if (request.action === 'cover') { result.pageCount = doc.numPages; }
+          reply(id, result);
         } finally {
           canvas.width = 0;
           canvas.height = 0;
