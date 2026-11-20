@@ -38,7 +38,7 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 | `tools/` | 自动回归、构建、生成物与公开文档检查 |
 | `release/` | 工程发布配置与生成物；操作性材料另在本地维护 |
 | `docs/` | 产品、商业、创新、架构、开发与用户说明，入口为README |
-| `cloud/ai/` | 独立 Python CLI、自己的 SQLite 与 Ollama 适配，不参与主应用构建 |
+| `cloud/ai/` | 电脑端 CLI、云模型适配、MCP 工具、独立 SQLite 与测试 |
 | `archive/` | 历史暂停功能，禁止编译、导入和计入当前能力 |
 | 后续云服务 | 托管AI网关、任务与用量账本目前只有设计，没有服务端实现 |
 | `tmp/`、`release/reports/`、`release/evidence/` | 本地生成结果和真实证据，不公开提交 |

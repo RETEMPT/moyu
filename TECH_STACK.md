@@ -63,7 +63,7 @@ CoreFileKit 提供系统文件选择；Share Kit 系统分享面板由用户选�
 
 ## 验证入口
 
-独立 AI 实验位于 `cloud/ai/`，使用 Python 3.10+ 标准库、SQLite、urllib 和 Ollama 非流式 JSON 协议；不依赖 ArkTS 主应用或历史 AI 代码。UTF-8 文本分块与词面检索、本地可编辑学习记录、资料版本与逐字引文校验组成生成流程。专项为 `node tools/verify-ai.mjs`，自动测试使用模拟模型；能力与限制见[实验说明](cloud/ai/README.md)。
+`cloud/ai/` 使用 Python 3.10+、SQLite 与标准库 HTTPS 适配多个云模型。可选 MCP stdio 使用单独的 SDK 依赖。ArkTS 通过版本化 JSON 交换学习成果。使用与测试命令见[云模型工具](cloud/ai/README.md)。
 
 工作流、PDF、仓储、编辑生命周期、架构和公开文档检查位于 `tools`。构建使用DevEco Studio与Hvigor，统一源码入口为 `node tools/verify-project.mjs`；本轮成功构建后再加 `--compiled`。方法与边界见[开发指南](docs/DEVELOPMENT_GUIDE.md)，内部运行记录本地保留。
 

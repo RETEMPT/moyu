@@ -10,7 +10,7 @@ Koodo Reader 2.4.7（提交 `2ac731c5f6b2baa37da9db4c2bacd0c0519a7ae9`）用于�
 
 Memos 提交 `1a51572406e1db3e97c24b2497013c8005e88317`（MIT）用于随手记、草稿、时间流及前后端契约研究；本轮未包含其源码和素材，未引入服务器依赖。两套参考均在上述记录中注明具体源文件。
 
-独立 AI 原型仅依赖 Python 3.10+ 标准库（含 sqlite3），生成任务通过用户部署的 Ollama 服务调用实际模型。DeepTutor、learn-claude-code、Open Notebook、Filee 仅作为思路参考，没有复制代码、资源或引入其依赖，详见[来源与边界](AI_REFERENCES.md)。Ollama 服务与模型不随仓库或 HarmonyOS 安装包分发，模型权重许可需按用户实际选型另行核验。
+云模型 CLI 依赖 Python 3.10+ 标准库。MCP 可选 SDK 见[工具说明](../cloud/ai/README.md)。DeepTutor、learn-claude-code、Open Notebook 和 Filee 仅用于参考产品与工程思路，详见[来源与边界](AI_REFERENCES.md)。
 
 ## 离线 PDF 兼容组件
 
