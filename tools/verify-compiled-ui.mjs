@@ -17,7 +17,7 @@ function renderer() {
   const records = new Map(), nodes = new Map(), children = new Map(), queue = new Set(), stack = [], modules = new Map();
   const storedValues = new Map(), storageProperties = new Map();
   const lazySources = [], pdfPages = [], serviceAdapters = new Map();
-  const toasts = [];
+  const toasts = [], routes = new Map();
   const removeBelow = id => {
     for (const [key, record] of records) if (record.parents.includes(id)) { record.active = false; nodes.delete(key); queue.delete(record); }
   };
@@ -126,8 +126,13 @@ function renderer() {
     construct: () => new Proxy({}, { get: () => () => {} }),
     get: (_, key) => key === 'getInstance' ? () => new Proxy({}, { get: () => () => {} }) : enums[key]
   });
-  const globals = { console, ViewPU, ObservedPropertySimplePU: Property, ObservedPropertyObjectPU: Property,
+  const globals = { console, Error, ViewPU, ObservedPropertySimplePU: Property, ObservedPropertyObjectPU: Property,
     ObservedObject: { GetRawObject: value => value },
+    makeBuilderParameterProxy: (_, fields) => new Proxy({}, { get: (_, key) => {
+      const value = fields[key]();
+      return value instanceof Property ? value.get() : value;
+    } }),
+    registerNamedRoute: (factory, _, route) => routes.set(route.pagePath, factory),
     SynchedPropertySimpleOneWayPU: Property, SynchedPropertyObjectOneWayPU: Property,
     SubscriberManager: { Get: () => ({ delete() {} }) },
     ViewStackProcessor: { StartGetAccessRecordingFor() {}, StopGetAccessRecording() {} },
@@ -137,12 +142,15 @@ function renderer() {
     } }, getContext: () => ({}),
     setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
     animateTo: (_, action) => action(), RenderingContextSettings: inert, CanvasRenderingContext2D: inert, OffscreenCanvas: inert, Scroller: inert, TextAreaController: inert, NavPathStack: inert,
-    TransitionEffect: new Proxy({}, { get: (_, key) => key === 'OPACITY' ? { animation() { return this; } } : () => ({ combine() { return this; }, animation() { return this; } }) }),
+    TransitionEffect: new Proxy({}, { get: (_, key) => {
+      const effect = { combine() { return this; }, animation() { return this; } };
+      return key === 'OPACITY' ? effect : () => effect;
+    } }),
     SourceTool: { Finger: 1, Pen: 2 }, TouchType: { Down: 0, Up: 1, Move: 2, Cancel: 3 } };
   for (const name of ['Web', 'Button', 'Column', 'Row', 'Text', 'Span', 'Blank', 'Image', 'Stack', 'Scroll', 'TextInput', 'TextArea',
     'Divider', 'Canvas', 'Circle', 'Path', 'Menu', 'MenuItem', 'MenuItemGroup', 'If', 'ForEach', 'LazyForEach', 'Slider', 'Flex', 'Context', 'List', 'ListItem', 'Swiper', 'GridRow', 'GridCol', 'Grid', 'GridItem', '__Common__', 'Gesture', 'PinchGesture', 'PanGesture', 'TapGesture', 'LongPressGesture', 'Checkbox', 'Toggle', 'LoadingProgress']) globals[name] = native(name);
   for (const name of ['ButtonType', 'FontWeight', 'Color', 'HorizontalAlign', 'FlexAlign', 'TextAlign', 'TextOverflow',
-    'ScrollDirection', 'BarState', 'Alignment', 'ItemAlign', 'Placement', 'Curve', 'HitTestMode', 'HoverEffect', 'Visibility', 'LineCapStyle',
+    'ScrollDirection', 'BarState', 'Alignment', 'ItemAlign', 'Placement', 'Curve', 'HitTestMode', 'HoverEffect', 'Visibility', 'LineCapStyle', 'LineJoinStyle',
     'GestureMode', 'GestureDirection', 'GesturePriority', 'GestureJudgeResult', 'ScrollAlign', 'TransitionEdge', 'ModifierKey', 'ImageFit', 'ImageInterpolation', 'SliderStyle', 'FlexWrap', 'FlexDirection', 'ItemAlign', 'ResponseType', 'VerticalAlign', 'InputType', 'FontStyle', 'TextDecorationType', 'CopyOptions', 'ToggleType', 'SafeAreaType', 'KeyType']) globals[name] = enums;
   const realViews = new Set(['views/layout/sheets/NewProjectSheet', 'views/common/IconButton', 'views/common/AppIcon', 'views/common/InkWidthSlider', 'views/common/DocumentText',
     'views/reader/HandwritingCanvas', 'views/reader/InkCanvasSurface', 'views/common/DocumentPreview', 'views/common/DocumentCover', 'views/workspace/GraphWorkspace', 'views/layout/BottomNavBar', 'views/settings/SettingsWorkspace',
@@ -167,8 +175,8 @@ function renderer() {
       if (!dependency) throw Error(`Unmapped import ${specifier}`);
       if (serviceAdapters.has(dependency)) return serviceAdapters.get(dependency);
       if (dependency === 'views/reader/pdf/PdfPageCanvas') return { PdfPageCanvas: PdfPageAdapter };
-      if (realViews.has(dependency) || ['views/common/QuickMemoComposer', 'views/common/MemoTimelineCard', 'views/common/MemoCalendar'].includes(dependency)) return load(dependency, true);
-      if (dependency.startsWith('common/') || dependency.startsWith('services/ink/') || dependency.startsWith('services/library/') || dependency === 'services/WorkspaceNotePolicy' || dependency === 'services/WorkspaceBuilder' || ['services/study/StudySourceService','services/study/LearningProgressPolicy','services/study/ReviewPolicy'].includes(dependency) || dependency === 'services/document/ReadingProgressPolicy' || dependency === 'services/document/PdfPageDataSource' || dependency === 'services/GraphTopicPolicy' || dependency === 'services/document/ReaderPairPolicy' || dependency === 'services/document/MarkdownEditing' || dependency === 'services/document/DocumentTextParser' || dependency === 'services/document/SourceTextStructure' || dependency === 'services/smart/SmartNoteBuilder') {
+      if (realViews.has(dependency) || ['views/common/QuickMemoComposer', 'views/common/MemoTimelineCard', 'views/common/MemoCalendar', 'views/common/NoteTagBadge'].includes(dependency)) return load(dependency, true);
+      if (dependency.startsWith('common/') || dependency.startsWith('services/ink/') || dependency.startsWith('services/library/') || dependency === 'services/WorkspaceNotePolicy' || dependency === 'services/WorkspaceBuilder' || ['services/study/StudySourceService','services/study/LearningProgressPolicy','services/study/ReviewPolicy'].includes(dependency) || dependency === 'services/document/ReadingProgressPolicy' || dependency === 'services/document/PdfPageDataSource' || ['services/GraphTopicPolicy', 'services/GraphViewPolicy'].includes(dependency) || dependency === 'services/document/ReaderPairPolicy' || dependency === 'services/document/MarkdownEditing' || dependency === 'services/document/DocumentTextParser' || dependency === 'services/document/SourceTextStructure' || dependency === 'services/smart/SmartNoteBuilder') {
         if (dependency.endsWith('StylusShortcutService')) return { StylusShortcutService: inert };
         return load(dependency, false);
       }
@@ -188,7 +196,10 @@ function renderer() {
     }
   }
   const find = label => [...nodes.values()].find(node => node.props.accessibilityText === label || node.content === label || node.content?.content === label);
-  return { load, nodes, children, flush, find, lazySources, pdfPages, toasts, storage: globals.AppStorage, service: (name, adapter) => serviceAdapters.set(name, adapter), mount(relative, name, props, method = 'initialRender', setup) {
+  return { load, nodes, children, flush, find, lazySources, pdfPages, toasts, storage: globals.AppStorage, service: (name, adapter) => serviceAdapters.set(name, adapter), entry(relative) {
+    load(relative, true);
+    return routes.get(relative)();
+  }, mount(relative, name, props, method = 'initialRender', setup) {
     const Component = load(relative, true)[name]; const view = new Component(null, props, undefined, ++nextId);
     setup?.(view);
     view[method](); flush(); return view;
@@ -318,11 +329,37 @@ test('compiled shape popup routes geometry to each source adapter without exposi
   for(const type of ['PDF','Image','Handwriting','Canvas']) {
     const ui=renderer(),view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',
       {note:{id:'a',type,title:'资料',sourceType:type==='Image'?'image':'pdf'}},'topNavigationBar',v=>{v.pdfSourceReady=true;v.whiteboardReady=true;});
-    ui.click('图形工具');assert.equal(view.isAnnotateMode,false);assert.ok(ui.find('绘制矩形'));
+    ui.click('图形工具');assert.equal(view.isAnnotateMode,false);
+    for(const shape of ['直线','箭头','双箭头','矩形','椭圆','三角形','直角三角','平行四边','五边形','五角星']) {
+      assert.ok(ui.find('绘制'+shape));
+    }
     assert.equal(ui.find('批注颜色 #2563EB'),undefined);
     ui.click('绘制矩形');assert.equal(view.isAnnotateMode,true);assert.equal(view.shapeOptionsOpen,false);
     if(type==='PDF'||type==='Image') assert.equal(view.currentTool,'rectangle');else assert.equal(view.canvasCommand.action,'rectangle');
   }
+});
+
+test('compiled compact ink dock stays open while configuring and allows collapse, restore and save in a reader pane',()=>{
+  const ui=renderer(),view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',
+    {note:{id:'a',type:'Handwriting',title:'手写'},paneMode:true,compactPane:true},'topNavigationBar',v=>{v.whiteboardReady=true;});
+  ui.click('普通笔');ui.click('画笔设置');
+  ui.find('书写后自动收起工具栏').props.onChange(true);ui.flush();
+  assert.equal(view.toolbarMinimized,false);assert.ok(ui.find('收起画笔设置'));
+  ui.click('收起画笔设置');view.collapseInkDockAfterStroke();ui.flush();
+  assert.equal(view.toolbarMinimized,true);assert.ok(ui.find('锁定只读并保存批注'));
+  ui.click('展开批注工具栏');assert.equal(view.toolbarMinimized,false);assert.equal(view.isAnnotateMode,true);
+  ui.click('画笔设置');ui.click('折叠工具栏为笔坞');
+  ui.click('更多文档操作');ui.click('画笔设置');assert.equal(view.toolbarMinimized,false);assert.equal(view.penOptionsOpen,true);
+  ui.click('收起笔设置');ui.click('画笔设置');ui.click('折叠工具栏为笔坞');
+  ui.click('锁定只读并保存批注');assert.equal(view.isAnnotateMode,false);assert.equal(view.exitSaveToken,1);
+});
+
+test('compiled pen-screen add panel exposes real, document-specific actions',()=>{
+  const ui=renderer(),calls=[];ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',
+    {note:{id:'a',type:'Handwriting',title:'手写'},paneMode:true,onSmartExtract:()=>calls.push('ocr')});
+  ui.click('添加与提取');assert.ok(ui.find('新建手写'));assert.ok(ui.find('随堂稿纸'));
+  assert.equal(ui.find('提取本页文字'),undefined);ui.click('图片提取文字');assert.deepEqual(calls,['ocr']);
+  assert.equal(ui.find('关闭添加弹窗'),undefined);
 });
 
 test('compiled paper popup provides persistent paper commands and read-only viewport reset only on canvas',()=>{
@@ -387,12 +424,12 @@ test('compiled output results show retry for errors and completion only for succ
   view.failed=false;view.resultMessage='正文截图已保存';ui.flush();assert.ok(ui.find('完成'));assert.equal(ui.find('选择保存位置'),undefined);
 });
 
-test('compiled pen settings stay inside the double-tap popup, with a usable precise color input',()=>{
+test('compiled pen settings expand on a second selection and support presets and precise color input',()=>{
   const ui=renderer();const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',
     {note:{id:'a',type:'PDF',title:'课程'}},'topNavigationBar',v=>{v.pdfSourceReady=true;});
-  ui.click('解锁批注');ui.click('普通笔');assert.equal(view.penOptionsOpen,false);assert.equal(ui.find('批注颜色 #2563EB'),undefined);
-  assert.equal(ui.find('普通笔').props.tapGesture.count,2);assert.equal(ui.find('普通笔').props.tapGesture.fingers,1);
-  ui.find('普通笔').props.onDoubleTap();ui.flush();assert.equal(view.penOptionsOpen,true);assert.ok(ui.find('批注颜色 #2563EB'));
+  ui.click('普通笔');assert.equal(view.penOptionsOpen,false);assert.equal(ui.find('批注颜色 #2563EB'),undefined);
+  ui.click('快捷颜色 #2563EB');assert.equal(view.selectedColor,'#2563EB');
+  ui.click('普通笔');assert.equal(view.penOptionsOpen,true);assert.ok(ui.find('批注颜色 #2563EB'));
   ui.click('笔宽 6 px');assert.equal(view.selectedWidth,6);ui.click('批注颜色 #2563EB');assert.equal(view.selectedColor,'#2563EB');
   ui.find('自定义颜色，6 位十六进制').props.onChange('ab12ef');ui.click('应用');assert.equal(view.selectedColor,'#AB12EF');
   ui.click('收起笔设置');ui.click('橡皮');assert.equal(view.penOptionsOpen,false);
@@ -502,6 +539,31 @@ test('compiled home more button opens a working menu without opening the note',(
   const ui=renderer(),opened=[],fav=[];const note={id:'a',title:'课程',type:'Markdown',category:'数学',tag:'',updateTime:'今天'};
   ui.mount('views/workspace/HomeWorkspace','HomeWorkspace',{recentNotes:[note],onSelectNote:note=>opened.push(note.id),onToggleFavorite:note=>fav.push(note.id)});
   ui.click('笔记操作 课程');assert.deepEqual(opened,[]);ui.click('☆ 加入收藏');assert.deepEqual(fav,['a']);assert.deepEqual(opened,[]);
+});
+
+test('compiled timeline distinguishes exam, course and focus tags and forwards their exact labels',()=>{
+  const ui=renderer(),calls=[];
+  const tags=['期末统考','计算机系统','真题考点'];
+  const note={id:'exam',title:'复习安排',type:'Markdown',tag:tags.join(', '),tags,
+    contentDetail:'# 复习安排\n参见 [[贝叶斯定理|概率论笔记]] #期末统考 #数学。'};
+  ui.mount('views/common/MemoTimelineCard','MemoTimelineCard',{note,onTag:tag=>calls.push(tag),onOpen:()=>calls.push(note.id)});
+  assert.equal(ui.find('查看标签 '+tags.join(', ')),undefined);
+  const colors=tags.map(tag=>ui.find(tag).props.fontColor);
+  assert.equal(new Set(colors).size,3);
+  const resourceTable = fs.readFileSync(path.join(root, 'entry/build/default/intermediates/res/default/ResourceTable.txt'), 'utf8');
+  const mediaIds = new Map(Array.from(resourceTable.matchAll(/^media\s+(\S+)\s+(0x[\da-f]+)\r?$/gmi),
+    ([, name, id]) => [name, Number(id)]));
+  for(const icon of ['ic_calendar','ic_code','ic_project_target']) {
+    assert.ok(mediaIds.has(icon));
+    assert.ok([...ui.nodes.values()].some(node => node.content?.resourceName === 'app.media.' + icon ||
+      node.content?.id === mediaIds.get(icon)));
+  }
+  assert.equal(ui.find('查看标签 期末统考').props.height,44);
+  assert.equal(ui.find('#期末统考'),undefined);
+  assert.ok(ui.find('#数学'));assert.ok(ui.find('概率论笔记'));
+  ui.click('查看标签 期末统考');ui.click('阅读摘要 复习安排');assert.deepEqual(calls,[tags[0],note.id]);
+  ui.storage.setOrCreate('flowmindDarkMode',true);ui.flush();
+  assert.notDeepEqual(tags.map(tag=>ui.find(tag).props.fontColor),colors);
 });
 
 test('compiled phone Markdown toolbar opens explicit output and share dialogs, and simple editing stays immediate',()=>{
@@ -622,7 +684,7 @@ for (const singleColumn of [true, false]) {
     }, 'initialRender', view => { view.singleColumn = singleColumn; });
     assert.equal(ui.find('记录日历上个月'), undefined);
     ui.click('按日期与标签筛选');
-    ui.click(`${dateKey}，1 条记录`); ui.click('#复习 1');
+    ui.click(`${dateKey}，1 条记录`); ui.click('筛选标签 复习，1 条记录');
     assert.deepEqual(dates, [dateKey]); assert.deepEqual(tags, ['复习']);
     ui.click('按日期与标签筛选'); assert.equal(ui.find('记录日历上个月'), undefined);
   });
@@ -981,6 +1043,83 @@ for(const type of ['PDF','Image','Handwriting']){
     assert.ok(native.every(child=>child.paneMode));
     assert.ok([...ui.nodes.values()].some(n=>n.props.id==='reader-document-left'));
     assert.ok([...ui.nodes.values()].some(n=>n.props.id==='reader-document-right'));
+  });
+}
+
+for (const secondary of [false, true]) {
+  test(`compiled ${secondary ? 'secondary' : 'primary'} PDF reader receives the committed original while open`, async () => {
+    const ui = renderer(), saved = [];
+    const note = { id: 'pdf', title: '待关联资料', type: 'PDF', sourceType: 'pdf', pageCount: 2,
+      contentDetail: '', pageAnnotations: '{"version":1,"pageCount":2,"pages":{}}' };
+    const companion = { ...note, id: 'other', sourceUri: '/files/documents/other.pdf' };
+    const sourceUri = '/files/documents/relinked.pdf';
+    const queues = ui.load('services/storage/SerialTaskQueue', false);
+    ui.service('services/storage/SerialTaskQueue', queues);
+    ui.service('services/document/ReaderCommitPolicy', ui.load('services/document/ReaderCommitPolicy', false));
+    const commits = ui.load('services/document/ReaderCommitService', false);
+    ui.service('services/document/ReaderCommitService', commits);
+    ui.service('services/document/PdfDocumentService', { PdfDocumentService: { getInstance: () => ({
+      removeManagedPdf: async () => {},
+      generatePageModels: count => Array.from({ length: count }, (_, pageIndex) => ({ pageIndex }))
+    }) } });
+    const index = ui.entry('pages/Index');
+    index.notes = secondary ? [companion, note] : [note];
+    index.fullScreenDocNote = index.notes[0];
+    index.fullScreenDocOpen = true;
+    if (secondary) index.companionNoteId = note.id;
+    index.getAbilityContext = () => ({});
+    let attempts = 0, finish;
+    index.storage = {
+      selectReplacementPdf: async (_, item) => {
+        assert.equal(item.id, note.id);
+        attempts++;
+        if (attempts === 1) return null;
+        if (attempts === 2) throw Error('PDF 内容损坏或格式不受支持');
+        return new Promise(resolve => { finish = () => resolve({ ...item, sourceUri }); });
+      },
+      save: async notes => saved.push(notes)
+    };
+    index.readerWorkspaceContent(index.fullScreenDocNote);
+    const annotator = [...ui.children.values()].find(child => child.pageDataSource && child.note.id === note.id);
+    assert.ok(annotator);
+    annotator.initPages();
+    ui.lazySources.find(entry => entry.source === annotator.pageDataSource).show(0, 1);
+    const page = ui.pdfPages.at(-1);
+    assert.equal(page.props.sourceUri, '');
+    page.props.onRestoreSource();
+    ui.flush();
+    assert.ok(ui.find('选择原文件'));
+    ui.click('返回资料库');
+    assert.equal(ui.find('选择原文件'), undefined);
+    assert.equal(index.fullScreenDocOpen, true);
+
+    page.props.onRestoreSource();
+    ui.flush();
+    await ui.click('选择原文件');
+    ui.flush();
+    assert.equal(ui.find('选择原文件'), undefined);
+    assert.equal(saved.length, 0);
+
+    page.props.onRestoreSource();
+    ui.flush();
+    await ui.click('选择原文件');
+    ui.flush();
+    assert.ok(ui.find('PDF 内容损坏或格式不受支持'));
+    assert.equal(page.props.sourceUri, '');
+    assert.equal(saved.length, 0);
+
+    const choosing = ui.click('选择原文件');
+    assert.equal(ui.find('正在关联…').props.enabled, false);
+    assert.equal(ui.find('取消').props.enabled, false);
+    ui.click('返回资料库');
+    assert.ok(ui.find('正在关联…'));
+    finish();
+    await choosing;
+    ui.flush();
+    assert.equal(saved.length, 1, ui.toasts.join('\n'));
+    assert.equal(saved[0].find(item => item.id === note.id).pageAnnotations, note.pageAnnotations);
+    assert.equal(annotator.note.sourceUri, sourceUri);
+    assert.equal(page.props.sourceUri, sourceUri);
   });
 }
 

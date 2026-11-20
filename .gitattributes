@@ -5,6 +5,16 @@
 archive/ai/** -text
 
 # Preserve upstream PDF.js and license bytes; whitespace checks still cover our host adapter.
-entry/src/main/resources/rawfile/offline-pdf/pdf.mjs -whitespace
-entry/src/main/resources/rawfile/offline-pdf/pdf.worker.mjs -whitespace
-entry/src/main/resources/rawfile/offline-pdf/**/LICENSE* -whitespace
+entry/src/main/resources/rawfile/offline-pdf/pdf.mjs -whitespace linguist-vendored
+entry/src/main/resources/rawfile/offline-pdf/pdf.worker.mjs -whitespace linguist-vendored
+entry/src/main/resources/rawfile/offline-pdf/**/LICENSE* -whitespace linguist-vendored
+
+# Exclude remaining upstream PDF.js static assets from GitHub Linguist statistics.
+entry/src/main/resources/rawfile/offline-pdf/cmaps/** linguist-vendored
+entry/src/main/resources/rawfile/offline-pdf/iccs/** linguist-vendored
+entry/src/main/resources/rawfile/offline-pdf/standard_fonts/** linguist-vendored
+entry/src/main/resources/rawfile/offline-pdf/wasm/** linguist-vendored
+
+# Optional: Map ArkTS (.ets) to TypeScript so GitHub Linguist counts core app source files.
+# Without this, self-authored host.mjs and tools/*.mjs will still dominate the language bar.
+*.ets linguist-language=TypeScript linguist-detectable=true

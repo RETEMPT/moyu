@@ -36,11 +36,11 @@ test('reader ownership and note identity policies have no platform, clock or per
   }
 });
 
-test('offline result preparation remains dormant with no main app network or UI entry', () => {
-  const policy = 'services/study/LearningResultPolicy.ets';
-  for (const [file, imports] of dependencies) {
-    assert.ok(!imports.includes(policy), `${file} unexpectedly activates the preparation layer`);
-  }
+test('offline learning results use the native study panel without network permissions', () => {
+  assert.ok(dependencies.get('views/study/StudySheet.ets').includes('views/study/LearningResultPanel.ets'));
+  assert.ok(dependencies.get('views/study/LearningResultPanel.ets').includes('services/study/LearningResultFile.ets'));
+  const fileAdapter = source.get('services/study/LearningResultFile.ets');
+  assert.doesNotMatch(fileAdapter, /NetworkKit|createHttp|Webview/);
   const moduleFile = path.resolve(root, '../module.json5');
   assert.ok(!fs.readFileSync(moduleFile, 'utf8').includes('ohos.permission.INTERNET'));
 });

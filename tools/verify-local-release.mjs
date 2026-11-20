@@ -7,12 +7,12 @@ import { parseJsonc } from './app-market-policy.mjs';
 const root=path.resolve(import.meta.dirname,'..');
 const sourceRoot=path.join(root,'entry/src/main/ets');
 function files(dir){return fs.readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?files(path.join(dir,e.name)):[path.join(dir,e.name)]);}
-// Runtime modules must be reachable; the explicitly authorized offline contract stays dormant.
+// Runtime modules, including the offline learning exchange, must be reachable.
 const sourceFiles=files(sourceRoot).filter(file=>file.endsWith('.ets'));
 const reached=new Set();
 function visit(file){
   if(reached.has(file))return;reached.add(file);
-  for(const match of fs.readFileSync(file,'utf8').matchAll(/(?:from\s+|import\s*)['"](\.[^'"]+)['"]/g)){
+  for(const match of fs.readFileSync(file,'utf8').matchAll(/(?:from\s+|import\s*(?:\(\s*)?)['"](\.[^'"]+)['"]/g)){
     const dependency=path.resolve(path.dirname(file),match[1]+'.ets');
     assert.ok(inSource(dependency),`Source dependency escaped application: ${file}`);
     visit(dependency);
@@ -20,19 +20,24 @@ function visit(file){
 }
 function inSource(file){return file.startsWith(sourceRoot+path.sep);}
 sourceFiles.filter(file=>/[/\\](?:pages|entryability|entrybackupability)[/\\]/.test(file)).forEach(visit);
-const preparationFiles = ['common/types/LearningResult.ets', 'services/study/LearningResultPolicy.ets']
-  .map(file => path.join(sourceRoot, file)).sort();
-assert.deepEqual(sourceFiles.filter(file=>!reached.has(file)).sort(), preparationFiles,
-  'Only the explicitly isolated learning result contract may be dormant; it must not become a runtime entry');
+assert.deepEqual(sourceFiles.filter(file=>!reached.has(file)).sort(), [],
+  'Every runtime module must be reachable from an application entry');
 const forbidden=/\b(?:AI|AiWorkspace|AssistantText|HuaweiAiSplitPanel|ModelConfigService|ModelProvider|AiModelCatalog|MarkerImportPolicy|SmartEntity|SmartRelation|aiSummary|aiTags|createProvider|NAV_AI)\b|墨客|伴读|大模型|自配 API|模型设置|services\/ai\/|views\/ai\//;
 const inFolder=(folder,file)=>{const relative=path.relative(folder,file);return relative!==''&&relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative);};
+const demoTransport=path.join(sourceRoot,'services/study/StudyAssistantGateway.ets');
 for(const file of files(sourceRoot)) {
   const source=fs.readFileSync(file,'utf8');
   // This system capability name belongs to non-generative OCR; it is never user-facing.
   const checked=source.replaceAll('SystemCapability.AI.OCR.TextRecognition','SystemCapability.OCR.TextRecognition');
   assert.ok(!forbidden.test(checked),`Removed feature remains in ${path.relative(root,file)}`);
-  assert.ok(!/@kit\.NetworkKit|createHttp\(|https:\/\/(?:api\.|openrouter|generativelanguage)/.test(source),`Model transport remains in ${file}`);
-  for(const m of source.matchAll(/(?:from\s+|import\s*)['"](\.[^'"]+)['"]/g)) {
+  if(file===demoTransport) {
+    assert.deepEqual(source.match(/https?:\/\/[^'"`\s]+/g),['http://10.0.2.2:8765/v1']);
+    assert.ok(source.includes('BuildProfile.DEBUG')&&source.includes('BundleFlag.GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION')&&
+      source.includes('maxRedirects: 0')&&source.includes('usingProxy: false'),'Simulator gateway must be Debug-only and use its fixed connection');
+  } else {
+    assert.ok(!/@kit\.NetworkKit|createHttp\(|https:\/\/(?:api\.|openrouter|generativelanguage)/.test(source),`Model transport remains in ${file}`);
+  }
+  for(const m of source.matchAll(/(?:from\s+|import\s*(?:\(\s*)?)['"](\.[^'"]+)['"]/g)) {
     const dependency=path.resolve(path.dirname(file),m[1]+'.ets');
     assert.ok(inFolder(sourceRoot,dependency),`Runtime import escaped current source: ${file}: ${m[1]}`);
     assert.ok(fs.existsSync(dependency),`Missing import in ${file}: ${m[1]}`);
@@ -48,7 +53,7 @@ const currentDocs=['README.md','TECH_STACK.md','PROJECT_MEMORY.md','SECURITY.md'
 // Source, permissions and archive isolation checks above remain mandatory for every release.
 for(const file of ['README.md','docs/USER_GUIDE.md','docs/PRIVACY.md','release/STORE_LISTING.md','release/site/privacy.html']) {
   let source=fs.readFileSync(path.join(root,file),'utf8');
-  // The overview separately describes the app, standalone experiment and dormant preparation.
+  // The overview separately describes the app and standalone experiment.
   // Audit the local app introduction here; production imports and permissions are checked above.
   if(file==='README.md')source=source.split(/^## (?:[\d.]+ 更新与能力边界|发展方向（规划）)/m)[0];
   assert.ok(!forbidden.test(source),`Retired product copy remains in ${file}`);

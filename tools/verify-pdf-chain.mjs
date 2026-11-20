@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import { resolveTypeScript } from './resolve-typescript.mjs';
 
 // Exercise actual storage / PDF / input lifecycle methods with native adapters mocked.
@@ -33,6 +34,7 @@ function load(relative, mocks, cache = new Map()) {
   const localRequire = specifier => {
     if (mocks[specifier]) return mocks[specifier];
     if (specifier === 'BuildProfile') return { default: { DEBUG: true } };
+    if (specifier === '@kit.BasicServicesKit') return { zlib: {} };
     if (specifier.startsWith('.')) return load(path.resolve(path.dirname(filename), `${specifier}.ets`), mocks, cache);
     throw Error(`Unmocked dependency: ${specifier}`);
   };
@@ -59,7 +61,7 @@ function viewMethod(relative, name, globals = {}) {
 
 function platform({ shortCopy = false, syncFails = false, renderFails = false, parseResult = 0,
   pageCount = 2, selection = 'file://picked/course.pdf', writeFails = false, flushFails = false,
-  nativeMissing = false, debug = true, offlineInfo, offlineError, nativeExecutor } = {}) {
+  nativeMissing = false, nativeKitUnavailable = false, debug = true, offlineInfo, offlineError, damagedSource, nativeExecutor } = {}) {
   const calls = [];
   let inWorker = false;
   const files = new Map([['file://picked/course.pdf', Buffer.from(fixture)]]);
@@ -82,6 +84,11 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
     statSync: input => ({ size: files.get(filePath(input))?.length || 0 }),
     stat: async input => ({ size: files.get(filePath(input))?.length || 0 }),
     readSync: (fd, buffer) => { const bytes = files.get(filePath(fd)); new Uint8Array(buffer).set(bytes); return bytes.length; },
+    read: async (fd, buffer, { offset = 0, length = buffer.byteLength } = {}) => {
+      const bytes = files.get(filePath(fd)).subarray(offset, offset + length);
+      new Uint8Array(buffer).set(bytes);
+      return bytes.length;
+    },
     openSync: open, open: async (file, mode) => open(file, mode),
     closeSync: close, close: async file => close(file),
     copyFile: async (fd, dest) => { calls.push(['copy', dest]); const bytes = files.get(filePath(fd));
@@ -96,7 +103,10 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
     readText: async file => files.get(file).toString()
   };
   class PdfDocument {
-    constructor() { assert.ok(inWorker, 'PDFKit must only be constructed inside a background task'); }
+    constructor() {
+      assert.ok(inWorker, 'PDFKit must only be constructed inside a background task');
+      if (nativeKitUnavailable) { calls.push('native-unavailable'); throw Error('PDFKit could not start'); }
+    }
     loadDocument(file) { calls.push(['native-load', file]); return parseResult; }
     getPageCount() { return pageCount; }
     getPage(index) { calls.push(['native-page', index]); return {
@@ -109,10 +119,21 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
   class DocumentViewPicker { async select() { return selection ? [selection] : []; } }
   const preferences = new Map();
   const mocks = {
-    [path.resolve(root, `${base}services/document/LocalPdfEngine.ets`)]: { LocalPdfEngine: { getInstance: () => ({
+    [path.resolve(root, `${base}services/document/LocalPdfEngine.ets`)]: {
+      pdfFailureKind: message => message.includes('损坏') ? 'damaged' : 'other',
+      LocalPdfEngine: { getInstance: () => ({
       bindContext() {},
+      cover: async file => {
+        calls.push(['offline-cover', file]);
+        if (offlineError) throw Error(offlineError);
+        if (!offlineInfo) throw Error('离线阅读组件未就绪，请重试');
+        if (renderFails) throw Error('offline render failed');
+        return { pageCount: offlineInfo.pageCount, aspectRatio: 2 / 3,
+          pixelMap: { release: async () => calls.push('offline-bitmap-release') } };
+      },
       inspect: async file => { calls.push(['offline-info', file]);
         if (offlineError) throw Error(offlineError);
+        if (file === damagedSource) throw Error('PDF 内容损坏或格式不受支持');
         if (!offlineInfo) throw Error('离线阅读组件未就绪，请重试');
         return offlineInfo; },
       render: async (file, page, cancelled) => { calls.push(['offline-page', file, page]);
@@ -122,6 +143,10 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
     }) } },
     canIUse: () => !nativeMissing,
     BuildProfile: { default: { DEBUG: debug } },
+    '@kit.CryptoArchitectureKit': { cryptoFramework: { createMd: () => {
+      const hash = createHash('sha256');
+      return { update: async ({ data }) => hash.update(data), digest: async () => ({ data: hash.digest() }) };
+    } } },
     '@kit.ImageKit': { image: { PixelMapFormat: { RGBA_8888: 1 }, createImageSource: bytes => {
       assert.equal(Buffer.from(bytes).subarray(1, 4).toString(), 'PNG'); calls.push('debug-image-source');
       return { getImageInfo: async () => ({ size: { width: 1200, height: 1698 } }),
@@ -135,7 +160,7 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
       calls.push(['worker', fn.name]);
       if (nativeExecutor) return nativeExecutor(fn, args);
       await Promise.resolve(); inWorker = true;
-      try { return fn(...args); } finally { inWorker = false; }
+      try { return await fn(...args); } finally { inWorker = false; }
     } }, util: { TextEncoder: class { encodeInto(text) { return Buffer.from(text); } } } },
     '@kit.ArkData': { preferences: { getPreferences: async () => ({
       get: async (key, fallback) => preferences.get(key) ?? fallback,
@@ -222,6 +247,29 @@ test('missing PDF Kit routes real metadata and page rendering through the offlin
   await page.pixelMap.release();assert.ok(p.calls.includes('offline-bitmap-release'));
   assert.ok(p.calls.some(c=>Array.isArray(c)&&c[0]==='offline-page'&&c[2]===274));
   assert.ok(!p.calls.includes('debug-image-source'));assert.equal(p.descriptors.size,0);
+});
+test('offline PDF import reads page count and cover in one request and reuses the cover when opened', async () => {
+  const p = platform({ nativeMissing: true, debug: false, offlineInfo: { pageCount: 549 } });
+  const result = await p.storage.importDocument(context);
+  assert.equal(result.status, 'imported');
+  assert.equal(result.pageCount, 549);
+  assert.equal(result.sourceSha256, createHash('sha256').update(fixture).digest('hex'));
+  const page = await p.pdf.renderPageAsync(result.sourceUri, 0);
+  assert.equal(page.aspectRatio, 2 / 3);
+  await page.pixelMap.release();
+  assert.deepEqual(p.calls.filter(call => Array.isArray(call) && call[0].startsWith('offline-')),
+    [['offline-cover', result.sourceUri]]);
+});
+test('PDFKit startup failure degrades to the offline engine without probing the Kit on every page', async () => {
+  const p = platform({ nativeKitUnavailable: true, debug: false, offlineInfo: { pageCount: 5 } });
+  const result = await p.storage.importDocument(context);
+  assert.equal(result.status, 'imported');
+  assert.equal(result.pageCount, 5);
+  const page = await p.pdf.renderPageAsync(result.sourceUri, 1);
+  await page.pixelMap.release();
+  assert.equal(p.calls.filter(call => call === 'native-unavailable').length, 1);
+  assert.deepEqual(p.calls.filter(call => Array.isArray(call) && call[0].startsWith('offline-')),
+    [['offline-cover', result.sourceUri], ['offline-page', result.sourceUri, 1]]);
 });
 test('offline capability failures preserve their cause without claiming the source is missing', async () => {
   const p=platform({nativeMissing:true,debug:false,offlineError:'离线阅读组件连接失败'});
@@ -395,6 +443,57 @@ test('replacement preserves note identity and annotations but invalidates old ex
   assert.equal(replacement.pageAnnotations, existing.pageAnnotations); assert.equal(replacement.pdfTextJson, undefined);
   assert.equal(replacement.pageCount, 2); assert.ok(p.files.get(replacement.sourceUri).equals(fixture));
   assert.deepEqual(existing, before);
+});
+
+test('verified PDF re-linking compares bytes, preserves proofread text and rejects another same-page PDF', async () => {
+  const p = platform();
+  const fingerprint = createHash('sha256').update(fixture).digest('hex');
+  const existing = note({ sourceSha256: fingerprint });
+  const replacement = await p.storage.selectReplacementPdf(context, existing);
+  assert.equal(replacement.sourceSha256, fingerprint);
+  assert.equal(replacement.pdfTextJson, existing.pdfTextJson);
+  const different = Buffer.from(fixture);
+  different[different.length - 1] ^= 1;
+  p.files.set('file://picked/course.pdf', different);
+  await assert.rejects(p.storage.selectReplacementPdf(context, replacement), /原文件不同/);
+  assert.ok(p.files.get(replacement.sourceUri).equals(fixture));
+  assert.equal([...p.files.keys()].filter(file => file.startsWith('/sandbox/documents/')).length, 1);
+});
+
+test('a damaged pre-fingerprint PDF can be re-linked while a readable different original cannot', async () => {
+  const damagedSource = '/sandbox/documents/broken.pdf';
+  const p = platform({ nativeMissing: true, offlineInfo: { pageCount: 2 }, damagedSource });
+  const other = '/sandbox/documents/other.pdf';
+  p.files.set(damagedSource, Buffer.from('damaged PDF'));
+  p.files.set(other, Buffer.from('other PDF'));
+  const legacy = note({ sourceUri: damagedSource });
+  const restored = await p.storage.selectReplacementPdf(context, legacy);
+  assert.equal(restored.pageAnnotations, legacy.pageAnnotations);
+  assert.equal(restored.pdfTextJson, undefined);
+  assert.ok(restored.sourceSha256);
+  await assert.rejects(p.storage.selectReplacementPdf(context, note({ sourceUri: other })), /原文件不同/);
+  assert.ok(p.files.has(other));
+  assert.ok(p.files.has(damagedSource));
+});
+
+test('PDF fingerprint hashes every chunk and releases the file descriptor', async () => {
+  const p = platform();
+  const bytes = Buffer.concat([Buffer.alloc(256 * 1024, 11), Buffer.alloc(256 * 1024, 32), Buffer.alloc(3, 90)]);
+  const file = '/sandbox/documents/long.pdf';
+  p.files.set(file, bytes);
+  assert.equal(await p.pdf.fingerprint(file), createHash('sha256').update(bytes).digest('hex'));
+  assert.equal(p.descriptors.size, 0);
+});
+
+test('sandbox recovery declines a different PDF occupying the old local filename', async () => {
+  const p = platform();
+  const stored = note({ sourceUri: '/old/files/documents/known.pdf', sourceFileName: 'known.pdf',
+    sourceSha256: createHash('sha256').update(fixture).digest('hex') });
+  p.preferences.set('notes', JSON.stringify([stored]));
+  p.files.set('/sandbox/documents/known.pdf', Buffer.from('a different file'));
+  const loaded = await p.restartStorage().load(context, []);
+  assert.equal(loaded[0].sourceUri, stored.sourceUri);
+  assert.equal(loaded[0].pageAnnotations, stored.pageAnnotations);
 });
 
 test('replacement with incompatible page count keeps annotations and deletes only the new copy', async () => {
@@ -730,7 +829,7 @@ test('offline failures arrive as distinct reader messages and keep classificatio
   const cases = [
     ['password', /密码/, 'password'], ['damaged', /损坏/, 'damaged'],
     ['missing', /重新关联/, 'missing'], ['engine', /未就绪/, 'engine'],
-    ['read', /读取失败/, 'other'], ['page', /页码超出范围/, 'other']
+    ['read', /读取失败/, 'missing'], ['page', /页码超出范围/, 'other']
   ];
   for (const [kind, pattern, classified] of cases) {
     const h = engineHarness();
@@ -751,6 +850,18 @@ test('an unknown host error is still reported without inventing a re-link action
   h.engine.finish(request.id, JSON.stringify({ error: 'Worker was destroyed' }));
   await assert.rejects(task, /Worker was destroyed/);
   assert.equal(h.pdfFailureKind('Worker was destroyed'), 'other');
+});
+
+test('a failed offline host startup does not multiply its wait by the number of visible pages', async () => {
+  const h = engineHarness(), readyWaits = [];
+  h.engine.reloaded();
+  h.engine.waitForReady = () => new Promise(resolve => readyWaits.push(resolve));
+  const failures = [0, 1, 2].map(page => assert.rejects(h.engine.render(bookPath, page), /未就绪/));
+  assert.equal(readyWaits.length, failures.length);
+  for (const resolve of readyWaits) resolve();
+  await Promise.all(failures);
+  assert.equal(h.port.scripts.length, 0);
+  assert.equal(h.engine.pending.size, 0);
 });
 
 test('a page that leaves the viewport rejects at once and cancels the host render', async () => {
@@ -844,10 +955,12 @@ test('native parse failures separate corruption from password and missing origin
   await assert.rejects(p.pdf.getPdfInfo(''), /重新关联/);
 });
 
-test('only a missing PDF original offers re-linking in the page background', () => {
+test('an unusable PDF original offers re-linking while engine failures offer retry', () => {
   const canRestore = viewMethod(backgroundFile, 'canRestore');
-  assert.equal(canRestore.call({ sourceType: 'pdf', failure: 'missing' }), true);
-  for (const failure of ['damaged', 'password', 'engine', 'other']) {
+  for (const failure of ['missing', 'damaged', 'password']) {
+    assert.equal(canRestore.call({ sourceType: 'pdf', failure }), true);
+  }
+  for (const failure of ['engine', 'other']) {
     assert.equal(canRestore.call({ sourceType: 'pdf', failure }), false);
   }
   assert.equal(canRestore.call({ sourceType: 'image', failure: 'missing' }), false);
@@ -999,7 +1112,7 @@ test('a large offline reply decoded after a host rebuild cannot publish its old 
   assert.ok(!h.calls.includes('decode-async')); assert.equal(h.engine.pending.size, 0);
 });
 
-function offlineHost(nativePdf) {
+function offlineHost(nativePdf, platform = {}) {
   const callbacks = [];
   const source = fs.readFileSync(path.join(root, 'entry/src/main/resources/rawfile/offline-pdf/host.mjs'), 'utf8')
     .replace(/^import[^\n]+\n/, '').replaceAll('import.meta.url', JSON.stringify('moyu://local/offline-pdf/host.mjs'));
@@ -1009,7 +1122,7 @@ function offlineHost(nativePdf) {
     onDataRange(begin, result) { this.result = Array.from(result); this.begin = begin; }
   }
   vm.runInNewContext(source + '\nwindow.TestRanges = NativeRanges;', { window, nativePdf, GlobalWorkerOptions: {},
-    getDocument() { throw Error('not requested'); }, PDFDataRangeTransport, URL, atob, console,
+    getDocument() { throw Error('not requested'); }, PDFDataRangeTransport, URL, atob, console, ...platform,
     setTimeout: (fn, delay) => { callbacks.push({ fn, delay }); return callbacks.length; }, clearTimeout() {} });
   return { window, callbacks };
 }
@@ -1031,10 +1144,45 @@ test('offline range transport awaits the asynchronous native bridge and ignores 
   const range = new h.window.TestRanges('token', 4, error => failures.push(error));
   range.requestDataRange(0, 4); await tick(); assert.equal(reads.length, 1); assert.equal(range.result, undefined);
   resolvers[0](Buffer.from([1,2,3,4]).toString('base64')); await tick();
-  assert.equal(h.callbacks.length, 1); h.callbacks.shift().fn(); await tick();
   assert.deepEqual(Array.from(range.result), [1,2,3,4]); assert.deepEqual(failures, []);
+  assert.equal(h.callbacks.length, 0);
   range.requestDataRange(0, 4); await tick(); range.abort(); resolvers[1](Buffer.from([9,9,9,9]).toString('base64'));
   await tick(); assert.deepEqual(Array.from(range.result), [1,2,3,4]);
+});
+
+test('offline range reads use bounded bridge chunks and reject a partial response', async () => {
+  const reads = [];
+  const failures = [];
+  const h = offlineHost({ ready: () => true, read: async (_token, begin, end) => {
+    reads.push([begin, end]);
+    return Buffer.alloc(end - begin - (begin === 0 ? 0 : 1)).toString('base64');
+  } });
+  const range = new h.window.TestRanges('token', 128 * 1024 + 4, error => failures.push(error));
+  range.requestDataRange(0, range.length);
+  await tick();
+  assert.deepEqual(reads, [[0, 128 * 1024], [128 * 1024, range.length]]);
+  assert.equal(range.result, undefined);
+  assert.equal(failures.length, 1);
+});
+
+test('the PDF.js cover action renders a real page before replying with its page count', async () => {
+  const events = [];
+  const canvas = { getContext: () => ({}), toDataURL: () => 'data:image/jpeg;base64,AQID' };
+  const host = offlineHost({ ready: () => true, finish: (_id, result) => events.push(JSON.parse(result)) }, {
+    document: { createElement: () => canvas },
+    getDocument(options) {
+      assert.equal(options.rangeChunkSize, 128 * 1024);
+      return { promise: Promise.resolve({ numPages: 17, async getPage(index) {
+        events.push(index);
+        return { getViewport: ({ scale }) => ({ width: 600 * scale, height: 800 * scale }),
+          render: () => { events.push('render'); return { promise: Promise.resolve() }; },
+          cleanup: () => events.push('cleanup') };
+      } }) };
+    }
+  });
+  await host.window.moyuPdf.request({ id: 'test', token: 'source', length: 100, action: 'cover', page: 0 });
+  assert.deepEqual(events, [1, 'render', { width: 600, height: 800, data: 'AQID', pageCount: 17 }, 'cleanup']);
+  assert.equal(canvas.width, 0);
 });
 
 test('offline resource response waits for asynchronous bytes and completes both success and failure', async () => {
@@ -1081,6 +1229,17 @@ test('PDF page cache transfers a bitmap to only one reader and rejects a changed
   assert.equal(p.calls.filter(call => call === 'bitmap-release').length, 2);
   p.pdf.recyclePage(source, 0, refreshed.pixelMap, refreshed.aspectRatio); p.files.delete(source);
   await assert.rejects(p.pdf.renderPageAsync(source, 0), /重新关联/); assert.equal(p.pdf.pageCache.size, 0);
+});
+
+test('a page component removed after reader exit cannot restore the cleared PDF cache', async () => {
+  const p = platform();
+  const source = '/sandbox/documents/course.pdf';
+  p.files.set(source, fixture);
+  const owned = await p.pdf.renderPageAsync(source, 0);
+  p.pdf.clearPageCache();
+  assert.equal(p.pdf.recyclePage(source, 0, owned.pixelMap, owned.aspectRatio), false);
+  await owned.pixelMap.release();
+  assert.equal(p.pdf.pageCache.size, 0);
 });
 
 test('bounded PDF cache releases evictions and all retained pages on reader exit', async () => {

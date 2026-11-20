@@ -4,7 +4,8 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { crc32, deflateRawSync, inflateRawSync } from 'node:zlib';
 import { resolveTypeScript } from './resolve-typescript.mjs';
 
 // Run ArkTS service and view snapshot logic with platform adapters mocked. HAP compilation
@@ -41,6 +42,8 @@ function load(relative, mocks = {}, cache = new Map()) {
   const localRequire = specifier => {
     if (mocks[specifier]) return mocks[specifier];
     if (specifier === 'BuildProfile') return { DEBUG: true, default: { DEBUG: true } };
+    if (specifier === '@kit.BasicServicesKit') return { zlib: {} };
+    if (specifier === '@kit.CryptoArchitectureKit') return { cryptoFramework: {} };
     if (specifier.startsWith('.')) {
       return load(path.resolve(path.dirname(filename), `${specifier}.ets`), mocks, cache);
     }
@@ -64,6 +67,15 @@ const { ReadingProgressPolicy } = load(`${base}services/document/ReadingProgress
 const { ReaderPairPolicy } = load(`${base}services/document/ReaderPairPolicy.ets`);
 const plain = value => JSON.parse(JSON.stringify(value));
 const reference = new Date(2026, 8, 30, 10);
+
+test('reading presentation hides known footer tags without changing source line positions', () => {
+  const { NoteTagPresentation } = load(`${base}services/library/NoteTagPresentation.ets`);
+  const source = '# 复习\r\n正文和 `#代码`\r\n## 小结\r\n#未知 #复习\r\n#课程\r\n';
+  assert.equal(NoteTagPresentation.displayBody(source, ['#复习', '课程']), '# 复习\n正文和 `#代码`\n## 小结\n#未知\n\n');
+  assert.equal(NoteTagPresentation.displayBody('```txt\n#复习\n```', ['复习']), '```txt\n#复习\n```');
+  assert.equal(NoteTagPresentation.displayTitle('公式 #复习', ['复习']), '公式');
+  assert.equal(NoteTagPresentation.displayBody('引文带转义 \\#复习', ['复习']), '引文带转义 \\#复习');
+});
 
 test('quick capture preserves Markdown, derives a title and ignores tags inside code and math', () => {
   const {QuickMemoService}=load(`${base}services/library/QuickMemoService.ets`);
@@ -490,6 +502,7 @@ function importService(uri, { pdfFails = false, writeFails = false, unlinkFails 
     [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: {
       PdfDocumentService: { getInstance: () => ({ savePdfToSandbox: async () => '/sandbox/copy.pdf', saveBundledExample: async () => '/sandbox/copy.pdf',
         removeManagedPdf: async (context, file) => { calls.push(['unlink', file]); },
+        fingerprint: async () => 'a'.repeat(64),
         validateImport: async () => { if (pdfFails) throw Error('PDF 损坏'); return { pageCount: 2 }; } }) }
     }
   };
@@ -562,7 +575,7 @@ test('deletion failures propagate for retry, missing files remain harmless', asy
   assert.equal(missing.calls.length, 0);
 });
 
-for (const suffix of ['doc', 'docx']) {
+for (const suffix of ['doc', 'ppt']) {
   test(`unsupported ${suffix} import does not produce invented document text`, async () => {
     const { service, calls } = importService(`file://picked/book.${suffix}`);
     const result = await service.importDocument({ filesDir: '/sandbox' });
@@ -577,6 +590,103 @@ test('text import retains full text and cancel performs no writes', async () => 
   const cancelled = importService('');
   assert.equal((await cancelled.service.importDocument({ filesDir: '/sandbox' })).status, 'cancelled');
   assert.equal(cancelled.calls.length, 0);
+});
+
+function officeZipFixture(parts) {
+  const locals = [], directory = [];
+  let offset = 0;
+  for (const [fileName, source] of Object.entries(parts)) {
+    const name = Buffer.from(fileName);
+    const raw = Buffer.from(source);
+    const packed = deflateRawSync(raw);
+    const local = Buffer.alloc(30);
+    const entry = Buffer.alloc(46);
+    local.writeUInt32LE(0x04034b50); entry.writeUInt32LE(0x02014b50);
+    local.writeUInt16LE(8, 8); entry.writeUInt16LE(8, 10);
+    local.writeUInt32LE(crc32(raw), 14); entry.writeUInt32LE(crc32(raw), 16);
+    local.writeUInt32LE(packed.length, 18); entry.writeUInt32LE(packed.length, 20);
+    local.writeUInt32LE(raw.length, 22); entry.writeUInt32LE(raw.length, 24);
+    local.writeUInt16LE(name.length, 26); entry.writeUInt16LE(name.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    locals.push(local, name, packed); directory.push(entry, name);
+    offset += local.length + name.length + packed.length;
+  }
+  const index = Buffer.concat(directory);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50);
+  end.writeUInt16LE(directory.length / 2, 8); end.writeUInt16LE(directory.length / 2, 10);
+  end.writeUInt32LE(index.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, index, end]);
+}
+
+function officeFixtureReader(data) {
+  const EventType = { START_TAG: 1, END_TAG: 2, TEXT: 3, CDSECT: 4, ENTITY_REFERENCE: 5 };
+  const fileIo = {
+    OpenMode: { READ_ONLY: 0 }, open: async () => ({ fd: 1 }), stat: async () => ({ size: data.length }), close: async () => {},
+    async read(fd, bytes, { offset }) {
+      return data.copy(Buffer.from(bytes), 0, offset, Math.min(data.length, offset + bytes.byteLength));
+    }
+  };
+  const zlib = {
+    ReturnStatus: { OK: 0, STREAM_END: 1 }, CompressFlushMode: { FINISH: 4 },
+    createZip: async () => {
+      let state = {};
+      return {
+        inflateInit2: async (_, window) => { assert.equal(window, -15); return 0; },
+        inflate: async stream => {
+          const inflated = inflateRawSync(Buffer.from(stream.nextIn), { maxOutputLength: stream.availableOut });
+          inflated.copy(Buffer.from(stream.nextOut));
+          state = { totalIn: stream.nextIn.byteLength, totalOut: inflated.length };
+          return 1;
+        },
+        getZStream: async () => state,
+        inflateEnd: async () => 0
+      };
+    },
+    createChecksum: async () => ({ crc32: async (_, bytes) => crc32(Buffer.from(bytes)) })
+  };
+  class XmlPullParser {
+    constructor(bytes) { this.source = Buffer.from(bytes).toString('utf8'); }
+    parseXml(options) {
+      for (const match of this.source.matchAll(/<(\/?)([\w:]+)>|([^<>]+)/g)) {
+        const event = match[3] ? EventType.TEXT : match[1] ? EventType.END_TAG : EventType.START_TAG;
+        options.tokenValueCallbackFunction(event, { getName: () => match[2], getText: () => match[3] });
+      }
+    }
+  }
+  return load(`${base}services/document/OfficeDocumentService.ets`, {
+    '@kit.ArkTS': { xml: { XmlPullParser, EventType }, util: {
+      TextEncoder: class { encodeInto(text) { return new Uint8Array(Buffer.from(text)); } },
+      TextDecoder: { create: () => ({ decodeToString: bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes) }) }
+    } },
+    '@kit.BasicServicesKit': { zlib }, '@kit.CoreFileKit': { fileIo }
+  }).OfficeDocumentService;
+}
+
+test('Office text import reads DOCX paragraphs and PPTX slides in presentation order', async () => {
+  const docx = officeZipFixture({
+    'word/document.xml': '<w:document><w:body><w:p><w:r><w:t>正文 #课件</w:t></w:r></w:p></w:body></w:document>'
+  });
+  assert.equal(await officeFixtureReader(docx).read('file://book.docx', false), '正文 \\#课件');
+  const pptx = officeZipFixture({
+    'ppt/presentation.xml': '<p:presentation><p:sldIdLst><p:sldId id="256" r:id="r2"/><p:sldId id="257" r:id="r1"/></p:sldIdLst></p:presentation>',
+    'ppt/_rels/presentation.xml.rels': '<Relationships><Relationship Id="r1" Target="slides/slide1.xml" Type="ns/slide"/><Relationship Id="r2" Target="/ppt/slides/slide2.xml" Type="ns/slide"/></Relationships>',
+    'ppt/slides/slide1.xml': '<p:sld><a:p><a:r><a:t>第二张</a:t></a:r></a:p></p:sld>',
+    'ppt/slides/slide2.xml': '<p:sld><a:p><a:r><a:t>第一张</a:t></a:r></a:p></p:sld>'
+  });
+  assert.equal(await officeFixtureReader(pptx).read('file://book.pptx', true),
+    '## 第 1 张幻灯片\n\n第一张\n\n## 第 2 张幻灯片\n\n第二张');
+});
+
+test('Office import rejects corrupt and oversized XML entries before publishing text', async () => {
+  const docx = officeZipFixture({ 'word/document.xml': '<w:p><w:t>正文</w:t></w:p>' });
+  const index = docx.readUInt32LE(docx.length - 6);
+  const invalidCrc = Buffer.from(docx);
+  invalidCrc.writeUInt32LE(0, index + 16);
+  await assert.rejects(officeFixtureReader(invalidCrc).read('doc.docx', false), /校验失败/);
+  const oversized = Buffer.from(docx);
+  oversized.writeUInt32LE(8 * 1024 * 1024, index + 24);
+  await assert.rejects(officeFixtureReader(oversized).read('doc.docx', false), /导入上限/);
 });
 
 const { StudySourceService } = load(`${base}services/study/StudySourceService.ets`);
@@ -701,6 +811,29 @@ test('offline card candidate requires exact live fragment and keeps local identi
   value.sources.push({ ...value.sources[0], id: 'source2' });
   value.cards[0].citations.push({ ...value.cards[0].citations[0], source_id: 'source2' });
   assert.throws(() => LearningResultPolicy.cardDraft(JSON.stringify(value), 0, 'source1', value.sources[0].text));
+});
+
+test('offline preview resolves actual Markdown lines and PDF pages, rejecting ambiguous or changed evidence', () => {
+  const value = structuredClone(exchangeFixture.result);
+  const text = value.sources[0].text;
+  const note = studyNote({ type: 'Markdown', contentDetail: '# 原文\r\n\r\n' + text });
+  const lines = LearningResultPolicy.locate(value, note);
+  assert.deepEqual(plain(lines), [{ sourceId: 'source1', line: 3 }]);
+  assert.equal(LearningResultPolicy.locatedCard(value, 0, lines).sourceLine, 3);
+  assert.throws(() => LearningResultPolicy.locatedCard(value, 0, LearningResultPolicy.locate(value, { ...note, contentDetail: text + text })));
+  const page = { pageNumber: 7, text, method: 'ocr', extractedAt: 1 };
+  const pdf = studyNote({ type: 'PDF', sourceType: 'pdf', pageCount: 9, sourceUri: '/source.pdf', pdfTextJson: JSON.stringify([page]) });
+  assert.equal(LearningResultPolicy.exportText(pdf, 7), text);
+  const pages = LearningResultPolicy.locate(value, pdf);
+  const draft = LearningResultPolicy.locatedCard(value, 0, pages);
+  assert.equal(draft.pageNumber, 7);
+  const generated = { ...ReviewPolicy.create(pdf, draft, 1), generatedKey: 'a'.repeat(64) };
+  const stored = ReviewPolicy.normalize([ReviewPolicy.rate(generated, 'good', 2)])[0];
+  assert.equal(LearningResultPolicy.storedCardSource(pdf, stored).pageNumber, 7);
+  assert.equal(LearningResultPolicy.storedCardSource({ ...pdf, pdfTextJson: '[]' }, stored), undefined);
+  assert.equal(LearningResultPolicy.locate(value, { ...pdf, pdfTextJson: '[]' }).length, 0);
+  assert.equal(LearningResultPolicy.locate(value, { ...pdf, pdfTextJson: JSON.stringify([page, { ...page, pageNumber: 8 }]) }).length, 0);
+  assert.equal(LearningResultPolicy.locate(value, { ...note, contentDetail: '已经修订' }).length, 0);
 });
 test('local learning overview follows live course membership and separates self-ratings from reading', () => {
   const notes = [studyNote({id:'a',category:'数学',lastReadAt:100,pageCount:20,readPage:20}),
@@ -834,6 +967,7 @@ function backupFileFixture({ selected = ['/picked/backup.json'], failPdf = false
       if (failImage) throw Error('broken image'); return { size: { width: 1, height: 1 }, mimeType:'image/png' };
     }, createPixelMap:async()=>({release:async()=>calls.push('preview-release')}), release: async () => calls.push(['image-release', filename]) }) } },
     [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: { PdfDocumentService: { getInstance: () => ({
+      fingerprint: async filename => createHash('sha256').update(files.get(filename)).digest('hex'),
       validateImport: async filename => { if (failPdf) throw Error('broken pdf'); return { pageCount: 2 }; }
     }) } }
   };
@@ -870,7 +1004,16 @@ test('backup restoration writes only decoded asset views and verifies real PDF p
   const restored = await f.service.materialize({ filesDir: '/sandbox' }, backup, 0, '恢复副本');
   assert.ok(restored.sourceUri.startsWith('/sandbox/documents/restore_backup123_0_'));
   assert.equal(restored.pageCount, 2); assert.equal(f.files.get(restored.sourceUri).toString(), '%PDF-1.7\noriginal');
+  assert.equal(restored.sourceSha256, createHash('sha256').update('%PDF-1.7\noriginal').digest('hex'));
   assert.equal(backup.notes[0].id, 'course_note');
+});
+test('backup restoration does not attach a PDF whose fingerprint differs from the saved note', async () => {
+  const f = backupFileFixture();
+  const backup = studyBackup();
+  backup.notes[0].sourceSha256 = createHash('sha256').update('expected original').digest('hex');
+  backup.assets = [{ noteId: 'course_note', kind: 'pdf', data: Buffer.from('different PDF').toString('base64') }];
+  await assert.rejects(f.service.materialize({ filesDir: '/sandbox' }, backup, 0, '恢复副本'), /校验值不一致/);
+  assert.equal(f.files.size, 0);
 });
 test('failed backup PDF or cover validation removes newly created attachments', async () => {
   for (const kind of ['pdf', 'cover']) {
@@ -1054,6 +1197,17 @@ test('reader commits re-read the library after file persistence and do not resur
   ports.saveDocument = async () => { notes = notes.filter(note => note.id !== 'course_note'); };
   await assert.rejects(service.commit(studyNote(), 'stale', ports, true), /移除/);
   assert.equal(notes.length, 1); assert.equal(writes, 1);
+});
+
+test('a stale PDF replacement cannot overwrite a more recent re-link', async () => {
+  const { ReaderCommitService } = load(`${base}services/document/ReaderCommitService.ets`);
+  const current = studyNote({ sourceUri: '/sandbox/documents/current.pdf', pdfTextJson: 'current index' });
+  const replacement = { ...current, sourceUri: '/sandbox/documents/stale.pdf', pdfTextJson: undefined };
+  const ports = { notes: () => [current], saveDocument: async () => assert.fail('unexpected document write'),
+    saveNotes: async () => assert.fail('unexpected snapshot write'), publish: () => assert.fail('unexpected publication') };
+  await assert.rejects(new ReaderCommitService().commit(replacement, '', ports, false, 'pdf-source',
+    '/sandbox/documents/old.pdf'), /关联已更新/);
+  assert.equal(current.pdfTextJson, 'current index');
 });
 
 test('reader index failure restores the committed body and a later retry still succeeds', async () => {
@@ -1262,6 +1416,7 @@ test('shape paths survive existing ink validation and stroke erase at reversed a
 
 test('PDF shape gestures preview without committing, create one undo step and discard cancelled geometry', () => {
   const h = pdfHistoryView(), batches = [], committed = [];
+  let completed = 0;
   const touch = viewMethod('views/reader/pdf/PdfPageCanvas.ets', 'handleTouch', { InkRenderer, ...penEnums });
   const finish = viewMethod('views/reader/pdf/PdfPageCanvas.ets', 'finishInput');
   const v = { sourceReady:true,isAnnotateMode:true,tool:'rectangle',pageWidth:720,pageHeight:1000,pageModel:{pageIndex:0},
@@ -1269,18 +1424,19 @@ test('PDF shape gestures preview without committing, create one undo step and di
     liveContext:{clearRect(){}},input:{read:()=>batches.shift(),reset(){},isActive:()=>false},
     onActiveFinisherChange(){},onPenActive(){},onInkContactChange(){},renderStroke(){},
     onStrokeAdded:stroke=>{committed.push(stroke);h.view.handleStrokeAdded(stroke);},
+    onStrokeCompleted:()=>{completed++;},
     finishInput:finish,resetInput(){this.finishInput(false);} };
   const e = {sourceTool:1,type:0,stopPropagation(){}};
   batches.push({phase:'begin',pen:false,samples:[{x:72,y:100}]}); touch.call(v,e);
   batches.push({phase:'move',samples:[{x:360,y:500}]}); touch.call(v,e);
-  assert.equal(committed.length,0);assert.equal(v.currentStroke.points.length,10);
+  assert.equal(committed.length,0);assert.equal(completed,0);assert.equal(v.currentStroke.points.length,10);
   batches.push({phase:'end',samples:[{x:360,y:500}]});touch.call(v,e);
-  assert.equal(committed.length,1);assert.equal(h.view.undoStack.length,1);
+  assert.equal(committed.length,1);assert.equal(completed,1);assert.equal(h.view.undoStack.length,1);
   assert.ok(committed[0].points.every(p=>p.u>=0&&p.u<=1&&p.v>=0&&p.v<=1));
   h.view.handleUndo();assert.equal(h.view.pageStrokes[0].length,0);
   batches.push({phase:'begin',samples:[{x:0,y:0}]});touch.call(v,e);
   batches.push({phase:'cancel',samples:[]});touch.call(v,e);
-  assert.equal(committed.length,1);assert.equal(v.shapeAnchor,null);
+  assert.equal(committed.length,1);assert.equal(completed,1);assert.equal(v.shapeAnchor,null);
 });
 
 test('paper settings persist separately for the document and scratchpad through concurrent saves and backup', async () => {
@@ -2178,6 +2334,9 @@ test('reader palette follows every chosen style in both modes without mutating s
 const { SettingsCatalog, SETTINGS_ENTRIES, SETTINGS_GROUPS } = load(`${base}common/constants/SettingsCatalog.ets`);
 test('settings search covers names and user vocabulary, preserves group boundaries and returns no fake matches', () => {
   assert.equal(SettingsCatalog.search('OCR')[0].id, 'capture');
+  for (const term of ['星闪 压感', 'M-Pencil', '华为笔记', '.hinote', '轻捏']) {
+    assert.equal(SettingsCatalog.search(term, 'connection')[0].id, 'ecosystem');
+  }
   assert.equal(SettingsCatalog.search('浅蓝')[0].id, 'theme');
   for (const label of ['白蓝', '白青', '白绿', '白玫', '暖砂', '雾蓝']) { assert.equal(SettingsCatalog.search(label)[0].id, 'theme'); }
   assert.equal(SettingsCatalog.search('deepseek API').length, 0);
@@ -2641,6 +2800,125 @@ test('a stylus takeover discards an unfinished palm or finger mark before acquir
 });
 
 const { GraphTopicPolicy } = load(`${base}services/GraphTopicPolicy.ets`);
+const { ALL_GRAPH_TOPICS, GraphViewPolicy } = load(`${base}services/GraphViewPolicy.ets`);
+
+test('graph topic expansion uses original members and local graph follows one or two hops', () => {
+  const note = (id, category) => ({ id, title: id === 'b' ? '同名' : id === 'c' ? '同名' : id, category, type: 'Markdown' });
+  const notes = [note('a', '课程'), note('b', '其他'), note('c', '其他'), note('d', '其他'),
+    { ...note('deleted', '课程'), deletedAt: 1 }];
+  const link = (a, b) => ({ sourceNoteId: a, sourceTitle: a, targetNoteId: b, targetTitle: b, label: b });
+  const graph = { backlinks: [link('a', 'b'), link('b', 'c'), link('c', 'd'), link('b', 'a'), link('a', 'deleted')],
+    unresolvedLinks: [{ sourceNoteId: 'a', sourceTitle: 'a', target: '概念', label: '概念' }] };
+  const scope = { topic: '课程', focus: '', depth: 1, filter: 'all' };
+  const topic = GraphViewPolicy.build(notes, graph, scope);
+  assert.deepEqual(plain(topic.nodes.map(item => item.key)), ['note:a', 'note:b', 'pending:概念']);
+  assert.equal(topic.edges.length, 2);
+  assert.equal(topic.backlinks.length, 2);
+  const reversed = GraphViewPolicy.build(notes, { ...graph, backlinks: [...graph.backlinks].reverse() }, scope);
+  assert.deepEqual(plain(reversed.nodes.map(item => item.key)), plain(topic.nodes.map(item => item.key)));
+  const focused = GraphViewPolicy.build(notes, graph, { ...scope, focus: 'note:a', depth: 2 });
+  assert.deepEqual(plain(focused.nodes.map(item => item.key)), ['note:a', 'note:b', 'pending:概念', 'note:c']);
+  const pending = GraphViewPolicy.build(notes, graph, { ...scope, topic: ALL_GRAPH_TOPICS, filter: 'unresolved' });
+  assert.deepEqual(plain(pending.nodes.map(item => item.key)), ['note:a', 'pending:概念']);
+  assert.equal(pending.edges.length, 1);
+  assert.equal(pending.backlinks.length, 0);
+});
+
+test('graph selection writes only after a link mode starts and reports success after persistence', async () => {
+  const messages = [];
+  const select = viewMethod('views/workspace/GraphWorkspace.ets', 'selectNode',
+    { Error, promptAction: { showToast: ({ message }) => messages.push(message) } });
+  const first = { key: 'note:a', noteId: 'a', label: '笔记 A' };
+  const second = { key: 'note:b', noteId: 'b', label: '笔记 B' };
+  const calls = [];
+  let fail = true;
+  const view = { alive: true, canvasReady: false, linkSourceNode: null,
+    visibleGraph: { nodes: [first, second] },
+    clearSelection() { this.selectedNode = null; this.linkSourceNode = null; },
+    async onLinkNodes(...args) {
+      calls.push(args);
+      if (fail) { throw Error('写入失败'); }
+    } };
+  await select.call(view, first);
+  await select.call(view, second);
+  assert.equal(view.selectedNode, second);
+  assert.deepEqual(calls, []);
+  view.linkSourceNode = first;
+  await select.call(view, second);
+  assert.equal(view.linkSourceNode, first);
+  assert.deepEqual(messages, ['写入失败']);
+  fail = false;
+  await select.call(view, second);
+  assert.equal(view.linkSourceNode, null);
+  assert.deepEqual(calls, [['a', 'b', '笔记 B'], ['a', 'b', '笔记 B']]);
+  assert.deepEqual(messages, ['写入失败', '已保存笔记链接']);
+});
+
+test('study assistant sends only a confirmed preview and discards a late response after cancellation', async () => {
+  const send = viewMethod('views/study/StudyAssistantPanel.ets', 'send', { Edge: { Top: 0 } });
+  const stop = viewMethod('views/study/StudyAssistantPanel.ets', 'stopRequest');
+  const preview = { operation: 'qa', goal: '问题', sources: [{ id: 's1', text: '核对过的资料' }] };
+  let sent = 0;
+  let complete;
+  const view = { pending: preview, busy: false, generation: 0, result: null, pairingCode: '', selectedModel: 'deepseek-flash', validPairing: () => false,
+    scroller: { scrollEdge() {} }, gateway: { cancel() {}, generate(payload, _pairingCode, model) {
+      sent++;
+      assert.equal(payload, preview);
+      assert.equal(model, 'deepseek-flash');
+      return new Promise(resolve => { complete = resolve; });
+    } } };
+  await send.call(view);
+  assert.equal(sent, 0);
+  view.validPairing = () => true;
+  const running = send.call(view);
+  await send.call(view);
+  assert.equal(sent, 1);
+  stop.call(view);
+  complete({ title: '迟到结果' });
+  await running;
+  assert.equal(view.result, null);
+  assert.equal(view.pending, preview);
+  assert.equal(view.busy, false);
+});
+
+test('the study gateway fetches the paired model list from the fixed host and rejects duplicate IDs', async () => {
+  const calls = [];
+  const models = [{ id: 'deepseek-flash', label: 'DeepSeek Flash', agent: true }];
+  const { StudyAssistantGateway } = load(`${base}services/study/StudyAssistantGateway.ets`, {
+    '@kit.AbilityKit': { bundleManager: {} },
+    '@kit.NetworkKit': { http: { RequestMethod: { GET: 'GET', POST: 'POST' }, HttpDataType: { STRING: 'string' },
+      createHttp: () => ({ request: async (url, options) => {
+        calls.push({ url, options });
+        return { responseCode: 200, result: JSON.stringify({ models }) };
+      }, destroy() {} }) } }
+  });
+  const gateway = new StudyAssistantGateway();
+  await assert.rejects(gateway.models('invalid'), /配对码/);
+  assert.equal(calls.length, 0);
+  const code = 'b'.repeat(32);
+  assert.deepEqual(plain(await gateway.models(code)), models);
+  assert.equal(calls[0].url, 'http://10.0.2.2:8765/v1/models');
+  assert.equal(calls[0].options.method, 'GET');
+  assert.equal(calls[0].options.header['X-Moyu-Pairing'], code);
+  assert.equal(calls[0].options.maxRedirects, 0);
+  assert.equal(calls[0].options.extraData, undefined);
+  models.push({ ...models[0], label: 'Duplicate' });
+  await assert.rejects(gateway.models(code), /模型列表无效/);
+});
+
+test('closing the assistant stops a pending request but keeps the session data', () => {
+  const update = viewMethod('views/study/StudyAssistantPanel.ets', 'onActiveChanged');
+  const result = { title: '已有结果' };
+  const pending = { operation: 'summary' };
+  let stops = 0;
+  const view = { active: false, busy: true, pending, result, stopRequest() { this.busy = false; stops++; } };
+  update.call(view);
+  view.active = true;
+  update.call(view);
+  assert.equal(stops, 1);
+  assert.equal(view.result, result);
+  assert.equal(view.pending, pending);
+});
 test('empty saved projects and note-only categories share one deduplicated topic list', () => {
   assert.deepEqual(plain(GraphTopicPolicy.topics([{category:'课程'}, {category:'课程'}, {category:''}],
     [{name:'空主题'}, {name:'课程'}, {name:' 空主题 '}])),
@@ -2674,10 +2952,10 @@ test('theme persistence failure leaves the original state and permits retry', as
 
 for(const outcome of ['success','failure','exception','leave']) {
   test(`graph confirmation preserves input until its ${outcome} result`,async()=>{
-    const submit=viewMethod('views/workspace/GraphWorkspace.ets','submitGalaxy',{promptAction:{showToast(){}}});
+    const submit=viewMethod('views/workspace/GraphWorkspace.ets','submitGalaxy',{ALL_GRAPH_TOPICS,promptAction:{showToast(){}}});
     let release,writes=0,draws=0;
     const view={galaxySaving:false,newGalaxyName:' 数学 ',alive:true,activeGalaxy:'__all_topics__',isCreatingGalaxy:true,
-      getGalaxies:()=>[],canvasReady:true,drawGraph:()=>draws++,
+      getGalaxies:()=>[],rebuildGraph:()=>draws++,
       onCreateGalaxy:()=>{writes++;return new Promise((resolve,reject)=>{release=()=>outcome==='exception'?reject(Error('full')):resolve(outcome!=='failure');});}};
     const pending=submit.call(view);await submit.call(view);assert.equal(writes,1);assert.equal(view.newGalaxyName,' 数学 ');
     if(outcome==='leave')view.alive=false;
@@ -2776,6 +3054,37 @@ test('search ranks exact titles, other titles, tags and body hits with stable ti
     { id: 'title', title: '课程笔记' }, { id: 'exact', title: '课程' }, { id: 'body2', title: '另一个', contentDetail: '课程' }];
   const found = await searchHarness().search({}, notes, '课程');
   assert.deepEqual(plain(found.map(row => row.noteId)), ['exact', 'title', 'tag', 'body', 'body2']);
+});
+
+test('search selects the requested format before reading and locates a CRLF Markdown body hit', async () => {
+  const read = [];
+  const notes = [{ id: 'notes', title: '课程', type: 'Markdown', category: '物理', contentDetail: '介绍\r\n\r\n法拉第定律' },
+    { id: 'pdf', title: '法拉第', type: 'PDF', contentDetail: '' },
+    { id: 'trash', title: '归档', type: 'Markdown', deletedAt: 1, contentDetail: '法拉第' }];
+  const service = searchHarness(async (_, note) => {
+    read.push(note.id);
+    return { id: note.id, title: note.title, content: note.contentDetail, fileName: note.id + '.md' };
+  });
+  const found = await service.search({}, notes, '法拉第', false, { format: 'Markdown' });
+  assert.deepEqual(read, ['notes']);
+  assert.equal(found[0].sourceLine, 3);
+  assert.equal(found[0].category, '物理');
+  assert.match(found[0].preview, /法拉第定律/);
+  assert.equal((await service.search({}, notes, '物理'))[0].noteId, 'notes');
+});
+
+test('assistant uses local selected-page and line anchors even when source texts repeat', () => {
+  const { StudyAssistantSource } = load(`${base}services/study/StudyAssistantSource.ets`);
+  const pdf = { id: 'p', type: 'PDF', sourceUri: '/notes/book.pdf', pageCount: 2,
+    pdfTextJson: JSON.stringify([1, 2].map(pageNumber => ({ pageNumber, text: '课程页原文', method: 'text' }))) };
+  const selection = StudyAssistantSource.prepare(pdf, 'summary', '提炼要点', '1', '2');
+  assert.deepEqual(plain(selection.locations.map(location => location.pageNumber)), [1, 2]);
+  assert.deepEqual(plain(selection.request.sources.map(source => source.text)), ['课程页原文', '课程页原文']);
+  assert.ok(selection.request.sources.every(source => Object.keys(source).length === 2));
+  const note = { type: 'Markdown', contentDetail: '第一行\r\n\r\n重复内容\r\n重复内容' };
+  const passage = StudyAssistantSource.prepare(note, 'qa', '解释资料', '2', '3');
+  assert.equal(passage.locations[0].line, 3);
+  assert.equal(passage.request.sources[0].text, '重复内容');
 });
 
 test('one unreadable body leaves metadata and other corrected PDF page results searchable', async () => {

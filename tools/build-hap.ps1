@@ -3,10 +3,14 @@ param(
     [string]$StudioDir = '',
     [ValidateSet('debug', 'release')][string]$BuildMode = 'debug',
     [switch]$AppPackage,
-    [switch]$Clean
+    [switch]$Clean,
+    [switch]$StudyDemo
 )
 
 $ErrorActionPreference = 'Stop'
+if ($StudyDemo -and ($BuildMode -ne 'debug' -or $AppPackage)) {
+    throw '-StudyDemo only applies to Debug HAP.'
+}
 $projectDirectory = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($StudioDir)) { $StudioDir = $env:DEVECO_STUDIO_HOME }
 if ([string]::IsNullOrWhiteSpace($StudioDir)) {
@@ -35,6 +39,7 @@ try {
     $env:DEVECO_SDK_HOME = Join-Path $StudioDir 'sdk'
     $buildArgs = @('assembleHap', '--no-daemon', '--mode', 'module', '-p', 'module=entry@default', '-p', 'product=default', '-p', "buildMode=$BuildMode")
     if ($AppPackage) { $buildArgs = @('assembleApp', '--no-daemon', '--mode', 'project', '-p', 'product=default', '-p', "buildMode=$BuildMode") }
+    if ($StudyDemo) { $buildArgs += @('-p', 'moyuStudyDemo=true') }
     if ($Clean) {
         # Project clean alone leaves module outputs (including removed native symbols) behind.
         & $hvigor clean '--no-daemon' '--mode' 'module' '-p' 'module=entry@default' '-p' 'product=default' '-p' "buildMode=$BuildMode"

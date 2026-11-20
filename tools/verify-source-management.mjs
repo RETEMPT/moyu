@@ -4,6 +4,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import { resolveTypeScript } from './resolve-typescript.mjs';
 
 // Standalone checks for startup source repair and Markdown hydration in NoteStorageService.
@@ -27,6 +28,7 @@ function load(relative, mocks, cache = new Map()) {
   }).outputText;
   const localRequire = specifier => {
     if (mocks[specifier]) { return mocks[specifier]; }
+    if (specifier === '@kit.BasicServicesKit') return { zlib: {} };
     if (specifier.startsWith('.')) {
       return load(path.resolve(path.dirname(filename), `${specifier}.ets`), mocks, cache);
     }
@@ -141,6 +143,7 @@ function platform(options = {}) {
       if (state.readerUnavailable) { throw Error('离线阅读组件未就绪，请重试'); }
       return { pageCount: state.pageCount };
     }
+    async fingerprint(target) { return createHash('sha256').update(files.get(target)).digest('hex'); }
     async removeManagedPdf(context, target) { files.delete(target); }
   }
 
