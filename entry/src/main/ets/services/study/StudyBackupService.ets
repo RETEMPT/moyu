@@ -140,7 +140,11 @@ export class StudyBackupService {
           await fs.fsync(file.fd);
         } finally { await fs.close(file); }
         if (asset.kind === 'pdf') {
-          note.pageCount = (await PdfDocumentService.getInstance().validateImport(target)).pageCount;
+          const service = PdfDocumentService.getInstance();
+          const fingerprint = await service.fingerprint(target);
+          if (note.sourceSha256 && note.sourceSha256 !== fingerprint) { throw new Error('备份中的原 PDF 与资料校验值不一致'); }
+          note.pageCount = (await service.validateImport(target)).pageCount;
+          note.sourceSha256 = fingerprint;
           note.sourceUri = target; note.sourceFileName = target.split('/').pop(); note.sourceType = 'pdf';
         } else if (asset.kind === 'image') {
           const preview = await ImageDocumentService.preview(context, target);

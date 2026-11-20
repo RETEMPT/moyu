@@ -1,7 +1,21 @@
 import { LearningResult, LearningSource, LearningCitation } from '../../common/types/LearningResult';
-import { ReviewDraft } from '../../common/types/StudyTypes';
+import { ReviewCard, ReviewDraft } from '../../common/types/StudyTypes';
+import { NoteItem } from '../../common/types/NoteItem';
+import { StudySourceService } from './StudySourceService';
+import { DocumentSourcePolicy } from '../document/DocumentSourcePolicy';
 
-/** Dormant preparation layer: no UI, network, storage, application IDs or automatic adoption. */
+export interface LearningSourceLocation {
+  sourceId: string;
+  pageNumber?: number;
+  line: number;
+}
+
+interface LocalText {
+  text: string;
+  pageNumber?: number;
+}
+
+/** Validates the exchange file and resolves evidence against explicitly selected local text. */
 export class LearningResultPolicy {
   static readonly MAX_BYTES: number = 131072;
 
@@ -113,5 +127,76 @@ export class LearningResultPolicy {
     }
     return { question: card.question, answer: card.answer,
       sourceText: card.citations.map((citation: LearningCitation) => citation.quote).join('\n\n') };
+  }
+
+  static normalizeSource(text: string): string {
+    return text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  }
+
+  private static localText(note: NoteItem): LocalText[] {
+    if (note.deletedAt) { return []; }
+    const kind = DocumentSourcePolicy.kind({ type: note.type, sourceType: note.sourceType });
+    if (kind === 'pdf') {
+      if (!note.sourceUri) { return []; }
+      return StudySourceService.pages(note).map((page): LocalText =>
+        ({ text: LearningResultPolicy.normalizeSource(page.text), pageNumber: page.pageNumber }));
+    }
+    if (kind !== null || !['markdown', 'txt', 'text'].includes(note.type.toLowerCase())) { return []; }
+    return [{ text: LearningResultPolicy.normalizeSource(note.contentDetail) }];
+  }
+
+  static exportText(note: NoteItem, pageNumber?: number): string {
+    const part = LearningResultPolicy.localText(note).find((item: LocalText) => item.pageNumber === pageNumber);
+    if (!part || !part.text.trim()) { throw new Error('没有可导出的原文；PDF 请先提取并核对指定页的文字。'); }
+    if (LearningResultPolicy.utf8Bytes(part.text) > 1024 * 1024) { throw new Error('原文超过 1 MiB，请分成较小的资料。'); }
+    return part.text;
+  }
+
+  static locate(result: LearningResult, note: NoteItem): LearningSourceLocation[] {
+    const parts = LearningResultPolicy.localText(note);
+    const locations: LearningSourceLocation[] = [];
+    for (const source of result.sources) {
+      let match: LearningSourceLocation | undefined;
+      let ambiguous = false;
+      for (const part of parts) {
+        const offset = part.text.indexOf(source.text);
+        if (offset < 0) { continue; }
+        if (match || part.text.indexOf(source.text, offset + 1) >= 0) { ambiguous = true; break; }
+        match = { sourceId: source.id, pageNumber: part.pageNumber,
+          line: part.pageNumber === undefined ? part.text.slice(0, offset).split('\n').length : 1 };
+      }
+      if (match && !ambiguous) { locations.push(match); }
+    }
+    return locations;
+  }
+
+  static citationLine(result: LearningResult, citation: LearningCitation, location: LearningSourceLocation): number {
+    const source = result.sources.find((item: LearningSource) => item.id === citation.source_id);
+    if (!source) { return location.line; }
+    return location.line + source.text.slice(0, source.text.indexOf(citation.quote)).split('\n').length - 1;
+  }
+
+  static locatedCard(result: LearningResult, index: number, locations: LearningSourceLocation[]): ReviewDraft {
+    const card = result.cards[index];
+    if (!card) { throw new Error('题卡不存在。'); }
+    const first = locations.find((item: LearningSourceLocation) => item.sourceId === card.citations[0].source_id);
+    if (!first || card.citations.some((citation: LearningCitation) => !locations.some((item: LearningSourceLocation) =>
+      item.sourceId === citation.source_id && item.pageNumber === first.pageNumber))) {
+      throw new Error('请选中能核对题卡全部出处的资料。同一张题卡的 PDF 出处须在同一页。');
+    }
+    const quotes = card.citations.map((citation: LearningCitation) => citation.quote);
+    return { question: card.question, answer: card.answer, pageNumber: first.pageNumber,
+      sourceLine: first.pageNumber === undefined ? LearningResultPolicy.citationLine(result, card.citations[0], first) : undefined,
+      sourceText: quotes.join('\n\n'), sourceQuotes: quotes };
+  }
+
+  static storedCardSource(note: NoteItem, card: ReviewCard): LearningSourceLocation | undefined {
+    const quotes = card.sourceQuotes;
+    const page = LearningResultPolicy.localText(note).find((item: LocalText) => item.pageNumber === card.pageNumber);
+    if (!quotes?.length || !page || !quotes.every((quote: string) => page.text.includes(quote))) { return undefined; }
+    if (page.pageNumber !== undefined) { return { sourceId: card.id, pageNumber: page.pageNumber, line: 1 }; }
+    const offset = page.text.indexOf(quotes[0]);
+    if (page.text.indexOf(quotes[0], offset + 1) >= 0) { return undefined; }
+    return { sourceId: card.id, line: page.text.slice(0, offset).split('\n').length };
   }
 }

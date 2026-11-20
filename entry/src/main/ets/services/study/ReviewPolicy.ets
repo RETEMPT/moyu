@@ -15,6 +15,11 @@ export class ReviewPolicy {
         !Number.isFinite(row.dueAt) || row.dueAt < 0 || result.some((card: ReviewCard) => card.id === row.id)) { continue; }
       result.push({ id: row.id, noteId: row.noteId, course: row.course, question: row.question, answer: row.answer,
         sourceText: row.sourceText, pageNumber: Number.isInteger(row.pageNumber) && (row.pageNumber || 0) > 0 ? row.pageNumber : undefined,
+        sourceLine: Number.isInteger(row.sourceLine) && (row.sourceLine || 0) > 0 ? row.sourceLine : undefined,
+        generatedKey: typeof row.generatedKey === 'string' && /^[a-f0-9]{64}$/.test(row.generatedKey) ? row.generatedKey : undefined,
+        sourceQuotes: Array.isArray(row.sourceQuotes) && row.sourceQuotes.length > 0 && row.sourceQuotes.length <= 6 &&
+          row.sourceQuotes.every((quote: string) => typeof quote === 'string' && quote.length >= 4 && quote.length <= 480) ?
+          row.sourceQuotes.slice() : undefined,
         dueAt: row.dueAt, intervalDays: Number.isFinite(row.intervalDays) ? Math.max(0, Math.min(180, row.intervalDays)) : 0,
         repetitions: Number.isFinite(row.repetitions) ? Math.max(0, Math.floor(row.repetitions)) : 0,
         reviewCount: Number.isFinite(row.reviewCount) ? Math.max(0, Math.floor(row.reviewCount || 0)) : Math.max(0, row.repetitions || 0),
@@ -31,7 +36,8 @@ export class ReviewPolicy {
     }
     return { id: `card_${now}_${Math.floor(Math.random() * 1000000)}`, noteId: note.id,
       course: note.category || '未分类', question: draft.question.trim(), answer: draft.answer.trim(),
-      sourceText: draft.sourceText.slice(0, 20000), pageNumber: draft.pageNumber, dueAt: now,
+      sourceText: draft.sourceText.slice(0, 20000), pageNumber: draft.pageNumber, sourceLine: draft.sourceLine,
+      sourceQuotes: draft.sourceQuotes, dueAt: now,
       intervalDays: 0, repetitions: 0, reviewCount: 0, lapses: 0, createdAt: now, updatedAt: now };
   }
 
@@ -43,7 +49,9 @@ export class ReviewPolicy {
     // Calendar days preserve local time across timezone/DST changes.
     due.setDate(due.getDate() + days);
     return { id: card.id, noteId: card.noteId, course: card.course, question: card.question, answer: card.answer,
-      sourceText: card.sourceText, pageNumber: card.pageNumber, dueAt: due.getTime(), intervalDays: days,
+      sourceText: card.sourceText, pageNumber: card.pageNumber, sourceLine: card.sourceLine, generatedKey: card.generatedKey,
+      sourceQuotes: card.sourceQuotes,
+      dueAt: due.getTime(), intervalDays: days,
       repetitions: rating === 'again' ? 0 : card.repetitions + 1, lapses: card.lapses + (rating === 'again' ? 1 : 0),
       reviewCount: (card.reviewCount || 0) + 1,
       createdAt: card.createdAt, updatedAt: now, lastRating: rating };
@@ -54,7 +62,8 @@ export class ReviewPolicy {
       draft.sourceText.length > 20000) { throw new Error('请填写问题和参考答案，并控制长度'); }
     // Editing content does not turn into a review or erase the user's feedback/schedule.
     return { id: card.id, noteId: card.noteId, course: card.course, question: draft.question.trim(),
-      answer: draft.answer.trim(), sourceText: draft.sourceText, pageNumber: card.pageNumber,
+      answer: draft.answer.trim(), sourceText: card.generatedKey ? card.sourceText : draft.sourceText, pageNumber: card.pageNumber,
+      sourceLine: card.sourceLine, generatedKey: card.generatedKey, sourceQuotes: card.sourceQuotes,
       dueAt: card.dueAt, intervalDays: card.intervalDays, repetitions: card.repetitions, reviewCount: card.reviewCount,
       lapses: card.lapses, createdAt: card.createdAt, updatedAt: now, lastRating: card.lastRating };
   }

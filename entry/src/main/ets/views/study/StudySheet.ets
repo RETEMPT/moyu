@@ -3,6 +3,9 @@ import { NoteItem } from '../../common/types/NoteItem';
 import { LearningOverview, MaterialLearningProgress, ReviewCard, ReviewRating } from '../../common/types/StudyTypes';
 import { ReviewPolicy } from '../../services/study/ReviewPolicy';
 import { LearningProgressPolicy } from '../../services/study/LearningProgressPolicy';
+import { LearningResult } from '../../common/types/LearningResult';
+import { LearningResultPanel } from './LearningResultPanel';
+import { LearningResultPolicy } from '../../services/study/LearningResultPolicy';
 
 @Component
 export struct StudySheet {
@@ -10,10 +13,15 @@ export struct StudySheet {
   @Prop cards: ReviewCard[] = [];
   @Prop course: string = '';
   @Prop initialNoteId: string = '';
+  @Prop result: LearningResult | undefined = undefined;
+  @Prop resultNoteId: string = '';
   @Prop @Watch('closeRequested') closeToken: number = 0;
   onClose: () => void = () => {};
   onSave: (cards: ReviewCard[]) => Promise<void> = async () => {};
-  onSource: (noteId: string, pageNumber?: number) => void = () => {};
+  onSource: (noteId: string, pageNumber?: number, line?: number) => void = () => {};
+  onResult: (result: LearningResult | undefined) => void = () => {};
+  onResultNote: (id: string) => void = () => {};
+  onAdopt: (result: LearningResult, noteId: string, index: number) => Promise<boolean> = async () => false;
   @StorageProp('flowmindDarkMode') dark: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
@@ -56,6 +64,10 @@ export struct StudySheet {
   private dueCards(): ReviewCard[] { return LearningProgressPolicy.queue(this.notes, this.cards, this.course, this.asOf, this.weakOnly); }
   private overview(): LearningOverview { return LearningProgressPolicy.overview(this.notes, this.cards, this.course, this.asOf); }
   private selectedNote(): NoteItem | undefined { return this.availableNotes().find((note: NoteItem) => note.id === this.noteId); }
+  private resultNote(): NoteItem | undefined { return this.availableNotes().find((note: NoteItem) => note.id === this.resultNoteId); }
+  private editingGenerated(): boolean {
+    return this.cards.some((card: ReviewCard) => card.id === this.editingId && card.generatedKey !== undefined);
+  }
   private switchTab(tab: number): void { this.tab = tab; this.asOf = Date.now(); this.reveal = false; this.revealedCardId = ''; }
   private hasDraft(): boolean {
     const card = this.activeCards().find((item: ReviewCard) => item.id === this.editingId);
@@ -70,10 +82,18 @@ export struct StudySheet {
   private cancelEdit(): void {
     this.editingId = ''; this.question = ''; this.answer = ''; this.sourceText = ''; this.discardWarning = false;
   }
-  private openSource(noteId: string, pageNumber?: number): void {
+  private openSource(noteId: string, pageNumber?: number, line?: number): void {
     if (this.busy) { return; }
     if (this.hasDraft()) { this.status = '请先保存或主动放弃题卡输入，再查看原文。'; this.switchTab(1); return; }
-    this.onClose(); this.onSource(noteId, pageNumber);
+    this.onClose(); this.onSource(noteId, pageNumber, line);
+  }
+
+  private openCardSource(card: ReviewCard): void {
+    if (!card.generatedKey) { this.openSource(card.noteId, card.pageNumber, card.sourceLine); return; }
+    const note = this.availableNotes().find((item: NoteItem) => item.id === card.noteId);
+    const location = note ? LearningResultPolicy.storedCardSource(note, card) : undefined;
+    if (!location) { this.status = '这道题的出处已变化或无法唯一定位，请在原文中重新核对。'; return; }
+    this.openSource(card.noteId, location.pageNumber, location.line);
   }
   private async commit(next: ReviewCard[], message: string): Promise<boolean> {
     if (this.busy) { return false; }
@@ -126,7 +146,9 @@ export struct StudySheet {
           }.width('100%').enabled(!this.busy)
         } else { Button('先回忆，再查看答案').height(44).width('100%').enabled(!this.busy).onClick(() => { this.revealedCardId = this.dueCards()[0].id; this.reveal = true; }) }
         Button(this.dueCards()[0].pageNumber ? `查看原文第 ${this.dueCards()[0].pageNumber} 页` : '查看来源资料')
-          .height(44).enabled(!this.busy).onClick(() => { const card = this.dueCards()[0]; this.openSource(card.noteId, card.pageNumber); })
+          .height(44).enabled(!this.busy).onClick(() => {
+            this.openCardSource(this.dueCards()[0]);
+          })
       }.padding(16).borderRadius(5).backgroundColor(this.palette().surfaceSubtle).width('100%')
     } else {
       Text(this.weakOnly ? '暂无到期的待巩固题，可在下方回看已有记录。' : this.activeCards().length ? '本轮待复习已完成。下次到期后会出现在这里。' : '还没有题卡，先从一份课程资料创建。')
@@ -136,11 +158,12 @@ export struct StudySheet {
       Column({ space: 6 }) {
         Column({ space: 4 }) {
           Text(card.question).fontSize(14).maxLines(2).fontColor(this.palette().inkPrimary)
+          if (card.generatedKey) { Text('生成题卡').fontSize(12).fontColor(this.palette().inkSecondary) }
           Text(`下次：${new Date(card.dueAt).toLocaleDateString()} · 遗忘 ${card.lapses} 次`).fontSize(12).fontColor(this.palette().inkSecondary)
         }.width('100%').alignItems(HorizontalAlign.Start)
         Row({ space: 8 }) {
           Button('编辑').height(44).enabled(!this.busy).onClick(() => this.editCard(card))
-          Button('查看原文').height(44).enabled(!this.busy).onClick(() => this.openSource(card.noteId, card.pageNumber))
+          Button('查看原文').height(44).enabled(!this.busy).onClick(() => this.openCardSource(card))
           Button(this.deleteWarning === card.id ? '确认移除' : '移除').height(44).enabled(!this.busy).onClick(() => {
             if (this.deleteWarning !== card.id) { this.deleteWarning = card.id; }
             else { this.commit(this.cards.filter((item: ReviewCard) => item.id !== card.id), '题卡已移除'); this.deleteWarning = ''; this.cardPage = 0; }
@@ -184,15 +207,16 @@ export struct StudySheet {
     }
   }
   @Builder
-  createPanel() {
+  sourcePicker() {
     Text('选择课程资料').fontSize(14).fontColor(this.palette().inkPrimary).width('100%')
     TextInput({ text: this.noteFilter, placeholder: '按标题查找资料' }).enabled(!this.busy).onChange((value: string) => { this.noteFilter = value; this.notePage = 0; })
     Scroll() {
       Row({ space: 6 }) {
         ForEach(this.filteredNotes().slice(this.notePage * 20, (this.notePage + 1) * 20), (note: NoteItem) => {
-          Button(note.title).height(44).backgroundColor(this.noteId === note.id ? this.palette().accent : this.palette().surfaceSubtle)
-            .fontColor(this.noteId === note.id ? this.palette().onAccent : this.palette().inkPrimary).enabled(!this.busy && !this.editingId)
-            .onClick(() => { this.noteId = note.id; })
+          Button(note.title).height(44).backgroundColor((this.tab === 3 ? this.resultNoteId : this.noteId) === note.id ? this.palette().accent : this.palette().surfaceSubtle)
+            .fontColor((this.tab === 3 ? this.resultNoteId : this.noteId) === note.id ? this.palette().onAccent : this.palette().inkPrimary)
+            .enabled(!this.busy && (this.tab === 3 || !this.editingId))
+            .onClick(() => { if (this.tab === 3) { this.onResultNote(note.id); } else { this.noteId = note.id; } })
         }, (note: NoteItem) => note.id)
       }
     }.scrollable(ScrollDirection.Horizontal).width('100%')
@@ -203,10 +227,18 @@ export struct StudySheet {
         Button('下一组资料').height(44).enabled(!this.busy && (this.notePage + 1) * 20 < this.filteredNotes().length).onClick(() => { this.notePage++; })
       }.width('100%')
     }
-    if (this.selectedNote()) { Text(`当前：${this.selectedNote()?.title}`).fontSize(13).fontColor(this.palette().inkSecondary).width('100%') }
+    if (this.tab === 3 ? this.resultNote() : this.selectedNote()) {
+      Text(`当前：${(this.tab === 3 ? this.resultNote() : this.selectedNote())?.title}`)
+        .fontSize(13).fontColor(this.palette().inkSecondary).width('100%')
+    }
+  }
+  @Builder
+  createPanel() {
+    this.sourcePicker()
     TextInput({ text: this.question, placeholder: '自测问题' }).maxLength(4000).enabled(!this.busy).onChange((value: string) => { this.question = value; })
     TextArea({ text: this.answer, placeholder: '参考答案' }).height(100).maxLength(12000).enabled(!this.busy).onChange((value: string) => { this.answer = value; })
-    TextArea({ text: this.sourceText, placeholder: '引用原文（手动卡片可选）' }).height(70).maxLength(20000).enabled(!this.busy).onChange((value: string) => { this.sourceText = value; })
+    TextArea({ text: this.sourceText, placeholder: '引用原文（手动卡片可选）' }).height(70).maxLength(20000)
+      .enabled(!this.busy && !this.editingGenerated()).onChange((value: string) => { this.sourceText = value; })
     Button(this.editingId ? '保存题卡修改' : '保存手动题卡').height(44).width('100%').enabled(!this.busy).onClick(() => this.manual())
     if (this.editingId || this.question || this.answer || this.sourceText) {
       Button(this.discardWarning ? '确认放弃本次输入' : '放弃本次输入').height(44).width('100%').enabled(!this.busy)
@@ -225,10 +257,23 @@ export struct StudySheet {
           Button('开始复习').height(44).layoutWeight(1).enabled(!this.busy).onClick(() => this.switchTab(0))
           Button('创建题卡').height(44).layoutWeight(1).enabled(!this.busy).onClick(() => this.switchTab(1))
         }.width('100%')
-        Button('学习概况').height(44).width('100%').enabled(!this.busy).onClick(() => this.switchTab(2))
+        Row({ space: 8 }) {
+          Button('学习概况').height(44).layoutWeight(1).enabled(!this.busy).onClick(() => this.switchTab(2))
+          Button('学习结果').height(44).layoutWeight(1).enabled(!this.busy).onClick(() => this.switchTab(3))
+        }.width('100%')
         if (this.status) { Text(this.status).fontSize(13).fontColor(this.palette().accent).width('100%') }
         Scroll() {
-          Column({ space: 12 }) { if (this.tab === 0) { this.reviewPanel() } else if (this.tab === 1) { this.createPanel() } else { this.progressPanel() } }.width('100%')
+          Column({ space: 12 }) {
+            if (this.tab === 0) { this.reviewPanel() }
+            else if (this.tab === 1) { this.createPanel() }
+            else if (this.tab === 2) { this.progressPanel() }
+            else {
+              this.sourcePicker()
+              LearningResultPanel({ note: this.resultNote(), result: this.result, onResult: this.onResult, onAdopt: this.onAdopt,
+                onBusy: (busy: boolean) => { this.busy = busy; },
+                onSource: (noteId: string, page?: number, line?: number) => this.openSource(noteId, page, line) })
+            }
+          }.width('100%')
         }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
       }.padding(18).width(this.phone ? '94%' : 620).height('88%').borderRadius(8).backgroundColor(this.palette().surface)
         .onClick(() => {})

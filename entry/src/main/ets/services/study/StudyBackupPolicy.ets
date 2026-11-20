@@ -30,6 +30,7 @@ export class StudyBackupPolicy {
       scratchpadPaperStyle: ['blank', 'grid', 'ruled'].includes(note.scratchpadPaperStyle || '') ? note.scratchpadPaperStyle : undefined,
       pageAnnotations: typeof note.pageAnnotations === 'string' && note.pageAnnotations.length < 8000000 ? note.pageAnnotations : undefined,
       sourceType: note.sourceType === 'image' ? 'image' : note.sourceType === 'pdf' ? 'pdf' : undefined,
+      sourceSha256: typeof note.sourceSha256 === 'string' && /^[a-f0-9]{64}$/.test(note.sourceSha256) ? note.sourceSha256 : undefined,
       pageCount: Number.isInteger(note.pageCount) && (note.pageCount || 0) > 0 && (note.pageCount || 0) <= 10000 ? note.pageCount : undefined,
       coverUrl: typeof note.coverUrl === 'string' && isCoverPreset(note.coverUrl) ? note.coverUrl : undefined,
       pdfTextJson: JSON.stringify(StudySourceService.pages(note)) };

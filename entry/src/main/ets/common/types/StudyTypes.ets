@@ -14,6 +14,10 @@ export interface ReviewCard {
   answer: string;
   sourceText: string;
   pageNumber?: number;
+  sourceLine?: number;
+  /** Hash of an accepted generated draft; also retains its origin across editing and backup. */
+  generatedKey?: string;
+  sourceQuotes?: string[];
   dueAt: number;
   intervalDays: number;
   repetitions: number;
@@ -35,6 +39,8 @@ export interface ReviewDraft {
   answer: string;
   sourceText: string;
   pageNumber?: number;
+  sourceLine?: number;
+  sourceQuotes?: string[];
 }
 
 /** Derived local records, never a claim of measured learning or mastery. */

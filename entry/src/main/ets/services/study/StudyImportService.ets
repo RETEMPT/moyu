@@ -25,7 +25,8 @@ export class StudyImportService {
         const note = existing || await StudyBackupService.materialize(context, backup, i, StudyBackupPolicy.restoreTitle(backup, i));
         const cards = backup.cards.filter((card: ReviewCard) => card.noteId === backup.notes[i].id).map((card: ReviewCard, index: number): ReviewCard => ({
           id: `restorecard_${backup.id}_${i}_${index}`, noteId: id, course: note.category || '未分类', question: card.question,
-          answer: card.answer, sourceText: card.sourceText, pageNumber: card.pageNumber, dueAt: card.dueAt,
+          answer: card.answer, sourceText: card.sourceText, pageNumber: card.pageNumber, sourceLine: card.sourceLine,
+          generatedKey: card.generatedKey, sourceQuotes: card.sourceQuotes, dueAt: card.dueAt,
           intervalDays: card.intervalDays, repetitions: card.repetitions, reviewCount: card.reviewCount, lapses: card.lapses,
           createdAt: card.createdAt, updatedAt: card.updatedAt, lastRating: card.lastRating }));
         await ports.commit(note, cards);
