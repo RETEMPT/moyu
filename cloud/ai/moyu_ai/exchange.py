@@ -13,7 +13,7 @@ WHITESPACE = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002
 def capabilities():
     return {"format": FORMAT, "version": VERSION, "operations": list(OPERATIONS),
             "max_bytes": MAX_BYTES, "transport": "offline-file",
-            "application_entry_enabled": False, "automatic_save": False}
+            "application_entry_enabled": True, "automatic_save": False}
 
 
 def keys(value, expected):

@@ -6,9 +6,9 @@ from pathlib import Path
 import sqlite3
 import sys
 
-from .provider import profile
+from .provider import PRESETS, profile
 from .exchange import MAX_BYTES, capabilities, decode
-from .sources import retrieve
+from .sources import chunks, digest, read_source, retrieve
 from .store import Store
 from .tutor import OPERATIONS, Tutor
 
@@ -21,7 +21,12 @@ def parser():
     groups = root.add_subparsers(dest="group", required=True)
 
     groups.add_parser("capabilities")
+    groups.add_parser("providers", help="查看云模型配置和环境变量名称")
     groups.add_parser("validate-result").add_argument("file", type=Path)
+    preview = groups.add_parser("preview-result", help="离线预览结果并核对指定的本地原文")
+    preview.add_argument("file", type=Path)
+    preview.add_argument("--source", action="append", nargs=2, default=[], metavar=("ID", "FILE"),
+                         help="显式将来源 ID 绑定到原始 TXT 或 Markdown，可重复指定")
 
     workspace = groups.add_parser("workspace").add_subparsers(dest="action", required=True)
     workspace.add_parser("backup").add_argument("destination", type=Path, help="尚不存在的新目录")
@@ -60,16 +65,22 @@ def parser():
     prepare.add_argument("notebook")
     prepare.add_argument("--operation", choices=OPERATIONS, required=True)
     prepare.add_argument("--goal", required=True)
-    prepare.add_argument("--model", required=True, help="用户已部署的 Ollama 模型 ID")
-    prepare.add_argument("--endpoint", default="http://127.0.0.1:11434")
+    prepare.add_argument("--provider", choices=PRESETS, required=True)
+    prepare.add_argument("--model", required=True, help="供应商支持 JSON 输出的模型 ID")
+    prepare.add_argument("--base-url", help="供应商工作空间端点或自有兼容服务的 HTTPS Base URL")
     prepare.add_argument("--max-output-tokens", type=int, default=1600)
     prepare.add_argument("--limit", type=int, default=6)
+    prepare.add_argument("--source", action="append", default=[], metavar="NAME",
+                         help="只检索指定资料名，可重复指定，留空则检索当前笔记本")
     prepare.add_argument("--include-memory", action="store_true", help="预览并发送本笔记本的主动学习记录")
-    for command in ["show", "accept", "abandon", "delete"]:
+    for command in ["show", "verify", "accept", "abandon", "delete"]:
         jobs.add_parser(command).add_argument("id")
     run = jobs.add_parser("run")
     run.add_argument("id")
     run.add_argument("--approve", required=True, help="job show 中的完整 preview_digest")
+    authorize = jobs.add_parser("authorize", help="确认一个任务，允许 Agent 执行一次")
+    authorize.add_argument("id")
+    authorize.add_argument("--approve", required=True, help="job show 中的完整 preview_digest")
     revise = jobs.add_parser("revise")
     revise.add_argument("id")
     revise.add_argument("--file", type=Path, required=True, help="仅含 title/sections/cards/warnings 的 UTF-8 JSON")
@@ -114,8 +125,8 @@ def execute(store, args):
     tutor = Tutor(store)
     if args.action == "prepare":
         return tutor.prepare(args.notebook, args.operation, args.goal,
-                             profile(args.endpoint, args.model, args.max_output_tokens),
-                             args.include_memory, args.limit)
+                             profile(args.provider, args.model, args.max_output_tokens, base_url=args.base_url),
+                             args.include_memory, args.limit, source_names=args.source)
     if args.action == "list":
         store.require_notebook(args.notebook)
         return [dict(row) for row in store.db.execute(
@@ -124,6 +135,10 @@ def execute(store, args):
         return store.job(args.id)
     if args.action == "run":
         return tutor.run(args.id, args.approve)
+    if args.action == "authorize":
+        return tutor.authorize(args.id, args.approve)
+    if args.action == "verify":
+        return tutor.verify(args.id)
     if args.action == "accept":
         return tutor.accept(args.id)
     if args.action == "abandon":
@@ -139,22 +154,56 @@ def execute(store, args):
     return tutor.export(args.id, args.path, args.portable)
 
 
+def preview_result(value, bindings):
+    files = dict(bindings)
+    if len(files) != len(bindings):
+        raise ValueError("同一来源 ID 只能指定一份本地原文。")
+    unknown = files.keys() - {source["id"] for source in value["sources"]}
+    if unknown:
+        raise ValueError("指定的来源 ID 不在学习结果中：" + ", ".join(sorted(unknown)))
+
+    sources = []
+    for source in value["sources"]:
+        path = files.get(source["id"])
+        status = "unmapped"
+        if path is not None:
+            original = read_source(path)
+            if digest(original) != source["digest"]:
+                status = "digest_mismatch"
+            elif any(all(part[key] == source[key] for key in ("text", "line_start", "line_end"))
+                     for part in chunks(original)):
+                status = "verified"
+            else:
+                status = "slice_mismatch"
+        sources.append({**source, "binding": status})
+    return {**value, "sources": sources}
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     store = None
+    binding_failed = False
     try:
         if args.group == "capabilities":
             result = capabilities()
-        elif args.group == "validate-result":
+        elif args.group == "providers":
+            result = [{"provider": name, "base_url": url or None, "api_key_env": env}
+                      for name, (url, env) in PRESETS.items()]
+        elif args.group in {"validate-result", "preview-result"}:
             with args.file.open("rb") as stream:
                 value = decode(stream.read(MAX_BYTES + 1))
-            result = {"valid": True, "job_id": value["job_id"], "operation": value["operation"],
-                      "sources": len(value["sources"]), "cards": len(value["cards"])}
+            if args.group == "preview-result":
+                result = preview_result(value, args.source)
+                binding_failed = any(source["binding"] in {"digest_mismatch", "slice_mismatch"}
+                                     for source in result["sources"])
+            else:
+                result = {"valid": True, "job_id": value["job_id"], "operation": value["operation"],
+                          "sources": len(value["sources"]), "cards": len(value["cards"])}
         else:
             store = Store(args.workspace)
             result = execute(store, args)
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 1 if isinstance(result, dict) and result.get("partial_failure") else 0
+        return 1 if binding_failed or (isinstance(result, dict) and result.get("partial_failure")) else 0
     except (ValueError, OSError, sqlite3.Error, RecursionError) as exc:
         print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1

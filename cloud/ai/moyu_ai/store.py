@@ -92,6 +92,9 @@ class Store:
                 raise ValueError("备份关联检查失败。")
             if connection.execute("SELECT 1 FROM jobs WHERE state='running' LIMIT 1").fetchone():
                 raise ValueError("快照含运行中任务，请等待完成或主动放弃后再备份。")
+            # Copy task data without transferring the authority to submit a paid request.
+            connection.execute("UPDATE jobs SET state='prepared' WHERE state='approved'")
+            connection.commit()
             counts = {table: connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
                       for table in ("notebooks", "documents", "chunks", "memories", "jobs")}
         except BaseException:

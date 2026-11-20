@@ -9,11 +9,15 @@
 | [lfnovo/open-notebook](https://github.com/lfnovo/open-notebook)（MIT） | 课题资料组织、基于资料的对话、转换与模型选择 | 笔记本隔离、词面检索、摘要／问答／报告／题卡草稿、文件导出 | 语义检索、更多协议、可编辑音频脚本及语音合成 |
 | [KnifeLemon/Filee](https://github.com/KnifeLemon/Filee)（MIT） | 本地格式处理、批量操作和保留原件 | 显式格式白名单、批量导入、逐项报告、导出防覆盖 | 独立转换适配器，按格式验证保真和可提取范围 |
 
-这是思路研究与独立实现，没有包含上述项目的源码、组件、模型权重或资源，也没有新增其服务端运行依赖。特别是 Filee 的格式数量和 Open Notebook 的播客生成不等同于本仓库能力；当前原型仅支持 UTF-8 TXT／Markdown，模型协议仅支持 Ollama。
+这是对公开项目的思路研究与独立实现。电脑端支持 UTF-8 TXT／Markdown，云模型通过 Chat Completions 协议调用。
 
 主程序在 1.1.1 中借鉴学习进度和复习闭环，在现有本地复习页增加按资料的学习概况、最近弱项筛选与到期优先、题卡内容编辑。它从已有阅读和自测记录派生，不引入上述项目代码或云业务；手机和平板实际交互仍待验证。
 
-Ollama 适配依据[官方聊天协议](https://docs.ollama.com/api/chat)实现，使用非流式 JSON、消息、输出 token 上限及实际用量字段。上游服务部署、模型下载和许可证仍由使用者按各自来源核验。
+云模型适配参考 [DeepSeek JSON Output](https://api-docs.deepseek.com/guides/json_mode/)、[百炼 Chat Completions](https://help.aliyun.com/en/model-studio/compatibility-of-openai-with-dashscope) 与 [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。Agent 工具通过 [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/migration.md) 的 stdio 接口运行。
+
+## 文档阅读与伴读
+
+[DeepSeek Harness 文档阅读插件](https://github.com/reg4916/dsh-doc-reader)按页、幻灯片和工作表提取文字。[NotebookLM 文档与引文说明](https://blog.google/innovation-and-ai/products/notebooklm-goes-global-support-for-websites-slides-fact-check/)说明了从答案返回支撑段落的交互。墨语在本地为 DOCX／PPTX 生成可读文字版，并使用明确的页码或行号记录发送片段和引文出处。选择文件使用[鸿蒙文件选择器](https://developer.huawei.com/consumer/en/doc/HarmonyOS-Guides/select-user-file/)，Office 正文解压使用[鸿蒙 zlib](https://developer.huawei.com/consumer/en/doc/harmonyos-references/js-apis-zlib/)。
 
 ## 技术实现依据与取舍
 

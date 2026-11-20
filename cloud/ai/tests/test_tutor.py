@@ -1,5 +1,6 @@
 import copy
 from contextlib import redirect_stderr, redirect_stdout
+from email.message import Message
 import io
 import json
 import os
@@ -11,7 +12,8 @@ from unittest.mock import patch
 import urllib.error
 
 from cloud.ai.moyu_ai.cli import main
-from cloud.ai.moyu_ai.provider import MAX_RESPONSE_BYTES, NoRedirect, OllamaProvider, profile
+from cloud.ai.moyu_ai.provider import CloudChatProvider, MAX_RESPONSE_BYTES, NoRedirect, PRESETS, profile
+from cloud.ai.moyu_ai.simulator_gateway import generate, handler
 from cloud.ai.moyu_ai.sources import CHUNK_CHARS, chunks, digest, read_source, retrieve
 from cloud.ai.moyu_ai.store import APP_ID, Store, encode
 from cloud.ai.moyu_ai.tutor import Tutor, validate_output
@@ -41,7 +43,7 @@ class TutorTest(unittest.TestCase):
         self.source.write_text("# 力学\n\n合外力决定加速度，F = ma。\n圆周运动的速度方向变化。\n", encoding="utf-8")
         self.store.import_source("力学", self.source)
         self.tutor = Tutor(self.store)
-        self.config = profile("http://127.0.0.1:11434", "fixture")
+        self.config = profile("deepseek", "fixture")
 
     def prepare(self, operation="qa", memory=False):
         return self.tutor.prepare("力学", operation, "合外力", self.config, memory)
@@ -69,6 +71,17 @@ class TutorTest(unittest.TestCase):
         self.assertEqual(first["id"], changed["id"])
         self.assertEqual(changed["revision"], 2)
         self.assertNotEqual(first["digest"], changed["digest"])
+
+    def test_explicit_sources_limit_retrieval_and_summary_fallback(self):
+        other = self.root / "other.txt"
+        other.write_text("合外力属于另一份资料。", encoding="utf-8")
+        self.store.import_source("力学", other, "另一份")
+        for operation, question in (("qa", "合外力"), ("summary", "completely_unmatched")):
+            job = self.tutor.prepare("力学", operation, question, self.config, source_names=["另一份"])
+            self.assertEqual({item["name"] for item in job["payload"]["sources"]}, {"另一份"})
+            self.assertNotIn("F = ma", job["payload"]["messages"][1]["content"])
+        with self.assertRaisesRegex(ValueError, "不在当前笔记本"):
+            self.tutor.prepare("力学", "qa", "合外力", self.config, source_names=["其他课程"])
 
     def test_backup_preserves_wal_data_and_is_independent(self):
         self.store.db.execute("PRAGMA journal_mode=WAL")
@@ -124,6 +137,31 @@ class TutorTest(unittest.TestCase):
                          str(self.root / "backup")])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.getvalue())["counts"]["documents"], 1)
+
+    def test_agent_authorization_is_explicit_single_use_and_not_copied(self):
+        job = self.prepare()
+        identity = job["id"]
+        provider = FakeProvider(self.draft(job))
+        with self.assertRaisesRegex(ValueError, "授权"):
+            self.tutor.run(identity, None, provider, authorized_only=True)
+        with self.assertRaisesRegex(ValueError, "preview_digest"):
+            self.tutor.authorize(identity, "wrong")
+        self.assertEqual(self.tutor.authorize(identity, job["preview_digest"])["state"], "approved")
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "DEEPSEEK_API_KEY"):
+                self.tutor.run(identity, None, authorized_only=True)
+        self.assertEqual(self.store.job(identity)["state"], "approved")
+        target = self.root / "approval-backup"
+        self.store.backup(target)
+        backup = Store(target)
+        try:
+            self.assertEqual(backup.job(identity)["state"], "prepared")
+        finally:
+            backup.close()
+        self.assertEqual(self.tutor.run(identity, None, provider, authorized_only=True)["state"], "review")
+        with self.assertRaisesRegex(ValueError, "授权"):
+            self.tutor.run(identity, None, provider, authorized_only=True)
+        self.assertEqual(provider.calls, 1)
 
     def test_portable_export_is_minimal_accepted_fresh_and_exclusive(self):
         from cloud.ai.moyu_ai.exchange import decode
@@ -255,7 +293,7 @@ class TutorTest(unittest.TestCase):
         fake = FakeProvider({"wrong": "schema"})
         with self.assertRaises(ValueError):
             self.tutor.run(job["id"], job["preview_digest"], fake)
-        with self.assertRaisesRegex(ValueError, "prepared"):
+        with self.assertRaisesRegex(ValueError, "仅待发送任务可执行"):
             self.tutor.run(job["id"], job["preview_digest"], fake)
         self.assertEqual(fake.calls, 1)
         self.assertIsNone(self.store.job(job["id"])["result"])
@@ -280,7 +318,7 @@ class TutorTest(unittest.TestCase):
         self.addCleanup(other.close)
 
         def duplicate():
-            with self.assertRaisesRegex(ValueError, "prepared"):
+            with self.assertRaisesRegex(ValueError, "仅待发送任务可执行"):
                 Tutor(other).run(job["id"], job["preview_digest"], FakeProvider({}))
 
         self.tutor.run(job["id"], job["preview_digest"], FakeProvider(self.draft(job), duplicate))
@@ -404,53 +442,141 @@ class SourceTest(unittest.TestCase):
 class ProviderTest(unittest.TestCase):
     def test_endpoint_policy_and_no_redirects(self):
         for endpoint in ["http://remote.example", "file:///etc/passwd", "https://user:key@example.org",
-                         "https://example.org/api", "https://example.org/?key=secret",
+                         "https://127.0.0.1", "https://example.org/v1/chat/completions", "https://example.org/?key=secret",
                          "https://example.org/#secret", "https://example.org:bad", "https://example.org\\evil"]:
             with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
-                profile(endpoint, "model")
-        self.assertEqual(profile("http://[::1]:11434/", "model")["endpoint"], "http://[::1]:11434")
+                profile("compatible", "model", base_url=endpoint)
+        self.assertEqual(profile("compatible", "model", base_url="https://example.org/v1/")["base_url"], "https://example.org/v1")
+        with self.assertRaises(ValueError):
+            profile("openai", "fixture", base_url="https://example.org")
+        region = "https://llm-123.ap-northeast-1.maas.aliyuncs.com/compatible-mode/v1"
+        self.assertEqual(profile("qwen-intl", "fixture", base_url=region)["base_url"], region)
+        with self.assertRaises(ValueError):
+            profile("qwen-cn", "fixture", base_url=region)
         self.assertIsNone(NoRedirect().redirect_request(None, None, 302, "", {}, "https://elsewhere.org"))
 
-    def invoke(self, response, **kwargs):
+    def invoke(self, response, provider="deepseek", **kwargs):
         raw = response if isinstance(response, bytes) else json.dumps(response).encode("utf-8")
         stream = io.BytesIO(raw)
-        with patch("urllib.request.OpenerDirector.open", return_value=stream) as opened:
-            result = OllamaProvider(profile("http://127.0.0.1:11434", "fixture")).generate([{ "role": "user", "content": "text"}])
+        with patch.dict(os.environ, {PRESETS[provider][1]: "provider-key"}, clear=True), \
+                patch("urllib.request.build_opener") as build_opener:
+            opened = build_opener.return_value.open
+            opened.return_value = stream
+            result = CloudChatProvider(profile(provider, "fixture", **kwargs)).generate([{"role": "user", "content": "text"}])
             request = opened.call_args.args[0]
+            proxy, redirects = build_opener.call_args.args
+            self.assertEqual(proxy.proxies, {})
+            self.assertIsInstance(redirects, NoRedirect)
         return result, request
 
-    def test_ollama_wire_request_and_unknown_usage(self):
-        (draft, metadata), request = self.invoke({"done": True, "message": {"content": '{"test":true}'}})
-        self.assertEqual(draft, {"test": True})
-        self.assertIsNone(metadata["usage"]["input_tokens"])
-        body = json.loads(request.data)
-        self.assertFalse(body["stream"])
-        self.assertEqual(body["format"], "json")
-        self.assertNotIn("tools", body)
-        self.assertEqual(request.full_url, "http://127.0.0.1:11434/api/chat")
+    def test_provider_request_fields_and_usage(self):
+        response = {"choices": [{"finish_reason": "stop", "message": {"content": '{"test":true}'}}],
+                    "usage": {"completion_tokens": 9}}
+        for provider in PRESETS:
+            with self.subTest(provider=provider):
+                kwargs = {"base_url": "https://example.org/openai/v1"} if provider == "compatible" else {}
+                (draft, metadata), request = self.invoke(response, provider, **kwargs)
+                body = json.loads(request.data)
+                self.assertEqual(draft, {"test": True})
+                self.assertEqual(metadata["usage"], {"input_tokens": None, "output_tokens": 9})
+                self.assertFalse(body["stream"])
+                self.assertEqual(body["response_format"], {"type": "json_object"})
+                self.assertNotIn("tools", body)
+                self.assertEqual(body["max_completion_tokens" if provider == "openai" else "max_tokens"], 1600)
+                self.assertEqual(body.get("thinking"), {"type": "disabled"} if provider == "deepseek" else None)
+                self.assertEqual(body.get("enable_thinking"), False if provider.startswith("qwen") else None)
+                self.assertEqual(request.full_url, (kwargs.get("base_url") or PRESETS[provider][0]) + "/chat/completions")
+                self.assertEqual(request.get_header("Authorization"), "Bearer provider-key")
 
     def test_response_size_invalid_json_incomplete_and_tool_calls(self):
         for response in [b"a" * (MAX_RESPONSE_BYTES + 1), b"not json", {},
-                         {"done": False, "message": {"content": "{}"}},
-                         {"done": True, "message": {"content": "{}", "tool_calls": ["tool"]}},
-                         {"done": True, "message": {"content": "[]" * 20000}}]:
+                         {"choices": [{"finish_reason": "length", "message": {"content": "{}"}}]},
+                         {"choices": [{"finish_reason": "stop", "message": {"content": "{}", "tool_calls": ["tool"]}}]},
+                         {"choices": [{"finish_reason": "stop", "message": {"content": " " * 3}}]},
+                         {"choices": [{"finish_reason": "stop", "message": {"content": "[]" * 20000}}]}]:
             with self.subTest(response=str(response)[:50]), self.assertRaises(ValueError):
                 self.invoke(response)
 
     def test_http_error_does_not_leak_body_or_retry(self):
         error = urllib.error.HTTPError("https://example.org", 429, "SECRET", {}, io.BytesIO(b"PRIVATE"))
-        with patch("urllib.request.OpenerDirector.open", side_effect=error) as opened:
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=True), \
+                patch("urllib.request.build_opener") as build_opener:
+            opened = build_opener.return_value.open
+            opened.side_effect = error
             with self.assertRaisesRegex(ValueError, "HTTP 429") as caught:
-                OllamaProvider(profile("https://example.org", "fixture")).generate([])
+                CloudChatProvider(profile("openai", "fixture")).generate([])
         self.assertEqual(opened.call_count, 1)
         self.assertNotIn("PRIVATE", str(caught.exception))
         self.assertNotIn("SECRET", str(caught.exception))
 
-    def test_credentials_not_sent_over_loopback_http(self):
-        with patch.dict(os.environ, {"MOYU_AI_API_KEY": "secret"}), patch("urllib.request.OpenerDirector.open") as opened:
-            with self.assertRaisesRegex(ValueError, "HTTPS"):
-                OllamaProvider(profile("http://localhost:11434", "fixture")).generate([])
+    def test_missing_provider_credentials_do_not_open_connection(self):
+        with patch.dict(os.environ, {"MOYU_AI_API_KEY": "secret"}, clear=True), patch("urllib.request.OpenerDirector.open") as opened:
+            with self.assertRaisesRegex(ValueError, "OPENAI_API_KEY"):
+                CloudChatProvider(profile("openai", "fixture")).generate([])
         opened.assert_not_called()
+
+
+class SimulatorGatewayTest(unittest.TestCase):
+    pairing = "a" * 32
+    selection = {"model": "deepseek-flash", "operation": "qa", "goal": "解释加速度", "sources": [
+        {"id": "s1", "text": "合外力产生加速度。"}, {"id": "s2", "text": "温度用温标表示。"},
+    ]}
+
+    def test_model_catalog_requires_pairing_and_returns_configured_models(self):
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-secret"}):
+            providers = {model: CloudChatProvider(profile("deepseek", model))
+                         for model in ("deepseek-flash", "deepseek-v4-pro")}
+        gateway_class = handler(providers, self.pairing)
+        gateway = gateway_class.__new__(gateway_class)
+        gateway.path = "/v1/models"
+        gateway.headers = Message()
+        gateway.headers["Host"] = "10.0.2.2:8765"
+        replies = []
+        gateway.reply = lambda status, body: replies.append((status, json.loads(body)))
+        gateway.do_GET()
+        gateway.headers["X-Moyu-Pairing"] = self.pairing
+        gateway.do_GET()
+        self.assertEqual([status for status, _ in replies], [403, 200])
+        self.assertEqual(replies[1][1]["models"], [
+            {"id": "deepseek-flash", "label": "DeepSeek Flash", "agent": True},
+            {"id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "agent": True},
+        ])
+
+    def test_agent_uses_selected_model_and_can_only_search_confirmed_sources(self):
+        calls = [{"id": "call_1", "type": "function", "function": {
+            "name": "search_selected_sources", "arguments": json.dumps({"query": "加速度"}),
+        }}]
+        draft = {"title": "加速度", "sections": [{"heading": "回答", "body": "合外力会改变速度。",
+                  "citations": [{"source_id": "s1", "quote": "合外力产生加速度"}]}], "cards": [], "warnings": []}
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-secret"}), \
+                patch("urllib.request.build_opener") as opener:
+            model = CloudChatProvider(profile("deepseek", "deepseek-flash"))
+            upstream = opener.return_value.open
+            upstream.side_effect = [io.BytesIO(encode({"choices": [{"finish_reason": reason, "message": message}]}).encode())
+                                    for reason, message in [
+                                        ("tool_calls", {"content": None, "tool_calls": calls}),
+                                        ("stop", {"content": encode(draft)}),
+                                    ]]
+            result = json.loads(generate(self.selection, {"deepseek-flash": model}))
+            first, second = [json.loads(call.args[0].data) for call in upstream.call_args_list]
+            self.assertEqual(first["model"], "deepseek-flash")
+            self.assertEqual(first["tool_choice"], "auto")
+            self.assertEqual(second["tool_choice"], "none")
+            self.assertEqual(json.loads(second["messages"][-1]["content"]),
+                             {"matches": [{"source_id": "s1", "text": "合外力产生加速度。"}]})
+            self.assertEqual(result["title"], draft["title"])
+
+            with self.assertRaisesRegex(ValueError, "不可用"):
+                generate({**self.selection, "model": "other-model"}, {"deepseek-flash": model})
+            self.assertEqual(upstream.call_count, 2)
+
+            calls[0]["function"]["name"] = "read_file"
+            upstream.side_effect = [io.BytesIO(encode({"choices": [
+                {"finish_reason": "tool_calls", "message": {"tool_calls": calls}},
+            ]}).encode())]
+            with self.assertRaisesRegex(ValueError, "未提供的工具"):
+                generate(self.selection, {"deepseek-flash": model})
+            self.assertEqual(upstream.call_count, 3)
 
 
 if __name__ == "__main__":
