@@ -2,7 +2,7 @@
 
 HarmonyOS 手机与平板上的本地课程资料和笔记应用。
 
-[下载 1.1.1](https://github.com/RETEMPT/moyu/releases/tag/v1.1.1) · [使用说明](docs/USER_GUIDE.md) · [隐私说明](docs/PRIVACY.md)
+[下载已发布版 1.1.1](https://github.com/RETEMPT/moyu/releases/tag/v1.1.1) · [使用说明](docs/USER_GUIDE.md) · [隐私说明](docs/PRIVACY.md)
 
 [文档总览](docs/README.md) · [开发指南](docs/DEVELOPMENT_GUIDE.md) · [代码规范](docs/CODE_STANDARDS.md)
 
@@ -14,17 +14,18 @@ HarmonyOS 手机与平板上的本地课程资料和笔记应用。
 
 资料保存在本机，无需账号。当前版本不提供自动云同步。
 
-## 1.1.1 更新与能力边界
+## 1.2.0 更新与能力边界
 
-当前版本为 1.1.1（1010001）。本版增强本地课程复习，同时在仓库中提供独立 AI 实验与离线接入准备；三者的使用范围如下，完整边界以[产品范围](PRODUCT_SCOPE.md)为准。
+当前源码版本为 1.2.0（1020000）。升级基线为已发布的 1.1.1。本版更新本地文档导入、阅读和学习结果交换，完整能力见[产品范围](PRODUCT_SCOPE.md)。
 
 | 内容 | 当前状态 |
 | --- | --- |
-| 本地复习增强 | 主应用新增按资料查看阅读与自测概况、筛选待巩固题、到期弱项优先；编辑题卡保留复习安排，手机和平板实际交互仍待验证 |
+| 文档导入与阅读 | 校验 DOCX、PPTX 正文条目的文件头和大小。应用按像素字节限制 PDF 位图缓存，重新关联 PDF 时可核对原件 |
+| 本地复习 | 按资料查看阅读与自测概况，筛选待巩固题，到期弱项优先，编辑题卡保留复习安排 |
 | [云模型与 Agent 工具](cloud/ai/README.md) | 电脑端支持 DeepSeek、千问百炼、OpenAI 与兼容端点，提供可选 MCP 工具 |
-| [离线学习结果](docs/LEARNING_INTEGRATION.md) | 开发构建支持原文导出、结果预览、引文回跳和生成题卡人工采纳 |
+| [离线学习结果](docs/LEARNING_INTEGRATION.md) | 原文导出、结果预览、引文回跳和题卡人工采纳 |
 
-电脑端工具使用独立明文工作区。鸿蒙端通过所选文件导入学习结果。项目借鉴与复用边界见[参考记录](docs/AI_REFERENCES.md)。
+发布候选仍需构建、签名和设备验证。学习助手的模拟器联调仅面向显式开启的 Debug 构建。电脑端工具使用独立明文工作区，鸿蒙端可通过所选文件导入学习结果。[联调说明](cloud/ai/README.md)
 
 ## 发展方向（规划）
 

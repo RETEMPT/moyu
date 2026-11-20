@@ -8,6 +8,7 @@
  *   4. 原文失败时报告错误，不展示替代的模拟页面
  */
 import { Context } from '@kit.AbilityKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { image } from '@kit.ImageKit';
@@ -34,8 +35,8 @@ export interface RenderedPdfPage {
 
 interface CachedPage {
   path: string;
-  page: number;
   stamp: string;
+  bytes: number;
   pixelMap: image.PixelMap;
   aspectRatio: number;
 }
@@ -51,9 +52,10 @@ export class PdfDocumentService {
   // The reader keeps only visible pages alive. Reusing a page across a tab switch or a short
   // scroll-back avoids another full parse of the source file. Ownership is transferred out of
   // this cache to exactly one PdfPageBackground, which releases it when it leaves the viewport.
-  private readonly PAGE_CACHE_LIMIT: number = 3;
+  private readonly PAGE_CACHE_LIMIT: number = 6;
+  private readonly pageCacheBudget: number = (deviceInfo?.deviceType === 'tablet' ? 48 : 24) * 1024 * 1024;
   private pageCache: Map<string, CachedPage> = new Map();
-  private pageCacheOrder: string[] = [];
+  private cachedBytes: number = 0;
   private bitmapStamps: WeakMap<image.PixelMap, PageStamp> = new WeakMap();
   private cacheEpoch: number = 0;
 
@@ -222,7 +224,7 @@ export class PdfDocumentService {
       const preview = await this.debugPreview.renderPage(filePath, 0);
       const rendered = preview ?? await LocalPdfEngine.getInstance().cover(filePath);
       pageCount = rendered.pageCount;
-      cover = rendered;
+      cover = { pixelMap: rendered.pixelMap, aspectRatio: rendered.aspectRatio };
       engine = preview ? '内置样本预渲染' : 'PDF.js';
     }
     this.bitmapStamps.set(cover.pixelMap, { source: source.stamp, epoch: epoch });
@@ -236,11 +238,25 @@ export class PdfDocumentService {
    * ownership; the cache releases the bitmap when it is evicted or the reader closes.
    */
   recyclePage(filePath: string, pageIndex: number, pixelMap: image.PixelMap, aspectRatio: number): boolean {
+    const stamp = this.bitmapStamps.get(pixelMap);
     if (!filePath || !Number.isInteger(pageIndex) || pageIndex < 0 || !Number.isFinite(aspectRatio) || aspectRatio <= 0 ||
-      this.bitmapStamps.get(pixelMap)?.epoch !== this.cacheEpoch) {
+      stamp === undefined || stamp.epoch !== this.cacheEpoch) {
       return false;
     }
-    this.rememberCachedPage(filePath, pageIndex, pixelMap, aspectRatio);
+    let bytes: number;
+    try { bytes = pixelMap.getPixelBytesNumber(); }
+    catch { return false; }
+    if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > this.pageCacheBudget) { return false; }
+
+    const key = this.cacheKey(filePath, pageIndex);
+    const previous = this.removeCachedPage(key);
+    if (previous !== null && previous.pixelMap !== pixelMap) { previous.pixelMap.release().catch(() => {}); }
+    this.pageCache.set(key, { path: filePath, stamp: stamp.source, bytes, pixelMap, aspectRatio });
+    this.cachedBytes += bytes;
+    for (const oldest of this.pageCache.keys()) {
+      if (this.cachedBytes <= this.pageCacheBudget && this.pageCache.size <= this.PAGE_CACHE_LIMIT) { break; }
+      this.removeCachedPage(oldest)?.pixelMap.release().catch(() => {});
+    }
     return true;
   }
 
@@ -249,7 +265,7 @@ export class PdfDocumentService {
     this.cacheEpoch++;
     for (const entry of this.pageCache.values()) { entry.pixelMap.release().catch(() => {}); }
     this.pageCache.clear();
-    this.pageCacheOrder = [];
+    this.cachedBytes = 0;
   }
 
   private cacheKey(filePath: string, pageIndex: number): string {
@@ -257,51 +273,21 @@ export class PdfDocumentService {
   }
 
   private takeCachedPage(filePath: string, pageIndex: number): CachedPage | null {
-    const key = this.cacheKey(filePath, pageIndex);
+    return this.removeCachedPage(this.cacheKey(filePath, pageIndex));
+  }
+
+  private removeCachedPage(key: string): CachedPage | null {
     const entry = this.pageCache.get(key);
     if (entry === undefined) { return null; }
     this.pageCache.delete(key);
-    const index = this.pageCacheOrder.indexOf(key);
-    if (index >= 0) { this.pageCacheOrder.splice(index, 1); }
+    this.cachedBytes -= entry.bytes;
     return entry;
   }
 
-  private rememberCachedPage(filePath: string, pageIndex: number, pixelMap: image.PixelMap, aspectRatio: number): void {
-    const key = this.cacheKey(filePath, pageIndex);
-    const previous = this.pageCache.get(key);
-    if (previous !== undefined) {
-      if (previous.pixelMap !== pixelMap) { previous.pixelMap.release().catch(() => {}); }
-      this.pageCache.delete(key);
-      const previousIndex = this.pageCacheOrder.indexOf(key);
-      if (previousIndex >= 0) { this.pageCacheOrder.splice(previousIndex, 1); }
-    }
-    this.pageCache.set(key, { path: filePath, page: pageIndex, stamp: this.bitmapStamps.get(pixelMap)?.source || '',
-      pixelMap: pixelMap, aspectRatio: aspectRatio });
-    this.pageCacheOrder.push(key);
-    while (this.pageCacheOrder.length > this.PAGE_CACHE_LIMIT) {
-      const oldest = this.pageCacheOrder.shift();
-      if (oldest === undefined) { break; }
-      const entry = this.pageCache.get(oldest);
-      if (entry !== undefined) {
-        this.pageCache.delete(oldest);
-        entry.pixelMap.release().catch(() => {});
-      }
-    }
-  }
-
   private evictPages(filePath: string): void {
-    const keys: string[] = [];
     for (const key of this.pageCache.keys()) {
-      const entry = this.pageCache.get(key);
-      if (entry !== undefined && entry.path === filePath) { keys.push(key); }
-    }
-    for (const key of keys) {
-      const entry = this.pageCache.get(key);
-      if (entry !== undefined) {
-        this.pageCache.delete(key);
-        const index = this.pageCacheOrder.indexOf(key);
-        if (index >= 0) { this.pageCacheOrder.splice(index, 1); }
-        entry.pixelMap.release().catch(() => {});
+      if (this.pageCache.get(key)?.path === filePath) {
+        this.removeCachedPage(key)?.pixelMap.release().catch(() => {});
       }
     }
   }

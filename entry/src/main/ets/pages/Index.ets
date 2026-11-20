@@ -24,6 +24,7 @@ import {
   CATEGORY_UNFILED,
   FILTER_ALL,
   NAV_CANVAS,
+  NAV_CHAT,
   NAV_FAVORITE,
   NAV_GRAPH,
   NAV_HOME,
@@ -49,7 +50,7 @@ import { QuickMemoService, MemoDraft } from '../services/library/QuickMemoServic
 import { TodoStorageService } from '../services/TodoStorageService';
 import { buildSpaces } from '../services/WorkspaceBuilder';
 import { templateBody } from '../common/templates/NoteTemplates';
-import { UsageGuideSheet } from '../views/settings/UsageGuideSheet';
+import { GuideStep, UsageGuideSheet } from '../views/settings/UsageGuideSheet';
 import { AppShell } from '../views/layout/AppShell';
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
 import { LibraryWorkspace } from '../views/workspace/LibraryWorkspace';
@@ -88,8 +89,10 @@ import { ReviewStorageService } from '../services/study/ReviewStorageService';
 import { ReviewPolicy } from '../services/study/ReviewPolicy';
 import { StudySourceService } from '../services/study/StudySourceService';
 import { StudySheet } from '../views/study/StudySheet';
+import { StudyChatSession, StudyChatWorkspace } from '../views/study/StudyChatWorkspace';
 import { PdfTextSheet } from '../views/study/PdfTextSheet';
 import { StudyBackupSheet } from '../views/study/StudyBackupSheet';
+import { StudyShareInbox } from '../services/study/StudyShareInbox';
 import { StudyRestoreService } from '../services/study/StudyRestoreService';
 import { ReaderCommitService } from '../services/document/ReaderCommitService';
 import { PrivacySheet } from '../views/settings/PrivacySheet';
@@ -186,10 +189,15 @@ struct Index {
   @State learningResult: LearningResult | undefined = undefined;
   @State learningResultNoteId: string = '';
   @State studyVisible: boolean = false;
+  @State chatSession: StudyChatSession = { pairingCode: '', models: [], model: '', messages: [], draft: '' };
   @State studyCourse: string = '';
   @State studyCloseToken: number = 0;
   @State backupVisible: boolean = false;
   @State backupCloseToken: number = 0;
+  @State backupSelection: string[] = [];
+  @State batchMoveIds: string[] = [];
+  @StorageProp('moyuStudyShareRevision') @Watch('handleSharedPackage') studyShareRevision: number = 0;
+  private handledStudyShareRevision: number = 0;
   @State privacyVisible: boolean = false;
   @State pdfExtractNoteId: string = '';
   @State pdfExtractPage: number = 1;
@@ -259,9 +267,9 @@ struct Index {
   }
 
   onBackPress(): boolean {
+    if (this.backupVisible) { this.backupCloseToken++; return true; }
     if (this.pairPickerSourceId) { this.pairPickerCloseToken++; return true; }
     if (this.privacyVisible) { this.privacyVisible = false; return true; }
-    if (this.backupVisible) { this.backupCloseToken++; return true; }
     if (this.studyVisible) { this.studyCloseToken++; return true; }
     if (this.pdfExtractNoteId) { this.pdfExtractCloseToken++; return true; }
     if (this.coverNoteId.length > 0) { this.coverCloseToken++; return true; }
@@ -308,6 +316,8 @@ struct Index {
     if (!this.bootstrapped) {
       this.bootstrapped = true;
       this.bootstrap();
+    } else {
+      this.handleSharedPackage();
     }
   }
 
@@ -318,7 +328,20 @@ struct Index {
   private async bootstrap(): Promise<void> {
     try { await this.loadWorkspace(); }
     catch { this.notify('本机资料初始化未完成，请保留原数据并重启重试'); }
-    finally { this.workspaceLoading = false; }
+    finally { this.workspaceLoading = false; this.handleSharedPackage(); }
+  }
+
+  private handleSharedPackage(): void {
+    if (this.workspaceLoading || this.handledStudyShareRevision === this.studyShareRevision) { return; }
+    this.handledStudyShareRevision = this.studyShareRevision;
+    if (StudyShareInbox.pending() && !this.backupVisible) { this.openBackup(); }
+    const notice = StudyShareInbox.notice();
+    if (notice) { this.notify(notice); }
+  }
+
+  private openBackup(ids: string[] = []): void {
+    this.backupSelection = ids.slice();
+    this.backupVisible = true;
   }
 
   private async loadWorkspace(): Promise<void> {
@@ -652,13 +675,15 @@ struct Index {
       this.activeSheet = '';
       this.sheetProject = null;
       this.sheetNote = null;
+      this.batchMoveIds = [];
     });
   }
 
   @Builder
   activeSheetContent() {
     if (this.activeSheet === 'usage_guide') {
-      UsageGuideSheet({ onClose: () => this.closeSheet() })
+      UsageGuideSheet({ onClose: () => this.closeSheet(), onSave: (step: GuideStep) =>
+        this.createNote(step.title, 'Markdown', '墨语指引', `# ${step.title}\n\n${step.text}\n`, ['使用指引'], false) })
     } else if (this.activeSheet === 'project_menu' && this.sheetProject !== null) {
       ProjectMenuSheet({
         project: this.sheetProject,
@@ -738,10 +763,11 @@ struct Index {
       })
     } else if (this.activeSheet === 'move_note' && this.sheetNote !== null) {
       MoveNoteSheet({
-        note: this.sheetNote, closeToken: this.sheetCloseToken,
+        note: this.sheetNote, closeToken: this.sheetCloseToken, batchCount: this.batchMoveIds.length,
         categories: this.allCategories(),
         onClose: () => this.closeSheet(),
-        onMoveNote: (note: NoteItem, category: string) => this.commitMove(note, category)
+        onMoveNote: (note: NoteItem, category: string) => this.batchMoveIds.length > 0 ?
+          this.commitBatchMove(this.batchMoveIds, category) : this.commitMove(note, category)
       })
     }
   }
@@ -1114,7 +1140,7 @@ struct Index {
       title: cleanTitle,
       category: category.length === 0 ? '未分类' : category,
       type: handwriting ? 'Handwriting' : 'Markdown',
-      previewText: '空白笔记',
+      previewText: body ? body.replace(/^# [^\n]*\n+/, '').trim().slice(0, 100) || cleanTitle : '空白笔记',
       tag: tags[0] || '',
       tagColor: '',
       updateTime: this.formatTime(now),
@@ -1287,15 +1313,15 @@ struct Index {
     } catch (error) { this.notify(error instanceof Error ? error.message : '回收站保存失败，请重试'); }
   }
 
-  /** 不可恢复操作的二次确认；对话框不可用时按「取消」处理，绝不误删。 */
-  private async confirmDestructive(message: string): Promise<boolean> {
+  /** 删除前确认。对话框不可用时取消该操作。 */
+  private async confirmDestructive(message: string, title: string = '不可恢复的操作', action: string = '彻底删除'): Promise<boolean> {
     try {
       const response = await promptAction.showDialog({
-        title: '不可恢复的操作',
+        title: title,
         message: message,
         buttons: [
           { text: '取消', color: '#787774' },
-          { text: '彻底删除', color: '#E03E3E' }
+          { text: action, color: '#E03E3E' }
         ]
       });
       return response.index === 1;
@@ -1411,6 +1437,30 @@ struct Index {
     const saved = await this.updateNoteMetadata(note.id, (next: NoteItem) => { next.category = name; });
     if (saved) { this.notify(name === CATEGORY_UNFILED ? '已移回资料库' : `已移动到「${name}」`); }
     return saved !== null;
+  }
+
+  private openBatchMove(ids: string[]): void {
+    const first = this.notes.find((note: NoteItem) => ids.includes(note.id));
+    if (!first) { this.notify('所选资料已变更，请重新选择'); return; }
+    this.batchMoveIds = ids.slice();
+    this.sheetNote = first;
+    this.activeSheet = 'move_note';
+  }
+
+  private async commitBatchMove(ids: string[], category: string): Promise<boolean> {
+    try {
+      await this.noteMutationQueue.run<void>(() => this.commitWorkspace(WorkspaceLifecycle.moveNotes(this.workspaceState(), ids, category)));
+      this.notify(`已移动 ${ids.length} 份资料`);
+      return true;
+    } catch (error) { this.notify(error instanceof Error ? error.message : '未能移动资料，请重试'); return false; }
+  }
+
+  private async trashSelected(ids: string[]): Promise<void> {
+    if (!ids.length || !await this.confirmDestructive(`所选 ${ids.length} 份资料可从回收站恢复。`, '移入回收站', '移入')) { return; }
+    try {
+      await this.noteMutationQueue.run<void>(() => this.commitWorkspace(WorkspaceLifecycle.deleteNotes(this.workspaceState(), ids, Date.now())));
+      this.notify(`已将 ${ids.length} 份资料移入回收站`);
+    } catch (error) { this.notify(error instanceof Error ? error.message : '未能移入回收站，请重试'); }
   }
 
   // ==================================================================
@@ -1825,7 +1875,8 @@ struct Index {
         onImportExample: () => this.importDocument('示例资料', true),
         onImportSnapshot: () => this.importDocument('示例资料', true, true),
         onOpenCapture: () => { this.smartExtractVisible = true; },
-        onOpenBackup: () => { this.backupVisible = true; }, onOpenPrivacy: () => { this.privacyVisible = true; } })
+        onOpenBackup: () => this.openBackup(), onOpenPrivacy: () => { this.privacyVisible = true; },
+        onOpenGuide: () => { this.activeSheet = 'usage_guide'; } })
     } else if (this.readingOpen) {
       this.readerWorkspaceContent(false)
     } else if (this.activeNav === NAV_HOME) {
@@ -1872,8 +1923,19 @@ struct Index {
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onOpenNoteMenu: (note: NoteItem) => this.openNoteMenu(note),
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
-        onImportDocument: () => this.importDocument(this.activeSpaceName() || '未分类')
+        onImportDocument: () => this.importDocument(this.activeSpaceName() || '未分类'),
+        onOpenBackup: () => this.openBackup(),
+        onOpenGuide: () => { this.activeSheet = 'usage_guide'; },
+        onOpenTrash: () => { this.activeNav = NAV_TRASH; },
+        onBatchMove: (ids: string[]) => this.openBatchMove(ids),
+        onBatchShare: (ids: string[]) => this.openBackup(ids),
+        onBatchTrash: (ids: string[]) => this.trashSelected(ids)
       })
+    } else if (this.activeNav === NAV_CHAT) {
+      StudyChatWorkspace({ session: $chatSession,
+        onOpenLearning: () => { this.studyCourse = ''; this.studyVisible = true; },
+        onOpenLibrary: () => { this.activeSpaceId = ''; this.searchText = ''; this.activeFilter = FILTER_ALL; this.activeNav = NAV_LIBRARY; },
+        onSave: (title: string, body: string) => this.createNote(title, 'Markdown', '学习对话', body, ['学习对话'], false) })
     } else if (this.activeNav === NAV_GRAPH) {
       GraphWorkspace({
         graph: this.linkGraph,
@@ -2068,16 +2130,19 @@ struct Index {
       }
       if (this.backupVisible) {
         StudyBackupSheet({ notes: this.notes, spaces: this.spaces, cards: this.reviewCards, closeToken: this.backupCloseToken,
+          initialSelection: this.backupSelection,
+          isInTrash: (id: string) => this.trash.some((note: NoteItem) => note.id === id),
           onClose: () => { this.backupVisible = false; },
           onRestore: (note: NoteItem, cards: ReviewCard[]) => this.noteMutationQueue.run<void>(() => StudyRestoreService.commit(note, cards, {
             notes: () => this.notes, cards: () => this.reviewCards,
+            isInTrash: (id: string) => this.trash.some((item: NoteItem) => item.id === id),
             create: async (item: NoteItem) => { await this.storage.create(this.getAbilityContext(), item); },
             saveNotes: (notes: NoteItem[]) => this.storage.save(notes),
             saveCards: (items: ReviewCard[]) => this.reviewStorage.save(this.getAbilityContext(), items),
             remove: (item: NoteItem) => this.storage.delete(this.getAbilityContext(), item.id, item.sourceUri || '', item.coverUrl || ''),
             publishNotes: (notes: NoteItem[]) => { this.notes = notes; this.rebuildSpaces(); this.refreshStats(); this.refreshGraph(); },
             publishCards: (items: ReviewCard[]) => { this.reviewCards = items; }
-          })) })
+          })) }).zIndex(50)
       }
       if (this.studyVisible) {
         StudySheet({ notes: this.notes, cards: this.reviewCards, course: this.studyCourse, result: this.learningResult,

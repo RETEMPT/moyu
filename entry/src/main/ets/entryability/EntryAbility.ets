@@ -2,16 +2,22 @@ import { AbilityConstant, Configuration, UIAbility, Want } from '@kit.AbilityKit
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { ThemeManager } from '../common/theme/ThemeManager';
+import { StudyShareInbox } from '../services/study/StudyShareInbox';
 
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    StudyShareInbox.receive(want);
     // 首帧渲染前把用户选定的主题恢复到位：调色板、色彩模式、桌面图标一次同步完，
     // 避免先渲染浅色再闪成深色。
     ThemeManager.restore(this.context, this.context.config.colorMode).catch((error: Error) => {
       hilog.error(DOMAIN, 'Moyu', 'Failed to restore theme. Cause: %{public}s', error.message);
     });
+  }
+
+  onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    StudyShareInbox.receive(want);
   }
 
   onConfigurationUpdate(newConfig: Configuration): void {

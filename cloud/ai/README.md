@@ -46,7 +46,7 @@ CLI 需要 Python 3.10+ 和标准库 SQLite。模型名称由使用者从供应�
 
 模拟器通过 `10.0.2.2:8765` 访问电脑的回环地址。网关只监听 `127.0.0.1:8765`，每次启动生成新配对码。模型密钥只在电脑进程环境中，网关不保留学习内容和会话。已确认的文字和目标会送给指定的云服务，可能产生 API 费用。默认列出两款 DeepSeek 模型，可重复指定 `--model` 来配置列表。切换供应商时重启网关并使用新的配对码。停止等待会关闭 App 的请求，网关已发出的请求可能继续完成。
 
-选择 DeepSeek 后，Agent 可以在一次工具调用轮次内检索已确认发送的片段，结果仍按逐字引文核验流程处理。模拟器支持单次问答、选页摘要和周报草稿。独立 MCP 工具提供笔记本检索、题卡与学习计划。
+阅读器内选择 DeepSeek 后，Agent 可以在一次工具调用轮次内检索已确认的片段，结果经过逐字引文核验。底栏「助手」进入独立对话，配对并选择模型后可不打开资料直接提问。每次发送携带本次问题和最多六轮近期对话，合计最多 7000 个 UTF-16 单元。对话暂存在应用会话中，点「保存为笔记」可写入本机资料库。独立 MCP 工具提供笔记本检索、题卡与学习计划。
 
 [DevEco 模拟器访问电脑网络](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/ide-emulator-access-network-V13/) · [DeepSeek JSON 输出](https://api-docs.deepseek.com/guides/json_mode/) · [DeepSeek 工具调用](https://api-docs.deepseek.com/guides/tool_calls/)
 

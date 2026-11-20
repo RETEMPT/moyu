@@ -174,6 +174,7 @@ function renderer() {
       const dependency = match?.[1] || (specifier.startsWith('.') ? path.posix.normalize(path.posix.join(path.posix.dirname(relative), specifier)) : '');
       if (!dependency) throw Error(`Unmapped import ${specifier}`);
       if (serviceAdapters.has(dependency)) return serviceAdapters.get(dependency);
+      if (dependency === 'services/study/StudyShareInbox') return { StudyShareInbox: { pending: () => null } };
       if (dependency === 'views/reader/pdf/PdfPageCanvas') return { PdfPageCanvas: PdfPageAdapter };
       if (realViews.has(dependency) || ['views/common/QuickMemoComposer', 'views/common/MemoTimelineCard', 'views/common/MemoCalendar', 'views/common/NoteTagBadge'].includes(dependency)) return load(dependency, true);
       if (dependency.startsWith('common/') || dependency.startsWith('services/ink/') || dependency.startsWith('services/library/') || dependency === 'services/WorkspaceNotePolicy' || dependency === 'services/WorkspaceBuilder' || ['services/study/StudySourceService','services/study/LearningProgressPolicy','services/study/ReviewPolicy'].includes(dependency) || dependency === 'services/document/ReadingProgressPolicy' || dependency === 'services/document/PdfPageDataSource' || ['services/GraphTopicPolicy', 'services/GraphViewPolicy'].includes(dependency) || dependency === 'services/document/ReaderPairPolicy' || dependency === 'services/document/MarkdownEditing' || dependency === 'services/document/DocumentTextParser' || dependency === 'services/document/SourceTextStructure' || dependency === 'services/smart/SmartNoteBuilder') {
@@ -453,7 +454,7 @@ test('compiled native transfer requires an explicit selection and guards repeat 
   ui.service('services/study/StudyBackupService',{StudyBackupService:{createShareFile:async(context,notes,cards)=>{
     calls.push(['package',notes.map(n=>n.id)]);await new Promise(resolve=>{release=resolve;});return '/cache/study-share/study_1_abc.flowmind.json';
   }}});
-  ui.service('services/SystemShareService',{SystemShareService:{shareBackup:async(context,file,count)=>calls.push(['native',file,count])}});
+  ui.service('services/SystemShareService',{SystemShareService:{available:()=>true,shareBackup:async(context,file,count)=>calls.push(['native',file,count])}});
   const view=ui.mount('views/study/StudyBackupSheet','StudyBackupSheet',{notes:[{id:'a',title:'讲义',category:'课程'},{id:'b',title:'随记',category:'课程'}]});
   assert.equal(ui.find('附近快传').props.enabled,false);assert.equal(ui.find('导出文件').props.enabled,false);
   assert.equal(ui.find('选择快传资料 讲义'),undefined);ui.click('展开分享文件夹 课程');
@@ -469,7 +470,7 @@ test('compiled transfer fails visibly and a closed sheet cannot open a late nati
   for(const closed of [false,true]) {
     const ui=renderer();let resolvePackage;let shares=0;
     ui.service('services/study/StudyBackupService',{StudyBackupService:{createShareFile:async()=>closed?await new Promise(resolve=>{resolvePackage=resolve;}):Promise.reject(Error('附件未完整读取'))}});
-    ui.service('services/SystemShareService',{SystemShareService:{shareBackup:async()=>{shares++;}}});
+    ui.service('services/SystemShareService',{SystemShareService:{available:()=>true,shareBackup:async()=>{shares++;}}});
     const view=ui.mount('views/study/StudyBackupSheet','StudyBackupSheet',{notes:[{id:'a',title:'讲义',category:'课程'}]});
     ui.click('展开分享文件夹 课程');
     ui.click('选择快传资料 讲义');const pending=view.shareSelected();

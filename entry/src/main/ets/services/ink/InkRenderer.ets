@@ -5,6 +5,9 @@ export type InkContext = CanvasRenderingContext2D | OffscreenCanvasRenderingCont
 
 /** Identical midpoint curves for live ink and persisted replay; live draws only the newest segment. */
 export class InkRenderer {
+  // Incremental live segments stay opaque on their own layer; the surface applies this once.
+  static readonly HIGHLIGHTER_OPACITY: number = 0.35;
+
   static segment(ctx: InkContext, points: CanvasPoint[], index: number, style: InkStyle): void {
     if (index < 0 || index >= points.length) { return; }
     const point = points[index];
@@ -40,7 +43,7 @@ export class InkRenderer {
   static stroke(ctx: InkContext, points: CanvasPoint[], style: InkStyle): void {
     if (!points.length) { return; }
     if (style.highlighter && !style.eraser) {
-      ctx.save(); ctx.globalAlpha = 0.35; ctx.strokeStyle = style.color; ctx.fillStyle = style.color;
+      ctx.save(); ctx.globalAlpha = InkRenderer.HIGHLIGHTER_OPACITY; ctx.strokeStyle = style.color; ctx.fillStyle = style.color;
       ctx.lineWidth = style.width; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath();
       if (points.length === 1) { ctx.arc(points[0].x, points[0].y, style.width / 2, 0, Math.PI * 2); ctx.fill(); }
       else {

@@ -3,11 +3,13 @@ import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { ReviewCard } from '../../common/types/StudyTypes';
 import { StudyBackup } from '../../common/types/StudyBackup';
+import { AnimationTokens } from '../../common/constants/DesignTokens';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
 import { buildSpaces } from '../../services/WorkspaceBuilder';
 import { projectIcon } from '../../common/utils/ProjectIcons';
 import { StudyBackupService } from '../../services/study/StudyBackupService';
 import { StudyImportService } from '../../services/study/StudyImportService';
+import { StudyShareInbox } from '../../services/study/StudyShareInbox';
 import { SystemShareService } from '../../services/SystemShareService';
 import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
@@ -19,27 +21,63 @@ export struct StudyBackupSheet {
   @Prop @Watch('onNotesChanged') notes: NoteItem[] = [];
   @Prop cards: ReviewCard[] = [];
   @Prop spaces: SpaceFolder[] = [];
+  @Prop initialSelection: string[] = [];
   @Prop @Watch('closeRequested') closeToken: number = 0;
   onClose: () => void = () => {};
   onRestore: (note: NoteItem, cards: ReviewCard[]) => Promise<void> = async () => {};
+  isInTrash: (id: string) => boolean = () => false;
   @StorageProp('flowmindDarkMode') dark: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
+  @StorageProp('moyuStudyShareRevision') @Watch('observeReceived') shareRevision: number = 0;
   @State selectedIds: string[] = [];
   @State visibleCount: number = 40;
   @State visibleFolderCount: number = 40;
   @State openFolderId: string = '';
-  @State backup: StudyBackup | null = null;
+  @State receiving: boolean = false;
+  @State sharedPending: boolean = false;
+  @State previewCount: number = 0;
+  @State previewNames: string[] = [];
+  @State private previewFromShare: boolean = false;
   @State busy: boolean = false;
   @State status: string = '';
+  private backup: StudyBackup | null = null;
   private alive: boolean = true;
   private cachedNotes: NoteItem[] | null = null;
   private cachedSpaces: SpaceFolder[] | null = null;
   private cachedFolders: ShareFolder[] = [];
-  aboutToAppear(): void { this.alive = true; }
+  aboutToAppear(): void {
+    this.alive = true;
+    this.selectedIds = this.initialSelection.slice();
+    this.onNotesChanged();
+    this.observeReceived();
+  }
   aboutToDisappear(): void { this.alive = false; }
   private closeRequested(): void { if (!this.busy) { this.onClose(); } }
   private palette() { return ThemeHelper.paletteOfDark(this.dark, this.themeStyle); }
+  private observeReceived(): void {
+    const received = StudyShareInbox.pending();
+    this.sharedPending = received !== null;
+    if (received && !this.busy && !this.backup) {
+      this.receiving = true;
+      this.setPreview(received, true);
+    }
+  }
+  private setPreview(backup: StudyBackup | null, fromShare: boolean = false): void {
+    this.backup = backup;
+    this.previewFromShare = fromShare;
+    this.previewCount = backup?.notes.length || 0;
+    this.previewNames = backup ? backup.notes.slice(0, 5).map((note: NoteItem) => note.title || '未命名资料') : [];
+  }
+  private discardPreview(): void {
+    const sharedId = this.previewFromShare ? this.backup?.id : undefined;
+    this.setPreview(null);
+    if (sharedId) { StudyShareInbox.dismiss(sharedId); }
+  }
+  private showReceived(): void {
+    const received = StudyShareInbox.pending();
+    if (received) { this.status = ''; this.setPreview(received, true); }
+  }
   private onNotesChanged(): void {
     const available = new Set(this.notes.map((note: NoteItem) => note.id));
     this.selectedIds = this.selectedIds.filter((id: string) => available.has(id));
@@ -82,6 +120,7 @@ export struct StudyBackupSheet {
   }
   private async shareSelected(): Promise<void> {
     if (this.busy || this.selectedNotes().length === 0) { return; }
+    if (!SystemShareService.available()) { this.status = '此设备可导出资料包，再从文件应用发送。'; return; }
     this.busy = true; this.status = '正在准备所选资料…';
     const notes = this.selectedNotes();
     try {
@@ -94,10 +133,10 @@ export struct StudyBackupSheet {
     finally { if (this.alive) { this.busy = false; } }
   }
   private async selectFile(): Promise<void> {
-    if (this.busy) { return; } this.busy = true; this.backup = null; this.status = '';
+    if (this.busy) { return; } this.busy = true; this.status = '';
     try {
       const backup = await StudyBackupService.selectFile(getContext(this) as common.UIAbilityContext);
-      if (this.alive) { this.backup = backup; }
+      if (this.alive && backup) { this.setPreview(backup); }
     } catch (error) { if (this.alive) { this.status = (error as Error).message || '资料包无法读取'; } }
     finally { if (this.alive) { this.busy = false; } }
   }
@@ -106,9 +145,13 @@ export struct StudyBackupSheet {
     if (!backup || this.busy) { return; } this.busy = true;
     try {
       const result = await StudyImportService.restore(getContext(this) as common.UIAbilityContext, backup, {
-        notes: () => this.notes, commit: this.onRestore, progress: (message: string) => { if (this.alive) { this.status = message; } }
+        notes: () => this.notes, isInTrash: this.isInTrash, commit: this.onRestore,
+        progress: (message: string) => { if (this.alive) { this.status = message; } }
       });
-      if (this.alive) { this.status = `已导入 ${result.imported} 份资料，跳过 ${result.skipped} 份已导入资料`; this.backup = null; }
+      if (this.alive) {
+        this.status = `已导入 ${result.imported} 份资料，跳过 ${result.skipped} 份已有副本`;
+        this.discardPreview();
+      }
     } catch (error) { if (this.alive) { this.status = (error as Error).message || '导入中断，可重试'; } }
     finally { if (this.alive) { this.busy = false; } }
   }
@@ -149,54 +192,117 @@ export struct StudyBackupSheet {
       .accessibilityText('选择快传资料 ' + note.title).accessibilityDescription(this.selectedIds.includes(note.id) ? '已选择' : '未选择')
       .onClick(() => this.toggleNote(note.id))
   }
+  @Builder
+  sendPanel() {
+    Row() {
+      Text(`已选 ${this.selectedIds.length} 份`).fontSize(14).fontColor(this.palette().inkPrimary).layoutWeight(1)
+      Button(this.selectedIds.length === this.notes.length && this.notes.length > 0 ? '取消全选' : '全选', { type: ButtonType.Normal })
+        .height(44).backgroundColor(Color.Transparent).fontColor(this.palette().inkSecondary).enabled(!this.busy && this.notes.length > 0)
+        .onClick(() => { this.selectedIds = this.selectedIds.length === this.notes.length ? [] : this.notes.map((note: NoteItem) => note.id); })
+    }.width('100%')
+    List() {
+      ForEach(this.folders().slice(0, this.visibleFolderCount), (folder: ShareFolder) => {
+        ListItem() { this.folderRow(folder) }
+        if (this.openFolderId === folder.id) {
+          ForEach(folder.notes.slice(0, this.visibleCount), (note: NoteItem) => {
+            ListItem() { this.noteRow(note) }
+          }, (note: NoteItem) => note.id)
+          if (this.visibleCount < folder.notes.length) {
+            ListItem() { Button('显示更多资料').height(44).width('100%').enabled(!this.busy).onClick(() => { this.visibleCount += 40; }) }
+          }
+        }
+      }, (folder: ShareFolder) => folder.id)
+      if (this.visibleFolderCount < this.folders().length) {
+        ListItem() { Button('显示更多文件夹').height(44).width('100%').enabled(!this.busy).onClick(() => { this.visibleFolderCount += 40; }) }
+      }
+      if (this.notes.length === 0) {
+        ListItem() { Text('还没有可分享的资料').fontSize(14).fontColor(this.palette().inkMuted).padding(16) }
+      }
+    }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+    Row({ space: 10 }) {
+      Button('导出文件', { type: ButtonType.Normal }).height(44).layoutWeight(1).borderRadius(6).fontColor(this.palette().inkPrimary)
+        .backgroundColor(this.palette().surfaceSubtle).enabled(!this.busy && this.selectedIds.length > 0).onClick(() => this.exportFile())
+      Button('附近快传', { type: ButtonType.Normal }).height(44).layoutWeight(1).borderRadius(6).fontColor(this.palette().onAccent)
+        .backgroundColor(this.palette().accent).enabled(!this.busy && this.selectedIds.length > 0).onClick(() => this.shareSelected())
+    }.width('100%')
+  }
+
+  @Builder
+  receivePanel() {
+    Scroll() {
+      Column({ space: 12 }) {
+        Text('在系统分享面板选墨语，或从文件中选择收到的资料包。')
+          .fontSize(14).fontColor(this.palette().inkSecondary).width('100%')
+        if (this.sharedPending && !this.previewFromShare) {
+          Button('查看收到的资料包', { type: ButtonType.Normal }).height(44).width('100%').enabled(!this.busy)
+            .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle).onClick(() => this.showReceived())
+        }
+        if (this.previewCount > 0) {
+          Column({ space: 8 }) {
+            Text(`${this.previewCount} 份资料待导入`).fontSize(16).fontWeight(FontWeight.Medium)
+              .fontColor(this.palette().inkPrimary).width('100%')
+            ForEach(this.previewNames, (name: string) => {
+              Text(name).fontSize(14).fontColor(this.palette().inkSecondary).width('100%').maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }, (name: string, index: number) => `${index}:${name}`)
+            if (this.previewCount > this.previewNames.length) {
+              Text(`另有 ${this.previewCount - this.previewNames.length} 份`).fontSize(13).fontColor(this.palette().inkMuted).width('100%')
+            }
+          }.width('100%').padding(14).borderRadius(10).backgroundColor(this.palette().surfaceSubtle)
+          Button(this.previewFromShare ? '忽略收到的资料包' : '取消预览', { type: ButtonType.Normal })
+            .height(44).width('100%').enabled(!this.busy).fontColor(this.palette().inkSecondary)
+            .backgroundColor(Color.Transparent).onClick(() => this.discardPreview())
+        }
+      }.width('100%')
+    }.width('100%').layoutWeight(1).align(Alignment.TopStart).scrollBar(BarState.Auto)
+    Row({ space: 10 }) {
+      Button('选择资料包', { type: ButtonType.Normal }).height(44).layoutWeight(1).borderRadius(6)
+        .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle).enabled(!this.busy).onClick(() => this.selectFile())
+      if (this.previewCount > 0) {
+        Button('确认导入为副本', { type: ButtonType.Normal }).height(44).layoutWeight(1).borderRadius(6)
+          .fontColor(this.palette().onAccent).backgroundColor(this.palette().accent).enabled(!this.busy).onClick(() => this.restore())
+      }
+    }.width('100%')
+  }
+
+  @Builder
+  transferTab(title: string, receive: boolean) {
+    Button(title, { type: ButtonType.Normal }).height(44).layoutWeight(1).borderRadius(8)
+      .fontColor(this.receiving === receive ? this.palette().inkPrimary : this.palette().inkMuted)
+      .backgroundColor(this.receiving === receive ? this.palette().activeBg : Color.Transparent)
+      .accessibilityDescription(this.receiving === receive ? '已选中' : '未选中')
+      .enabled(!this.busy).onClick(() => {
+        if (this.receiving === receive) { return; }
+        this.receiving = receive;
+        this.status = '';
+        if (receive && !this.backup) { this.showReceived(); }
+      })
+  }
+
   build() {
-    Column() {
-      Column({ space: 14 }) {
+    Stack({ alignContent: this.phone ? Alignment.Bottom : Alignment.Center }) {
+      Column().width('100%').height('100%').backgroundColor(this.dark ? 'rgba(0,0,0,0.42)' : 'rgba(0,0,0,0.20)')
+        .onClick(() => this.closeRequested())
+      Column({ space: 10 }) {
         Row() {
           Text('备份与快传').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
           IconButton({ icon: $r('app.media.ic_close'), label: '关闭资料快传', available: !this.busy, onAction: this.onClose })
         }.width('100%')
-        Text('按文件夹选择资料，再通过系统分享面板选择设备。').fontSize(14).fontColor(this.palette().inkSecondary).width('100%')
-        Row() {
-          Text(`已选 ${this.selectedIds.length} 份`).fontSize(14).fontColor(this.palette().inkPrimary).layoutWeight(1)
-          Button(this.selectedIds.length === this.notes.length && this.notes.length > 0 ? '取消全选' : '全选', { type: ButtonType.Normal })
-            .height(44).backgroundColor(Color.Transparent).fontColor(this.palette().inkSecondary).enabled(!this.busy)
-            .onClick(() => { this.selectedIds = this.selectedIds.length === this.notes.length ? [] : this.notes.map((note: NoteItem) => note.id); })
-        }.width('100%')
-        List() {
-          ForEach(this.folders().slice(0, this.visibleFolderCount), (folder: ShareFolder) => {
-            ListItem() { this.folderRow(folder) }
-            if (this.openFolderId === folder.id) {
-              ForEach(folder.notes.slice(0, this.visibleCount), (note: NoteItem) => {
-                ListItem() { this.noteRow(note) }
-              }, (note: NoteItem) => note.id)
-              if (this.visibleCount < folder.notes.length) {
-                ListItem() { Button('显示更多资料').height(44).width('100%').onClick(() => { this.visibleCount += 40; }) }
-              }
-            }
-          }, (folder: ShareFolder) => folder.id)
-          if (this.visibleFolderCount < this.folders().length) {
-            ListItem() { Button('显示更多文件夹').height(44).width('100%').onClick(() => { this.visibleFolderCount += 40; }) }
-          }
-          if (this.notes.length === 0) {
-            ListItem() { Text('还没有可分享的资料').fontSize(14).fontColor(this.palette().inkMuted).padding(16) }
-          }
-        }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
-        Row({ space: 10 }) {
-          Button('导出文件', { type: ButtonType.Normal }).height(44).layoutWeight(1).borderRadius(5).fontColor(this.palette().inkPrimary)
-            .backgroundColor(this.palette().surfaceSubtle).enabled(!this.busy && this.selectedIds.length > 0).onClick(() => this.exportFile())
-          Button('附近快传', { type: ButtonType.Normal }).height(44).layoutWeight(1).borderRadius(5).fontColor(this.palette().onAccent)
-            .backgroundColor(this.palette().accent).enabled(!this.busy && this.selectedIds.length > 0).onClick(() => this.shareSelected())
-        }.width('100%')
-        Button('导入收到的资料包', { type: ButtonType.Normal }).height(44).width('100%').borderRadius(5)
-          .fontColor(this.palette().inkSecondary).backgroundColor(Color.Transparent).enabled(!this.busy).onClick(() => this.selectFile())
-        if (this.backup) {
-          Text(`${this.backup.notes.length} 份资料，确认后导入为副本`).fontSize(14).fontColor(this.palette().inkPrimary).width('100%')
-          Button('确认导入为副本').height(44).width('100%').enabled(!this.busy).onClick(() => this.restore())
+        Row({ space: 4 }) {
+          this.transferTab('发送与导出', false)
+          this.transferTab(this.sharedPending ? '接收 · 1' : '接收', true)
+        }.width('100%').padding(3).borderRadius(10).backgroundColor(this.palette().surfaceSubtle)
+        if (this.receiving) { this.receivePanel() } else { this.sendPanel() }
+        if (this.status) {
+          Text(this.status).fontSize(13).fontColor(this.palette().inkSecondary).width('100%').maxLines(3)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
-        if (this.status) { Text(this.status).fontSize(13).fontColor(this.palette().inkSecondary).width('100%').maxLines(3) }
-      }.padding(24).width(this.phone ? '94%' : 560).height('86%').borderRadius(8).backgroundColor(this.palette().surface).onClick(() => {})
-    }.width('100%').height('100%').justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
-      .backgroundColor('rgba(0,0,0,0.18)').onClick(() => { if (!this.busy) { this.onClose(); } })
+      }.padding(this.phone ? 16 : 24).width('94%').height('86%').constraintSize({ maxWidth: 560 })
+        .margin({ bottom: this.phone ? 12 : 0 }).borderRadius(18).backgroundColor(this.palette().surface)
+        .border({ width: 1, color: this.palette().borderSubtle }).onClick(() => {})
+        .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: this.phone ? 24 : 8 }))
+          .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_SMOOTH }))
+    }.width('100%').height('100%')
+      .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_SMOOTH }))
   }
 }

@@ -3,6 +3,7 @@ import { ReviewCard } from '../../common/types/StudyTypes';
 
 export interface StudyRestorePorts {
   notes: () => NoteItem[];
+  isInTrash?: (id: string) => boolean;
   cards: () => ReviewCard[];
   create: (note: NoteItem) => Promise<void>;
   saveNotes: (notes: NoteItem[]) => Promise<void>;
@@ -15,6 +16,7 @@ export interface StudyRestorePorts {
 /** Each note is a separate commit. A card failure leaves a valid note and can be retried by stable IDs. */
 export class StudyRestoreService {
   static async commit(note: NoteItem, cards: ReviewCard[], ports: StudyRestorePorts): Promise<void> {
+    if (ports.isInTrash?.(note.id)) { throw new Error('已有副本在回收站，可从回收站恢复'); }
     const previous = ports.notes().slice();
     const existing = previous.find((item: NoteItem) => item.id === note.id);
     const next = existing ? previous : previous.concat([note]);

@@ -17,7 +17,7 @@ import {
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
-import { NAV_CANVAS, NAV_FAVORITE, NAV_GRAPH, NAV_HOME, NAV_LIBRARY, NAV_SETTINGS, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
+import { NAV_CANVAS, NAV_CHAT, NAV_FAVORITE, NAV_GRAPH, NAV_HOME, NAV_LIBRARY, NAV_SETTINGS, NAV_TODO, NAV_TRASH } from '../../common/constants/WorkspaceConstants';
 import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
 import { documentIcon } from '../../common/utils/DocumentPresentation';
@@ -341,6 +341,7 @@ export struct Sidebar {
         // ---- 全局核心功能导航 ----
         Column({ space: 2 }) {
           this.navRow($r('app.media.ic_home'), '主页', NAV_HOME)
+          this.navRow($r('app.media.ic_chat'), '助手', NAV_CHAT)
           this.navRow($r('app.media.ic_read'), '资料库', NAV_LIBRARY)
           this.navRow($r('app.media.ic_star'), '收藏', NAV_FAVORITE)
           this.navRow($r('app.media.ic_check'), '待办', NAV_TODO)

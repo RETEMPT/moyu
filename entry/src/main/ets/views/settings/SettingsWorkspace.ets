@@ -29,6 +29,7 @@ export struct SettingsWorkspace {
   onImportExample: () => Promise<NoteItem | null> = async () => null;
   onImportSnapshot: () => Promise<NoteItem | null> = async () => null;
   onOpenPrivacy: () => void = () => {};
+  onOpenGuide: () => void = () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
@@ -251,8 +252,8 @@ export struct SettingsWorkspace {
       this.paragraph('优先选正向、清晰、无反光的单栏图片。姓名、日期、数字、公式及多栏阅读顺序需要核对；模糊或严重倾斜的图片请重新拍摄。')
     } else if (this.section === 'backup') {
       this.heading('备份与快传')
-      this.paragraph('勾选资料后导出文件，或通过系统分享面板选择附近设备。收到资料包后选择导入，恢复为副本。')
-      this.action('选择资料', this.onOpenBackup, true)
+      this.paragraph('在发送页勾选资料，可导出文件或通过系统分享选择附近设备。收到资料包后，从系统分享面板选择墨语，或在接收页选择文件。预览后确认导入副本。')
+      this.action('打开备份与快传', this.onOpenBackup, true)
       this.heading('备份范围')
       this.paragraph('资料包包含所选正文、原 PDF、原始图片、封面、笔迹与题卡，不含待办和回收站。文件未加密，请妥善保管。')
       this.heading('接收设备')
@@ -275,6 +276,7 @@ export struct SettingsWorkspace {
       this.action('备份与快传', () => this.navigate('backup'))
       this.action('文字识别与排版', () => this.navigate('capture'))
     } else if (this.section === 'guide') {
+      this.action('浏览和保存指引', this.onOpenGuide, true)
       ForEach(GUIDE_STEPS, (step: GuideStep) => {
         Column({ space: 8 }) { this.heading(step.title); this.paragraph(step.text) }
           .padding(16).borderRadius(5).backgroundColor(this.palette().surface).width('100%')

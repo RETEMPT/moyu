@@ -30,6 +30,10 @@
             "actions": [
               "ohos.want.action.home"
             ]
+          },
+          {
+            "actions": ["ohos.want.action.sendData"],
+            "uris": [{ "scheme": "file", "utd": "general.json", "maxFileSupported": 1 }]
           }
         ]
       }

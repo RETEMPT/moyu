@@ -15,6 +15,7 @@ export struct MoveNoteSheet {
   @Prop note: NoteItem;
   @Prop @Watch('requestClose') closeToken: number = 0;
   @Prop categories: string[] = [];
+  @Prop batchCount: number = 0;
 
   onClose: () => void = () => {};
   onMoveNote: (note: NoteItem, category: string) => Promise<boolean> = async () => false;
@@ -31,6 +32,7 @@ export struct MoveNoteSheet {
   }
 
   private currentCategory(): string {
+    if (this.batchCount > 0) { return ''; }
     return this.note.category.length === 0 ? '未分类' : this.note.category;
   }
 
@@ -40,6 +42,7 @@ export struct MoveNoteSheet {
     if (this.saving) { return; }
     const trimmed = category.trim();
     if (!trimmed) { this.error = '请输入项目名称'; return; }
+    if (trimmed.length > 80 && !this.categories.includes(trimmed)) { this.error = '新项目名称需为 1–80 字'; return; }
     if (trimmed === this.currentCategory()) { this.onClose(); return; }
     this.saving = true; this.error = '';
     try {
@@ -79,7 +82,7 @@ export struct MoveNoteSheet {
   build() {
     SheetOverlay({ onDismiss: () => this.requestClose() }) {
       Column({ space: 8 }) {
-        Text(`移动「${this.note.title}」到项目`)
+        Text(this.batchCount > 0 ? `移动 ${this.batchCount} 份资料到项目` : `移动「${this.note.title}」到项目`)
           .fontSize(TypographyTokens.BODY_REGULAR)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.palette().inkPrimary)

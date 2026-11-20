@@ -592,7 +592,7 @@ test('text import retains full text and cancel performs no writes', async () => 
   assert.equal(cancelled.calls.length, 0);
 });
 
-function officeZipFixture(parts) {
+function officeZipFixture(parts, useDataDescriptor = false) {
   const locals = [], directory = [];
   let offset = 0;
   for (const [fileName, source] of Object.entries(parts)) {
@@ -601,15 +601,23 @@ function officeZipFixture(parts) {
     const packed = deflateRawSync(raw);
     const local = Buffer.alloc(30);
     const entry = Buffer.alloc(46);
+    const descriptor = Buffer.alloc(useDataDescriptor ? 16 : 0);
     local.writeUInt32LE(0x04034b50); entry.writeUInt32LE(0x02014b50);
     local.writeUInt16LE(8, 8); entry.writeUInt16LE(8, 10);
-    local.writeUInt32LE(crc32(raw), 14); entry.writeUInt32LE(crc32(raw), 16);
-    local.writeUInt32LE(packed.length, 18); entry.writeUInt32LE(packed.length, 20);
-    local.writeUInt32LE(raw.length, 22); entry.writeUInt32LE(raw.length, 24);
+    entry.writeUInt32LE(crc32(raw), 16);
+    entry.writeUInt32LE(packed.length, 20);
+    entry.writeUInt32LE(raw.length, 24);
+    if (useDataDescriptor) {
+      local.writeUInt16LE(8, 6); entry.writeUInt16LE(8, 8);
+      descriptor.writeUInt32LE(0x08074b50);
+      entry.copy(descriptor, 4, 16, 28);
+    } else {
+      entry.copy(local, 14, 16, 28);
+    }
     local.writeUInt16LE(name.length, 26); entry.writeUInt16LE(name.length, 28);
     entry.writeUInt32LE(offset, 42);
-    locals.push(local, name, packed); directory.push(entry, name);
-    offset += local.length + name.length + packed.length;
+    locals.push(local, name, packed, descriptor); directory.push(entry, name);
+    offset += local.length + name.length + packed.length + descriptor.length;
   }
   const index = Buffer.concat(directory);
   const end = Buffer.alloc(22);
@@ -687,6 +695,13 @@ test('Office import rejects corrupt and oversized XML entries before publishing 
   const oversized = Buffer.from(docx);
   oversized.writeUInt32LE(8 * 1024 * 1024, index + 24);
   await assert.rejects(officeFixtureReader(oversized).read('doc.docx', false), /导入上限/);
+});
+
+test('Office import accepts streaming data descriptors and rejects inconsistent entry flags', async () => {
+  const archived = officeZipFixture({ 'word/document.xml': '<w:p><w:t>流式正文</w:t></w:p>' }, true);
+  assert.equal(await officeFixtureReader(archived).read('doc.docx', false), '流式正文');
+  archived.writeUInt16LE(0, 6);
+  await assert.rejects(officeFixtureReader(archived).read('doc.docx', false), /条目损坏/);
 });
 
 const { StudySourceService } = load(`${base}services/study/StudySourceService.ets`);
@@ -925,6 +940,10 @@ test('backup restoration preserves original data and stable IDs make repeated im
   await StudyRestoreService.commit(note, [card], f.ports); await StudyRestoreService.commit(note, [card], f.ports);
   assert.equal(f.notes().length, 2); assert.equal(f.cards().length, 1);
   assert.equal(f.notes()[0].id, 'original'); assert.equal(f.calls.filter(c => c[0] === 'create').length, 1);
+  const before = f.calls.length;
+  f.ports.isInTrash = id => id === 'trashed';
+  await assert.rejects(StudyRestoreService.commit(studyNote({ id: 'trashed' }), [], f.ports), /已有副本在回收站/);
+  assert.equal(f.calls.length, before);
 });
 test('failed backup note write rolls back metadata and cleans only the new note', async () => {
   const f = restoreFixture(); f.failNotes(true);
@@ -940,8 +959,8 @@ test('failed backup card write retains a valid restored note and retry fills mis
   assert.equal(f.notes().length, 2); assert.equal(f.cards().length, 1);
 });
 
-function backupFileFixture({ selected = ['/picked/backup.json'], failPdf = false, failImage = false, shortRead = false, failWrite = false } = {}) {
-  const files = new Map(); const opened = new Map(); const calls = []; let fd = 0;
+function backupFileFixture({ selected = ['/picked/backup.json'], failPdf = false, failImage = false, shortRead = false, failWrite = false, maxRead = Infinity, maxWrite = Infinity } = {}) {
+  const files = new Map(); const opened = new Map(); const positions = new Map(); const calls = []; let fd = 0;
   const mocks = {
     '@kit.AbilityKit': {},
     '@kit.CoreFileKit': { picker: { DocumentSelectOptions: class {}, DocumentSaveOptions: class {}, DocumentViewPicker: class {
@@ -949,11 +968,27 @@ function backupFileFixture({ selected = ['/picked/backup.json'], failPdf = false
     } }, fileIo: { OpenMode: { READ_ONLY: 0, WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 },
       accessSync: () => true, mkdirSync: () => {},
       access: async () => true, mkdir: async () => {}, listFile: async dir => [...files.keys()].filter(p => p.startsWith(dir+'/')).map(p => p.slice(dir.length+1)),
-      open: async (filename, mode) => { opened.set(++fd, filename); if(mode & 4)files.delete(filename); return { fd }; },
+      open: async (filename, mode) => { opened.set(++fd, filename); positions.set(fd, 0); if(mode & 4)files.delete(filename); return { fd }; },
       close: async file => { calls.push(['close', file.fd]); },
       statSync: descriptor => ({ size: files.get(typeof descriptor === 'number' ? opened.get(descriptor) : descriptor)?.length ?? 0 }),
-      read: async (descriptor, buffer) => { const bytes = files.get(opened.get(descriptor)); new Uint8Array(buffer).set(bytes); return bytes.length - (shortRead ? 1 : 0); },
-      write: async (descriptor, value) => { if (failWrite) throw Error('disk full'); const bytes = Buffer.from(value); const p=opened.get(descriptor); files.set(p, Buffer.concat([files.get(p)||Buffer.alloc(0), bytes])); calls.push(['write',bytes.length]); return bytes.length; },
+      stat: async descriptor => ({ isFile: () => true, size: files.get(opened.get(descriptor))?.length ?? 0 }),
+      read: async (descriptor, buffer, { length = buffer.byteLength } = {}) => {
+        const bytes = files.get(opened.get(descriptor));
+        const start = positions.get(descriptor);
+        const chunk = bytes.subarray(start, Math.min(bytes.length - (shortRead ? 1 : 0), start + length, start + maxRead));
+        new Uint8Array(buffer).set(chunk);
+        positions.set(descriptor, start + chunk.length);
+        calls.push(['read', chunk.length]);
+        return chunk.length;
+      },
+      write: async (descriptor, value) => {
+        if (failWrite) throw Error('disk full');
+        const bytes = Buffer.from(value).subarray(0, maxWrite);
+        const filename = opened.get(descriptor);
+        files.set(filename, Buffer.concat([files.get(filename) || Buffer.alloc(0), bytes]));
+        calls.push(['write', bytes.length]);
+        return bytes.length;
+      },
       fsync: async descriptor => calls.push(['flush', descriptor]),
       unlink: async filename => { files.delete(filename); calls.push(['unlink', filename]); }
     } },
@@ -1158,6 +1193,12 @@ test('shared study import resumes a partial batch and maps cards to stable resto
   assert.deepEqual(plain(result), { imported: 1, skipped: 1 }); assert.equal(notes.length, 2);
   assert.equal(materializations, 3); assert.ok(cards.every(card => notes.some(note => note.id === card.noteId)));
   assert.equal(cards.length, backup.cards.length); assert.equal(progress.length, 4);
+  const trashed = await StudyImportService.restore({}, backup, {
+    notes: () => [], isInTrash: id => notes.some(note => note.id === id),
+    progress: () => {}, commit: async () => assert.fail('A trashed copy must not be recreated')
+  });
+  assert.deepEqual(plain(trashed), { imported: 0, skipped: 2 });
+  assert.equal(materializations, 3);
 });
 
 test('shared study import rejects unsupported packages before materializing or committing any data', async () => {
@@ -1844,7 +1885,76 @@ test('native transfer packages preserve only selected notes and their full asset
   assert.ok(f.calls.filter(c=>c[0]==='write').length>1);assert.ok(f.calls.filter(c=>c[0]==='write').every(c=>c[1]<=512*1024));
   assert.deepEqual(f.calls.filter(c=>c[0]==='worker').map(c=>c[1]),['validateBackupData','encodeBackupData']);
   f.files.set('/picked/backup.json',f.files.get(file));const decoded=await f.service.selectFile({filesDir:'/sandbox'});
-  assert.equal(decoded.notes[0].contentDetail,note.contentDetail);assert.equal(f.calls.at(-2)[1],'decodeBackupData');
+  assert.equal(decoded.notes[0].contentDetail,note.contentDetail);
+  assert.equal(f.calls.at(-2)[0],'close');assert.deepEqual(f.calls.at(-1),['worker','decodeBackupData']);
+});
+
+test('backup round trip completes positive short reads and writes without losing bytes', async () => {
+  const fixture = backupFileFixture({ maxRead: 31, maxWrite: 47 });
+  const note = studyNote({ contentDetail: '# 课程\n' + '章节\n'.repeat(90) });
+  const file = await fixture.service.createShareFile({ filesDir: '/sandbox', cacheDir: '/cache' }, [note], []);
+  const decoded = await fixture.service.readUri(file);
+  assert.equal(decoded.notes[0].contentDetail, note.contentDetail);
+  assert.ok(fixture.calls.filter(call => call[0] === 'read').length > 1);
+  assert.ok(fixture.calls.filter(call => call[0] === 'write').length > 1);
+});
+
+function studyShareFixture(readUri = async () => studyBackup()) {
+  const reads = [];
+  const revisions = [];
+  const { StudyShareInbox } = load(`${base}services/study/StudyShareInbox.ets`, {
+    '@kit.AbilityKit': {},
+    '@kit.CoreFileKit': { fileUri: { FileUri: class { constructor(uri) { this.name = uri.split('/').at(-1); } } } },
+    '@kit.ShareKit': { systemShare: { getSharedData: async want => ({ getRecords: () => want.records }) } },
+    [path.resolve(root, `${base}services/study/StudyBackupService.ets`)]: {
+      StudyBackupService: { readUri: async uri => { reads.push(uri); return readUri(uri); } }
+    },
+    canIUse: () => true,
+    AppStorage: { setOrCreate: (key, value) => revisions.push([key, value]) }
+  });
+  return { inbox: StudyShareInbox, reads, revisions };
+}
+
+test('system share only opens matching file records from the registered action', async () => {
+  const { inbox, reads, revisions } = studyShareFixture();
+  const action = 'ohos.want.action.sendData';
+  const record = { utd: 'general.json', uri: 'file://sender/docs/lesson.FLOWMIND.JSON' };
+  await inbox.receive({ action: 'ohos.want.action.home', records: [record] });
+  for (const records of [[], [record, record], [{ ...record, utd: 'general.image' }],
+    [{ ...record, uri: 'https://example.com/course.flowmind.json' }], [{ ...record, uri: 'file://sender/a.json' }]]) {
+    await inbox.receive({ action, records });
+    assert.equal(inbox.pending(), null);
+  }
+  assert.equal(reads.length, 0);
+  assert.equal(revisions.length, 5);
+  await inbox.receive({ action, records: [record] });
+  assert.deepEqual(reads, [record.uri]);
+  assert.equal(inbox.pending().id, 'backup123');
+  assert.equal(inbox.notice(), '');
+  assert.deepEqual(revisions.at(-1), ['moyuStudyShareRevision', 6]);
+});
+
+test('a second delivery never overwrites the incoming preview and a failed read can be retried', async () => {
+  let release;
+  const { inbox, reads } = studyShareFixture(async () => {
+    if (!release) return new Promise(resolve => { release = resolve; });
+    throw Error('invalid backup');
+  });
+  const want = { action: 'ohos.want.action.sendData', records: [{ utd: 'general.json', uri: 'file://sender/notes.flowmind.json' }] };
+  const first = inbox.receive(want);
+  await inbox.receive(want);
+  assert.match(inbox.notice(), /待处理/);
+  release(studyBackup());
+  await first;
+  await inbox.receive(want);
+  assert.equal(reads.length, 1);
+  inbox.dismiss('other');
+  assert.equal(inbox.pending().id, 'backup123');
+  inbox.dismiss('backup123');
+  await inbox.receive(want);
+  assert.equal(reads.length, 2);
+  assert.equal(inbox.pending(), null);
+  assert.match(inbox.notice(), /无法读取/);
 });
 
 test('transfer cache cleanup removes only its own expired packages and failed writes never leave a successful package', async () => {
@@ -2906,6 +3016,28 @@ test('the study gateway fetches the paired model list from the fixed host and re
   await assert.rejects(gateway.models(code), /模型列表无效/);
 });
 
+test('chat sends complete recent turns only and routes to the fixed paired gateway', async () => {
+  const calls = [];
+  const { StudyAssistantGateway, studyChatContext } = load(`${base}services/study/StudyAssistantGateway.ets`, {
+    '@kit.AbilityKit': { bundleManager: {} },
+    '@kit.NetworkKit': { http: { RequestMethod: { GET: 'GET', POST: 'POST' }, HttpDataType: { STRING: 'string' },
+      createHttp: () => ({ request: async (url, options) => {
+        calls.push({ url, options });
+        return { responseCode: 200, result: JSON.stringify({ reply: '回复' }) };
+      }, destroy() {} }) } }
+  });
+  const transcript = [{ role: 'user', content: '旧问题' }, { role: 'assistant', content: '课'.repeat(4800) },
+    { role: 'user', content: '近期问题' }, { role: 'assistant', content: '📚'.repeat(1500) }];
+  const context = plain(studyChatContext(transcript, '追问'));
+  assert.deepEqual(context, [...transcript.slice(2), { role: 'user', content: '追问' }]);
+  assert.equal(transcript.length, 4);
+  const gateway = new StudyAssistantGateway();
+  assert.equal(await gateway.chat(context, 'b'.repeat(32), 'deepseek-flash'), '回复');
+  assert.equal(calls[0].url, 'http://10.0.2.2:8765/v1/chat');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].options.extraData), { model: 'deepseek-flash', messages: context });
+});
+
 test('closing the assistant stops a pending request but keeps the session data', () => {
   const update = viewMethod('views/study/StudyAssistantPanel.ets', 'onActiveChanged');
   const result = { title: '已有结果' };
@@ -3582,6 +3714,22 @@ test('failed project deletion retains all state and never reports a successful d
   assert.equal(notices.length,1);assert.match(notices[0],/失败|disk/);
 });
 
+test('batch moves preserve file IDs and dependent content and reject a stale selection without a partial change', () => {
+  const note = studyNote({ id: 'saved', category: '旧项目', sourceUri: '/sandbox/book.pdf',
+    pageAnnotations: '{"strokes":[]}', contentDetail: '参见 [[复习资料]]' });
+  const other = studyNote({ id: 'other', category: '其他' });
+  const before = { notes: [note, other], projects: [], trash: [], trashedProjects: [] };
+  const moved = WorkspaceLifecycle.moveNotes(before, [note.id], '考试');
+  assert.deepEqual(plain(moved.notes[0]), plain({ ...note, category: '考试' }));
+  assert.equal(moved.notes[1], other);
+  assert.equal(before.notes[0].category, '旧项目');
+  assert.throws(() => WorkspaceLifecycle.moveNotes(before, ['saved', 'missing'], '考试'), /所选资料已变更/);
+  assert.throws(() => WorkspaceLifecycle.deleteNotes(before, ['saved', 'missing'], 100), /所选资料已变更/);
+  const deleted = WorkspaceLifecycle.deleteNotes(moved, ['saved', 'other'], 100);
+  assert.equal(deleted.notes.length, 0);
+  assert.deepEqual(plain(deleted.trash.map(note => [note.id, note.deletedAt])), [['saved', 100], ['other', 100]]);
+});
+
 test('unclassified import returns to the library and clears stale project and search filters',async()=>{
   const view={spaces:[],documentImportBusy:false,activeNav:'首页',activeSpaceId:'old',searchText:'old',activeFilter:'PDF',getAbilityContext:()=>({}),
     storage:{selectDocumentUris:async()=>['book']},notify(){},importOneDocument:async()=>({id:'book'})};
@@ -3654,8 +3802,25 @@ test('cover preparation cannot revert an edit that completed before its queued c
 
 test('startup initialization always releases its loading state and reports unexpected failures',async()=>{
   const bootstrap=viewMethod('pages/Index.ets','bootstrap');const messages=[];
-  const view={workspaceLoading:true,loadWorkspace:async()=>{throw Error('startup');},notify:message=>messages.push(message)};
+  const view={workspaceLoading:true,loadWorkspace:async()=>{throw Error('startup');},notify:message=>messages.push(message),handleSharedPackage(){}};
   await bootstrap.call(view);assert.equal(view.workspaceLoading,false);assert.equal(messages.length,1);assert.match(messages[0],/初始化未完成/);
+});
+
+test('a system share from cold start opens the import preview only after library initialization', () => {
+  const messages = [];
+  const handle = viewMethod('pages/Index.ets', 'handleSharedPackage', { StudyShareInbox: { pending: () => studyBackup(), notice: () => '' } });
+  const openBackup = viewMethod('pages/Index.ets', 'openBackup');
+  const view = { workspaceLoading: true, studyShareRevision: 1, handledStudyShareRevision: 0, backupVisible: false,
+    openBackup, notify: message => messages.push(message) };
+  handle.call(view);
+  assert.equal(view.backupVisible, false);
+  view.workspaceLoading = false;
+  handle.call(view);
+  assert.equal(view.backupVisible, true);
+  view.backupVisible = false;
+  handle.call(view);
+  assert.equal(view.backupVisible, false);
+  assert.deepEqual(messages, []);
 });
 
 

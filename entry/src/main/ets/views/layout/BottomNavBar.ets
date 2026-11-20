@@ -1,10 +1,10 @@
 /** Compact-width primary navigation. Labels follow the tablet workspace; icons reuse its SVG set. */
 import { window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
-import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
+import { AnimationTokens, ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { AppIcon } from '../common/AppIcon';
-import { NAV_HOME, NAV_LIBRARY, NAV_TODO, NAV_GRAPH } from '../../common/constants/WorkspaceConstants';
+import { NAV_HOME, NAV_LIBRARY, NAV_TODO, NAV_GRAPH, NAV_CHAT } from '../../common/constants/WorkspaceConstants';
 
 interface BottomTabItem {
   icon: Resource;
@@ -26,6 +26,7 @@ export struct BottomNavBar {
   private tabs: BottomTabItem[] = [
     { icon: $r('app.media.ic_home'), label: '记录', navKey: NAV_HOME },
     { icon: $r('app.media.ic_read'), label: '资料', navKey: NAV_LIBRARY },
+    { icon: $r('app.media.ic_chat'), label: '助手', navKey: NAV_CHAT },
     { icon: $r('app.media.ic_check'), label: '待办', navKey: NAV_TODO },
     { icon: $r('app.media.ic_graph'), label: '图谱', navKey: NAV_GRAPH }
   ];
@@ -63,37 +64,37 @@ export struct BottomNavBar {
 
   @Builder
   tabItem(tab: BottomTabItem) {
-    Column({ space: 2 }) {
-      AppIcon({ source: tab.icon, iconSize: 20, tint: this.activeNav === tab.navKey ? this.palette().inkPrimary : this.palette().inkMuted })
-      Text(tab.label)
-        .fontSize(TypographyTokens.TINY)
-        .fontWeight(this.activeNav === tab.navKey ? FontWeight.Bold : FontWeight.Normal)
-        .fontColor(this.activeNav === tab.navKey ? this.palette().inkPrimary : this.palette().inkMuted)
-        .maxLines(1)
+    Button({ type: ButtonType.Normal }) {
+      Column({ space: 2 }) {
+        AppIcon({ source: tab.icon, iconSize: 20, tint: this.activeNav === tab.navKey ? this.palette().accent : this.palette().inkSecondary })
+        Text(tab.label).fontSize(TypographyTokens.TINY).maxLines(1)
+          .fontWeight(this.activeNav === tab.navKey ? FontWeight.Bold : FontWeight.Normal)
+          .fontColor(this.activeNav === tab.navKey ? this.palette().inkPrimary : this.palette().inkSecondary)
+      }.width('100%').height('100%').justifyContent(FlexAlign.Center)
     }
     .layoutWeight(1)
-    .height(LayoutTokens.BOTTOM_NAV_HEIGHT)
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .borderRadius(5)
+    .height(LayoutTokens.BOTTOM_NAV_HEIGHT - 8)
+    .padding(0)
+    .borderRadius(14)
     .backgroundColor(this.activeNav === tab.navKey ? this.palette().activeBg : Color.Transparent)
     .accessibilityText(tab.label)
+    .accessibilityDescription(this.activeNav === tab.navKey ? '已选中' : '未选中')
     .onClick(() => {
-      if (this.activeNav !== tab.navKey) { this.onSelectNav(tab.navKey); }
+      if (this.activeNav !== tab.navKey) {
+        animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_SMOOTH }, () => this.onSelectNav(tab.navKey));
+      }
     })
   }
 
   build() {
-    Row({ space: 2 }) {
-      ForEach(this.tabs, (tab: BottomTabItem) => {
-        this.tabItem(tab)
-      }, (tab: BottomTabItem) => tab.navKey)
-    }
-    .width('100%')
-    .height(LayoutTokens.BOTTOM_NAV_HEIGHT)
-    .padding({ left: 4, right: 4 })
-    .backgroundColor(this.palette().surface)
-    .border({ width: { top: 1 }, color: this.palette().borderSubtle })
-    .visibility(this.keyboardVisible ? Visibility.None : Visibility.Visible)
+    Column() {
+      Row({ space: 2 }) {
+        ForEach(this.tabs, (tab: BottomTabItem) => { this.tabItem(tab) }, (tab: BottomTabItem) => tab.navKey)
+      }.width('100%').height(LayoutTokens.BOTTOM_NAV_HEIGHT).padding(4).borderRadius(19)
+        .backgroundColor(this.palette().surface)
+        .border({ width: 1, color: this.palette().borderSubtle })
+        .shadow({ radius: 12, offsetY: 4, color: this.isDarkMode ? 'rgba(0,0,0,0.30)' : 'rgba(0,0,0,0.10)' })
+    }.width('100%').padding({ top: 6, bottom: 8, left: 12, right: 12 }).backgroundColor(this.palette().canvas)
+      .visibility(this.keyboardVisible ? Visibility.None : Visibility.Visible)
   }
 }

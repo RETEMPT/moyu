@@ -733,7 +733,8 @@ export struct HandwritingCanvas {
       // 白纸质感手绘无限画布区 (支持向下无限滚动与动态延展)
       Stack({ alignContent: Alignment.TopStart }) {
         InkCanvasSurface({ drawingContext: this.context, liveContext: this.liveContext, paperContext: this.paperContext,
-          drawPaper: true, contentReady: !this.loadingInk, interactive: !this.loadingInk && !this.loadError, liveOpacity: this.isHighlighter && !this.isEraser ? 0.35 : 1,
+          drawPaper: true, contentReady: !this.loadingInk, interactive: !this.loadingInk && !this.loadError,
+          liveOpacity: this.isHighlighter && !this.isEraser ? InkRenderer.HIGHLIGHTER_OPACITY : 1,
           onPaintReady: () => this.requestRedraw(), onInput: (event: TouchEvent) => this.handleTouch(event),
           onBlankTap: () => { if (this.readOnly && !this.inkContact) { this.onBlankTap(); } },
           onSizeChanged: (surfaceWidth: number, surfaceHeight: number) => {

@@ -16,6 +16,7 @@ from .tutor import study_messages, validate_output
 
 PORT = 8765
 MAX_REQUEST = 48 * 1024
+MAX_CHAT_CONTEXT = 7000
 DEEPSEEK_MODELS = {"deepseek-flash": "DeepSeek Flash", "deepseek-v4-pro": "DeepSeek V4 Pro"}
 SEARCH_TOOL = {
     "type": "function",
@@ -87,6 +88,39 @@ def generate(value, providers):
                                "result": {"draft": draft, "warnings": ["仅覆盖所选资料，结论请对照原文。"]}}))
 
 
+def chat(value, providers):
+    keys(value, "model messages")
+    model = value["model"]
+    if not isinstance(model, str) or model not in providers:
+        raise ValueError("此模型在电脑网关中不可用，请重新连接并选择模型。")
+    history = value["messages"]
+    if not isinstance(history, list) or not 1 <= len(history) <= 13 or len(history) % 2 == 0:
+        raise ValueError("对话格式无效。")
+
+    messages = [{"role": "system", "content": '你是墨语学习对话助手。请用用户的语言回答，说明不确定之处。'
+                 '当前没有提供资料库内容。输出 JSON 对象，只包含字符串字段 "reply"。'}]
+    units = 0
+    for index, item in enumerate(history):
+        keys(item, "role content")
+        role = "user" if index % 2 == 0 else "assistant"
+        limit = 1200 if role == "user" else 4800
+        content = item["content"]
+        if item["role"] != role or not isinstance(content, str) or not content.strip():
+            raise ValueError("对话消息格式无效。")
+        length = len(content.encode("utf-16-le")) // 2
+        units += length
+        if length > limit or units > MAX_CHAT_CONTEXT:
+            raise ValueError("对话内容过长，请缩短问题或新建对话。")
+        messages.append({"role": role, "content": content})
+
+    answer, _ = providers[model].generate(messages)
+    keys(answer, "reply")
+    reply = answer["reply"]
+    if not isinstance(reply, str) or not reply.strip() or len(reply.encode("utf-16-le")) // 2 > 4800:
+        raise ValueError("模型返回的回复为空或过长。")
+    return encode({"reply": reply.strip()}).encode("utf-8")
+
+
 def handler(providers, pairing_code):
     busy = Lock()
     allowed_hosts = {f"127.0.0.1:{PORT}", f"10.0.2.2:{PORT}"}
@@ -135,7 +169,7 @@ def handler(providers, pairing_code):
                 self.reply(200, catalog)
 
         def do_POST(self):
-            if self.path != "/v1/study":
+            if self.path not in ("/v1/study", "/v1/chat"):
                 self.error_json(404, "未知接口。")
                 return
             if not self.authorized():
@@ -157,7 +191,8 @@ def handler(providers, pairing_code):
                 self.error_json(409, "上一个请求仍在处理，请稍后再试。")
                 return
             try:
-                self.reply(200, generate(value, providers))
+                run = chat if self.path == "/v1/chat" else generate
+                self.reply(200, run(value, providers))
             except (UnicodeError, RecursionError):
                 self.error_json(422, "资料文字无效。")
             except ValueError as error:

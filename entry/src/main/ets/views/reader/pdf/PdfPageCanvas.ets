@@ -308,7 +308,7 @@ export struct PdfPageCanvas {
         onRestoreSource: () => this.onRestoreSource() })
     InkCanvasSurface({ drawingContext: this.context, liveContext: this.liveContext,
       contentReady: this.sourceReady, interactive: this.sourceReady && this.isAnnotateMode && this.tool !== 'pan',
-      liveOpacity: this.tool === 'highlighter' ? 0.35 : 1,
+      liveOpacity: this.tool === 'highlighter' ? InkRenderer.HIGHLIGHTER_OPACITY : 1,
       onPaintReady: () => this.scheduleRedraw(), onInput: (event: TouchEvent) => this.handleTouch(event),
       onSizeChanged: (width: number, height: number) => {
         if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) { return; }

@@ -8,6 +8,7 @@ export const NAV_HOME: string = '首页';
 export const NAV_SETTINGS: string = '设置';
 export const NAV_LIBRARY: string = '资料库';
 export const NAV_GRAPH: string = '图谱';
+export const NAV_CHAT: string = '助手';
 /** 独立自由画布工作区。 */
 export const NAV_CANVAS: string = '白板';
 export const FREE_CANVAS_ID: string = 'canvas-global';
