@@ -2,12 +2,14 @@ import { KeyboardAvoidMode } from '@kit.ArkUI';
 import { picker } from '@kit.CoreFileKit';
 import { ColorPalette, TypographyTokens } from '../../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../../common/theme/ThemeHelper';
+import { NoteItem } from '../../../common/types/NoteItem';
 import { SmartContent } from '../../../common/types/SmartContent';
 import { SmartTask } from '../../../common/types/SmartTask';
 import { SmartExtractService, SmartLayoutStyle, SMART_INPUT_LIMIT } from '../../../services/smart/SmartExtractService';
 import { SmartNoteBuilder } from '../../../services/smart/SmartNoteBuilder';
 import { OcrService } from '../../../services/ocr/OcrService';
-import { DocumentExtractService } from '../../../services/smart/DocumentExtractService';
+import { DocumentExtractService, PdfExtractionCursor } from '../../../services/smart/DocumentExtractService';
+import { TextImportPolicy } from '../../../services/smart/TextImportPolicy';
 import { common } from '@kit.AbilityKit';
 import { IconButton } from '../../common/IconButton';
 import { AppIcon } from '../../common/AppIcon';
@@ -24,13 +26,16 @@ interface SmartExtractDraft {
   selectedTaskIds: string[];
   style?: SmartLayoutStyle;
   mergeWrappedLines?: boolean;
+  pdfSource?: SmartPdfSource | null;
 }
+
+interface SmartPdfSource { path: string; pages: number; next: PdfExtractionCursor; }
 
 @Component
 export struct SmartExtractSheet {
   onClose: () => void = () => {};
   onCommit: (content: SmartContent, selectedTasks: SmartTask[]) => Promise<void> = async () => {};
-  onImportSource: (uri: string) => Promise<string> = async () => { throw new Error('资料库尚未就绪，请稍后重试'); };
+  onImportSource: (uri: string) => Promise<NoteItem> = async () => { throw new Error('资料库尚未就绪，请稍后重试'); };
   @Prop @Watch('requestClose') closeToken: number = 0;
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
@@ -40,8 +45,7 @@ export struct SmartExtractSheet {
   @State private imageUri: string = '';
   @State private sourceNotice: string = '';
   @State private layoutStyle: SmartLayoutStyle = 'faithful';
-  @State private pdfStart: string = '1';
-  @State private pdfEnd: string = '1';
+  @State private pdfSource: SmartPdfSource | null = null;
   @State private importProgress: string = '';
   @State private mergeWrappedLines: boolean = false;
   @State private result: SmartContent | null = null;
@@ -64,6 +68,7 @@ export struct SmartExtractSheet {
       this.imageUri = draft.imageUri || '';
       this.layoutStyle = draft.style === 'study' ? 'study' : 'faithful';
       this.mergeWrappedLines = draft.mergeWrappedLines === true;
+      this.pdfSource = draft.pdfSource || null;
     }
     if (draft && draft.result !== null) {
       this.inputText = draft.input;
@@ -100,24 +105,58 @@ export struct SmartExtractSheet {
     try {
       const options = new picker.DocumentSelectOptions(); options.maxSelectNumber = 1;
       options.fileSuffixFilters = ['学习文档|.pdf,.md,.markdown,.txt'];
-      const selected = await new picker.DocumentViewPicker().select(options);
+      const selected = await new picker.DocumentViewPicker(getContext(this) as common.UIAbilityContext).select(options);
       if (!this.alive || id !== this.requestId || !selected.length) { return; }
-      DocumentExtractService.validateInput(selected[0]);
       this.importProgress = '正在保存到本机资料库…';
-      const localPath = await this.onImportSource(selected[0]);
+      const note = await this.onImportSource(selected[0]);
       if (!this.alive || id !== this.requestId) { return; }
-      this.sourceNotice = '资料已保存到本机资料库「外部参考」，可离线重新打开。';
-      this.importProgress = '正在读取本机副本…';
-      const result = await DocumentExtractService.read(getContext(this) as common.UIAbilityContext, localPath,
-        Number(this.pdfStart), Number(this.pdfEnd), () => !this.alive || id !== this.requestId,
-        (page: number) => { if (this.alive && id === this.requestId) { this.importProgress = `正在提取第 ${page} 页…`; } });
-      if (!this.alive || id !== this.requestId) { return; }
-      const appended = this.inputText.trim() ? `${this.inputText}\n\n${result.text}` : result.text;
-      if (appended.length > SMART_INPUT_LIMIT) { throw new Error('追加后文字超过上限，请先整理当前内容或缩小导入范围'); }
-      this.inputText = appended; this.sourceNotice += '\n' + result.notice; AppStorage.setOrCreate('smartExtractDraft', appended);
+      this.sourceNotice = `已保存「${note.title}」到资料库`;
+      this.pdfSource = null;
+      if (note.sourceType === 'pdf' && note.sourceUri) {
+        this.pdfSource = { path: note.sourceUri, pages: note.pageCount || 0, next: { page: 1, offset: 0 } };
+        await this.extractPdf(id);
+      } else {
+        this.appendText(TextImportPolicy.parse(note.contentDetail));
+      }
     } catch (error) {
       if (this.alive && id === this.requestId) { this.errorMsg = error instanceof Error ? error.message : '文档提取未成功，原输入已保留'; }
     } finally { if (this.alive && id === this.requestId) { this.step = 'input'; this.importProgress = ''; } }
+  }
+
+  private appendText(text: string): void {
+    const appended = this.inputText.trim() ? this.inputText + '\n\n' + text : text;
+    if (appended.length > SMART_INPUT_LIMIT) { throw new Error('文字超过编辑区上限，请先整理当前文字'); }
+    this.inputText = appended;
+    AppStorage.setOrCreate('smartExtractDraft', appended);
+  }
+
+  private async extractPdf(id: number): Promise<void> {
+    const pdf = this.pdfSource;
+    if (!pdf) { return; }
+    const budget = SMART_INPUT_LIMIT - (this.inputText.trim() ? this.inputText.length + 2 : 0);
+    this.importProgress = `正在提取第 ${pdf.next.page} 页…`;
+    const result = await DocumentExtractService.readPdf(pdf.path, pdf.pages, pdf.next, budget, OcrService.isHardwareSupported(),
+      () => !this.alive || id !== this.requestId,
+      (page: number) => { if (this.alive && id === this.requestId) { this.importProgress = `正在提取第 ${page} 页…`; } });
+    if (!this.alive || id !== this.requestId) { return; }
+    if (result.text) { this.appendText(result.text); }
+    this.pdfSource = result.next ? { path: pdf.path, pages: pdf.pages, next: result.next } : null;
+    if (!result.text) {
+      this.errorMsg = OcrService.isHardwareSupported() ? '这部分未识别到文字' : '这部分未找到文字层，当前设备无法识别扫描页';
+    }
+  }
+
+  private async continuePdf(): Promise<void> {
+    if (this.busy() || !this.pdfSource) { return; }
+    const id = ++this.requestId;
+    this.errorMsg = '';
+    this.step = 'importing';
+    try { await this.extractPdf(id); }
+    catch (error) {
+      if (this.alive && id === this.requestId) { this.errorMsg = error instanceof Error ? error.message : '提取失败，可重试'; }
+    } finally {
+      if (this.alive && id === this.requestId) { this.step = 'input'; this.importProgress = ''; }
+    }
   }
 
   private requestClose(): void {
@@ -129,7 +168,7 @@ export struct SmartExtractSheet {
       result: this.step === 'result' ? this.result : null, title: this.title,
       category: this.category, body: this.body, tasks: this.tasks,
       selectedTaskIds: this.selectedTaskIds,
-      style: this.layoutStyle, mergeWrappedLines: this.mergeWrappedLines };
+      style: this.layoutStyle, mergeWrappedLines: this.mergeWrappedLines, pdfSource: this.pdfSource };
     AppStorage.setOrCreate('smartExtractResultDraft', draft);
     this.requestId++;
     this.onClose();
@@ -160,7 +199,7 @@ export struct SmartExtractSheet {
       if (appended.length > SMART_INPUT_LIMIT) { throw new Error('追加后文字超过上限，请先整理当前内容，原输入已保留'); }
       this.inputText = appended;
       this.imageUri = picked.photoUris[0];
-      this.sourceNotice = '图片文字已追加，请先校对姓名、数字、日期，再开始排版。';
+      this.sourceNotice = '';
       AppStorage.setOrCreate('smartExtractDraft', this.inputText);
     } catch (error) {
       if (this.alive && id === this.requestId) {
@@ -267,6 +306,12 @@ export struct SmartExtractSheet {
       await this.onCommit(this.previewContent(), this.chosenTasks());
       AppStorage.setOrCreate('smartExtractDraft', '');
       AppStorage.delete('smartExtractResultDraft');
+      if (this.pdfSource) {
+        const draft: SmartExtractDraft = { input: '', imageUri: '', result: null, title: '', category: '',
+          body: '', tasks: [], selectedTaskIds: [], style: this.layoutStyle,
+          mergeWrappedLines: this.mergeWrappedLines, pdfSource: this.pdfSource };
+        AppStorage.setOrCreate('smartExtractResultDraft', draft);
+      }
       this.onClose();
     } catch (error) {
       this.step = 'result';
@@ -283,16 +328,10 @@ export struct SmartExtractSheet {
   @Builder
   inputPanel() {
     Column({ space: 12 }) {
-      this.hint('1  导入或粘贴 → 2  校对文字 → 3  预览排版 → 4  保存笔记')
-      Row({ space: 6 }) {
-        AppIcon({ source: $r('app.media.ic_check'), iconSize: 14, tint: OcrService.isHardwareSupported() ? this.palette().accent : this.palette().inkMuted })
-        Text(OcrService.isHardwareSupported() ? '端侧 NPU 硬件加速 · 本地离线识别' : '当前设备未提供系统 OCR，支持粘贴文本')
-          .fontSize(TypographyTokens.TINY).fontColor(this.palette().inkSecondary)
-      }.width('100%').justifyContent(FlexAlign.Start)
       Button({ type: ButtonType.Normal }) {
         Row({ space: 8 }) {
           AppIcon({ source: $r('app.media.ic_note'), tint: this.palette().accent })
-          Text('从扫描件 / 图片识别文字 (OCR)').fontSize(14)
+          Text('从图片识别文字').fontSize(14)
         }.justifyContent(FlexAlign.Center).width('100%')
       }.width('100%').height(48)
         .accessibilityText('从图片识别文字')
@@ -300,22 +339,17 @@ export struct SmartExtractSheet {
         .onClick(() => this.pickImageAndOcr())
       Button('导入 PDF / Markdown / TXT').width('100%').height(48)
         .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle).onClick(() => this.pickDocument())
-      Row({ space: 8 }) {
-        Text('PDF 页范围').fontSize(12).fontColor(this.palette().inkSecondary)
-        TextInput({ text: this.pdfStart, placeholder: '起始页' }).layoutWeight(1).height(44)
-          .onChange((value: string) => { this.pdfStart = value; })
-        Text('–').fontColor(this.palette().inkMuted)
-        TextInput({ text: this.pdfEnd, placeholder: '结束页' }).layoutWeight(1).height(44)
-          .onChange((value: string) => { this.pdfEnd = value; })
-      }.width('100%')
-      this.hint('导入会保存到本机资料库「外部参考」。PDF 每次提取最多 5 页；Markdown 和 TXT 可直接整理。')
+      if (this.pdfSource) {
+        Button(`继续提取 PDF · 第 ${this.pdfSource.next.page} 页`, { type: ButtonType.Normal }).width('100%').height(44)
+          .fontColor(this.palette().accent).backgroundColor(this.palette().accentSoft).onClick(() => this.continuePdf())
+      }
       if (this.imageUri.length > 0) {
         Image(this.imageUri).width('100%').height(100).objectFit(ImageFit.Contain).borderRadius(8)
       }
       if (this.sourceNotice.length > 0) {
-        this.hint(this.sourceNotice)
+        Text(this.sourceNotice).fontSize(14).fontColor(this.palette().inkPrimary).width('100%')
       }
-      TextArea({ text: this.inputText, placeholder: '粘贴通知、课程资料或随笔，也可以先识别图片。' })
+      TextArea({ text: this.inputText, placeholder: '粘贴或校对文字' })
         .height(this.isPhone ? 180 : 220).width('100%').fontSize(TypographyTokens.BODY_REGULAR)
         .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle)
         .onChange((value: string) => {
@@ -323,9 +357,9 @@ export struct SmartExtractSheet {
           AppStorage.setOrCreate('smartExtractDraft', value);
           this.errorMsg = '';
         })
-      Text(`${this.inputText.length} / ${SMART_INPUT_LIMIT} 字`)
-        .fontSize(TypographyTokens.TINY).fontColor(this.inputText.length > SMART_INPUT_LIMIT ? this.palette().danger : this.palette().inkMuted)
-        .width('100%')
+      if (this.inputText.length > SMART_INPUT_LIMIT) {
+        Text(`最多 ${SMART_INPUT_LIMIT} 字，请分段整理`).fontSize(14).fontColor(this.palette().danger).width('100%')
+      }
       Row({ space: 8 }) {
         Button('保留原文').layoutWeight(1).height(44)
           .fontColor(this.palette().inkPrimary)
@@ -336,14 +370,11 @@ export struct SmartExtractSheet {
           .backgroundColor(this.layoutStyle === 'study' ? this.palette().accentSoft : this.palette().surfaceSubtle)
           .onClick(() => { this.layoutStyle = 'study'; })
       }.width('100%')
-      this.hint(this.layoutStyle === 'study' ? '按明确标题和项目符号整理层级，不改写或补充知识。' : '保留段落、原顺序、代码与公式，仅补笔记标题。')
       Row({ space: 10 }) {
         Text('合并图片断行').fontSize(14).layoutWeight(1).fontColor(this.palette().inkPrimary)
         Toggle({ type: ToggleType.Switch, isOn: this.mergeWrappedLines }).selectedColor(this.palette().accent)
           .onChange((value: boolean) => { this.mergeWrappedLines = value; })
       }.width('100%').constraintSize({ minHeight: 48 })
-      if (this.mergeWrappedLines) { this.hint('尝试连接普通正文的断行，列表、空段、代码、表格与公式保留。请对照原文检查多栏内容和特殊换行。') }
-      this.hint('本地规则整理，保留原文。')
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
@@ -370,7 +401,6 @@ export struct SmartExtractSheet {
   @Builder
   resultPanel() {
     Column({ space: 12 }) {
-      this.hint(this.result?.processingNotice || '')
       TextInput({ text: this.title, placeholder: '笔记标题' }).height(44)
         .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle)
         .onChange((value: string) => { this.title = value; })
@@ -398,10 +428,9 @@ export struct SmartExtractSheet {
       } else {
         DocumentText({ text: this.previewBody() }).width('100%').padding(12).borderRadius(5).backgroundColor(this.palette().surfaceSubtle)
       }
-      Text(`添加到日历 · 已选 ${this.selectedTaskIds.length} 项`)
-        .fontSize(TypographyTokens.BODY_REGULAR).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
-      if (this.tasks.length === 0) {
-        this.hint('没有识别到明确的待办，可直接保存笔记。')
+      if (this.tasks.length > 0) {
+        Text(`添加到日历 · 已选 ${this.selectedTaskIds.length} 项`)
+          .fontSize(TypographyTokens.BODY_REGULAR).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
       }
       ForEach(this.tasks.map((task: SmartTask) => task.id), (taskId: string, index: number) => {
         this.taskRow(index)
@@ -434,7 +463,7 @@ export struct SmartExtractSheet {
           Text(this.errorMsg).width('100%').fontSize(14).fontColor(this.palette().danger)
         }
         if (this.step === 'input') {
-          Button('开始本地整理').width('100%').height(48)
+          Button('开始整理').width('100%').height(48)
             .fontColor(this.palette().onAccent).backgroundColor(this.palette().accent)
             .enabled(this.inputText.trim().length > 0 && this.inputText.length <= SMART_INPUT_LIMIT)
             .onClick(() => this.triggerExtraction())

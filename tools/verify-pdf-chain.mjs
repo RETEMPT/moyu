@@ -61,8 +61,10 @@ function viewMethod(relative, name, globals = {}) {
 
 function platform({ shortCopy = false, syncFails = false, renderFails = false, parseResult = 0,
   pageCount = 2, selection = 'file://picked/course.pdf', writeFails = false, flushFails = false,
-  nativeMissing = false, nativeKitUnavailable = false, debug = true, offlineInfo, offlineError, damagedSource, nativeExecutor } = {}) {
+  nativeMissing = false, nativeKitUnavailable = false, debug = true, offlineInfo, offlineError, damagedSource,
+  nativeExecutor, pixelBytes = 2 * 1024 * 1024, deviceType = 'phone' } = {}) {
   const calls = [];
+  const bitmap = label => ({ getPixelBytesNumber: () => pixelBytes, release: async () => calls.push(label) });
   let inWorker = false;
   const files = new Map([['file://picked/course.pdf', Buffer.from(fixture)]]);
   const directories = new Set(['/sandbox']);
@@ -112,7 +114,7 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
     getPage(index) { calls.push(['native-page', index]); return {
       getWidth: () => 595.28, getHeight: () => 841.89, getTextContent: () => `Page ${index + 1}`,
       getCustomPagePixelMap: () => { if (renderFails) throw Error('native render failed');
-        calls.push('native-render'); return { release: async () => calls.push('bitmap-release') }; },
+        calls.push('native-render'); return bitmap('bitmap-release'); },
       release: () => calls.push('page-release') }; }
     releaseDocument() { calls.push('document-release'); }
   }
@@ -129,7 +131,7 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
         if (!offlineInfo) throw Error('离线阅读组件未就绪，请重试');
         if (renderFails) throw Error('offline render failed');
         return { pageCount: offlineInfo.pageCount, aspectRatio: 2 / 3,
-          pixelMap: { release: async () => calls.push('offline-bitmap-release') } };
+          pixelMap: bitmap('offline-bitmap-release') };
       },
       inspect: async file => { calls.push(['offline-info', file]);
         if (offlineError) throw Error(offlineError);
@@ -139,10 +141,11 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
       render: async (file, page, cancelled) => { calls.push(['offline-page', file, page]);
         if (cancelled()) throw Error('页面已离开');
         if (renderFails) throw Error('offline render failed');
-        return { aspectRatio: 2 / 3, pixelMap: { release: async () => calls.push('offline-bitmap-release') } }; }
+        return { aspectRatio: 2 / 3, pixelMap: bitmap('offline-bitmap-release') }; }
     }) } },
     canIUse: () => !nativeMissing,
     BuildProfile: { default: { DEBUG: debug } },
+    '@kit.BasicServicesKit': { deviceInfo: { deviceType }, zlib: {} },
     '@kit.CryptoArchitectureKit': { cryptoFramework: { createMd: () => {
       const hash = createHash('sha256');
       return { update: async ({ data }) => hash.update(data), digest: async () => ({ data: hash.digest() }) };
@@ -150,7 +153,7 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
     '@kit.ImageKit': { image: { PixelMapFormat: { RGBA_8888: 1 }, createImageSource: bytes => {
       assert.equal(Buffer.from(bytes).subarray(1, 4).toString(), 'PNG'); calls.push('debug-image-source');
       return { getImageInfo: async () => ({ size: { width: 1200, height: 1698 } }),
-        createPixelMap: async () => ({ release: async () => calls.push('debug-bitmap-release') }),
+        createPixelMap: async () => bitmap('debug-bitmap-release'),
         release: async () => calls.push('debug-image-release') };
     } } },
     '@kit.CoreFileKit': { fileIo, picker: { DocumentViewPicker, DocumentSelectOptions: class {} } },
@@ -248,17 +251,19 @@ test('missing PDF Kit routes real metadata and page rendering through the offlin
   assert.ok(p.calls.some(c=>Array.isArray(c)&&c[0]==='offline-page'&&c[2]===274));
   assert.ok(!p.calls.includes('debug-image-source'));assert.equal(p.descriptors.size,0);
 });
-test('offline PDF import reads page count and cover in one request and reuses the cover when opened', async () => {
+test('offline PDF import commits after reading metadata and renders a page when opened', async () => {
   const p = platform({ nativeMissing: true, debug: false, offlineInfo: { pageCount: 549 } });
   const result = await p.storage.importDocument(context);
   assert.equal(result.status, 'imported');
   assert.equal(result.pageCount, 549);
   assert.equal(result.sourceSha256, createHash('sha256').update(fixture).digest('hex'));
+  assert.deepEqual(p.calls.filter(call => Array.isArray(call) && call[0].startsWith('offline-')),
+    [['offline-info', result.sourceUri]]);
   const page = await p.pdf.renderPageAsync(result.sourceUri, 0);
   assert.equal(page.aspectRatio, 2 / 3);
   await page.pixelMap.release();
   assert.deepEqual(p.calls.filter(call => Array.isArray(call) && call[0].startsWith('offline-')),
-    [['offline-cover', result.sourceUri]]);
+    [['offline-info', result.sourceUri], ['offline-page', result.sourceUri, 0]]);
 });
 test('PDFKit startup failure degrades to the offline engine without probing the Kit on every page', async () => {
   const p = platform({ nativeKitUnavailable: true, debug: false, offlineInfo: { pageCount: 5 } });
@@ -269,7 +274,7 @@ test('PDFKit startup failure degrades to the offline engine without probing the 
   await page.pixelMap.release();
   assert.equal(p.calls.filter(call => call === 'native-unavailable').length, 1);
   assert.deepEqual(p.calls.filter(call => Array.isArray(call) && call[0].startsWith('offline-')),
-    [['offline-cover', result.sourceUri], ['offline-page', result.sourceUri, 1]]);
+    [['offline-info', result.sourceUri], ['offline-page', result.sourceUri, 1]]);
 });
 test('offline capability failures preserve their cause without claiming the source is missing', async () => {
   const p=platform({nativeMissing:true,debug:false,offlineError:'离线阅读组件连接失败'});
@@ -311,11 +316,11 @@ test('missing or empty sources never invoke the native parser', async () => {
   assert.ok(!p.calls.some(call => call[0] === 'native-load'));
 });
 
-test('a native parse success alone cannot publish an unrenderable imported PDF', async () => {
+test('a first-page rendering error leaves the indexed original available for recovery', async () => {
   const p = platform({ renderFails: true }); const result = await p.storage.importDocument(context);
-  assert.equal(result.status, 'failed'); assert.match(result.message, /native render/);
-  assert.ok(![...p.files.keys()].some(file => file.startsWith('/sandbox/documents/')));
-  assert.ok(![...p.files.keys()].some(file => file.startsWith('/sandbox/notes/')));
+  assert.equal(result.status, 'imported');
+  await assert.rejects(p.pdf.renderPageAsync(result.sourceUri, 0), /native render/);
+  assert.ok(p.files.has(result.sourceUri)); assert.ok(p.files.has(result.document.filePath));
   assert.ok(p.calls.includes('page-release')); assert.equal(p.descriptors.size, 0);
 });
 
@@ -327,8 +332,8 @@ test('import then snapshot reload retains the actual PDF source bytes and page c
   const reloaded = await p.restartStorage().load(context, []);
   assert.equal(reloaded[0].sourceUri, result.sourceUri); assert.ok(p.files.get(reloaded[0].sourceUri).equals(fixture));
   assert.equal((await p.pdf.validateImport(reloaded[0].sourceUri)).pageCount, 2);
-  // The first import keeps its cover for an instant note open; validating the same source
-  // again must replace (and release) that retained bitmap rather than leaking it.
+  await p.pdf.validateImport(reloaded[0].sourceUri);
+  // An explicit cover revalidation replaces (and releases) its prior retained bitmap.
   assert.ok(p.calls.includes('bitmap-release'));
 });
 
@@ -407,10 +412,10 @@ test('malformed local filenames never redirect a PDF into a different directory'
   }
 });
 
-test('a 600-page textbook import parses metadata and renders only the first page before publishing', async () => {
+test('a 600-page textbook import reads real page metadata before publishing without rasterizing pages', async () => {
   const p = platform({ pageCount: 600 }); const result = await p.storage.importDocument(context);
   assert.equal(result.status, 'imported'); assert.equal(result.pageCount, 600);
-  assert.deepEqual(p.calls.filter(call => call[0] === 'native-page').map(call => call[1]), [0]);
+  assert.deepEqual(p.calls.filter(call => call[0] === 'native-page'), []);
   assert.equal(p.descriptors.size, 0); assert.ok(p.files.get(result.sourceUri).equals(fixture));
 });
 
@@ -1243,12 +1248,50 @@ test('a page component removed after reader exit cannot restore the cleared PDF 
 });
 
 test('bounded PDF cache releases evictions and all retained pages on reader exit', async () => {
-  const p = platform({ pageCount: 5 }); const source = '/sandbox/documents/course.pdf'; p.files.set(source, fixture);
-  for (let index = 0; index < 5; index++) {
+  const p = platform({ pageCount: 8 }); const source = '/sandbox/documents/course.pdf'; p.files.set(source, fixture);
+  for (let index = 0; index < 8; index++) {
     const result = await p.pdf.renderPageAsync(source, index); p.pdf.recyclePage(source, index, result.pixelMap, result.aspectRatio);
   }
-  assert.equal(p.pdf.pageCache.size, 3); assert.equal(p.calls.filter(call => call === 'bitmap-release').length, 2);
-  p.pdf.clearPageCache(); assert.equal(p.pdf.pageCache.size, 0); assert.equal(p.calls.filter(call => call === 'bitmap-release').length, 5);
+  assert.equal(p.pdf.pageCache.size, 6); assert.equal(p.calls.filter(call => call === 'bitmap-release').length, 2);
+  p.pdf.clearPageCache(); assert.equal(p.pdf.pageCache.size, 0); assert.equal(p.calls.filter(call => call === 'bitmap-release').length, 8);
+});
+
+test('PDF cache enforces phone and tablet pixel budgets and keeps recently returned pages', async () => {
+  const bytesPerPage = 12 * 1024 * 1024;
+  const source = '/sandbox/documents/course.pdf';
+  for (const [deviceType, capacity] of [['phone', 2], ['tablet', 4]]) {
+    const p = platform({ pageCount: 6, pixelBytes: bytesPerPage, deviceType });
+    p.files.set(source, fixture);
+    const cachePage = async index => {
+      const page = await p.pdf.renderPageAsync(source, index);
+      assert.equal(p.pdf.recyclePage(source, index, page.pixelMap, page.aspectRatio), true);
+      return page.pixelMap;
+    };
+    for (let index = 0; index < capacity; index++) await cachePage(index);
+    const latest = await cachePage(0);
+    await cachePage(capacity);
+    assert.equal(p.pdf.cachedBytes, capacity * bytesPerPage);
+    assert.equal(p.pdf.pageCache.size, capacity);
+    assert.ok(!p.pdf.pageCache.has(source + '#1'));
+    const adopted = await p.pdf.renderPageAsync(source, 0);
+    assert.equal(adopted.pixelMap, latest);
+    assert.equal(p.pdf.cachedBytes, (capacity - 1) * bytesPerPage);
+    await adopted.pixelMap.release();
+    await p.pdf.removeManagedPdf(context, source);
+    assert.equal(p.pdf.cachedBytes, 0);
+    assert.equal(p.calls.filter(call => call === 'bitmap-release').length, capacity + 1);
+  }
+});
+
+test('a bitmap over the PDF cache budget stays owned by the reader', async () => {
+  const p = platform({ pixelBytes: 25 * 1024 * 1024 });
+  const source = '/sandbox/documents/course.pdf';
+  p.files.set(source, fixture);
+  const page = await p.pdf.renderPageAsync(source, 0);
+  assert.equal(p.pdf.recyclePage(source, 0, page.pixelMap, page.aspectRatio), false);
+  assert.equal(p.pdf.cachedBytes, 0);
+  assert.ok(!p.calls.includes('bitmap-release'));
+  await page.pixelMap.release();
 });
 
 test('offline ranges reject same-sized source rewrites instead of mixing bytes from two versions', async () => {

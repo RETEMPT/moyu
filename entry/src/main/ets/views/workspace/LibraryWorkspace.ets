@@ -15,15 +15,17 @@ import { LibraryPolicy } from '../../services/library/LibraryPolicy';
 import { ReadingProgressPolicy, ReadingStatus } from '../../services/document/ReadingProgressPolicy';
 import { MemoTimelineCard } from '../common/MemoTimelineCard';
 import { IconButton } from '../common/IconButton';
+import { AppIcon } from '../common/AppIcon';
 import { NoteTagBadge } from '../common/NoteTagBadge';
 
 @Component
 export struct LibraryWorkspace {
   @Prop @Watch('onQueryChanged') notes: NoteItem[] = [];
-  @Prop allNotes: NoteItem[] = [];
+  @Prop @Watch('pruneSelection') allNotes: NoteItem[] = [];
   @Prop totalCount: number = 0;
   @Prop searchText: string = '';
   @Prop activeFilter: string = FILTER_ALL;
+  @Prop @Watch('clearImportFilters') importToken: number = 0;
   @Prop activeNoteId: string = '';
   @Prop viewMode: string = 'shelf';
   @Prop sortKey: string = 'update';
@@ -39,6 +41,12 @@ export struct LibraryWorkspace {
   onOpenNoteMenu: (note: NoteItem) => void = () => {};
   onCreateNote: () => void = () => {};
   onImportDocument: () => void = () => {};
+  onOpenBackup: () => void = () => {};
+  onOpenGuide: () => void = () => {};
+  onOpenTrash: () => void = () => {};
+  onBatchMove: (ids: string[]) => void = () => {};
+  onBatchShare: (ids: string[]) => void = () => {};
+  onBatchTrash: (ids: string[]) => Promise<void> = async () => {};
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
@@ -49,11 +57,45 @@ export struct LibraryWorkspace {
   @State readingStatus: ReadingStatus = 'all';
   @State visibleCount: number = 40;
   @State shelfColumns: number = 2;
+  @State private batchMode: boolean = false;
+  @State private batchBusy: boolean = false;
+  @State private selectedIds: string[] = [];
   private cachedSource: NoteItem[] | null = null;
   private cachedQuery: string = '';
   private cachedNotes: NoteItem[] = [];
 
   private onQueryChanged(): void { this.visibleCount = 40; }
+
+  private pruneSelection(): void {
+    if (this.selectedIds.length === 0) { return; }
+    const available = new Set(this.allNotes.map((note: NoteItem) => note.id));
+    this.selectedIds = this.selectedIds.filter((id: string) => available.has(id));
+  }
+
+  private selectNote(id: string): void {
+    this.selectedIds = this.selectedIds.includes(id) ? this.selectedIds.filter((item: string) => item !== id) : this.selectedIds.concat(id);
+  }
+
+  private selectResults(): void {
+    const ids = this.displayNotes().map((note: NoteItem) => note.id);
+    const selected = new Set(this.selectedIds);
+    const all = ids.every((id: string) => selected.has(id));
+    ids.forEach((id: string) => { if (all) { selected.delete(id); } else { selected.add(id); } });
+    this.selectedIds = Array.from(selected);
+  }
+
+  private allResultsSelected(): boolean {
+    const results = this.displayNotes();
+    const selected = new Set(this.selectedIds);
+    return results.length > 0 && results.every((note: NoteItem) => selected.has(note.id));
+  }
+
+  private async trashSelected(): Promise<void> {
+    if (this.batchBusy || this.selectedIds.length === 0) { return; }
+    this.batchBusy = true;
+    try { await this.onBatchTrash(this.selectedIds.slice()); }
+    finally { this.batchBusy = false; }
+  }
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
@@ -75,12 +117,13 @@ export struct LibraryWorkspace {
 
   /** 标签过滤（OR）+ 排序后的实际展示列表。 */
   private displayNotes(): NoteItem[] {
-    const query = JSON.stringify(this.selectedTags) + this.sortKey + this.sortAsc + this.readingStatus + this.viewMode;
+    const timeline = !this.batchMode && this.viewMode === 'timeline';
+    const query = JSON.stringify(this.selectedTags) + this.sortKey + this.sortAsc + this.readingStatus + timeline;
     if (this.cachedSource === this.notes && this.cachedQuery === query) { return this.cachedNotes; }
     this.cachedSource = this.notes; this.cachedQuery = query;
     this.cachedNotes = LibraryPolicy.query(this.notes, { tags: this.selectedTags,
-      sort: this.viewMode === 'timeline' ? 'create' : this.sortKey, ascending: this.viewMode === 'timeline' ? false : this.sortAsc,
-      type: this.viewMode === 'timeline' ? 'Markdown' : undefined, status: this.readingStatus, pinnedFirst: this.viewMode !== 'timeline' });
+      sort: timeline ? 'create' : this.sortKey, ascending: timeline ? false : this.sortAsc,
+      status: this.readingStatus, pinnedFirst: !timeline });
     return this.cachedNotes;
   }
 
@@ -111,8 +154,12 @@ export struct LibraryWorkspace {
   }
 
   private resetFilters(): void {
-    this.selectedTags = []; this.readingStatus = 'all'; this.visibleCount = 40;
+    this.clearImportFilters();
     this.onResetFilters();
+  }
+
+  private clearImportFilters(): void {
+    this.selectedTags = []; this.readingStatus = 'all'; this.visibleCount = 40;
   }
 
   @Builder
@@ -259,11 +306,44 @@ export struct LibraryWorkspace {
     .hoverEffect(HoverEffect.Highlight)
   }
 
+  @Builder
+  manageButton(label: string, handler: () => void, enabled: boolean = true) {
+    Button(label, { type: ButtonType.Normal }).height(44).fontSize(13).borderRadius(8)
+      .padding({ left: 10, right: 10 }).fontColor(this.palette().inkSecondary).backgroundColor(this.palette().surfaceSubtle)
+      .enabled(enabled).onClick(handler)
+  }
+
+  @Builder
+  batchRow(note: NoteItem) {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 10 }) {
+        AppIcon({ source: this.selectedIds.includes(note.id) ? $r('app.media.ic_check') : $r('app.media.ic_checkbox_empty'),
+          iconSize: 22, tint: this.selectedIds.includes(note.id) ? this.palette().accent : this.palette().inkMuted })
+        Column({ space: 2 }) {
+          Text(note.title).fontSize(15).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontColor(this.palette().inkPrimary).width('100%')
+          Text(`${documentLabel(note.type)} · ${note.category || '未分类'}`).fontSize(12).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor(this.palette().inkMuted).width('100%')
+        }.layoutWeight(1)
+      }.width('100%')
+    }.width('100%').height(56).padding({ left: 12, right: 12 }).borderRadius(8)
+      .backgroundColor(this.selectedIds.includes(note.id) ? this.palette().activeBg : this.palette().surface)
+      .accessibilityText('选择资料 ' + note.title).accessibilityDescription(this.selectedIds.includes(note.id) ? '已选择' : '未选择')
+      .enabled(!this.batchBusy).onClick(() => this.selectNote(note.id))
+  }
+
   build() {
     Column() {
       Column({ space: 8 }) {
         Row({ space: 8 }) {
           Text('资料库').fontSize(this.isPhone ? 28 : TypographyTokens.TITLE_HERO).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
+          if (!this.batchMode) {
+            Button({ type: ButtonType.Normal }) {
+              AppIcon({ source: $r('app.media.ic_share'), iconSize: 20, tint: this.palette().inkSecondary })
+            }.width(44).height(44).padding(0).borderRadius(6).backgroundColor(this.palette().surface)
+              .border({ width: 1, color: this.palette().borderSubtle }).accessibilityText('备份与快传')
+              .onClick(() => this.onOpenBackup())
+          }
           Button('导入资料', { type: ButtonType.Normal }).height(44).fontSize(13).borderRadius(6)
             .padding({ left: 12, right: 12 }).fontColor(this.palette().inkSecondary).backgroundColor(this.palette().surface)
             .border({ width: 1, color: this.palette().borderSubtle }).accessibilityText('导入资料').onClick(() => this.onImportDocument())
@@ -271,15 +351,29 @@ export struct LibraryWorkspace {
             .padding({ left: 14, right: 14 }).fontColor(this.palette().surface).backgroundColor(this.palette().inkPrimary)
             .onClick(() => this.onCreateNote())
         }.width('100%')
+        Row({ space: 6 }) {
+          if (this.batchMode) {
+            Text(`已选 ${this.selectedIds.length} 份`).fontSize(14).fontColor(this.palette().inkPrimary).layoutWeight(1)
+            this.manageButton(this.allResultsSelected() ? '取消全选' : '全选结果',
+              () => this.selectResults(), !this.batchBusy && this.displayNotes().length > 0)
+            this.manageButton('完成', () => { this.batchMode = false; this.selectedIds = []; this.visibleCount = 40; }, !this.batchBusy)
+          } else {
+            this.manageButton('使用指引', this.onOpenGuide)
+            this.manageButton('回收站', this.onOpenTrash)
+            this.manageButton('批量管理', () => { this.batchMode = true; this.visibleCount = 40; }, this.totalCount > 0)
+          }
+        }.width('100%')
         TextInput({ text: this.searchText, placeholder: '搜索标题、正文与 #标签' })
           .fontSize(14).fontColor(this.palette().inkPrimary).placeholderColor(this.palette().inkMuted)
           .backgroundColor(this.palette().surface).border({ width: 1, color: this.palette().borderSubtle })
           .borderRadius(6).height(48).accessibilityText('搜索资料标题、正文与标签').width('100%')
           .onChange((value: string) => this.onSearchChange(value))
         Row({ space: 0 }) {
-          this.viewChip('shelf', '书架')
-          this.viewChip('list', '列表')
-          this.viewChip('timeline', '时间流')
+          if (!this.batchMode) {
+            this.viewChip('shelf', '书架')
+            this.viewChip('list', '列表')
+            this.viewChip('timeline', '时间流')
+          }
           Blank()
           Button(this.selectedTags.length > 0 || this.readingStatus !== 'all' ? '筛选 · 已启用' : '筛选', { type: ButtonType.Normal }).height(44).fontSize(12).padding({ left: 12, right: 12 })
             .fontColor(this.palette().inkSecondary).backgroundColor(this.optionsExpanded ? this.palette().activeBg : Color.Transparent)
@@ -292,7 +386,7 @@ export struct LibraryWorkspace {
             ForEach(NOTE_FILTERS, (filter: string) => { this.filterChip(filter) }, (filter: string) => filter)
           }
         }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
-        if (this.optionsExpanded && this.viewMode !== 'timeline') {
+        if (this.optionsExpanded && (this.batchMode || this.viewMode !== 'timeline')) {
           Scroll() {
             Row({ space: 2 }) {
               this.sortChip('update', '更新时间')
@@ -312,8 +406,8 @@ export struct LibraryWorkspace {
               this.statusChip('finished', '已到末页')
             }
           }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
-        } else if (this.viewMode === 'timeline') {
-          Text('文字记录按创建时间倒序排列').fontSize(12).fontColor(this.palette().inkMuted).width('100%').height(44)
+        } else if (!this.batchMode && this.viewMode === 'timeline') {
+          Text('资料按创建时间倒序排列').fontSize(12).fontColor(this.palette().inkMuted).width('100%').height(44)
         }
         if (this.optionsExpanded) {
           if (this.availableTags().length > 0) {
@@ -350,6 +444,16 @@ export struct LibraryWorkspace {
         .layoutWeight(1)
         .justifyContent(FlexAlign.Center)
         .alignItems(HorizontalAlign.Center)
+      } else if (this.batchMode) {
+        List({ space: 8 }) {
+          ForEach(this.displayNotes().slice(0, this.visibleCount), (note: NoteItem) => {
+            ListItem() { this.batchRow(note) }
+          }, (note: NoteItem) => readingRenderKey(note))
+          if (this.visibleCount < this.displayNotes().length) {
+            ListItem() { Button('显示更多资料').width('100%').height(44).onClick(() => { this.visibleCount += 40; }) }
+          }
+        }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
+          .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 8, bottom: 8 })
       } else if (this.viewMode === 'timeline') {
         List({ space: 12 }) {
           ForEach(this.displayNotes().slice(0, this.visibleCount), (note: NoteItem) => {
@@ -394,6 +498,13 @@ export struct LibraryWorkspace {
         .width('100%')
         .padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 12, bottom: 20 })
         .scrollBar(BarState.Auto)
+      }
+      if (this.batchMode && this.selectedIds.length > 0) {
+        Row({ space: 6 }) {
+          this.manageButton('移动分类', () => this.onBatchMove(this.selectedIds.slice()), !this.batchBusy)
+          this.manageButton('备份与快传', () => this.onBatchShare(this.selectedIds.slice()), !this.batchBusy)
+          this.manageButton('移入回收站', () => { this.trashSelected(); }, !this.batchBusy)
+        }.width('100%').padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), bottom: 8 })
       }
     }
     .width('100%')

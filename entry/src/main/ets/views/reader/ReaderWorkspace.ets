@@ -21,6 +21,7 @@ export struct ReaderWorkspace {
   @Prop annotationPaneOpen: boolean = false;
   @Prop jumpToken: number = 0;
   @Prop jumpLine: number = -1;
+  onVisibleLineChange: (noteId: string, line: number) => void = () => {};
   @Prop favorite: boolean = false;
   onBack: () => void = () => {};
   onOpenCompanion: () => void = () => {};
@@ -119,6 +120,7 @@ export struct ReaderWorkspace {
           favorite: this.favorite, annotationPaneOpen: this.annotationPaneOpen,
           onToggleFavorite: () => this.onToggleFavorite(this.note), onDeleteNote: () => this.onDeleteNote(this.note),
           onToggleAnnotation: () => this.toggleAnnotation(), jumpToken: this.jumpToken, jumpLine: this.jumpLine,
+          onVisibleLineChange: this.onVisibleLineChange,
           onSaved: this.onSaved, onSaveStateChange: (state: string) => this.updateSaveState('text', state),
           onOutlineUpdated: this.onOutlineUpdated, onOpenNoteByTitle: this.onOpenNoteByTitle })
       }.height('100%').layoutWeight(this.annotationPaneOpen ? 55 : 100)

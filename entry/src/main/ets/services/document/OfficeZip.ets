@@ -1,7 +1,10 @@
 const DIRECTORY_END_SIZE: number = 22;
 const MAX_DIRECTORY_ENTRIES: number = 4096;
 const MAX_XML_PART: number = 2 * 1024 * 1024;
+const MAX_COMPRESSED_XML_PART: number = MAX_XML_PART + 64 * 1024;
 const MAX_TOTAL_XML: number = 8 * 1024 * 1024;
+const DATA_DESCRIPTOR_FLAG: number = 0x0008;
+const ENCRYPTION_FLAGS: number = 0x2041;
 
 interface ZipEntry {
   offset: number;
@@ -58,13 +61,21 @@ export class OfficeZip {
     const pathLength = this.u16(entry.offset + 26);
     const start = entry.offset + 30 + pathLength + this.u16(entry.offset + 28);
     const stop = start + entry.compressed;
+    const flags = this.u16(entry.offset + 6);
     if (stop > this.directory || this.name(entry.offset + 30, pathLength) !== name ||
-      this.u16(entry.offset + 8) !== entry.method || (entry.flags & 0x2041) !== 0 ||
-      (this.u16(entry.offset + 6) & 0x2041) !== 0 || ![0, 8].includes(entry.method)) {
+      this.u16(entry.offset + 8) !== entry.method || flags !== entry.flags ||
+      (flags & ENCRYPTION_FLAGS) !== 0 || ![0, 8].includes(entry.method)) {
       throw new Error('Office 正文条目损坏、已加密或使用了不支持的压缩方式。');
     }
-    if (entry.size < 1 || entry.size > MAX_XML_PART || this.totalRead + entry.size > MAX_TOTAL_XML) {
+    if (entry.size < 1 || entry.size > MAX_XML_PART || entry.compressed > MAX_COMPRESSED_XML_PART ||
+      this.totalRead + entry.size > MAX_TOTAL_XML) {
       throw new Error('Office 正文超过导入上限，请先拆分文档。');
+    }
+    // Streaming writers put sizes and CRC in a descriptor; their data is checked after decoding.
+    if (entry.compressed === 0 || (entry.method === 0 && entry.compressed !== entry.size) ||
+      ((flags & DATA_DESCRIPTOR_FLAG) === 0 && (this.u32(entry.offset + 14) !== entry.crc ||
+        this.u32(entry.offset + 18) !== entry.compressed || this.u32(entry.offset + 22) !== entry.size))) {
+      throw new Error('Office 正文校验失败，条目文件头与目录不一致。');
     }
     this.totalRead += entry.size;
     return { data: this.bytes.slice(start, stop), size: entry.size, method: entry.method, crc: entry.crc };

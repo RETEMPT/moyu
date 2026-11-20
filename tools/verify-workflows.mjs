@@ -105,13 +105,29 @@ test('quick capture keeps its draft on metadata failure and never announces succ
 
 
 
-test('timeline selects text documents by creation time and keeps edited older notes in their original order', () => {
+test('timeline and calendar include imported PDFs by creation date and keep edited notes in order', () => {
   const {MemoFeedPolicy}=load(`${base}services/library/MemoFeedPolicy.ets`);
   const display=viewMethod('views/workspace/HomeWorkspace.ets','displayNotes',{MemoFeedPolicy});
-  const view={recentNotes:[studyNote({id:'old',type:'Markdown',createdAt:1,updatedAt:100}),
-    studyNote({id:'new',type:'Markdown',createdAt:2,updatedAt:2}),studyNote({id:'pdf',type:'PDF',createdAt:3})],
+  const day = new Date(2026, 10, 20, 9);
+  const start = day.getTime();
+  const view={recentNotes:[studyNote({id:'old',type:'Markdown',createdAt:start,updatedAt:start+100}),
+    studyNote({id:'new',type:'Markdown',createdAt:start+1}),studyNote({id:'pdf',type:'PDF',createdAt:start+2})],
     activeShelfFilter:'all',viewMode:'timeline',sortKey:'update',sortAsc:false,cachedShelfSource:null};
-  assert.deepEqual(plain(display.call(view)).map(n=>n.id),['new','old']);
+  assert.deepEqual(plain(display.call(view)).map(n=>n.id),['pdf','new','old']);
+  const key = MemoFeedPolicy.dateKey(start);
+  assert.deepEqual(plain(MemoFeedPolicy.query(view.recentNotes, key)).map(n => n.id), ['pdf', 'new', 'old']);
+  assert.equal(MemoFeedPolicy.month(view.recentNotes, day.getFullYear(), day.getMonth()).find(cell => cell.key === key).count, 3);
+});
+
+test('timeline promotes legacy body hashtags to badges and keeps code, math and links readable', () => {
+  const { MemoFeedPolicy } = load(`${base}services/library/MemoFeedPolicy.ets`);
+  const note = studyNote({ title: '矩阵', tag: '基础', contentDetail:
+    '# 矩阵\n\n正文 `#代码` $x #公式$ #数学 #线性代数 [[概率论]]\n\n#数学' });
+  assert.deepEqual(plain(MemoFeedPolicy.cardTags(note)), ['基础', '数学', '线性代数']);
+  const excerpt = MemoFeedPolicy.excerpt(note).map(part => part.text).join('');
+  assert.match(excerpt, /#代码.*#公式.*概率论/);
+  assert.doesNotMatch(excerpt, /#数学|#线性代数/);
+  assert.equal(MemoFeedPolicy.query([note], '', '线性代数')[0], note);
 });
 
 test('library searches complete local bodies, secondary tags and validated PDF page text', () => {
@@ -592,7 +608,7 @@ test('text import retains full text and cancel performs no writes', async () => 
   assert.equal(cancelled.calls.length, 0);
 });
 
-function officeZipFixture(parts) {
+function officeZipFixture(parts, useDataDescriptor = false) {
   const locals = [], directory = [];
   let offset = 0;
   for (const [fileName, source] of Object.entries(parts)) {
@@ -601,15 +617,23 @@ function officeZipFixture(parts) {
     const packed = deflateRawSync(raw);
     const local = Buffer.alloc(30);
     const entry = Buffer.alloc(46);
+    const descriptor = Buffer.alloc(useDataDescriptor ? 16 : 0);
     local.writeUInt32LE(0x04034b50); entry.writeUInt32LE(0x02014b50);
     local.writeUInt16LE(8, 8); entry.writeUInt16LE(8, 10);
-    local.writeUInt32LE(crc32(raw), 14); entry.writeUInt32LE(crc32(raw), 16);
-    local.writeUInt32LE(packed.length, 18); entry.writeUInt32LE(packed.length, 20);
-    local.writeUInt32LE(raw.length, 22); entry.writeUInt32LE(raw.length, 24);
+    entry.writeUInt32LE(crc32(raw), 16);
+    entry.writeUInt32LE(packed.length, 20);
+    entry.writeUInt32LE(raw.length, 24);
+    if (useDataDescriptor) {
+      local.writeUInt16LE(8, 6); entry.writeUInt16LE(8, 8);
+      descriptor.writeUInt32LE(0x08074b50);
+      entry.copy(descriptor, 4, 16, 28);
+    } else {
+      entry.copy(local, 14, 16, 28);
+    }
     local.writeUInt16LE(name.length, 26); entry.writeUInt16LE(name.length, 28);
     entry.writeUInt32LE(offset, 42);
-    locals.push(local, name, packed); directory.push(entry, name);
-    offset += local.length + name.length + packed.length;
+    locals.push(local, name, packed, descriptor); directory.push(entry, name);
+    offset += local.length + name.length + packed.length + descriptor.length;
   }
   const index = Buffer.concat(directory);
   const end = Buffer.alloc(22);
@@ -687,6 +711,13 @@ test('Office import rejects corrupt and oversized XML entries before publishing 
   const oversized = Buffer.from(docx);
   oversized.writeUInt32LE(8 * 1024 * 1024, index + 24);
   await assert.rejects(officeFixtureReader(oversized).read('doc.docx', false), /导入上限/);
+});
+
+test('Office import accepts streaming data descriptors and rejects inconsistent entry flags', async () => {
+  const archived = officeZipFixture({ 'word/document.xml': '<w:p><w:t>流式正文</w:t></w:p>' }, true);
+  assert.equal(await officeFixtureReader(archived).read('doc.docx', false), '流式正文');
+  archived.writeUInt16LE(0, 6);
+  await assert.rejects(officeFixtureReader(archived).read('doc.docx', false), /条目损坏/);
 });
 
 const { StudySourceService } = load(`${base}services/study/StudySourceService.ets`);
@@ -925,6 +956,10 @@ test('backup restoration preserves original data and stable IDs make repeated im
   await StudyRestoreService.commit(note, [card], f.ports); await StudyRestoreService.commit(note, [card], f.ports);
   assert.equal(f.notes().length, 2); assert.equal(f.cards().length, 1);
   assert.equal(f.notes()[0].id, 'original'); assert.equal(f.calls.filter(c => c[0] === 'create').length, 1);
+  const before = f.calls.length;
+  f.ports.isInTrash = id => id === 'trashed';
+  await assert.rejects(StudyRestoreService.commit(studyNote({ id: 'trashed' }), [], f.ports), /已有副本在回收站/);
+  assert.equal(f.calls.length, before);
 });
 test('failed backup note write rolls back metadata and cleans only the new note', async () => {
   const f = restoreFixture(); f.failNotes(true);
@@ -940,8 +975,8 @@ test('failed backup card write retains a valid restored note and retry fills mis
   assert.equal(f.notes().length, 2); assert.equal(f.cards().length, 1);
 });
 
-function backupFileFixture({ selected = ['/picked/backup.json'], failPdf = false, failImage = false, shortRead = false, failWrite = false } = {}) {
-  const files = new Map(); const opened = new Map(); const calls = []; let fd = 0;
+function backupFileFixture({ selected = ['/picked/backup.json'], failPdf = false, failImage = false, shortRead = false, failWrite = false, maxRead = Infinity, maxWrite = Infinity } = {}) {
+  const files = new Map(); const opened = new Map(); const positions = new Map(); const calls = []; let fd = 0;
   const mocks = {
     '@kit.AbilityKit': {},
     '@kit.CoreFileKit': { picker: { DocumentSelectOptions: class {}, DocumentSaveOptions: class {}, DocumentViewPicker: class {
@@ -949,11 +984,27 @@ function backupFileFixture({ selected = ['/picked/backup.json'], failPdf = false
     } }, fileIo: { OpenMode: { READ_ONLY: 0, WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 },
       accessSync: () => true, mkdirSync: () => {},
       access: async () => true, mkdir: async () => {}, listFile: async dir => [...files.keys()].filter(p => p.startsWith(dir+'/')).map(p => p.slice(dir.length+1)),
-      open: async (filename, mode) => { opened.set(++fd, filename); if(mode & 4)files.delete(filename); return { fd }; },
+      open: async (filename, mode) => { opened.set(++fd, filename); positions.set(fd, 0); if(mode & 4)files.delete(filename); return { fd }; },
       close: async file => { calls.push(['close', file.fd]); },
       statSync: descriptor => ({ size: files.get(typeof descriptor === 'number' ? opened.get(descriptor) : descriptor)?.length ?? 0 }),
-      read: async (descriptor, buffer) => { const bytes = files.get(opened.get(descriptor)); new Uint8Array(buffer).set(bytes); return bytes.length - (shortRead ? 1 : 0); },
-      write: async (descriptor, value) => { if (failWrite) throw Error('disk full'); const bytes = Buffer.from(value); const p=opened.get(descriptor); files.set(p, Buffer.concat([files.get(p)||Buffer.alloc(0), bytes])); calls.push(['write',bytes.length]); return bytes.length; },
+      stat: async descriptor => ({ isFile: () => true, size: files.get(opened.get(descriptor))?.length ?? 0 }),
+      read: async (descriptor, buffer, { length = buffer.byteLength } = {}) => {
+        const bytes = files.get(opened.get(descriptor));
+        const start = positions.get(descriptor);
+        const chunk = bytes.subarray(start, Math.min(bytes.length - (shortRead ? 1 : 0), start + length, start + maxRead));
+        new Uint8Array(buffer).set(chunk);
+        positions.set(descriptor, start + chunk.length);
+        calls.push(['read', chunk.length]);
+        return chunk.length;
+      },
+      write: async (descriptor, value) => {
+        if (failWrite) throw Error('disk full');
+        const bytes = Buffer.from(value).subarray(0, maxWrite);
+        const filename = opened.get(descriptor);
+        files.set(filename, Buffer.concat([files.get(filename) || Buffer.alloc(0), bytes]));
+        calls.push(['write', bytes.length]);
+        return bytes.length;
+      },
       fsync: async descriptor => calls.push(['flush', descriptor]),
       unlink: async filename => { files.delete(filename); calls.push(['unlink', filename]); }
     } },
@@ -1158,6 +1209,12 @@ test('shared study import resumes a partial batch and maps cards to stable resto
   assert.deepEqual(plain(result), { imported: 1, skipped: 1 }); assert.equal(notes.length, 2);
   assert.equal(materializations, 3); assert.ok(cards.every(card => notes.some(note => note.id === card.noteId)));
   assert.equal(cards.length, backup.cards.length); assert.equal(progress.length, 4);
+  const trashed = await StudyImportService.restore({}, backup, {
+    notes: () => [], isInTrash: id => notes.some(note => note.id === id),
+    progress: () => {}, commit: async () => assert.fail('A trashed copy must not be recreated')
+  });
+  assert.deepEqual(plain(trashed), { imported: 0, skipped: 2 });
+  assert.equal(materializations, 3);
 });
 
 test('shared study import rejects unsupported packages before materializing or committing any data', async () => {
@@ -1567,88 +1624,96 @@ test('plain text imports preserve formulas and tables, normalize newlines and re
   assert.throws(() => TextImportPolicy.parse('x'.repeat(12001)), /分段/);
 });
 
-function documentImportHarness({ fail = false, cancelled = () => false, text = '真实扫描文字', pdf = true, managed = false } = {}) {
-  const calls = [], fsAdapter = { OpenMode: { READ_ONLY: 0 }, openSync: () => ({ fd: 1 }), closeSync: () => calls.push('closed'),
-    statSync: () => ({ size: 300 }), readSync: (_, buffer) => { new Uint8Array(buffer).set(Buffer.from(pdf ? '%PDF-' : '# MD\n')); return 5; },
-    readText: async () => text };
-  const service = { savePdfToSandbox: async () => { calls.push('copied'); return '/sandbox/documents/extract.pdf'; },
-    extractPages: async (_, start, end, scan, cancel, progress) => {
-      calls.push([start, end, scan]); if (fail) throw Error('OCR failed'); if (cancel()) throw Error('cancel'); progress(start);
-      return [{ pageNumber: start, text, method: 'ocr' }];
-    }, removeManagedPdf: async (_, uri) => calls.push(['removed', uri]) };
+const savedPdf = { title: '离散数学', sourceType: 'pdf', pageCount: 3, sourceUri: '/sandbox/documents/original.pdf' };
+
+function documentImportHarness({ pages = ['第一页', '', '第三页'], cancelled = () => false } = {}) {
+  const calls = [];
+  const service = { extractPages: async (path, start, end, scan, cancel, progress, receive) => {
+    calls.push({ path, start, end, scan });
+    for (let index = start; index <= end; index++) {
+      if (cancel()) throw Error('已取消提取');
+      progress(index);
+      if (!receive({ pageNumber: index, text: pages[index - 1], method: 'text' })) break;
+    }
+  } };
   const { DocumentExtractService } = load(`${base}services/smart/DocumentExtractService.ets`, {
-    '@kit.CoreFileKit': { fileIo: fsAdapter }, '@kit.AbilityKit': {},
-    [path.resolve(root, `${base}services/smart/SmartExtractService.ets`)]: { SMART_INPUT_LIMIT: 12000 },
     [path.resolve(root, `${base}services/document/PdfDocumentService.ets`)]: { PdfDocumentService: { getInstance: () => service } } });
-  const uri = managed ? '/sandbox/documents/original.pdf' : (pdf ? 'file://source.pdf' : 'file://result.md');
-  return { calls, read: (start = 1, end = 1) => DocumentExtractService.read({ filesDir: '/sandbox' }, uri, start, end, cancelled, () => {}) };
+  return { calls, read: (cursor = { page: 1, offset: 0 }, budget = 12000) =>
+    DocumentExtractService.readPdf(savedPdf.sourceUri, pages.length, cursor, budget, true, cancelled, () => {}) };
 }
 
-test('local PDF extraction releases the source handle and temporary copy on success, error and cancellation', async () => {
-  const success = documentImportHarness(); const result = await success.read();
-  assert.match(result.text, /真实扫描文字/); assert.match(result.notice, /本机/); assert.equal(success.calls[0], 'closed');
-  assert.deepEqual(success.calls.at(-1), ['removed', '/sandbox/documents/extract.pdf']);
-  const failure = documentImportHarness({ fail: true }); await assert.rejects(failure.read()); assert.equal(failure.calls.at(-1)[0], 'removed');
-  let checks = 0; const cancel = documentImportHarness({ cancelled: () => ++checks > 1 });
-  await assert.rejects(cancel.read(), /取消/); assert.equal(cancel.calls.at(-1)[0], 'removed');
+test('automatic extraction uses the saved PDF and actual page count, skips blank pages and preserves page labels', async () => {
+  const fixture = documentImportHarness(); const result = await fixture.read();
+  assert.equal(result.text, '## 第 1 页\n\n第一页\n\n## 第 3 页\n\n第三页');
+  assert.equal(result.next, null);
+  assert.deepEqual(fixture.calls, [{ path: savedPdf.sourceUri, start: 1, end: 3, scan: true }]);
 });
 
-test('document extraction rejects oversized results and excessive page ranges without modifying a draft', async () => {
-  const text = documentImportHarness({ pdf: false, text: '# 原文\n\n保留内容' }); assert.equal((await text.read()).text, '# 原文\n\n保留内容');
-  const range = documentImportHarness(); await assert.rejects(range.read(1, 6), /1–5/); assert.ok(!range.calls.includes('copied'));
-  const large = documentImportHarness({ text: 'x'.repeat(12001) }); await assert.rejects(large.read(), /页范围/); assert.equal(large.calls.at(-1)[0], 'removed');
+test('automatic extraction resumes inside a long page without losing characters or splitting a surrogate pair', async () => {
+  const text = '课'.repeat(110) + '📖' + '本'.repeat(110);
+  const fixture = documentImportHarness({ pages: [text] });
+  const first = await fixture.read(undefined, 120);
+  assert.equal(first.next.page, 1);
+  assert.doesNotMatch(first.text, /[\uD800-\uDBFF]$/);
+  const second = await fixture.read(first.next);
+  assert.equal(second.next, null);
+  assert.equal(first.text.split('\n\n')[1] + second.text.split('\n\n')[1], text);
 });
 
-test('extraction retains the library PDF on success, failure and cancellation without another copy', async () => {
-  const success = documentImportHarness({ managed: true }); assert.match((await success.read()).text, /真实扫描文字/);
-  const failure = documentImportHarness({ managed: true, fail: true }); await assert.rejects(failure.read());
-  let checks = 0; const cancelled = documentImportHarness({ managed: true, cancelled: () => ++checks > 1 });
-  await assert.rejects(cancelled.read(), /取消/);
-  for (const result of [success, failure, cancelled]) {
-    assert.ok(!result.calls.includes('copied')); assert.ok(!result.calls.some(call => Array.isArray(call) && call[0] === 'removed'));
-    assert.ok(result.calls.includes('closed'));
-  }
+test('blank PDF batches retain a continuation cursor and cancelled reads publish no results', async () => {
+  const fixture = documentImportHarness({ pages: Array(12).fill('').concat('第十三页') });
+  const first = await fixture.read();
+  assert.equal(first.text, ''); assert.deepEqual(plain(first.next), { page: 13, offset: 0 });
+  assert.match((await fixture.read(first.next)).text, /第十三页/);
+  await assert.rejects(documentImportHarness({ cancelled: () => true }).read(), /取消/);
 });
+
+function extractionSheetHarness(readPdf, select) {
+  const drafts = [];
+  const relative = 'views/layout/sheets/SmartExtractSheet.ets';
+  const globals = {
+    Error, picker: { DocumentSelectOptions: class {}, DocumentViewPicker: class { select() { return select(); } } },
+    SMART_INPUT_LIMIT: 12000, AppStorage: { setOrCreate: (_, text) => drafts.push(text) },
+    DocumentExtractService: { readPdf }, OcrService: { isHardwareSupported: () => false }
+  };
+  const view = { alive: true, requestId: 0, step: 'input', inputText: '', pdfSource: null,
+    busy() { return this.step !== 'input'; }, onImportSource: async () => savedPdf };
+  for (const method of ['pickDocument', 'appendText', 'extractPdf']) { view[method] = viewMethod(relative, method, globals); }
+  return { view, drafts };
+}
 
 test('late document import cannot append into a closed or superseded extraction sheet; repeated taps use one picker', async () => {
   let release, picks = 0;
-  class DocumentSelectOptions {}
-  class DocumentViewPicker { async select() { picks++; return ['file://source.pdf']; } }
-  const pick = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'pickDocument', {
-    picker: { DocumentSelectOptions, DocumentViewPicker }, SMART_INPUT_LIMIT: 12000, AppStorage: { setOrCreate() {} },
-    DocumentExtractService: { validateInput() {}, read: () => new Promise(resolve => { release = resolve; }) } });
-  const v = { alive: true, requestId: 0, step: 'input', inputText: '保留草稿', pdfStart: '1', pdfEnd: '1',
-    onImportSource: async () => '/sandbox/documents/original.pdf', busy() { return this.step !== 'input'; } };
-  const pending = pick.call(v); await new Promise(resolve => setTimeout(resolve, 0)); await pick.call(v); assert.equal(picks, 1);
-  v.requestId++; v.alive = false; release({ text: '晚到结果', notice: '' }); await pending; assert.equal(v.inputText, '保留草稿');
+  const { view } = extractionSheetHarness(() => new Promise(resolve => { release = resolve; }), async () => {
+    picks++; return ['file://source.pdf'];
+  });
+  view.inputText = '保留草稿';
+  const pending = view.pickDocument(); await new Promise(resolve => setTimeout(resolve, 0));
+  await view.pickDocument(); assert.equal(picks, 1);
+  view.requestId++; view.alive = false; release({ text: '晚到结果', next: null });
+  await pending; assert.equal(view.inputText, '保留草稿');
 });
 
 test('the extraction sheet waits for library persistence and reads only the saved local source', async () => {
-  let saved; const reads = []; const drafts = [];
-  const pick = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'pickDocument', {
-    Error,
-    picker: { DocumentSelectOptions: class {}, DocumentViewPicker: class { async select() { return ['file://source.pdf']; } } },
-    SMART_INPUT_LIMIT: 12000, AppStorage: { setOrCreate: (_, text) => drafts.push(text) },
-    DocumentExtractService: { validateInput() {}, read: async (_, uri) => { reads.push(uri); return { text: '本机文字', notice: '请校对' }; } } });
-  const view = { alive: true, requestId: 0, step: 'input', inputText: '', pdfStart: '1', pdfEnd: '1', busy() { return this.step !== 'input'; },
-    onImportSource: () => new Promise(resolve => { saved = resolve; }) };
-  const pending = pick.call(view); await new Promise(resolve => setTimeout(resolve, 0)); assert.deepEqual(reads, []);
-  saved('/sandbox/documents/original.pdf'); await pending;
-  assert.deepEqual(reads, ['/sandbox/documents/original.pdf']); assert.equal(view.inputText, '本机文字');
+  let saved; const reads = [];
+  const { view, drafts } = extractionSheetHarness(async (path, pages) => {
+    reads.push([path, pages]); return { text: '本机文字', next: null };
+  }, async () => ['file://source.pdf']);
+  view.onImportSource = () => new Promise(resolve => { saved = resolve; });
+  const pending = view.pickDocument(); await new Promise(resolve => setTimeout(resolve, 0)); assert.deepEqual(reads, []);
+  saved(savedPdf); await pending;
+  assert.deepEqual(reads, [[savedPdf.sourceUri, savedPdf.pageCount]]); assert.equal(view.inputText, '本机文字');
   assert.match(view.sourceNotice, /已保存/); assert.deepEqual(drafts, ['本机文字']);
   view.onImportSource = async () => { throw Error('存储空间不足'); }; view.inputText = '保留原稿'; reads.length = 0;
-  await pick.call(view); assert.deepEqual(reads, []); assert.equal(view.inputText, '保留原稿'); assert.match(view.errorMsg, /空间不足/);
+  await view.pickDocument(); assert.deepEqual(reads, []); assert.equal(view.inputText, '保留原稿'); assert.match(view.errorMsg, /空间不足/);
 });
 
 test('closing during a durable file import suppresses late extraction and leaves the library save to finish', async () => {
   let finish; let reads = 0;
-  const pick = viewMethod('views/layout/sheets/SmartExtractSheet.ets', 'pickDocument', {
-    picker: { DocumentSelectOptions: class {}, DocumentViewPicker: class { async select() { return ['file://source.pdf']; } } },
-    DocumentExtractService: { validateInput() {}, read: async () => { reads++; } } });
-  const view = { alive: true, requestId: 0, step: 'input', inputText: '原稿', pdfStart: '1', pdfEnd: '1', busy() { return this.step !== 'input'; },
-    onImportSource: () => new Promise(resolve => { finish = resolve; }) };
-  const pending = pick.call(view); await new Promise(resolve => setTimeout(resolve, 0)); view.alive = false; view.requestId++;
-  finish('/sandbox/documents/original.pdf'); await pending;
+  const { view } = extractionSheetHarness(async () => { reads++; }, async () => ['file://source.pdf']);
+  view.inputText = '原稿'; view.onImportSource = () => new Promise(resolve => { finish = resolve; });
+  const pending = view.pickDocument(); await new Promise(resolve => setTimeout(resolve, 0)); view.alive = false; view.requestId++;
+  finish(savedPdf); await pending;
   assert.equal(reads, 0); assert.equal(view.inputText, '原稿');
 });
 
@@ -1706,7 +1771,7 @@ test('home feed composes date, tag and pinned filters without mutating the libra
   assert.deepEqual(notes.map(n=>n.id),['old','today','other','pdf']);
 });
 
-test('memo calendar uses local creation dates, covers leap years and excludes PDF activity', () => {
+test('memo calendar uses local creation dates and includes PDF activity on leap days', () => {
   const {MemoFeedPolicy}=load(`${base}services/library/MemoFeedPolicy.ets`);
   const local=new Date(2024,1,29,0,1).getTime();
   const notes=[studyNote({type:'Markdown',createdAt:local,updatedAt:Date.now(),tags:['复习','复习']}),
@@ -1714,10 +1779,10 @@ test('memo calendar uses local creation dates, covers leap years and excludes PD
   assert.equal(MemoFeedPolicy.dateKey(local),'2024-02-29');
   assert.equal(MemoFeedPolicy.dateKey(Infinity),'');assert.equal(MemoFeedPolicy.dateKey(0),'');
   const cells=MemoFeedPolicy.month(notes,2024,1);assert.equal(cells.length%7,0);
-  assert.equal(cells.filter(c=>c.inMonth).length,29);assert.equal(cells.find(c=>c.key==='2024-02-29').count,1);
+  assert.equal(cells.filter(c=>c.inMonth).length,29);assert.equal(cells.find(c=>c.key==='2024-02-29').count,2);
   assert.equal(new Set(cells.map(c=>c.key)).size,cells.length);
-  assert.deepEqual(plain(MemoFeedPolicy.tags(notes)),[{tag:'复习',count:1}]);
-  assert.equal(MemoFeedPolicy.query(notes).length,2);
+  assert.deepEqual(Object.fromEntries(MemoFeedPolicy.tags(notes).map(item => [item.tag, item.count])), { PDF: 1, 复习: 1 });
+  assert.equal(MemoFeedPolicy.query(notes).length,3);
   assert.equal(MemoFeedPolicy.month([],2026,11).filter(c=>c.inMonth).length,31);
 });
 
@@ -1844,7 +1909,76 @@ test('native transfer packages preserve only selected notes and their full asset
   assert.ok(f.calls.filter(c=>c[0]==='write').length>1);assert.ok(f.calls.filter(c=>c[0]==='write').every(c=>c[1]<=512*1024));
   assert.deepEqual(f.calls.filter(c=>c[0]==='worker').map(c=>c[1]),['validateBackupData','encodeBackupData']);
   f.files.set('/picked/backup.json',f.files.get(file));const decoded=await f.service.selectFile({filesDir:'/sandbox'});
-  assert.equal(decoded.notes[0].contentDetail,note.contentDetail);assert.equal(f.calls.at(-2)[1],'decodeBackupData');
+  assert.equal(decoded.notes[0].contentDetail,note.contentDetail);
+  assert.equal(f.calls.at(-2)[0],'close');assert.deepEqual(f.calls.at(-1),['worker','decodeBackupData']);
+});
+
+test('backup round trip completes positive short reads and writes without losing bytes', async () => {
+  const fixture = backupFileFixture({ maxRead: 31, maxWrite: 47 });
+  const note = studyNote({ contentDetail: '# 课程\n' + '章节\n'.repeat(90) });
+  const file = await fixture.service.createShareFile({ filesDir: '/sandbox', cacheDir: '/cache' }, [note], []);
+  const decoded = await fixture.service.readUri(file);
+  assert.equal(decoded.notes[0].contentDetail, note.contentDetail);
+  assert.ok(fixture.calls.filter(call => call[0] === 'read').length > 1);
+  assert.ok(fixture.calls.filter(call => call[0] === 'write').length > 1);
+});
+
+function studyShareFixture(readUri = async () => studyBackup()) {
+  const reads = [];
+  const revisions = [];
+  const { StudyShareInbox } = load(`${base}services/study/StudyShareInbox.ets`, {
+    '@kit.AbilityKit': {},
+    '@kit.CoreFileKit': { fileUri: { FileUri: class { constructor(uri) { this.name = uri.split('/').at(-1); } } } },
+    '@kit.ShareKit': { systemShare: { getSharedData: async want => ({ getRecords: () => want.records }) } },
+    [path.resolve(root, `${base}services/study/StudyBackupService.ets`)]: {
+      StudyBackupService: { readUri: async uri => { reads.push(uri); return readUri(uri); } }
+    },
+    canIUse: () => true,
+    AppStorage: { setOrCreate: (key, value) => revisions.push([key, value]) }
+  });
+  return { inbox: StudyShareInbox, reads, revisions };
+}
+
+test('system share only opens matching file records from the registered action', async () => {
+  const { inbox, reads, revisions } = studyShareFixture();
+  const action = 'ohos.want.action.sendData';
+  const record = { utd: 'general.json', uri: 'file://sender/docs/lesson.FLOWMIND.JSON' };
+  await inbox.receive({ action: 'ohos.want.action.home', records: [record] });
+  for (const records of [[], [record, record], [{ ...record, utd: 'general.image' }],
+    [{ ...record, uri: 'https://example.com/course.flowmind.json' }], [{ ...record, uri: 'file://sender/a.json' }]]) {
+    await inbox.receive({ action, records });
+    assert.equal(inbox.pending(), null);
+  }
+  assert.equal(reads.length, 0);
+  assert.equal(revisions.length, 5);
+  await inbox.receive({ action, records: [record] });
+  assert.deepEqual(reads, [record.uri]);
+  assert.equal(inbox.pending().id, 'backup123');
+  assert.equal(inbox.notice(), '');
+  assert.deepEqual(revisions.at(-1), ['moyuStudyShareRevision', 6]);
+});
+
+test('a second delivery never overwrites the incoming preview and a failed read can be retried', async () => {
+  let release;
+  const { inbox, reads } = studyShareFixture(async () => {
+    if (!release) return new Promise(resolve => { release = resolve; });
+    throw Error('invalid backup');
+  });
+  const want = { action: 'ohos.want.action.sendData', records: [{ utd: 'general.json', uri: 'file://sender/notes.flowmind.json' }] };
+  const first = inbox.receive(want);
+  await inbox.receive(want);
+  assert.match(inbox.notice(), /待处理/);
+  release(studyBackup());
+  await first;
+  await inbox.receive(want);
+  assert.equal(reads.length, 1);
+  inbox.dismiss('other');
+  assert.equal(inbox.pending().id, 'backup123');
+  inbox.dismiss('backup123');
+  await inbox.receive(want);
+  assert.equal(reads.length, 2);
+  assert.equal(inbox.pending(), null);
+  assert.match(inbox.notice(), /无法读取/);
 });
 
 test('transfer cache cleanup removes only its own expired packages and failed writes never leave a successful package', async () => {
@@ -2075,11 +2209,14 @@ test('external PDF import persists library metadata before exposing the referenc
     noteMutationQueue:{run:task=>task()},formatTime:()=>'',rebuildSpaces:()=>calls.push('library'),refreshGraph:()=>{},notify:()=>{}};
   v.importOneDocument=viewMethod('pages/Index.ets','importOneDocument');
   const pending=method.call(v,'外部参考');await new Promise(r=>setTimeout(r,0));assert.equal(v.notes.length,0);
+  assert.match(v.documentImportStatus, /正在导入/);
   assert.equal(await method.call(v),null);write();const imported=await pending;assert.equal(v.notes[0],imported);assert.equal(imported.sourceUri,transfer.sourceUri);
   assert.equal(imported.category,'外部参考');assert.equal(imported.sourceFileName,'copy.pdf');assert.equal(v.documentImportBusy,false);assert.deepEqual(calls,['library']);
+  assert.equal(v.activeNav, '资料库'); assert.equal(v.documentImportNoteId, 'pdf'); assert.match(v.documentImportStatus, /已导入/);
   v.storage.delete=async(_,id,source)=>calls.push(['cleanup',id,source]);
   v.storage.save=async()=>{throw Error('disk');};const original=v.notes;assert.equal(await method.call(v),null);assert.equal(v.notes,original);assert.equal(v.documentImportBusy,false);
   assert.deepEqual(calls.at(-1),['cleanup','pdf','/sandbox/copy.pdf']);
+  assert.equal(v.documentImportError, true);
 });
 
 test('an import waits for earlier note mutations and retains their latest committed content',async()=>{
@@ -2096,14 +2233,62 @@ test('an import waits for earlier note mutations and retains their latest commit
   assert.equal(view.notes[1].contentDetail,'latest');assert.equal(writes[0][1].contentDetail,'latest');
 });
 
+test('chat shows a pending question immediately and ignores a reply that arrives after stopping', async () => {
+  const relative = 'views/study/StudyChatWorkspace.ets';
+  let finish;
+  let stopped = 0;
+  const models = [{ id: 'model', label: '测试模型', agent: false }];
+  const view = {
+    alive: true, available: true, generation: 0, pendingQuestion: '', sending: false, scrollBottom() {},
+    gateway: { chat: () => new Promise(resolve => { finish = resolve; }), cancel: () => { stopped++; } },
+    session: { pairingCode: 'paired', models, model: 'model', history: [], conversation: { id: 'a', draft: '离散数学怎么复习？', messages: [] } }
+  };
+  for (const name of ['replaceConversation', 'setDraft', 'send', 'stop', 'restoreQuestion', 'moveTo']) {
+    view[name] = viewMethod(relative, name, { studyChatContext: (history, question) => history.concat(question) });
+  }
+  const pending = view.send();
+  assert.equal(view.pendingQuestion, '离散数学怎么复习？'); assert.equal(view.session.conversation.draft, '');
+  view.stop(); assert.equal(stopped, 1); assert.equal(view.session.conversation.draft, '离散数学怎么复习？');
+  finish('迟到的回答'); await pending;
+  assert.equal(view.session.conversation.messages.length, 0);
+  view.gateway.chat = async () => { throw Error('网络中断'); };
+  await view.send(); assert.equal(view.pendingQuestion, '离散数学怎么复习？'); assert.match(view.status, /网络中断/);
+  view.gateway.chat = async () => '先复习关系和图论。';
+  await view.send(); assert.equal(view.pendingQuestion, ''); assert.deepEqual(plain(view.session.conversation.messages).map(turn => turn.role), ['user', 'assistant']);
+  view.moveTo({ id: 'b', draft: '', messages: [] }); assert.equal(view.session.history[0].id, 'a');
+  view.moveTo(view.session.history[0]); assert.equal(view.session.conversation.messages.length, 2);
+  assert.equal(view.session.models, models); assert.equal(view.session.model, 'model'); assert.equal(view.session.pairingCode, 'paired');
+});
+
+test('citation navigation returns to the original PDF page or Markdown line', () => {
+  const relative = 'views/reader/ReaderSplitWorkspace.ets';
+  const positions = [];
+  const view = {
+    note: { id: 'math' }, sourcePage: 1, assistantCursor: { noteId: 'math', page: 7 },
+    visibleText: { noteId: 'math', line: 18 }, citationOrigin: null, citationTimer: -1,
+    onStudyCitation: (...point) => positions.push(point)
+  };
+  for (const name of ['clearCitationReturn', 'jumpToCitation', 'returnFromCitation']) {
+    view[name] = viewMethod(relative, name, { setTimeout: () => 1, clearTimeout() {} });
+  }
+  view.jumpToCitation(30); view.jumpToCitation(31); view.returnFromCitation();
+  assert.deepEqual(positions, [['math', 30, undefined], ['math', 31, undefined], ['math', 7, undefined]]);
+  assert.equal(view.assistantShowsSource, true);
+  view.jumpToCitation(undefined, 90); view.returnFromCitation();
+  assert.deepEqual(positions.at(-1), ['math', undefined, 18]);
+});
+
 test('batch imports keep the chosen project, process sequentially and retain committed files after a partial failure',async()=>{
-  const importBatch=viewMethod('pages/Index.ets','importDocument');const calls=[],messages=[];let active=0,peak=0;
+  const importBatch=viewMethod('pages/Index.ets','importDocument',{Error});const calls=[];let active=0,peak=0;
   const view={documentImportBusy:false,getAbilityContext:()=>({}),storage:{selectDocumentUris:async()=>['a','broken','b']},
-    notify:message=>messages.push(message),importOneDocument:async(category,example,snapshot,uri)=>{
-      peak=Math.max(peak,++active);await Promise.resolve();calls.push([category,uri]);active--;return uri==='broken'?null:{id:uri};
+    spaces:[{id:'course',name:'课本'}],importOneDocument:async(category,example,snapshot,uri,projectId)=>{
+      peak=Math.max(peak,++active);await Promise.resolve();calls.push([category,uri,projectId]);active--;
+      if(uri==='broken')throw Error('资料损坏');
+      return {id:uri};
     }};
   assert.equal((await importBatch.call(view,'课本')).id,'a');assert.equal(peak,1);assert.equal(view.documentImportBusy,false);
-  assert.deepEqual(calls,[['课本','a'],['课本','broken'],['课本','b']]);assert.match(messages.at(-1),/2\/3/);
+  assert.deepEqual(calls,[['课本','a','course'],['课本','broken','course'],['课本','b','course']]);
+  assert.match(view.documentImportStatus,/2\/3.*资料损坏/);assert.equal(view.activeSpaceId,'course');
   view.storage.selectDocumentUris=async()=>[];assert.equal(await importBatch.call(view),null);assert.equal(calls.length,3);
 });
 
@@ -2161,15 +2346,15 @@ test('ink-only reader commits do not rebuild the text graph while changed text a
   }
 });
 
-test('the extraction import adapter returns library PDF and text paths and propagates failed imports', async () => {
+test('the extraction import adapter returns the committed record and propagates the import error', async () => {
   const method = viewMethod('pages/Index.ets', 'importExtractSource'); const calls = [];
   const view = { importDocument: async (...args) => { calls.push(args); return { id: 'pdf', sourceType: 'pdf', sourceUri: '/sandbox/documents/original.pdf' }; } };
-  assert.equal(await method.call(view, 'file://source.pdf'), '/sandbox/documents/original.pdf');
+  assert.equal((await method.call(view, 'file://source.pdf')).sourceUri, '/sandbox/documents/original.pdf');
   assert.deepEqual(calls[0], ['未分类', false, false, 'file://source.pdf']);
-  view.importDocument = async () => ({ id: 'text', sourceType: 'document' }); view.getAbilityContext = () => ({});
-  view.storage = { read: async () => ({ filePath: '/sandbox/notes/text.md' }) };
-  assert.equal(await method.call(view, 'file://result.md'), '/sandbox/notes/text.md');
-  view.importDocument = async () => null; await assert.rejects(method.call(view, 'file://source.pdf'), /保存/);
+  view.importDocument = async () => ({ id: 'text', sourceType: 'document', contentDetail: '正文' });
+  assert.equal((await method.call(view, 'file://result.md')).contentDetail, '正文');
+  view.importDocument = async () => { throw Error('资料损坏'); };
+  await assert.rejects(method.call(view, 'file://source.pdf'), /资料损坏/);
 });
 test('bundled example PDF is explicitly imported with durable source and rejects a broken native document', async () => {
   const fixture=importService('');const result=await fixture.service.importExamplePdf({filesDir:'/sandbox'});
@@ -2906,6 +3091,28 @@ test('the study gateway fetches the paired model list from the fixed host and re
   await assert.rejects(gateway.models(code), /模型列表无效/);
 });
 
+test('chat sends complete recent turns only and routes to the fixed paired gateway', async () => {
+  const calls = [];
+  const { StudyAssistantGateway, studyChatContext } = load(`${base}services/study/StudyAssistantGateway.ets`, {
+    '@kit.AbilityKit': { bundleManager: {} },
+    '@kit.NetworkKit': { http: { RequestMethod: { GET: 'GET', POST: 'POST' }, HttpDataType: { STRING: 'string' },
+      createHttp: () => ({ request: async (url, options) => {
+        calls.push({ url, options });
+        return { responseCode: 200, result: JSON.stringify({ reply: '回复' }) };
+      }, destroy() {} }) } }
+  });
+  const transcript = [{ role: 'user', content: '旧问题' }, { role: 'assistant', content: '课'.repeat(4800) },
+    { role: 'user', content: '近期问题' }, { role: 'assistant', content: '📚'.repeat(1500) }];
+  const context = plain(studyChatContext(transcript, '追问'));
+  assert.deepEqual(context, [...transcript.slice(2), { role: 'user', content: '追问' }]);
+  assert.equal(transcript.length, 4);
+  const gateway = new StudyAssistantGateway();
+  assert.equal(await gateway.chat(context, 'b'.repeat(32), 'deepseek-flash'), '回复');
+  assert.equal(calls[0].url, 'http://10.0.2.2:8765/v1/chat');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].options.extraData), { model: 'deepseek-flash', messages: context });
+});
+
 test('closing the assistant stops a pending request but keeps the session data', () => {
   const update = viewMethod('views/study/StudyAssistantPanel.ets', 'onActiveChanged');
   const result = { title: '已有结果' };
@@ -3582,6 +3789,22 @@ test('failed project deletion retains all state and never reports a successful d
   assert.equal(notices.length,1);assert.match(notices[0],/失败|disk/);
 });
 
+test('batch moves preserve file IDs and dependent content and reject a stale selection without a partial change', () => {
+  const note = studyNote({ id: 'saved', category: '旧项目', sourceUri: '/sandbox/book.pdf',
+    pageAnnotations: '{"strokes":[]}', contentDetail: '参见 [[复习资料]]' });
+  const other = studyNote({ id: 'other', category: '其他' });
+  const before = { notes: [note, other], projects: [], trash: [], trashedProjects: [] };
+  const moved = WorkspaceLifecycle.moveNotes(before, [note.id], '考试');
+  assert.deepEqual(plain(moved.notes[0]), plain({ ...note, category: '考试' }));
+  assert.equal(moved.notes[1], other);
+  assert.equal(before.notes[0].category, '旧项目');
+  assert.throws(() => WorkspaceLifecycle.moveNotes(before, ['saved', 'missing'], '考试'), /所选资料已变更/);
+  assert.throws(() => WorkspaceLifecycle.deleteNotes(before, ['saved', 'missing'], 100), /所选资料已变更/);
+  const deleted = WorkspaceLifecycle.deleteNotes(moved, ['saved', 'other'], 100);
+  assert.equal(deleted.notes.length, 0);
+  assert.deepEqual(plain(deleted.trash.map(note => [note.id, note.deletedAt])), [['saved', 100], ['other', 100]]);
+});
+
 test('unclassified import returns to the library and clears stale project and search filters',async()=>{
   const view={spaces:[],documentImportBusy:false,activeNav:'首页',activeSpaceId:'old',searchText:'old',activeFilter:'PDF',getAbilityContext:()=>({}),
     storage:{selectDocumentUris:async()=>['book']},notify(){},importOneDocument:async()=>({id:'book'})};
@@ -3654,8 +3877,25 @@ test('cover preparation cannot revert an edit that completed before its queued c
 
 test('startup initialization always releases its loading state and reports unexpected failures',async()=>{
   const bootstrap=viewMethod('pages/Index.ets','bootstrap');const messages=[];
-  const view={workspaceLoading:true,loadWorkspace:async()=>{throw Error('startup');},notify:message=>messages.push(message)};
+  const view={workspaceLoading:true,loadWorkspace:async()=>{throw Error('startup');},notify:message=>messages.push(message),handleSharedPackage(){}};
   await bootstrap.call(view);assert.equal(view.workspaceLoading,false);assert.equal(messages.length,1);assert.match(messages[0],/初始化未完成/);
+});
+
+test('a system share from cold start opens the import preview only after library initialization', () => {
+  const messages = [];
+  const handle = viewMethod('pages/Index.ets', 'handleSharedPackage', { StudyShareInbox: { pending: () => studyBackup(), notice: () => '' } });
+  const openBackup = viewMethod('pages/Index.ets', 'openBackup');
+  const view = { workspaceLoading: true, studyShareRevision: 1, handledStudyShareRevision: 0, backupVisible: false,
+    openBackup, notify: message => messages.push(message) };
+  handle.call(view);
+  assert.equal(view.backupVisible, false);
+  view.workspaceLoading = false;
+  handle.call(view);
+  assert.equal(view.backupVisible, true);
+  view.backupVisible = false;
+  handle.call(view);
+  assert.equal(view.backupVisible, false);
+  assert.deepEqual(messages, []);
 });
 
 

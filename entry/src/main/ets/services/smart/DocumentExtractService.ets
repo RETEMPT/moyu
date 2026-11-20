@@ -1,56 +1,40 @@
-import { Context } from '@kit.AbilityKit';
-import { fileIo as fs } from '@kit.CoreFileKit';
-import { PdfDocumentService } from '../document/PdfDocumentService';
-import { TextImportPolicy } from './TextImportPolicy';
 import { SMART_INPUT_LIMIT } from '../../common/constants/ContentLimits';
+import { PdfTextPage } from '../../common/types/StudyTypes';
+import { PdfDocumentService } from '../document/PdfDocumentService';
 
-export interface DocumentExtractResult { text: string; notice: string; }
+export interface PdfExtractionCursor { page: number; offset: number; }
+export interface PdfExtractionChunk { text: string; next: PdfExtractionCursor | null; }
 
-/** Bounded local extraction. Library copies are retained; standalone temporary copies are released. */
+/** Use real PDF pages and stop when the editor has enough text or the current scan batch ends. */
 export class DocumentExtractService {
-  /** Check extraction limits before a selected file is copied into the library. */
-  static validateInput(uri: string): boolean {
-    const handle = fs.openSync(uri, fs.OpenMode.READ_ONLY);
-    let pdf = false;
-    try {
-      const size = fs.statSync(handle.fd).size;
-      if (size <= 0 || size > 20 * 1024 * 1024) { throw new Error('请选择非空且不超过 20 MB 的文件'); }
-      const header = new ArrayBuffer(5); fs.readSync(handle.fd, header);
-      const bytes = new Uint8Array(header);
-      pdf = bytes[0] === 37 && bytes[1] === 80 && bytes[2] === 68 && bytes[3] === 70 && bytes[4] === 45;
-      if (!pdf && size > 1024 * 1024) { throw new Error('文字结果文件最多 1 MB，请分段导出'); }
-    } finally { fs.closeSync(handle); }
-    return pdf;
-  }
-
-  static async read(context: Context, uri: string, start: number, end: number,
-    cancelled: () => boolean, progress: (page: number) => void): Promise<DocumentExtractResult> {
-    let name = uri.split('/').pop() || '';
-    try { name = decodeURIComponent(name); } catch { /* Keep an opaque picker name. */ }
-    if (cancelled()) { throw new Error('已取消导入'); }
-    const pdf = DocumentExtractService.validateInput(uri);
-    if (!pdf) {
-      if (!/\.(md|markdown|txt)$/i.test(name)) { throw new Error('支持 PDF、Markdown 和 TXT；学习备份请从备份页恢复'); }
-      const raw = await fs.readText(uri);
-      if (cancelled()) { throw new Error('已取消导入'); }
-      return { text: TextImportPolicy.parse(raw),
-        notice: '文字已导入，请校对后整理。Markdown 中的表格与公式保留；配套图片须另外保管。' };
-    }
-    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end - start >= 5) {
-      throw new Error('每次提取 1–5 页，请填写正确的 PDF 页范围');
-    }
-    const service = PdfDocumentService.getInstance();
-    const prefix = `${context.filesDir}/documents/`;
-    const localName = uri.startsWith(prefix) ? uri.substring(prefix.length) : '';
-    const managed = localName.length > 0 && localName !== '.' && localName !== '..' && !/[\\/]/.test(localName);
-    const copy = managed ? uri : await service.savePdfToSandbox(context, uri, 'smart-extract.pdf');
-    try {
-      if (cancelled()) { throw new Error('已取消导入'); }
-      const pages = await service.extractPages(copy, start, end, true, cancelled, progress);
-      const text = pages.map(page => `## 第 ${page.pageNumber} 页\n\n${page.text || '（本页未识别到文字）'}`).join('\n\n');
-      if (!pages.some(page => page.text.trim())) { throw new Error('这些页面没有识别到文字，请检查扫描清晰度、系统识别能力，或粘贴校对后的文字'); }
-      if (text.length > SMART_INPUT_LIMIT) { throw new Error('页面文字过多，请缩小页范围，原输入已保留'); }
-      return { text, notice: '使用本机 PDF 文字层与鸿蒙 OCR 提取，请核对阅读顺序、表格、公式及数字；扫描结果未自动视为已校对。' };
-    } finally { if (!managed) { await service.removeManagedPdf(context, copy); } }
+  static async readPdf(path: string, pageCount: number, cursor: PdfExtractionCursor, budget: number, scanOcr: boolean,
+    cancelled: () => boolean, progress: (page: number) => void): Promise<PdfExtractionChunk> {
+    if (budget < 32 || budget > SMART_INPUT_LIMIT) { throw new Error('请先整理当前文字，再继续提取'); }
+    if (cursor.page > pageCount) { return { text: '', next: null }; }
+    const end = Math.min(pageCount, cursor.page + 11);
+    let text = '';
+    let next: PdfExtractionCursor | null = null;
+    await PdfDocumentService.getInstance().extractPages(path, cursor.page, end, scanOcr, cancelled, progress,
+      (page: PdfTextPage): boolean => {
+        const offset = page.pageNumber === cursor.page ? cursor.offset : 0;
+        const remaining = page.text.slice(offset);
+        if (remaining.trim()) {
+          const heading = (text ? '\n\n' : '') + `## 第 ${page.pageNumber} 页` + (offset > 0 ? '（续）' : '') + '\n\n';
+          const available = budget - text.length - heading.length;
+          if (available < 2) { next = { page: page.pageNumber, offset }; return false; }
+          let count = Math.min(available, remaining.length);
+          if (count < remaining.length) {
+            const paragraph = remaining.lastIndexOf('\n', count - 1);
+            if (paragraph >= count / 2) { count = paragraph + 1; }
+            const unit = remaining.charCodeAt(count - 1);
+            if (unit >= 0xD800 && unit <= 0xDBFF) { count--; }
+          }
+          text += heading + remaining.slice(0, count);
+          if (count < remaining.length) { next = { page: page.pageNumber, offset: offset + count }; return false; }
+        }
+        next = page.pageNumber < pageCount ? { page: page.pageNumber + 1, offset: 0 } : null;
+        return true;
+      });
+    return { text, next };
   }
 }

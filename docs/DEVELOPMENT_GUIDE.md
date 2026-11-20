@@ -1,6 +1,6 @@
 # 墨语开发指南
 
-更新：2026-10-22。基线：1.1.1（1010001），HarmonyOS 手机／平板原生应用。接手前阅读[产品范围](../PRODUCT_SCOPE.md)、[代码规范](CODE_STANDARDS.md)和[架构](ARCHITECTURE.md)。
+更新于 2026-11-20。源码基线为 1.2.0（1020000），面向 HarmonyOS 手机和平板。接手前阅读[产品范围](../PRODUCT_SCOPE.md)、[代码规范](CODE_STANDARDS.md)和[架构](ARCHITECTURE.md)。
 
 ## 环境与可复现构建
 
@@ -53,7 +53,7 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 
 **OCR 与整理**：系统能力检测 → 页／图片文字识别 → 人工校对 → 规则结构化 → 原文和预览 → 用户选择待办 → 保存。提取页数与字数限制见[排版规则](LOCAL_TEXT_LAYOUT.md)；不是云端生成。
 
-**备份与分享**：明确选择资料 → 按允许字段组装 → TaskPool 编解码与校验 → 生成临时资料包 → 系统分享面板 → 接收方确认导入副本。当前上限为包 32 MB、单附件 16 MB；面板打开不等于送达。备份不包括日历待办和回收站。
+**备份与分享**。资料库批量选择和备份页共享资料包生成逻辑。系统分享接收通过 `EntryAbility.onCreate` 或 `onNewWant` 处理 `sendData`，仅打开单份 `.flowmind.json` 文件。临时授权有效期间分块读取并关闭文件，TaskPool 校验成功后将资料包交给接收预览。文件选择器使用同一个读取与校验流程。用户确认后，恢复服务逐份创建本机副本。资料包上限为 32 MB，单附件上限为 16 MB，范围包括选中的资料和题卡。设备发现由系统分享面板提供。[华为接收分享指南](https://developer.huawei.com/consumer/en/doc/harmonyos-guides/share-interface-description/)
 
 ## 数据与迁移
 
@@ -84,10 +84,10 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 
 ## 关联质量与云服务设计
 
-独立 AI 原型需要 Python 3.10+ 与 sqlite3，无第三方 Python 包。运行方式与数据边界见[原型说明](../cloud/ai/README.md)，专项检查为 `node tools/verify-ai.mjs`，已加入统一入口；CI 显式准备 Python。测试使用临时数据库和模拟模型，不调用真实推理服务。原型数据默认在被忽略的 `cloud/ai/.data/`，不可作为源码或 APP／HAP 资源打包。主应用源码或权限没有变化时，不因独立原型变动重编译或安装应用。
+电脑端 CLI 需要 Python 3.10+ 与 sqlite3，MCP 扩展另有可选依赖。专项检查 `node tools/verify-ai.mjs` 已加入统一入口，CI 显式准备 Python。测试使用临时数据库和模拟模型。CI 失败时可下载 `verification-logs` 查看各项报告。工作区数据及运行方式见[云模型工具说明](../cloud/ai/README.md)。
 
 本地学习增强位于 `services/study/LearningProgressPolicy.ets` 和 `views/study/StudySheet.ets`，使用显式时钟与已提交资料／题卡，不新增库表。代码修改后仍需 release 编译、工作流与编译后接线检查；后者仅验证 SDK 生成事件，不替代实际手机和平板的字号、键盘、布局和触控验收。云业务暂不开放，不预埋自动启用开关。
 
-离线交换准备层见[接入契约](LEARNING_INTEGRATION.md)。修改 `LearningResultPolicy` 或 Python `exchange.py` 时同步共享样本并运行两端回归；生产入口不引用准备策略，单纯 release 构建不会编译它。使用已配置的 DevEco 环境执行 `hvigorw assembleHap --no-daemon --mode module -p module=entry@ohosTest -p product=default -p buildMode=debug`，验证测试目标内的 ArkTS 编译；该步骤不安装、不运行测试包。未来接线必须同时更新明确隔离的源码范围规则、隐私与用户行为文档，不能只删除检查。
+离线学习结果由复习页打开。修改 `LearningResultPolicy` 或 Python `exchange.py` 时，同步共享样本并运行两端回归。使用已配置的 DevEco 环境执行 `hvigorw assembleHap --no-daemon --mode module -p module=entry@ohosTest -p product=default -p buildMode=debug` 可验证测试目标的 ArkTS 编译。结果交换和设备验收见[接入契约](LEARNING_INTEGRATION.md)。
 
 保存与迁移修改应记录版本、真实测试和未覆盖边界，不复用旧结果。托管云AI按[技术方案](CLOUD_AI_DESIGN.md)组织网关、任务、引用验证和用量账本，面向的学习场景见[服务方向](CLOUD_AI_BUSINESS.md)。新增网络与云处理时同步产品范围、权限、隐私与凭据管理，让实现、用户说明和数据边界保持一致。

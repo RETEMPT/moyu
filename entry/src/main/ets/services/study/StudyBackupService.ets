@@ -4,7 +4,7 @@ import { taskpool, util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { NoteItem } from '../../common/types/NoteItem';
 import { ReviewCard } from '../../common/types/StudyTypes';
-import { StudyBackup, BackupAsset } from '../../common/types/StudyBackup';
+import { StudyBackup, BackupAsset, STUDY_PACKAGE_SUFFIX } from '../../common/types/StudyBackup';
 import { StudyBackupPolicy } from './StudyBackupPolicy';
 import { NoteCoverService } from '../NoteCoverService';
 import { PdfDocumentService } from '../document/PdfDocumentService';
@@ -13,6 +13,7 @@ import { ImageDocumentService } from '../document/ImageDocumentService';
 import { validateBackupData, encodeBackupData, decodeBackupData } from './BackupCodec';
 
 const MAX_BYTES: number = 32 * 1024 * 1024;
+const IO_CHUNK_BYTES: number = 512 * 1024;
 
 export class StudyBackupService {
   static async validate(input: StudyBackup): Promise<StudyBackup> {
@@ -22,19 +23,13 @@ export class StudyBackupService {
     const backup = await StudyBackupService.create(context, notes, cards);
     const buffer = await taskpool.execute(encodeBackupData, backup) as ArrayBuffer;
     const options = new picker.DocumentSaveOptions();
-    options.newFileNames = [`墨语学习备份_${new Date().toISOString().slice(0, 10)}.flowmind.json`];
-    options.fileSuffixChoices = ['墨语学习备份|.json'];
+    options.newFileNames = [`墨语学习备份_${new Date().toISOString().slice(0, 10)}${STUDY_PACKAGE_SUFFIX}`];
     const uris = await new picker.DocumentViewPicker(context).save(options);
     if (!uris.length) { return false; }
     const file = await fs.open(uris[0], fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
     let closed = false;
     try {
-      let offset = 0;
-      while (offset < buffer.byteLength) {
-        const written = await fs.write(file.fd, buffer.slice(offset, Math.min(offset + 512 * 1024, buffer.byteLength)));
-        if (written <= 0) { throw new Error('备份未完整写入，请重试'); }
-        offset += written;
-      }
+      await StudyBackupService.writeBuffer(file.fd, buffer);
       await fs.fsync(file.fd);
     } catch (error) {
       try { await fs.close(file); closed = true; } catch { /* Best effort. */ }
@@ -59,12 +54,10 @@ export class StudyBackupService {
         if (!allowed) { throw new Error(`《${note.title}》的附件不在应用目录，请重新导入后备份`); }
         const file = await fs.open(source, fs.OpenMode.READ_ONLY);
         try {
-          const size = fs.statSync(file.fd).size;
+          const size = (await fs.stat(file.fd)).size;
           total += size;
           if (size <= 0 || size > 16 * 1024 * 1024 || total > 22 * 1024 * 1024) { throw new Error('附件较大，请按课程分批备份；单个附件上限 16 MB'); }
-          const buffer = new ArrayBuffer(size);
-          const read = await fs.read(file.fd, buffer);
-          if (read !== size) { throw new Error('附件未完整读取，请重试'); }
+          const buffer = await StudyBackupService.readBuffer(file.fd, size);
           assets.push({ noteId: note.id, kind: kind === 0 ? note.sourceType === 'image' ? 'image' : 'pdf' : 'cover',
             extension: kind === 0 && note.sourceType === 'image' ? ImageDocumentPolicy.extension(source) : undefined,
             data: await new util.Base64Helper().encodeToString(new Uint8Array(buffer)) });
@@ -89,16 +82,11 @@ export class StudyBackupService {
         try { await fs.unlink(directory + '/' + name); } catch { /* A file in use stays available to its receiver. */ }
       }
     }
-    const target = directory + '/study_' + Date.now() + '_' + backup.id + '.flowmind.json';
+    const target = directory + '/study_' + Date.now() + '_' + backup.id + STUDY_PACKAGE_SUFFIX;
     const file = await fs.open(target, fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
     let complete = false;
     try {
-      let offset = 0;
-      while (offset < buffer.byteLength) {
-        const written = await fs.write(file.fd, buffer.slice(offset, Math.min(offset + 512 * 1024, buffer.byteLength)));
-        if (written <= 0) { throw new Error('资料包未完整写入，请重试'); }
-        offset += written;
-      }
+      await StudyBackupService.writeBuffer(file.fd, buffer);
       await fs.fsync(file.fd); complete = true;
     } finally {
       try { await fs.close(file); }
@@ -109,15 +97,47 @@ export class StudyBackupService {
   static async selectFile(context: Context): Promise<StudyBackup | null> {
     const options = new picker.DocumentSelectOptions(); options.maxSelectNumber = 1; options.fileSuffixFilters = ['.json'];
     const uris = await new picker.DocumentViewPicker(context).select(options);
-    if (!uris.length) { return null; }
-    const file = await fs.open(uris[0], fs.OpenMode.READ_ONLY);
+    return uris.length ? await StudyBackupService.readUri(uris[0]) : null;
+  }
+
+  /** Reads while the picker or system share grant is active. Both entry points use the same codec. */
+  static async readUri(uri: string): Promise<StudyBackup> {
+    const file = await fs.open(uri, fs.OpenMode.READ_ONLY);
+    let buffer: ArrayBuffer;
     try {
-      const size = fs.statSync(file.fd).size;
-      if (size > MAX_BYTES) { throw new Error('备份文件超过 32 MB'); }
-      const buffer = new ArrayBuffer(size);
-      if (await fs.read(file.fd, buffer) !== size) { throw new Error('备份文件未完整读取'); }
-      return await taskpool.execute(decodeBackupData, buffer) as StudyBackup;
+      const stat = await fs.stat(file.fd);
+      if (!stat.isFile() || stat.size <= 0) { throw new Error('请选择有效的墨语资料包'); }
+      if (stat.size > MAX_BYTES) { throw new Error('备份文件超过 32 MB'); }
+      buffer = await StudyBackupService.readBuffer(file.fd, stat.size);
+      if ((await fs.stat(file.fd)).size !== stat.size) { throw new Error('资料包在读取时发生变化，请重新选择'); }
     } finally { await fs.close(file); }
+    const backup = await taskpool.execute(decodeBackupData, buffer) as StudyBackup;
+    if (backup.notes.length === 0) { throw new Error('此资料包没有可导入的资料'); }
+    return backup;
+  }
+
+  private static async readBuffer(fd: number, size: number): Promise<ArrayBuffer> {
+    const bytes = new Uint8Array(size);
+    const buffer = new ArrayBuffer(Math.min(IO_CHUNK_BYTES, size));
+    let offset = 0;
+    while (offset < size) {
+      const length = Math.min(buffer.byteLength, size - offset);
+      const read = await fs.read(fd, buffer, { length: length });
+      if (read <= 0 || read > length) { throw new Error('资料包或附件未完整读取，请重试'); }
+      bytes.set(new Uint8Array(buffer, 0, read), offset);
+      offset += read;
+    }
+    return bytes.buffer as ArrayBuffer;
+  }
+
+  private static async writeBuffer(fd: number, buffer: ArrayBuffer): Promise<void> {
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const chunk = buffer.slice(offset, Math.min(offset + IO_CHUNK_BYTES, buffer.byteLength));
+      const written = await fs.write(fd, chunk);
+      if (written <= 0 || written > chunk.byteLength) { throw new Error('资料包或附件未完整写入，请重试'); }
+      offset += written;
+    }
   }
 
   static async materialize(context: Context, backup: StudyBackup, index: number, title: string): Promise<NoteItem> {
@@ -136,7 +156,7 @@ export class StudyBackupService {
         created.push(target);
         try {
           const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-          if (await fs.write(file.fd, buffer) !== bytes.length) { throw new Error('附件写入不完整'); }
+          await StudyBackupService.writeBuffer(file.fd, buffer);
           await fs.fsync(file.fd);
         } finally { await fs.close(file); }
         if (asset.kind === 'pdf') {

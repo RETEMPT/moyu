@@ -7,7 +7,7 @@ import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { SAVE_IDLE, SAVE_SAVING, SAVE_FAILED } from '../../common/constants/WorkspaceConstants';
 import { ReaderPairPolicy } from '../../services/document/ReaderPairPolicy';
 import { PdfDocumentService } from '../../services/document/PdfDocumentService';
-import { StudyAssistantGateway } from '../../services/study/StudyAssistantGateway';
+import { StudyAssistantGateway, StudyGatewaySelection } from '../../services/study/StudyAssistantGateway';
 import { WorkspaceNotePolicy } from '../../services/WorkspaceNotePolicy';
 import { IconButton } from '../common/IconButton';
 import { StudyAssistantPanel } from '../study/StudyAssistantPanel';
@@ -20,6 +20,7 @@ interface ReaderPaneParams {
 }
 
 interface ReaderPageCursor { noteId: string; page: number; }
+interface CitationOrigin { noteId: string; page?: number; line?: number; }
 
 /** A split owns navigation and save barriers. Each pane keeps its format-specific reader and data. */
 @Component
@@ -32,13 +33,15 @@ export struct ReaderSplitWorkspace {
   @Prop sourcePage: number = 1;
   @Prop jumpToken: number = 0;
   @Prop jumpLine: number = -1;
+  @Prop sharedGateway: StudyGatewaySelection = { pairingCode: '', models: [], model: '' };
+  onGatewayChange: (selection: StudyGatewaySelection) => void = () => {};
   onOutlineUpdated: (items: MarkdownOutlineItem[]) => void = () => {};
   @Prop sourceJumpToken: number = 0;
   onClose: () => void = () => {};
   onSecondaryClosed: () => void = () => {};
   onSelectDocument: (id: string) => void = () => {};
   onCloseDocumentTab: (id: string) => void = () => {};
-  onOpenSplitPicker: () => void = () => {};
+  onOpenSplitPicker: (onAssistant: () => void) => void = () => {};
   onSplitDocument: (id: string) => void = () => {};
   onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onSaveStateChange: (state: string) => void = () => {};
@@ -58,6 +61,7 @@ export struct ReaderSplitWorkspace {
   @StorageProp('flowmindDarkMode') dark: boolean = false;
   @StorageProp('flowmindThemeStyle') style: string = 'mono';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
+  @StorageProp('flowmindStudyPreview') studyPreview: boolean = false;
   @State private saveToken: number = 0;
   @State private primaryBackToken: number = 0;
   @State private secondaryBackToken: number = 0;
@@ -72,6 +76,9 @@ export struct ReaderSplitWorkspace {
   @State private assistantMounted: boolean = false;
   @State private assistantShowsSource: boolean = false;
   @State private assistantCursor: ReaderPageCursor = { noteId: '', page: 0 };
+  @State private citationOrigin: CitationOrigin | null = null;
+  private visibleText: CitationOrigin | null = null;
+  private citationTimer: number = -1;
   private mounted: boolean = false;
   private expected: Set<string> = new Set();
   private states: Map<string, string> = new Map();
@@ -84,13 +91,16 @@ export struct ReaderSplitWorkspace {
 
   aboutToAppear(): void {
     this.mounted = true;
-    StudyAssistantGateway.enabled().then((available: boolean) => { if (this.mounted) { this.assistantAvailable = available; } });
+    if (this.studyPreview) {
+      StudyAssistantGateway.enabled().then((available: boolean) => { if (this.mounted) { this.assistantAvailable = available; } });
+    }
     if (!this.manageKeyboardMode) { return; }
     this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
     this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
   }
   aboutToDisappear(): void {
     this.mounted = false;
+    this.clearCitationReturn();
     // Page bitmaps are only borrowed for the lifetime of the reader; do not retain 1200x1800
     // textures after the user returns to the library.
     PdfDocumentService.getInstance().clearPageCache();
@@ -149,6 +159,43 @@ export struct ReaderSplitWorkspace {
     this.saveBefore(() => this.onSplitDocument(id));
   }
 
+  private toggleAssistant(): void {
+    if (this.assistantOpen) { this.assistantOpen = false; return; }
+    this.saveBefore(() => {
+      this.assistantShowsSource = false;
+      this.assistantMounted = true;
+      this.assistantOpen = true;
+    });
+  }
+
+  private clearCitationReturn(): void {
+    if (this.citationTimer !== -1) { clearTimeout(this.citationTimer); this.citationTimer = -1; }
+    this.citationOrigin = null;
+  }
+
+  private jumpToCitation(page?: number, line?: number): void {
+    const noteId = this.note.id;
+    const prior = this.citationOrigin?.noteId === noteId ? this.citationOrigin : null;
+    this.clearCitationReturn();
+    if (page !== undefined || line !== undefined) {
+      const currentPage = this.assistantCursor.noteId === noteId ? this.assistantCursor.page : this.sourcePage;
+      const currentLine = this.visibleText?.noteId === noteId ? this.visibleText.line : 1;
+      const origin: CitationOrigin = prior || (page !== undefined ? { noteId, page: currentPage } : { noteId, line: currentLine });
+      if ((origin.page !== undefined && origin.page !== page) || (origin.line !== undefined && origin.line !== line)) {
+        this.citationOrigin = origin;
+        this.citationTimer = setTimeout(() => this.clearCitationReturn(), 2500);
+      }
+      this.assistantShowsSource = true;
+      this.onStudyCitation(noteId, page, line);
+    }
+  }
+
+  private returnFromCitation(): void {
+    const origin = this.citationOrigin;
+    this.clearCitationReturn();
+    if (origin && origin.noteId === this.note.id) { this.onStudyCitation(origin.noteId, origin.page, origin.line); }
+  }
+
   @Builder
   tabs() {
     Row({ space: 4 }) {
@@ -186,22 +233,21 @@ export struct ReaderSplitWorkspace {
       }
       IconButton({ icon: $r('app.media.ic_search'), label: '搜索并打开资料', compact: true, available: !this.busy,
         onAction: () => this.saveBefore(this.onSearchNotes) })
-      if (this.assistantAvailable && (this.assistantOpen || ReaderPairPolicy.isPdf(this.note) || ReaderPairPolicy.isMarkdown(this.note))) {
-        Button(this.assistantOpen ? '收起助手' : '学习助手').height(44).fontSize(13).enabled(!this.busy)
-          .onClick(() => {
-            if (this.assistantOpen) { this.assistantOpen = false; }
-            else {
-              this.saveBefore(() => {
-                this.assistantShowsSource = false;
-                this.assistantMounted = true;
-                this.assistantOpen = true;
-              });
-            }
-          })
+      if (this.studyPreview && (this.assistantOpen || ReaderPairPolicy.isPdf(this.note) || ReaderPairPolicy.isMarkdown(this.note))) {
+        if (this.phone) {
+          IconButton({ icon: $r('app.media.ic_chat'), label: this.assistantOpen ? '收起 AI 伴读' : 'AI 伴读',
+            compact: true, selected: this.assistantOpen, available: !this.busy, onAction: () => this.toggleAssistant() })
+        } else {
+          Button(this.assistantOpen ? '收起伴读' : 'AI 伴读', { type: ButtonType.Normal }).height(44).fontSize(13)
+            .borderRadius(10).enabled(!this.busy)
+            .backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.style).accentSoft)
+            .fontColor(ThemeHelper.paletteOfDark(this.dark, this.style).accent)
+            .onClick(() => this.toggleAssistant())
+        }
       }
       if (!this.assistantOpen) {
         IconButton({ icon: $r('app.media.ic_split'), label: this.secondaryNote ? '更换分屏资料' : '分屏阅读', compact: true,
-          available: !this.busy, onAction: () => this.saveBefore(this.onOpenSplitPicker) })
+          available: !this.busy, onAction: () => this.saveBefore(() => this.onOpenSplitPicker(() => this.toggleAssistant())) })
         if (this.secondaryNote) {
           IconButton({ icon: $r('app.media.ic_close'), label: '收起分屏资料', compact: true, available: !this.busy,
             onAction: () => this.saveBefore(this.onSecondaryClosed) })
@@ -217,6 +263,9 @@ export struct ReaderSplitWorkspace {
         backRequestToken: $$.secondary ? 0 : this.primaryBackToken, hostSaveToken: this.saveToken,
         jumpToken: $$.secondary ? 0 : this.jumpToken, jumpLine: $$.secondary ? -1 : this.jumpLine,
         onOutlineUpdated: (items: MarkdownOutlineItem[]) => { if (!$$.secondary) { this.onOutlineUpdated(items); } },
+        onVisibleLineChange: (noteId: string, line: number) => {
+          if (!$$.secondary && noteId === this.note.id) { this.visibleText = { noteId, line }; }
+        },
         annotationPaneOpen: $$.secondary ? this.secondaryScratchpad : this.primaryScratchpad,
         onHostSaveFinished: (ok: boolean, id: string, token: number) => this.saved(ok, id, token),
         onToggleAnnotation: () => { if ($$.secondary) { this.secondaryScratchpad = !this.secondaryScratchpad; } else { this.primaryScratchpad = !this.primaryScratchpad; } },
@@ -279,7 +328,7 @@ export struct ReaderSplitWorkspace {
       if (this.phone && this.assistantOpen) {
         Row({ space: 6 }) {
           this.assistantTab('资料原文', true)
-          this.assistantTab('学习助手', false)
+          this.assistantTab('AI 伴读', false)
         }.width('100%').padding({ left: 12, right: 12, top: 4, bottom: 4 })
           .backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.style).surface)
       }
@@ -293,17 +342,15 @@ export struct ReaderSplitWorkspace {
           }
           if (this.assistantMounted && (ReaderPairPolicy.isPdf(this.note) || ReaderPairPolicy.isMarkdown(this.note))) {
             Column() {
-              StudyAssistantPanel({ note: this.note, active: this.assistantOpen,
+              StudyAssistantPanel({ note: this.note, active: this.assistantOpen, gatewayAvailable: this.assistantAvailable,
+                sharedGateway: this.sharedGateway, onGatewayChange: this.onGatewayChange,
                 sourcePage: this.assistantCursor.noteId === this.note.id ? this.assistantCursor.page :
                   this.note.readPage || this.sourcePage,
                 onExtract: (page: number) => {
                   const id = this.note.id;
                   this.saveBefore(() => this.onExtractPdfText(id, page));
                 },
-                onJump: (page?: number, line?: number) => {
-                  this.assistantShowsSource = true;
-                  this.onStudyCitation(this.note.id, page, line);
-                },
+                onJump: (page?: number, line?: number) => this.jumpToCitation(page, line),
                 onSaveDraft: (title: string, body: string) => this.onSaveStudyDraft(this.note, title, body)
               })
             }.layoutWeight(1).height(this.phone ? undefined : '100%').clip(true)
@@ -323,6 +370,15 @@ export struct ReaderSplitWorkspace {
             .backgroundColor(this.overDrop ? ThemeHelper.paletteOfDark(this.dark, this.style).activeBg : ThemeHelper.paletteOfDark(this.dark, this.style).surface).border({ width: 2, color: ThemeHelper.paletteOfDark(this.dark, this.style).accent })
             .zIndex(100).accessibilityText('右侧分屏放置区')
             .onDragEnter(() => { this.overDrop = true; }).onDragLeave(() => { this.overDrop = false; }).onDrop(() => this.dropDocument())
+        }
+        if (this.citationOrigin?.noteId === this.note.id && (!this.phone || this.assistantShowsSource)) {
+          Column() {
+            Button('返回原位置', { type: ButtonType.Normal }).height(44).padding({ left: 16, right: 16 })
+              .fontSize(14).fontColor(ThemeHelper.paletteOfDark(this.dark, this.style).onAccent)
+              .backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.style).accent)
+              .enabled(!this.busy).onClick(() => this.returnFromCitation())
+          }.width(this.phone ? '100%' : '50%').height('100%').justifyContent(FlexAlign.End)
+            .padding({ bottom: 72 }).hitTestBehavior(HitTestMode.Transparent)
         }
       }.layoutWeight(1).width('100%')
     }.width('100%').height('100%').backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.style).canvas)

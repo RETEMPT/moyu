@@ -4,7 +4,7 @@ import { LearningCitation, LearningResult, LearningSection } from '../../common/
 import { NoteItem } from '../../common/types/NoteItem';
 import { ReaderPairPolicy } from '../../services/document/ReaderPairPolicy';
 import { LearningResultPolicy, LearningSourceLocation } from '../../services/study/LearningResultPolicy';
-import { StudyAssistantFragment, StudyAssistantGateway, StudyAssistantRequest, StudyGatewayModel } from '../../services/study/StudyAssistantGateway';
+import { StudyAssistantFragment, StudyAssistantGateway, StudyAssistantRequest, StudyGatewayModel, StudyGatewaySelection } from '../../services/study/StudyAssistantGateway';
 import { StudyAssistantSource } from '../../services/study/StudyAssistantSource';
 import { StudySourceService } from '../../services/study/StudySourceService';
 import { AppIcon } from '../common/AppIcon';
@@ -15,6 +15,9 @@ export struct StudyAssistantPanel {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
   @Prop @Watch('onActiveChanged') active: boolean = true;
   @Prop sourcePage: number = 1;
+  @Prop gatewayAvailable: boolean = false;
+  @Prop sharedGateway: StudyGatewaySelection = { pairingCode: '', models: [], model: '' };
+  onGatewayChange: (selection: StudyGatewaySelection) => void = () => {};
   onExtract: (page: number) => void = () => {};
   onJump: (page?: number, line?: number) => void = () => {};
   onSaveDraft: (title: string, body: string) => Promise<boolean> = async () => false;
@@ -45,7 +48,12 @@ export struct StudyAssistantPanel {
   private sourceUri: string = '';
   private pageCount: number = 0;
 
-  aboutToAppear(): void { this.onNoteChanged(); }
+  aboutToAppear(): void {
+    this.pairingCode = this.sharedGateway.pairingCode;
+    this.models = this.sharedGateway.models;
+    this.selectedModel = this.sharedGateway.model;
+    this.onNoteChanged();
+  }
 
   aboutToDisappear(): void { this.stopRequest(); }
 
@@ -154,6 +162,7 @@ export struct StudyAssistantPanel {
       this.models = models;
       if (!this.model()) { this.selectedModel = models[0].id; }
       this.pairingOpen = false;
+      this.publishGateway();
     } catch (error) {
       if (generation !== this.generation) { return; }
       this.models = [];
@@ -162,6 +171,10 @@ export struct StudyAssistantPanel {
     } finally {
       if (generation === this.generation) { this.connecting = false; }
     }
+  }
+
+  private publishGateway(): void {
+    this.onGatewayChange({ pairingCode: this.pairingCode.trim(), models: this.models, model: this.selectedModel });
   }
 
   private extract(): void {
@@ -274,14 +287,14 @@ export struct StudyAssistantPanel {
       .border({ width: 1, color: this.selectedModel === model.id ? this.palette().accent : this.palette().borderSubtle })
       .accessibilityDescription(this.selectedModel === model.id ? '已选中' : '可选模型')
       .onClick(() => {
-        if (this.selectedModel !== model.id) { this.selectedModel = model.id; this.resetPreview(); }
+        if (this.selectedModel !== model.id) { this.selectedModel = model.id; this.resetPreview(); this.publishGateway(); }
       })
   }
 
   @Builder
   modelPicker() {
     Column({ space: 8 }) {
-      Text('Select model').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+      Text('选择模型').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
       if (this.models.length > 0) {
         ForEach(this.models, (model: StudyGatewayModel) => { this.modelOption(model) }, (model: StudyGatewayModel) => model.id)
         if (this.model()?.agent) {
@@ -418,7 +431,7 @@ export struct StudyAssistantPanel {
   build() {
     Column() {
       Column({ space: 4 }) {
-        Text('学习助手').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
+        Text('AI 伴读').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
         Text(this.note.title).fontSize(13).fontColor(this.palette().inkSecondary)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.width('100%').alignItems(HorizontalAlign.Start).padding({ left: 16, right: 16, top: 12, bottom: 10 })
@@ -438,8 +451,13 @@ export struct StudyAssistantPanel {
             this.preview(this.pending)
           } else if (this.result) {
             this.output(this.result)
-          } else {
+          } else if (this.gatewayAvailable) {
             this.composer()
+          } else {
+            Text('当前版本未启用电脑网关').fontSize(14).fontColor(this.palette().inkSecondary).width('100%')
+            if (ReaderPairPolicy.isPdf(this.note) && this.note.sourceUri) {
+              this.action('提取当前页文字', false, true, () => this.onExtract(this.sourcePage))
+            }
           }
         }.padding(16).width('100%').alignItems(HorizontalAlign.Start)
       }.layoutWeight(1).width('100%').align(Alignment.Top)

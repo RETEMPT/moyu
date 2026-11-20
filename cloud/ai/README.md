@@ -42,11 +42,11 @@ CLI 需要 Python 3.10+ 和标准库 SQLite。模型名称由使用者从供应�
    .\build_hap.bat -BuildMode debug -StudyDemo -Clean
    ```
 
-3. 打开 PDF 或 Markdown／TXT 资料，在阅读器顶部选择「学习助手」。输入网关终端显示的配对码，点击「连接电脑网关」，然后在「Select model」选择 DeepSeek Flash 或 DeepSeek V4 Pro。选择问答、摘要或周报，核对模型和资料范围后确认发送。PDF 先用「提取待校对页」处理选中的页。返回结果后可定位引文，并把草稿保存为本地 Markdown 笔记。
+3. 从侧栏或底栏进入「AI 墨客」，输入网关终端显示的配对码并选择模型。打开 PDF 或 Markdown／TXT 后，也可从阅读器顶栏或分屏选择中进入「AI 伴读」。两个入口共享当前配对。伴读支持问答、摘要和周报，发送前可核对原文范围。PDF 可先用「提取待校对页」。点回答的引用跳到原文后，可以用「返回原位置」回到刚才阅读的页或段落。
 
 模拟器通过 `10.0.2.2:8765` 访问电脑的回环地址。网关只监听 `127.0.0.1:8765`，每次启动生成新配对码。模型密钥只在电脑进程环境中，网关不保留学习内容和会话。已确认的文字和目标会送给指定的云服务，可能产生 API 费用。默认列出两款 DeepSeek 模型，可重复指定 `--model` 来配置列表。切换供应商时重启网关并使用新的配对码。停止等待会关闭 App 的请求，网关已发出的请求可能继续完成。
 
-选择 DeepSeek 后，Agent 可以在一次工具调用轮次内检索已确认发送的片段，结果仍按逐字引文核验流程处理。模拟器支持单次问答、选页摘要和周报草稿。独立 MCP 工具提供笔记本检索、题卡与学习计划。
+阅读器内选择 DeepSeek 后，Agent 可以在一次工具调用轮次内检索已确认的片段，结果经过逐字引文核验。独立对话发送本次问题和最多六轮近期对话，合计最多 7000 个 UTF-16 单元。消息发送后立即显示，网关完成请求后显示完整回答。可停止等待、修改失败的问题或重试。新建对话后可从会话记录切回之前的对话，点「保存对话为笔记」可写入本机资料库。独立 MCP 工具提供笔记本检索、题卡与学习计划。
 
 [DevEco 模拟器访问电脑网络](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/ide-emulator-access-network-V13/) · [DeepSeek JSON 输出](https://api-docs.deepseek.com/guides/json_mode/) · [DeepSeek 工具调用](https://api-docs.deepseek.com/guides/tool_calls/)
 

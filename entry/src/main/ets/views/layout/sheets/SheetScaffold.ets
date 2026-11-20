@@ -26,31 +26,31 @@ export struct SheetOverlay {
   @BuilderParam body: () => void = this.emptyBody;
 
   build() {
-    Column() {
+    Stack({ alignContent: this.isPhone ? Alignment.Bottom : Alignment.Center }) {
+      Column().width('100%').height('100%')
+        .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.40)' : 'rgba(0,0,0,0.18)')
+        .onClick(() => this.onDismiss())
       Column({ space: 8 }) {
         this.body()
       }
       .width('92%')
       .constraintSize({ maxWidth: 440, maxHeight: '90%' })
       .padding(20)
-      .borderRadius(14)
+      .margin({ bottom: this.isPhone ? 12 : 0 })
+      .borderRadius(18)
       .backgroundColor(ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle).surface)
       .shadow({ radius: 20, color: this.isDarkMode ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.14)', offsetY: 6 })
       .border({
         width: 1,
         color: this.isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'
       })
-        .onClick(() => {})
-      .transition(TransitionEffect.OPACITY.combine(TransitionEffect.scale({ x: AnimationTokens.SCALE_MODAL_ENTER, y: AnimationTokens.SCALE_MODAL_ENTER }))
+      .onClick(() => {})
+      .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: this.isPhone ? 18 : 5 }))
         .animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_SMOOTH }))
     }
     .width('100%')
     .height('100%')
-    .justifyContent(FlexAlign.Center)
-    .alignItems(HorizontalAlign.Center)
-    .backgroundColor(this.isDarkMode ? 'rgba(0,0,0,0.40)' : 'rgba(0,0,0,0.14)')
     .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_SMOOTH }))
-    .onClick(() => this.onDismiss())
   }
 }
 

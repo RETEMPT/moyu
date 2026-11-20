@@ -25,6 +25,31 @@ export interface StudyGatewayModel {
   agent: boolean;
 }
 
+export interface StudyGatewaySelection {
+  pairingCode: string;
+  models: StudyGatewayModel[];
+  model: string;
+}
+
+export interface StudyChatMessage { role: string; content: string; }
+
+interface StudyChatRequest { model: string; messages: StudyChatMessage[]; }
+interface StudyChatResponse { reply: string; }
+
+/** Keep complete recent turns in the request while leaving the local transcript intact. */
+export function studyChatContext(history: StudyChatMessage[], question: string): StudyChatMessage[] {
+  const context: StudyChatMessage[] = [{ role: 'user', content: question }];
+  let units = question.length;
+  for (let index = history.length - 2; index >= 0 && context.length < 13; index -= 2) {
+    const user = history[index];
+    const answer = history[index + 1];
+    units += user.content.length + answer.content.length;
+    if (units > 7000) { break; }
+    context.unshift(user, answer);
+  }
+  return context;
+}
+
 interface StudyGatewayCatalog { models: StudyGatewayModel[]; }
 
 interface StudyGatewayGeneration {
@@ -36,6 +61,8 @@ interface StudyGatewayGeneration {
 
 export class StudyAssistantGateway {
   private active: http.HttpRequest | null = null;
+
+  static previewEnabled(): boolean { return BuildProfile.DEBUG; }
 
   static async enabled(): Promise<boolean> {
     if (!BuildProfile.DEBUG) { return false; }
@@ -77,6 +104,18 @@ export class StudyAssistantGateway {
       throw new Error('结果与已确认的资料片段不一致，请重新准备请求。');
     }
     return result;
+  }
+
+  async chat(messages: StudyChatMessage[], pairingCode: string, model: string): Promise<string> {
+    const payload: StudyChatRequest = { model, messages };
+    const raw = await this.request('/chat', pairingCode, JSON.stringify(payload));
+    try {
+      const value = JSON.parse(raw) as StudyChatResponse;
+      if (!value || typeof value.reply !== 'string' || !value.reply.trim() || value.reply.length > 4800) {
+        throw new Error('Invalid reply');
+      }
+      return value.reply;
+    } catch { throw new Error('电脑网关返回的对话格式无效，请使用新版网关重试。'); }
   }
 
   private async request(path: string, pairingCode: string, body: string = ''): Promise<string> {

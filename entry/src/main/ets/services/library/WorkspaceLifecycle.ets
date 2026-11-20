@@ -47,11 +47,33 @@ export class WorkspaceLifecycle {
   }
 
   static deleteNote(state: WorkspaceState, id: string, now: number): WorkspaceState {
-    const note = state.notes.find((item: NoteItem) => item.id === id);
-    if (!note) { throw new Error('目标资料已不存在'); }
-    const copy = copyNote(note); copy.deletedAt = now;
-    return { notes: state.notes.filter((item: NoteItem) => item.id !== id), projects: state.projects,
-      trash: [copy].concat(state.trash.filter((item: NoteItem) => item.id !== id)), trashedProjects: state.trashedProjects };
+    return WorkspaceLifecycle.deleteNotes(state, [id], now);
+  }
+
+  static deleteNotes(state: WorkspaceState, ids: string[], now: number): WorkspaceState {
+    const selected = new Set(ids);
+    const members = state.notes.filter((note: NoteItem) => selected.has(note.id));
+    if (selected.size === 0 || members.length !== selected.size) { throw new Error('所选资料已变更，请重新选择'); }
+    const deleted = members.map((note: NoteItem): NoteItem => { const copy = copyNote(note); copy.deletedAt = now; return copy; });
+    return { notes: state.notes.filter((note: NoteItem) => !selected.has(note.id)), projects: state.projects,
+      trash: deleted.concat(state.trash.filter((note: NoteItem) => !selected.has(note.id))), trashedProjects: state.trashedProjects };
+  }
+
+  static moveNotes(state: WorkspaceState, ids: string[], category: string): WorkspaceState {
+    const selected = new Set(ids);
+    const name = category.trim();
+    if (!name || (name.length > 80 && !state.notes.some((note: NoteItem) => note.category === name) &&
+      !state.projects.some((project: SpaceFolder) => project.name === name))) { throw new Error('新项目名称需为 1–80 字'); }
+    if (selected.size === 0 || state.notes.filter((note: NoteItem) => selected.has(note.id)).length !== selected.size) {
+      throw new Error('所选资料已变更，请重新选择');
+    }
+    const notes = state.notes.map((note: NoteItem): NoteItem => {
+      if (!selected.has(note.id) || note.category === name) { return note; }
+      const copy = copyNote(note);
+      copy.category = name;
+      return copy;
+    });
+    return { notes, projects: state.projects, trash: state.trash, trashedProjects: state.trashedProjects };
   }
 
   static restoreNote(state: WorkspaceState, id: string): WorkspaceState {

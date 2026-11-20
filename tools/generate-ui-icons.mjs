@@ -40,6 +40,7 @@ const icons = {
   plus: '<path d="M12 4v16M4 12h16"/>',
   format: '<path d="M4 5h16M12 5v14M8 19h8M4 12v-3M20 12v-3"/>',
   quote: '<path d="M10 5H4v7h6v-7Zm0 7c0 4-2 6-5 7M21 5h-6v7h6v-7Zm0 7c0 4-2 6-5 7"/>',
+  chat: '<path d="M6 4h12a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H9l-5 3v-5a3 3 0 0 1-1-2V7a3 3 0 0 1 3-3Z"/><path d="M8 9h8m-8 4h5"/>',
   list: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
   ordered: '<path d="M10 6h10M10 12h10M10 18h10M3 4h2v5M3 13c0-3 4-3 4-1 0 2-4 3-4 6h4"/>',
   bold: '<path d="M6 4h7a4 4 0 0 1 0 8H6Zm0 8h8a4 4 0 0 1 0 8H6Z"/>',

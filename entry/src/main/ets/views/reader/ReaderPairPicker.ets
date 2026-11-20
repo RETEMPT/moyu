@@ -1,6 +1,7 @@
 import { NoteItem } from '../../common/types/NoteItem';
 import { ReaderPairPolicy } from '../../services/document/ReaderPairPolicy';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
+import { AppIcon } from '../common/AppIcon';
 import { IconButton } from '../common/IconButton';
 
 @Component
@@ -10,9 +11,11 @@ export struct ReaderPairPicker {
   @Prop @Watch('requestClose') closeToken: number = 0;
   onClose: () => void = () => {};
   onSelect: (id: string) => Promise<boolean> = async () => false;
+  onOpenAssistant: () => void = () => {};
   @StorageProp('flowmindDarkMode') dark: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') phone: boolean = false;
+  @StorageProp('flowmindStudyPreview') studyPreview: boolean = false;
   @State private keyword: string = '';
   @State private busy: boolean = false;
   @State private error: string = '';
@@ -38,8 +41,19 @@ export struct ReaderPairPicker {
             .fontSize(18).fontWeight(FontWeight.Medium).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary).layoutWeight(1)
           IconButton({ icon: $r('app.media.ic_close'), label: '关闭分屏选择', available: !this.busy, onAction: () => this.requestClose() })
         }.width('100%')
-        Text('两份资料分别保存，可组合 PDF、图片、手写和文字笔记。').fontSize(13)
-          .fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkMuted).width('100%')
+        if (this.studyPreview && (ReaderPairPolicy.isPdf(this.source) || ReaderPairPolicy.isMarkdown(this.source))) {
+          Button({ type: ButtonType.Normal }) {
+            Row({ space: 10 }) {
+              AppIcon({ source: $r('app.media.ic_chat'), tint: ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent })
+              Text('AI 伴读').fontSize(15).fontWeight(FontWeight.Medium).layoutWeight(1)
+                .fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent)
+              AppIcon({ source: $r('app.media.ic_chevron_right'), iconSize: 16,
+                tint: ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent })
+            }.width('100%')
+          }.width('100%').height(48).padding({ left: 12, right: 12 }).borderRadius(8).enabled(!this.busy)
+            .backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accentSoft)
+            .accessibilityText('打开 AI 伴读').onClick(this.onOpenAssistant)
+        }
         TextInput({ text: this.keyword, placeholder: '搜索标题或项目' }).height(44).enabled(!this.busy)
           .backgroundColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).surfaceSubtle)
           .fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary)

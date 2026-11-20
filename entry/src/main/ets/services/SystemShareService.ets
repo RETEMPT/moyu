@@ -3,10 +3,13 @@ import { systemShare } from '@kit.ShareKit';
 import { uniformTypeDescriptor } from '@kit.ArkData';
 import { fileIo, fileUri } from '@kit.CoreFileKit';
 import { ImageDocumentPolicy } from './document/ImageDocumentPolicy';
+import { STUDY_PACKAGE_UTD } from '../common/types/StudyBackup';
 
 /** Opens the OS chooser; show() completion means the panel opened, not delivery. */
 export class SystemShareService {
   private static controller: systemShare.ShareController | null = null;
+
+  static available(): boolean { return canIUse('SystemCapability.Collaboration.SystemShare'); }
 
   static async shareText(context: common.UIAbilityContext, title: string, text: string): Promise<void> {
     if (text.trim().length === 0) { throw new Error('先写入文字再分享'); }
@@ -41,7 +44,7 @@ export class SystemShareService {
       throw new Error('资料包不可用，请重新选择资料');
     }
     const data = new systemShare.SharedData({
-      utd: uniformTypeDescriptor.getUniformDataTypeByFilenameExtension('.json', uniformTypeDescriptor.UniformDataType.FILE),
+      utd: STUDY_PACKAGE_UTD,
       uri: fileUri.getUriFromPath(source), title: '墨语资料包',
       description: `${count} 份资料，包含正文、原文件与笔迹`
     });
@@ -49,7 +52,7 @@ export class SystemShareService {
   }
 
   private static async open(context: common.UIAbilityContext, data: systemShare.SharedData): Promise<void> {
-    if (!canIUse('SystemCapability.Collaboration.SystemShare')) { throw new Error('当前设备不支持系统分享，请使用导出'); }
+    if (!SystemShareService.available()) { throw new Error('当前设备不支持系统分享，请使用导出'); }
     SystemShareService.controller = new systemShare.ShareController(data);
     await SystemShareService.controller.show(context, { selectionMode: systemShare.SelectionMode.SINGLE,
       previewMode: systemShare.SharePreviewMode.DETAIL });

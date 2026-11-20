@@ -8,6 +8,7 @@ import { StudyBackupService } from './StudyBackupService';
 export interface StudyImportResult { imported: number; skipped: number; }
 export interface StudyImportPorts {
   notes: () => NoteItem[];
+  isInTrash?: (id: string) => boolean;
   commit: (note: NoteItem, cards: ReviewCard[]) => Promise<void>;
   progress: (message: string) => void;
 }
@@ -20,6 +21,7 @@ export class StudyImportService {
     try {
       for (let i = 0; i < backup.notes.length; i++) {
         const id = StudyBackupPolicy.restoreId(backup, i);
+        if (ports.isInTrash?.(id)) { skipped++; continue; }
         const existing = ports.notes().find((note: NoteItem) => note.id === id);
         ports.progress(`正在导入 ${i + 1}/${backup.notes.length}…`);
         const note = existing || await StudyBackupService.materialize(context, backup, i, StudyBackupPolicy.restoreTitle(backup, i));

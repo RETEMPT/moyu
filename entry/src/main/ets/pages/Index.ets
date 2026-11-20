@@ -24,6 +24,7 @@ import {
   CATEGORY_UNFILED,
   FILTER_ALL,
   NAV_CANVAS,
+  NAV_CHAT,
   NAV_FAVORITE,
   NAV_GRAPH,
   NAV_HOME,
@@ -49,7 +50,7 @@ import { QuickMemoService, MemoDraft } from '../services/library/QuickMemoServic
 import { TodoStorageService } from '../services/TodoStorageService';
 import { buildSpaces } from '../services/WorkspaceBuilder';
 import { templateBody } from '../common/templates/NoteTemplates';
-import { UsageGuideSheet } from '../views/settings/UsageGuideSheet';
+import { GuideStep, UsageGuideSheet } from '../views/settings/UsageGuideSheet';
 import { AppShell } from '../views/layout/AppShell';
 import { HomeWorkspace } from '../views/workspace/HomeWorkspace';
 import { LibraryWorkspace } from '../views/workspace/LibraryWorkspace';
@@ -88,11 +89,15 @@ import { ReviewStorageService } from '../services/study/ReviewStorageService';
 import { ReviewPolicy } from '../services/study/ReviewPolicy';
 import { StudySourceService } from '../services/study/StudySourceService';
 import { StudySheet } from '../views/study/StudySheet';
+import { StudyChatSession, StudyChatWorkspace, withStudyGatewaySelection } from '../views/study/StudyChatWorkspace';
+import { StudyAssistantGateway, StudyGatewaySelection } from '../services/study/StudyAssistantGateway';
 import { PdfTextSheet } from '../views/study/PdfTextSheet';
 import { StudyBackupSheet } from '../views/study/StudyBackupSheet';
+import { StudyShareInbox } from '../services/study/StudyShareInbox';
 import { StudyRestoreService } from '../services/study/StudyRestoreService';
 import { ReaderCommitService } from '../services/document/ReaderCommitService';
 import { PrivacySheet } from '../views/settings/PrivacySheet';
+import { DocumentImportStatus } from '../views/common/DocumentImportStatus';
 
 /** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
 interface PendingNoteCreate {
@@ -167,6 +172,7 @@ struct Index {
   @State private companionNoteId: string = '';
   @State private pairPickerSourceId: string = '';
   @State private pairPickerCloseToken: number = 0;
+  private pairPickerAssistant: (() => void) | null = null;
   @State fullScreenDocNote: NoteItem = EMPTY_NOTE;
   // Full-screen reader autosave must not rebuild AppShell/Library behind it. The reader owns
   // its own busy/failed UI; this mirror is only consulted by navigation guards and on exit.
@@ -186,10 +192,16 @@ struct Index {
   @State learningResult: LearningResult | undefined = undefined;
   @State learningResultNoteId: string = '';
   @State studyVisible: boolean = false;
+  @State chatSession: StudyChatSession = { pairingCode: '', models: [], model: '',
+    conversation: { id: 'chat-initial', messages: [], draft: '' }, history: [] };
   @State studyCourse: string = '';
   @State studyCloseToken: number = 0;
   @State backupVisible: boolean = false;
   @State backupCloseToken: number = 0;
+  @State backupSelection: string[] = [];
+  @State batchMoveIds: string[] = [];
+  @StorageProp('moyuStudyShareRevision') @Watch('handleSharedPackage') studyShareRevision: number = 0;
+  private handledStudyShareRevision: number = 0;
   @State privacyVisible: boolean = false;
   @State pdfExtractNoteId: string = '';
   @State pdfExtractPage: number = 1;
@@ -207,7 +219,11 @@ struct Index {
   /** 新建笔记对话框（记随笔） */
   @State createNoteOpen: boolean = false;
   @State noteCreateBusy: boolean = false;
-  private documentImportBusy: boolean = false;
+  @State private documentImportBusy: boolean = false;
+  @State private documentImportStatus: string = '';
+  @State private documentImportError: boolean = false;
+  @State private documentImportNoteId: string = '';
+  @State private libraryImportToken: number = 0;
   @State noteCreateError: string = '';
   /** 新建项目对话框 */
   @State createProjectOpen: boolean = false;
@@ -259,9 +275,9 @@ struct Index {
   }
 
   onBackPress(): boolean {
+    if (this.backupVisible) { this.backupCloseToken++; return true; }
     if (this.pairPickerSourceId) { this.pairPickerCloseToken++; return true; }
     if (this.privacyVisible) { this.privacyVisible = false; return true; }
-    if (this.backupVisible) { this.backupCloseToken++; return true; }
     if (this.studyVisible) { this.studyCloseToken++; return true; }
     if (this.pdfExtractNoteId) { this.pdfExtractCloseToken++; return true; }
     if (this.coverNoteId.length > 0) { this.coverCloseToken++; return true; }
@@ -303,11 +319,14 @@ struct Index {
   }
 
   aboutToAppear(): void {
+    AppStorage.setOrCreate('flowmindStudyPreview', StudyAssistantGateway.previewEnabled());
     this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
     this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
     if (!this.bootstrapped) {
       this.bootstrapped = true;
       this.bootstrap();
+    } else {
+      this.handleSharedPackage();
     }
   }
 
@@ -318,7 +337,20 @@ struct Index {
   private async bootstrap(): Promise<void> {
     try { await this.loadWorkspace(); }
     catch { this.notify('本机资料初始化未完成，请保留原数据并重启重试'); }
-    finally { this.workspaceLoading = false; }
+    finally { this.workspaceLoading = false; this.handleSharedPackage(); }
+  }
+
+  private handleSharedPackage(): void {
+    if (this.workspaceLoading || this.handledStudyShareRevision === this.studyShareRevision) { return; }
+    this.handledStudyShareRevision = this.studyShareRevision;
+    if (StudyShareInbox.pending() && !this.backupVisible) { this.openBackup(); }
+    const notice = StudyShareInbox.notice();
+    if (notice) { this.notify(notice); }
+  }
+
+  private openBackup(ids: string[] = []): void {
+    this.backupSelection = ids.slice();
+    this.backupVisible = true;
   }
 
   private async loadWorkspace(): Promise<void> {
@@ -514,7 +546,6 @@ struct Index {
     const next: LibraryPreferences = { view, sort, ascending };
     try {
       await this.libraryPreferences.save(this.getAbilityContext(), next); this.libraryDisplay = next;
-      if (view === 'timeline') { this.activeFilter = 'Markdown'; }
     }
     catch { this.notify('资料库显示设置未能保存，请重试'); }
     finally { this.libraryDisplayBusy = false; }
@@ -612,7 +643,7 @@ struct Index {
       const category: string = note.category.length === 0 ? '未分类' : note.category;
       return [category, note.title];
     }
-    return [this.activeNav];
+    return [this.activeNav === NAV_CHAT && !StudyAssistantGateway.previewEnabled() ? '学习工具' : this.activeNav];
   }
 
   /** Prepare outside the queue, then merge the cover into the latest committed note. */
@@ -652,13 +683,15 @@ struct Index {
       this.activeSheet = '';
       this.sheetProject = null;
       this.sheetNote = null;
+      this.batchMoveIds = [];
     });
   }
 
   @Builder
   activeSheetContent() {
     if (this.activeSheet === 'usage_guide') {
-      UsageGuideSheet({ onClose: () => this.closeSheet() })
+      UsageGuideSheet({ onClose: () => this.closeSheet(), onSave: (step: GuideStep) =>
+        this.createNote(step.title, 'Markdown', '墨语指引', `# ${step.title}\n\n${step.text}\n`, ['使用指引'], false) })
     } else if (this.activeSheet === 'project_menu' && this.sheetProject !== null) {
       ProjectMenuSheet({
         project: this.sheetProject,
@@ -738,10 +771,11 @@ struct Index {
       })
     } else if (this.activeSheet === 'move_note' && this.sheetNote !== null) {
       MoveNoteSheet({
-        note: this.sheetNote, closeToken: this.sheetCloseToken,
+        note: this.sheetNote, closeToken: this.sheetCloseToken, batchCount: this.batchMoveIds.length,
         categories: this.allCategories(),
         onClose: () => this.closeSheet(),
-        onMoveNote: (note: NoteItem, category: string) => this.commitMove(note, category)
+        onMoveNote: (note: NoteItem, category: string) => this.batchMoveIds.length > 0 ?
+          this.commitBatchMove(this.batchMoveIds, category) : this.commitMove(note, category)
       })
     }
   }
@@ -946,11 +980,19 @@ struct Index {
     this.notify('目标笔记不存在');
   }
 
-  private openPairPicker(sourceId: string): void {
+  private openPairPicker(sourceId: string, onAssistant: () => void): void {
     if ((this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) { this.notify('请先完成或重试当前资料保存'); return; }
     const source = this.notes.find((note: NoteItem) => note.id === sourceId);
     if (!source || !ReaderPairPolicy.isReadable(source)) { this.notify('当前资料格式暂不支持分屏'); return; }
+    this.pairPickerAssistant = onAssistant;
     this.pairPickerSourceId = sourceId;
+  }
+
+  private closePairPicker(openAssistant: boolean = false): void {
+    const action = this.pairPickerAssistant;
+    this.pairPickerSourceId = '';
+    this.pairPickerAssistant = null;
+    if (openAssistant && action) { action(); }
   }
 
   private async selectReaderPair(otherId: string, requestedSourceId: string = ''): Promise<boolean> {
@@ -1114,7 +1156,7 @@ struct Index {
       title: cleanTitle,
       category: category.length === 0 ? '未分类' : category,
       type: handwriting ? 'Handwriting' : 'Markdown',
-      previewText: '空白笔记',
+      previewText: body ? body.replace(/^# [^\n]*\n+/, '').trim().slice(0, 100) || cleanTitle : '空白笔记',
       tag: tags[0] || '',
       tagColor: '',
       updateTime: this.formatTime(now),
@@ -1287,15 +1329,15 @@ struct Index {
     } catch (error) { this.notify(error instanceof Error ? error.message : '回收站保存失败，请重试'); }
   }
 
-  /** 不可恢复操作的二次确认；对话框不可用时按「取消」处理，绝不误删。 */
-  private async confirmDestructive(message: string): Promise<boolean> {
+  /** 删除前确认。对话框不可用时取消该操作。 */
+  private async confirmDestructive(message: string, title: string = '不可恢复的操作', action: string = '彻底删除'): Promise<boolean> {
     try {
       const response = await promptAction.showDialog({
-        title: '不可恢复的操作',
+        title: title,
         message: message,
         buttons: [
           { text: '取消', color: '#787774' },
-          { text: '彻底删除', color: '#E03E3E' }
+          { text: action, color: '#E03E3E' }
         ]
       });
       return response.index === 1;
@@ -1411,6 +1453,30 @@ struct Index {
     const saved = await this.updateNoteMetadata(note.id, (next: NoteItem) => { next.category = name; });
     if (saved) { this.notify(name === CATEGORY_UNFILED ? '已移回资料库' : `已移动到「${name}」`); }
     return saved !== null;
+  }
+
+  private openBatchMove(ids: string[]): void {
+    const first = this.notes.find((note: NoteItem) => ids.includes(note.id));
+    if (!first) { this.notify('所选资料已变更，请重新选择'); return; }
+    this.batchMoveIds = ids.slice();
+    this.sheetNote = first;
+    this.activeSheet = 'move_note';
+  }
+
+  private async commitBatchMove(ids: string[], category: string): Promise<boolean> {
+    try {
+      await this.noteMutationQueue.run<void>(() => this.commitWorkspace(WorkspaceLifecycle.moveNotes(this.workspaceState(), ids, category)));
+      this.notify(`已移动 ${ids.length} 份资料`);
+      return true;
+    } catch (error) { this.notify(error instanceof Error ? error.message : '未能移动资料，请重试'); return false; }
+  }
+
+  private async trashSelected(ids: string[]): Promise<void> {
+    if (!ids.length || !await this.confirmDestructive(`所选 ${ids.length} 份资料可从回收站恢复。`, '移入回收站', '移入')) { return; }
+    try {
+      await this.noteMutationQueue.run<void>(() => this.commitWorkspace(WorkspaceLifecycle.deleteNotes(this.workspaceState(), ids, Date.now())));
+      this.notify(`已将 ${ids.length} 份资料移入回收站`);
+    } catch (error) { this.notify(error instanceof Error ? error.message : '未能移入回收站，请重试'); }
   }
 
   // ==================================================================
@@ -1559,22 +1625,46 @@ struct Index {
     const targetProjectId = this.spaces?.find((space: SpaceFolder) => space.name === targetCategory)?.id || '';
     try {
       const uris = example ? [''] : selectedUri ? [selectedUri] : await this.storage.selectDocumentUris(this.getAbilityContext());
-      let first: NoteItem | null = null; let imported: number = 0;
+      if (!uris.length) { return null; }
+      this.documentImportError = false;
+      this.documentImportNoteId = '';
+      let first: NoteItem | null = null;
+      let imported = 0;
+      const failures: string[] = [];
       for (let index = 0; index < uris.length; index++) {
-        this.notify(uris.length > 1 ? `正在导入 ${index + 1}/${uris.length} 份资料…` : '正在导入资料…');
-        const note = await this.importOneDocument(targetCategory, example, snapshot, uris[index], targetProjectId);
-        if (note) { imported++; if (first === null) { first = note; } }
+        this.documentImportStatus = uris.length > 1 ? `正在导入 ${index + 1}/${uris.length} 份资料…` : '正在导入资料…';
+        try {
+          const note = await this.importOneDocument(targetCategory, example, snapshot, uris[index], targetProjectId);
+          imported++;
+          if (first === null) { first = note; }
+        } catch (error) {
+          if (selectedUri) { throw error instanceof Error ? error : new Error('资料保存失败，请重试'); }
+          failures.push(error instanceof Error ? error.message : '资料保存失败，请重试');
+        }
       }
-      if (uris.length > 1) { this.notify(`已导入 ${imported}/${uris.length} 份资料${imported < uris.length ? '，未完成的资料可重新选择导入' : ''}`); }
-      if (first && (first.category === CATEGORY_UNFILED || !targetCategory.trim() || targetCategory === CATEGORY_UNFILED)) {
-        this.activeNav = NAV_LIBRARY; this.activeSpaceId = ''; this.searchText = ''; this.activeFilter = FILTER_ALL;
+      this.documentImportNoteId = first?.id || '';
+      this.documentImportError = failures.length > 0;
+      this.documentImportStatus = uris.length === 1 ? (first ? `已导入「${first.title}」` : failures[0]) :
+        `已导入 ${imported}/${uris.length} 份资料${failures.length ? '。' + failures[0] : ''}`;
+      if (first) { this.memoDateFilter = ''; this.memoTagFilter = ''; }
+      if (first && !selectedUri && !example && !this.fullScreenDocOpen && !this.readingOpen) {
+        this.activeNav = NAV_LIBRARY;
+        this.activeSpaceId = this.spaces?.find((space: SpaceFolder) => space.id === targetProjectId)?.id || '';
+        this.searchText = '';
+        this.activeFilter = FILTER_ALL;
+        this.libraryImportToken++;
       }
       return first;
-    } catch (error) { this.notify(error instanceof Error ? error.message : '文件选择失败，请重试'); return null; }
+    } catch (error) {
+      this.documentImportError = true;
+      this.documentImportStatus = error instanceof Error ? error.message : '文件选择失败，请重试';
+      if (selectedUri) { throw new Error(this.documentImportStatus); }
+      return null;
+    }
     finally { this.documentImportBusy = false; }
   }
 
-  private async importOneDocument(targetCategory: string, example: boolean, snapshot: boolean, selectedUri: string, targetProjectId: string = ''): Promise<NoteItem | null> {
+  private async importOneDocument(targetCategory: string, example: boolean, snapshot: boolean, selectedUri: string, targetProjectId: string = ''): Promise<NoteItem> {
     const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context, snapshot) :
@@ -1621,16 +1711,14 @@ struct Index {
         }
         this.rebuildSpaces();
         this.refreshGraph();
-        this.notify(officeTag ? result.message : `已保存到本机资料库：${result.fileName || document.title}`);
         return note;
-      } else if (result.status !== 'cancelled') {
-        this.notify(result.message);
       }
+      throw new Error(result.fileName && !result.message.includes(result.fileName) ?
+        `「${result.fileName}」${result.message}` : result.message);
     } catch (error) {
       console.error(`文档导入失败: ${JSON.stringify(error)}`);
-      this.notify('文档导入失败');
+      throw error instanceof Error ? error : new Error('文档导入失败，请重试');
     }
-    return null;
   }
 
   /** Copy only the fields that the active reader edited, without replacing the notes array. */
@@ -1723,11 +1811,10 @@ struct Index {
   }
 
   /** Extraction uses the exact persisted source and never relies on a picker grant after import. */
-  private async importExtractSource(uri: string): Promise<string> {
+  private async importExtractSource(uri: string): Promise<NoteItem> {
     const note = await this.importDocument(CATEGORY_UNFILED, false, false, uri);
-    if (!note) { throw new Error('资料未能保存到本机资料库，请重试'); }
-    if (note.sourceType === 'pdf' && note.sourceUri) { return note.sourceUri; }
-    return (await this.storage.read(this.getAbilityContext(), note)).filePath;
+    if (!note) { throw new Error('已有资料正在导入，请稍后重试'); }
+    return note;
   }
 
   private formatTime(date: Date): string {
@@ -1774,7 +1861,12 @@ struct Index {
       note: fullScreen ? this.fullScreenDocNote : this.readingNote, manageKeyboardMode: false,
       documentTabs: this.readerDocuments(),
       secondaryNote: this.pairedDocument(),
-      onOpenSplitPicker: () => this.openPairPicker((fullScreen ? this.fullScreenDocNote : this.readingNote).id),
+      sharedGateway: { pairingCode: this.chatSession.pairingCode, models: this.chatSession.models, model: this.chatSession.model },
+      onGatewayChange: (selection: StudyGatewaySelection) => {
+        this.chatSession = withStudyGatewaySelection(this.chatSession, selection);
+      },
+      onOpenSplitPicker: (onAssistant: () => void) =>
+        this.openPairPicker((fullScreen ? this.fullScreenDocNote : this.readingNote).id, onAssistant),
       onSecondaryClosed: () => { this.companionNoteId = ''; },
       onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
       onSplitDocument: (id: string) => { this.splitReaderDocument(id); },
@@ -1825,7 +1917,8 @@ struct Index {
         onImportExample: () => this.importDocument('示例资料', true),
         onImportSnapshot: () => this.importDocument('示例资料', true, true),
         onOpenCapture: () => { this.smartExtractVisible = true; },
-        onOpenBackup: () => { this.backupVisible = true; }, onOpenPrivacy: () => { this.privacyVisible = true; } })
+        onOpenBackup: () => this.openBackup(), onOpenPrivacy: () => { this.privacyVisible = true; },
+        onOpenGuide: () => { this.activeSheet = 'usage_guide'; } })
     } else if (this.readingOpen) {
       this.readerWorkspaceContent(false)
     } else if (this.activeNav === NAV_HOME) {
@@ -1859,6 +1952,7 @@ struct Index {
         onViewModeChange: (view: string) => { this.updateLibraryDisplay(view, this.libraryDisplay.sort, this.libraryDisplay.ascending); },
         onSortChange: (sort: string, ascending: boolean) => { this.updateLibraryDisplay(this.libraryDisplay.view, sort, ascending); },
         onResetFilters: () => { this.searchText = ''; this.activeFilter = FILTER_ALL; this.activeSpaceId = ''; },
+        importToken: this.libraryImportToken,
         totalCount: this.notes.length,
         searchText: this.searchText,
         activeFilter: this.activeFilter,
@@ -1872,8 +1966,19 @@ struct Index {
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onOpenNoteMenu: (note: NoteItem) => this.openNoteMenu(note),
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
-        onImportDocument: () => this.importDocument(this.activeSpaceName() || '未分类')
+        onImportDocument: () => this.importDocument(this.activeSpaceName() || '未分类'),
+        onOpenBackup: () => this.openBackup(),
+        onOpenGuide: () => { this.activeSheet = 'usage_guide'; },
+        onOpenTrash: () => { this.activeNav = NAV_TRASH; },
+        onBatchMove: (ids: string[]) => this.openBatchMove(ids),
+        onBatchShare: (ids: string[]) => this.openBackup(ids),
+        onBatchTrash: (ids: string[]) => this.trashSelected(ids)
       })
+    } else if (this.activeNav === NAV_CHAT) {
+      StudyChatWorkspace({ session: $chatSession,
+        onOpenLearning: () => { this.studyCourse = ''; this.studyVisible = true; },
+        onOpenLibrary: () => { this.activeSpaceId = ''; this.searchText = ''; this.activeFilter = FILTER_ALL; this.activeNav = NAV_LIBRARY; },
+        onSave: (title: string, body: string) => this.createNote(title, 'Markdown', '学习对话', body, ['学习对话'], false) })
     } else if (this.activeNav === NAV_GRAPH) {
       GraphWorkspace({
         graph: this.linkGraph,
@@ -2061,23 +2166,27 @@ struct Index {
       if (this.pairPickerSourceId && this.notes.some((note: NoteItem) => note.id === this.pairPickerSourceId)) {
         ReaderPairPicker({ source: this.notes.find((note: NoteItem) => note.id === this.pairPickerSourceId)!, notes: this.notes,
           closeToken: this.pairPickerCloseToken,
-          onClose: () => { this.pairPickerSourceId = ''; }, onSelect: (id: string) => this.selectReaderPair(id) })
+          onClose: () => this.closePairPicker(), onOpenAssistant: () => this.closePairPicker(true),
+          onSelect: (id: string) => this.selectReaderPair(id) })
       }
       if (this.privacyVisible) {
         PrivacySheet({ onClose: () => { this.privacyVisible = false; } })
       }
       if (this.backupVisible) {
         StudyBackupSheet({ notes: this.notes, spaces: this.spaces, cards: this.reviewCards, closeToken: this.backupCloseToken,
+          initialSelection: this.backupSelection,
+          isInTrash: (id: string) => this.trash.some((note: NoteItem) => note.id === id),
           onClose: () => { this.backupVisible = false; },
           onRestore: (note: NoteItem, cards: ReviewCard[]) => this.noteMutationQueue.run<void>(() => StudyRestoreService.commit(note, cards, {
             notes: () => this.notes, cards: () => this.reviewCards,
+            isInTrash: (id: string) => this.trash.some((item: NoteItem) => item.id === id),
             create: async (item: NoteItem) => { await this.storage.create(this.getAbilityContext(), item); },
             saveNotes: (notes: NoteItem[]) => this.storage.save(notes),
             saveCards: (items: ReviewCard[]) => this.reviewStorage.save(this.getAbilityContext(), items),
             remove: (item: NoteItem) => this.storage.delete(this.getAbilityContext(), item.id, item.sourceUri || '', item.coverUrl || ''),
             publishNotes: (notes: NoteItem[]) => { this.notes = notes; this.rebuildSpaces(); this.refreshStats(); this.refreshGraph(); },
             publishCards: (items: ReviewCard[]) => { this.reviewCards = items; }
-          })) })
+          })) }).zIndex(50)
       }
       if (this.studyVisible) {
         StudySheet({ notes: this.notes, cards: this.reviewCards, course: this.studyCourse, result: this.learningResult,
@@ -2123,6 +2232,13 @@ struct Index {
         })
       }
 
+
+      if (this.documentImportStatus && !this.smartExtractVisible && !this.fullScreenDocOpen && !this.readingOpen) {
+        DocumentImportStatus({ message: this.documentImportStatus, busy: this.documentImportBusy,
+          failed: this.documentImportError, canOpen: this.documentImportNoteId.length > 0,
+          onOpen: () => { this.openNoteById(this.documentImportNoteId); this.documentImportStatus = ''; },
+          onClose: () => { this.documentImportStatus = ''; } })
+      }
 
       if (this.smartExtractVisible) {
         SmartExtractSheet({
