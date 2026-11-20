@@ -251,17 +251,19 @@ test('missing PDF Kit routes real metadata and page rendering through the offlin
   assert.ok(p.calls.some(c=>Array.isArray(c)&&c[0]==='offline-page'&&c[2]===274));
   assert.ok(!p.calls.includes('debug-image-source'));assert.equal(p.descriptors.size,0);
 });
-test('offline PDF import reads page count and cover in one request and reuses the cover when opened', async () => {
+test('offline PDF import commits after reading metadata and renders a page when opened', async () => {
   const p = platform({ nativeMissing: true, debug: false, offlineInfo: { pageCount: 549 } });
   const result = await p.storage.importDocument(context);
   assert.equal(result.status, 'imported');
   assert.equal(result.pageCount, 549);
   assert.equal(result.sourceSha256, createHash('sha256').update(fixture).digest('hex'));
+  assert.deepEqual(p.calls.filter(call => Array.isArray(call) && call[0].startsWith('offline-')),
+    [['offline-info', result.sourceUri]]);
   const page = await p.pdf.renderPageAsync(result.sourceUri, 0);
   assert.equal(page.aspectRatio, 2 / 3);
   await page.pixelMap.release();
   assert.deepEqual(p.calls.filter(call => Array.isArray(call) && call[0].startsWith('offline-')),
-    [['offline-cover', result.sourceUri]]);
+    [['offline-info', result.sourceUri], ['offline-page', result.sourceUri, 0]]);
 });
 test('PDFKit startup failure degrades to the offline engine without probing the Kit on every page', async () => {
   const p = platform({ nativeKitUnavailable: true, debug: false, offlineInfo: { pageCount: 5 } });
@@ -272,7 +274,7 @@ test('PDFKit startup failure degrades to the offline engine without probing the 
   await page.pixelMap.release();
   assert.equal(p.calls.filter(call => call === 'native-unavailable').length, 1);
   assert.deepEqual(p.calls.filter(call => Array.isArray(call) && call[0].startsWith('offline-')),
-    [['offline-cover', result.sourceUri], ['offline-page', result.sourceUri, 1]]);
+    [['offline-info', result.sourceUri], ['offline-page', result.sourceUri, 1]]);
 });
 test('offline capability failures preserve their cause without claiming the source is missing', async () => {
   const p=platform({nativeMissing:true,debug:false,offlineError:'离线阅读组件连接失败'});
@@ -314,11 +316,11 @@ test('missing or empty sources never invoke the native parser', async () => {
   assert.ok(!p.calls.some(call => call[0] === 'native-load'));
 });
 
-test('a native parse success alone cannot publish an unrenderable imported PDF', async () => {
+test('a first-page rendering error leaves the indexed original available for recovery', async () => {
   const p = platform({ renderFails: true }); const result = await p.storage.importDocument(context);
-  assert.equal(result.status, 'failed'); assert.match(result.message, /native render/);
-  assert.ok(![...p.files.keys()].some(file => file.startsWith('/sandbox/documents/')));
-  assert.ok(![...p.files.keys()].some(file => file.startsWith('/sandbox/notes/')));
+  assert.equal(result.status, 'imported');
+  await assert.rejects(p.pdf.renderPageAsync(result.sourceUri, 0), /native render/);
+  assert.ok(p.files.has(result.sourceUri)); assert.ok(p.files.has(result.document.filePath));
   assert.ok(p.calls.includes('page-release')); assert.equal(p.descriptors.size, 0);
 });
 
@@ -330,8 +332,8 @@ test('import then snapshot reload retains the actual PDF source bytes and page c
   const reloaded = await p.restartStorage().load(context, []);
   assert.equal(reloaded[0].sourceUri, result.sourceUri); assert.ok(p.files.get(reloaded[0].sourceUri).equals(fixture));
   assert.equal((await p.pdf.validateImport(reloaded[0].sourceUri)).pageCount, 2);
-  // The first import keeps its cover for an instant note open; validating the same source
-  // again must replace (and release) that retained bitmap rather than leaking it.
+  await p.pdf.validateImport(reloaded[0].sourceUri);
+  // An explicit cover revalidation replaces (and releases) its prior retained bitmap.
   assert.ok(p.calls.includes('bitmap-release'));
 });
 
@@ -410,10 +412,10 @@ test('malformed local filenames never redirect a PDF into a different directory'
   }
 });
 
-test('a 600-page textbook import parses metadata and renders only the first page before publishing', async () => {
+test('a 600-page textbook import reads real page metadata before publishing without rasterizing pages', async () => {
   const p = platform({ pageCount: 600 }); const result = await p.storage.importDocument(context);
   assert.equal(result.status, 'imported'); assert.equal(result.pageCount, 600);
-  assert.deepEqual(p.calls.filter(call => call[0] === 'native-page').map(call => call[1]), [0]);
+  assert.deepEqual(p.calls.filter(call => call[0] === 'native-page'), []);
   assert.equal(p.descriptors.size, 0); assert.ok(p.files.get(result.sourceUri).equals(fixture));
 });
 

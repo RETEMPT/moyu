@@ -89,13 +89,15 @@ import { ReviewStorageService } from '../services/study/ReviewStorageService';
 import { ReviewPolicy } from '../services/study/ReviewPolicy';
 import { StudySourceService } from '../services/study/StudySourceService';
 import { StudySheet } from '../views/study/StudySheet';
-import { StudyChatSession, StudyChatWorkspace } from '../views/study/StudyChatWorkspace';
+import { StudyChatSession, StudyChatWorkspace, withStudyGatewaySelection } from '../views/study/StudyChatWorkspace';
+import { StudyAssistantGateway, StudyGatewaySelection } from '../services/study/StudyAssistantGateway';
 import { PdfTextSheet } from '../views/study/PdfTextSheet';
 import { StudyBackupSheet } from '../views/study/StudyBackupSheet';
 import { StudyShareInbox } from '../services/study/StudyShareInbox';
 import { StudyRestoreService } from '../services/study/StudyRestoreService';
 import { ReaderCommitService } from '../services/document/ReaderCommitService';
 import { PrivacySheet } from '../views/settings/PrivacySheet';
+import { DocumentImportStatus } from '../views/common/DocumentImportStatus';
 
 /** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
 interface PendingNoteCreate {
@@ -170,6 +172,7 @@ struct Index {
   @State private companionNoteId: string = '';
   @State private pairPickerSourceId: string = '';
   @State private pairPickerCloseToken: number = 0;
+  private pairPickerAssistant: (() => void) | null = null;
   @State fullScreenDocNote: NoteItem = EMPTY_NOTE;
   // Full-screen reader autosave must not rebuild AppShell/Library behind it. The reader owns
   // its own busy/failed UI; this mirror is only consulted by navigation guards and on exit.
@@ -189,7 +192,8 @@ struct Index {
   @State learningResult: LearningResult | undefined = undefined;
   @State learningResultNoteId: string = '';
   @State studyVisible: boolean = false;
-  @State chatSession: StudyChatSession = { pairingCode: '', models: [], model: '', messages: [], draft: '' };
+  @State chatSession: StudyChatSession = { pairingCode: '', models: [], model: '',
+    conversation: { id: 'chat-initial', messages: [], draft: '' }, history: [] };
   @State studyCourse: string = '';
   @State studyCloseToken: number = 0;
   @State backupVisible: boolean = false;
@@ -215,7 +219,11 @@ struct Index {
   /** 新建笔记对话框（记随笔） */
   @State createNoteOpen: boolean = false;
   @State noteCreateBusy: boolean = false;
-  private documentImportBusy: boolean = false;
+  @State private documentImportBusy: boolean = false;
+  @State private documentImportStatus: string = '';
+  @State private documentImportError: boolean = false;
+  @State private documentImportNoteId: string = '';
+  @State private libraryImportToken: number = 0;
   @State noteCreateError: string = '';
   /** 新建项目对话框 */
   @State createProjectOpen: boolean = false;
@@ -311,6 +319,7 @@ struct Index {
   }
 
   aboutToAppear(): void {
+    AppStorage.setOrCreate('flowmindStudyPreview', StudyAssistantGateway.previewEnabled());
     this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
     this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
     if (!this.bootstrapped) {
@@ -537,7 +546,6 @@ struct Index {
     const next: LibraryPreferences = { view, sort, ascending };
     try {
       await this.libraryPreferences.save(this.getAbilityContext(), next); this.libraryDisplay = next;
-      if (view === 'timeline') { this.activeFilter = 'Markdown'; }
     }
     catch { this.notify('资料库显示设置未能保存，请重试'); }
     finally { this.libraryDisplayBusy = false; }
@@ -635,7 +643,7 @@ struct Index {
       const category: string = note.category.length === 0 ? '未分类' : note.category;
       return [category, note.title];
     }
-    return [this.activeNav];
+    return [this.activeNav === NAV_CHAT && !StudyAssistantGateway.previewEnabled() ? '学习工具' : this.activeNav];
   }
 
   /** Prepare outside the queue, then merge the cover into the latest committed note. */
@@ -972,11 +980,19 @@ struct Index {
     this.notify('目标笔记不存在');
   }
 
-  private openPairPicker(sourceId: string): void {
+  private openPairPicker(sourceId: string, onAssistant: () => void): void {
     if ((this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) { this.notify('请先完成或重试当前资料保存'); return; }
     const source = this.notes.find((note: NoteItem) => note.id === sourceId);
     if (!source || !ReaderPairPolicy.isReadable(source)) { this.notify('当前资料格式暂不支持分屏'); return; }
+    this.pairPickerAssistant = onAssistant;
     this.pairPickerSourceId = sourceId;
+  }
+
+  private closePairPicker(openAssistant: boolean = false): void {
+    const action = this.pairPickerAssistant;
+    this.pairPickerSourceId = '';
+    this.pairPickerAssistant = null;
+    if (openAssistant && action) { action(); }
   }
 
   private async selectReaderPair(otherId: string, requestedSourceId: string = ''): Promise<boolean> {
@@ -1609,22 +1625,46 @@ struct Index {
     const targetProjectId = this.spaces?.find((space: SpaceFolder) => space.name === targetCategory)?.id || '';
     try {
       const uris = example ? [''] : selectedUri ? [selectedUri] : await this.storage.selectDocumentUris(this.getAbilityContext());
-      let first: NoteItem | null = null; let imported: number = 0;
+      if (!uris.length) { return null; }
+      this.documentImportError = false;
+      this.documentImportNoteId = '';
+      let first: NoteItem | null = null;
+      let imported = 0;
+      const failures: string[] = [];
       for (let index = 0; index < uris.length; index++) {
-        this.notify(uris.length > 1 ? `正在导入 ${index + 1}/${uris.length} 份资料…` : '正在导入资料…');
-        const note = await this.importOneDocument(targetCategory, example, snapshot, uris[index], targetProjectId);
-        if (note) { imported++; if (first === null) { first = note; } }
+        this.documentImportStatus = uris.length > 1 ? `正在导入 ${index + 1}/${uris.length} 份资料…` : '正在导入资料…';
+        try {
+          const note = await this.importOneDocument(targetCategory, example, snapshot, uris[index], targetProjectId);
+          imported++;
+          if (first === null) { first = note; }
+        } catch (error) {
+          if (selectedUri) { throw error instanceof Error ? error : new Error('资料保存失败，请重试'); }
+          failures.push(error instanceof Error ? error.message : '资料保存失败，请重试');
+        }
       }
-      if (uris.length > 1) { this.notify(`已导入 ${imported}/${uris.length} 份资料${imported < uris.length ? '，未完成的资料可重新选择导入' : ''}`); }
-      if (first && (first.category === CATEGORY_UNFILED || !targetCategory.trim() || targetCategory === CATEGORY_UNFILED)) {
-        this.activeNav = NAV_LIBRARY; this.activeSpaceId = ''; this.searchText = ''; this.activeFilter = FILTER_ALL;
+      this.documentImportNoteId = first?.id || '';
+      this.documentImportError = failures.length > 0;
+      this.documentImportStatus = uris.length === 1 ? (first ? `已导入「${first.title}」` : failures[0]) :
+        `已导入 ${imported}/${uris.length} 份资料${failures.length ? '。' + failures[0] : ''}`;
+      if (first) { this.memoDateFilter = ''; this.memoTagFilter = ''; }
+      if (first && !selectedUri && !example && !this.fullScreenDocOpen && !this.readingOpen) {
+        this.activeNav = NAV_LIBRARY;
+        this.activeSpaceId = this.spaces?.find((space: SpaceFolder) => space.id === targetProjectId)?.id || '';
+        this.searchText = '';
+        this.activeFilter = FILTER_ALL;
+        this.libraryImportToken++;
       }
       return first;
-    } catch (error) { this.notify(error instanceof Error ? error.message : '文件选择失败，请重试'); return null; }
+    } catch (error) {
+      this.documentImportError = true;
+      this.documentImportStatus = error instanceof Error ? error.message : '文件选择失败，请重试';
+      if (selectedUri) { throw new Error(this.documentImportStatus); }
+      return null;
+    }
     finally { this.documentImportBusy = false; }
   }
 
-  private async importOneDocument(targetCategory: string, example: boolean, snapshot: boolean, selectedUri: string, targetProjectId: string = ''): Promise<NoteItem | null> {
+  private async importOneDocument(targetCategory: string, example: boolean, snapshot: boolean, selectedUri: string, targetProjectId: string = ''): Promise<NoteItem> {
     const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context, snapshot) :
@@ -1671,16 +1711,14 @@ struct Index {
         }
         this.rebuildSpaces();
         this.refreshGraph();
-        this.notify(officeTag ? result.message : `已保存到本机资料库：${result.fileName || document.title}`);
         return note;
-      } else if (result.status !== 'cancelled') {
-        this.notify(result.message);
       }
+      throw new Error(result.fileName && !result.message.includes(result.fileName) ?
+        `「${result.fileName}」${result.message}` : result.message);
     } catch (error) {
       console.error(`文档导入失败: ${JSON.stringify(error)}`);
-      this.notify('文档导入失败');
+      throw error instanceof Error ? error : new Error('文档导入失败，请重试');
     }
-    return null;
   }
 
   /** Copy only the fields that the active reader edited, without replacing the notes array. */
@@ -1773,11 +1811,10 @@ struct Index {
   }
 
   /** Extraction uses the exact persisted source and never relies on a picker grant after import. */
-  private async importExtractSource(uri: string): Promise<string> {
+  private async importExtractSource(uri: string): Promise<NoteItem> {
     const note = await this.importDocument(CATEGORY_UNFILED, false, false, uri);
-    if (!note) { throw new Error('资料未能保存到本机资料库，请重试'); }
-    if (note.sourceType === 'pdf' && note.sourceUri) { return note.sourceUri; }
-    return (await this.storage.read(this.getAbilityContext(), note)).filePath;
+    if (!note) { throw new Error('已有资料正在导入，请稍后重试'); }
+    return note;
   }
 
   private formatTime(date: Date): string {
@@ -1824,7 +1861,12 @@ struct Index {
       note: fullScreen ? this.fullScreenDocNote : this.readingNote, manageKeyboardMode: false,
       documentTabs: this.readerDocuments(),
       secondaryNote: this.pairedDocument(),
-      onOpenSplitPicker: () => this.openPairPicker((fullScreen ? this.fullScreenDocNote : this.readingNote).id),
+      sharedGateway: { pairingCode: this.chatSession.pairingCode, models: this.chatSession.models, model: this.chatSession.model },
+      onGatewayChange: (selection: StudyGatewaySelection) => {
+        this.chatSession = withStudyGatewaySelection(this.chatSession, selection);
+      },
+      onOpenSplitPicker: (onAssistant: () => void) =>
+        this.openPairPicker((fullScreen ? this.fullScreenDocNote : this.readingNote).id, onAssistant),
       onSecondaryClosed: () => { this.companionNoteId = ''; },
       onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
       onSplitDocument: (id: string) => { this.splitReaderDocument(id); },
@@ -1910,6 +1952,7 @@ struct Index {
         onViewModeChange: (view: string) => { this.updateLibraryDisplay(view, this.libraryDisplay.sort, this.libraryDisplay.ascending); },
         onSortChange: (sort: string, ascending: boolean) => { this.updateLibraryDisplay(this.libraryDisplay.view, sort, ascending); },
         onResetFilters: () => { this.searchText = ''; this.activeFilter = FILTER_ALL; this.activeSpaceId = ''; },
+        importToken: this.libraryImportToken,
         totalCount: this.notes.length,
         searchText: this.searchText,
         activeFilter: this.activeFilter,
@@ -2123,7 +2166,8 @@ struct Index {
       if (this.pairPickerSourceId && this.notes.some((note: NoteItem) => note.id === this.pairPickerSourceId)) {
         ReaderPairPicker({ source: this.notes.find((note: NoteItem) => note.id === this.pairPickerSourceId)!, notes: this.notes,
           closeToken: this.pairPickerCloseToken,
-          onClose: () => { this.pairPickerSourceId = ''; }, onSelect: (id: string) => this.selectReaderPair(id) })
+          onClose: () => this.closePairPicker(), onOpenAssistant: () => this.closePairPicker(true),
+          onSelect: (id: string) => this.selectReaderPair(id) })
       }
       if (this.privacyVisible) {
         PrivacySheet({ onClose: () => { this.privacyVisible = false; } })
@@ -2188,6 +2232,13 @@ struct Index {
         })
       }
 
+
+      if (this.documentImportStatus && !this.smartExtractVisible && !this.fullScreenDocOpen && !this.readingOpen) {
+        DocumentImportStatus({ message: this.documentImportStatus, busy: this.documentImportBusy,
+          failed: this.documentImportError, canOpen: this.documentImportNoteId.length > 0,
+          onOpen: () => { this.openNoteById(this.documentImportNoteId); this.documentImportStatus = ''; },
+          onClose: () => { this.documentImportStatus = ''; } })
+      }
 
       if (this.smartExtractVisible) {
         SmartExtractSheet({

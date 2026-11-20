@@ -53,6 +53,7 @@ export struct Sidebar {
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
+  @StorageProp('flowmindStudyPreview') studyPreview: boolean = false;
   @State pressedItemId: string = '';
   private suppressRowClick: boolean = false;
 
@@ -341,7 +342,7 @@ export struct Sidebar {
         // ---- 全局核心功能导航 ----
         Column({ space: 2 }) {
           this.navRow($r('app.media.ic_home'), '主页', NAV_HOME)
-          this.navRow($r('app.media.ic_chat'), '助手', NAV_CHAT)
+          this.navRow($r('app.media.ic_chat'), this.studyPreview ? NAV_CHAT : '学习工具', NAV_CHAT)
           this.navRow($r('app.media.ic_read'), '资料库', NAV_LIBRARY)
           this.navRow($r('app.media.ic_star'), '收藏', NAV_FAVORITE)
           this.navRow($r('app.media.ic_check'), '待办', NAV_TODO)

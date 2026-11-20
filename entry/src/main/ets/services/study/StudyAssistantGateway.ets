@@ -25,6 +25,12 @@ export interface StudyGatewayModel {
   agent: boolean;
 }
 
+export interface StudyGatewaySelection {
+  pairingCode: string;
+  models: StudyGatewayModel[];
+  model: string;
+}
+
 export interface StudyChatMessage { role: string; content: string; }
 
 interface StudyChatRequest { model: string; messages: StudyChatMessage[]; }
@@ -55,6 +61,8 @@ interface StudyGatewayGeneration {
 
 export class StudyAssistantGateway {
   private active: http.HttpRequest | null = null;
+
+  static previewEnabled(): boolean { return BuildProfile.DEBUG; }
 
   static async enabled(): Promise<boolean> {
     if (!BuildProfile.DEBUG) { return false; }

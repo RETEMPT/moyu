@@ -25,6 +25,7 @@ export struct LibraryWorkspace {
   @Prop totalCount: number = 0;
   @Prop searchText: string = '';
   @Prop activeFilter: string = FILTER_ALL;
+  @Prop @Watch('clearImportFilters') importToken: number = 0;
   @Prop activeNoteId: string = '';
   @Prop viewMode: string = 'shelf';
   @Prop sortKey: string = 'update';
@@ -122,7 +123,7 @@ export struct LibraryWorkspace {
     this.cachedSource = this.notes; this.cachedQuery = query;
     this.cachedNotes = LibraryPolicy.query(this.notes, { tags: this.selectedTags,
       sort: timeline ? 'create' : this.sortKey, ascending: timeline ? false : this.sortAsc,
-      type: timeline ? 'Markdown' : undefined, status: this.readingStatus, pinnedFirst: !timeline });
+      status: this.readingStatus, pinnedFirst: !timeline });
     return this.cachedNotes;
   }
 
@@ -153,8 +154,12 @@ export struct LibraryWorkspace {
   }
 
   private resetFilters(): void {
-    this.selectedTags = []; this.readingStatus = 'all'; this.visibleCount = 40;
+    this.clearImportFilters();
     this.onResetFilters();
+  }
+
+  private clearImportFilters(): void {
+    this.selectedTags = []; this.readingStatus = 'all'; this.visibleCount = 40;
   }
 
   @Builder
@@ -402,7 +407,7 @@ export struct LibraryWorkspace {
             }
           }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
         } else if (!this.batchMode && this.viewMode === 'timeline') {
-          Text('文字记录按创建时间倒序排列').fontSize(12).fontColor(this.palette().inkMuted).width('100%').height(44)
+          Text('资料按创建时间倒序排列').fontSize(12).fontColor(this.palette().inkMuted).width('100%').height(44)
         }
         if (this.optionsExpanded) {
           if (this.availableTags().length > 0) {

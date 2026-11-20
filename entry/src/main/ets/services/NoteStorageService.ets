@@ -263,7 +263,7 @@ export class NoteStorageService {
 
       if (/\.pdf$/i.test(fileName)) {
         const savedPath = await PdfDocumentService.getInstance().savePdfToSandbox(context, uri, fileName);
-        return await this.importPdfCopy(context, savedPath, fileName, id);
+        return await this.importPdfCopy(context, savedPath, fileName, id, true);
       }
       if (ImageDocumentPolicy.extension(fileName)) {
         const imported = await ImageDocumentService.importFile(context, uri, fileName);
@@ -335,7 +335,8 @@ export class NoteStorageService {
     }
   }
 
-  private async importPdfCopy(context: Context, savedPath: string, fileName: string, id: string): Promise<DocumentTransferResult> {
+  private async importPdfCopy(context: Context, savedPath: string, fileName: string, id: string,
+    metadataOnly: boolean = false): Promise<DocumentTransferResult> {
     const service = PdfDocumentService.getInstance();
     let count: number;
     let sourceSha256: string = '';
@@ -345,7 +346,7 @@ export class NoteStorageService {
     }).catch((error: Error): void => { checksumError = error; });
     try {
       // Both operations read the durable copy. Wait for both before committing or removing it.
-      count = (await service.validateImport(savedPath).finally(() => checksum)).pageCount;
+      count = (await service.validateImport(savedPath, metadataOnly).finally(() => checksum)).pageCount;
       if (!sourceSha256) { throw checksumError ?? new Error('PDF 文件校验失败，请重试'); }
     } catch (error) {
       try { await service.removeManagedPdf(context, savedPath); } catch { /* 不残留失败导入文件 */ }
@@ -875,9 +876,11 @@ export class NoteStorageService {
   }
 
   private fileNameFromUri(uri: string): string {
-    const cleanUri: string = uri.split('?')[0];
+    const cleanUri: string = uri.split(/[?#]/)[0];
     const parts: string[] = cleanUri.split('/');
-    return decodeURIComponent(parts[parts.length - 1] || 'document');
+    const name = parts[parts.length - 1] || 'document';
+    try { return decodeURIComponent(name); }
+    catch { return name; }
   }
 
   private noteFromImportedFile(id: string, fileName: string, content: string): NoteItem {

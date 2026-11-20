@@ -207,8 +207,9 @@ export class PdfDocumentService {
     return rendered;
   }
 
-  /** Import validates the page count and first image in the same renderer request. */
-  async validateImport(filePath: string): Promise<PdfDocumentInfo> {
+  /** Library imports only need metadata. Replacement and bundled samples also check the cover. */
+  async validateImport(filePath: string, metadataOnly: boolean = false): Promise<PdfDocumentInfo> {
+    if (metadataOnly) { return this.getPdfInfo(filePath); }
     const epoch = this.cacheEpoch;
     const source = await this.sourceState(filePath);
     const result = await this.tryNative(filePath, 'cover', 0, () => false);
@@ -330,7 +331,8 @@ export class PdfDocumentService {
 
   /** Bounded batches keep extraction cancellable; reviewed results alone enter the index. */
   async extractPages(filePath: string, start: number, end: number, scanOcr: boolean,
-    cancelled: () => boolean, progress: (page: number) => void): Promise<PdfTextPage[]> {
+    cancelled: () => boolean, progress: (page: number) => void,
+    continueAfterPage: (page: PdfTextPage) => boolean = () => true): Promise<PdfTextPage[]> {
     if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end - start >= 30) {
       throw new Error('每次请选择 1～30 页');
     }
@@ -360,7 +362,9 @@ export class PdfDocumentService {
         finally { await preview.pixelMap.release(); }
       }
       if (text.length > 80000) { throw new Error(`第 ${number} 页文字过多，请缩小页面内容`); }
-      pages.push({ pageNumber: number, text, method, extractedAt: Date.now() });
+      const page: PdfTextPage = { pageNumber: number, text, method, extractedAt: Date.now() };
+      pages.push(page);
+      if (!continueAfterPage(page)) { break; }
     }
     if (cancelled()) { throw new Error('已取消提取'); }
     return pages;

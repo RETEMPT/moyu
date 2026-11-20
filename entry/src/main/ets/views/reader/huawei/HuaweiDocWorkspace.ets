@@ -75,6 +75,7 @@ export struct HuaweiDocWorkspace {
     if (this.jumpDialogOpen) { this.jumpDialogOpen = false; return; }
     if (this.exitDialogOpen) { if (!this.exitSaving) { this.exitDialogOpen = false; } return; }
     if (this.exitSaving || this.restoreSourceBusy) { return; }
+    if (this.toolbarMinimized === false) { this.toolbarMinimized = true; return; }
     if (this.isAnnotateMode || this.documentDirty || this.scratchpadDirty || this.splitMode !== 'none' ||
       this.pendingReadingPage > 0 || this.readingWritePending) { this.saveDestination = 'close'; this.beginReaderSave(); }
     else { this.onClose(); }
@@ -155,7 +156,7 @@ export struct HuaweiDocWorkspace {
   @State pageOverviewOpen: boolean = false;
   @State drawingSettingsOpen: boolean = false;
   @State addContentModalOpen: boolean = false;
-  @State toolbarMinimized: boolean = false;
+  @State toolbarMinimized: boolean = true;
   @State autoMinimizeToolbar: boolean = false;
 
   // 轻量提示
@@ -234,7 +235,7 @@ export struct HuaweiDocWorkspace {
     this.outputBusy = false; this.restoreSourceBusy = false; this.outputMessage = ''; this.pendingOutput = '';
     this.jumpDialogOpen = false;
     this.penOptionsOpen = false; this.shapeOptionsOpen = false; this.paperOptionsOpen = false; this.clearDialogOpen = false;
-    this.drawingSettingsOpen = false; this.addContentModalOpen = false; this.toolbarMinimized = false;
+    this.drawingSettingsOpen = false; this.addContentModalOpen = false; this.toolbarMinimized = true;
     this.pageOverviewOpen = false;
     this.documentDirty = false; this.scratchpadDirty = false; this.isAnnotateMode = false;
     this.pdfSourceReady = false; this.whiteboardReady = false; this.annotationError = '';
@@ -263,6 +264,7 @@ export struct HuaweiDocWorkspace {
     if (this.exitSaving || !this.isAnnotateMode) { return; }
     this.isAnnotateMode = false;
     this.penOptionsOpen = false;
+    this.toolbarMinimized = true;
     this.saveDestination = 'reading';
     this.beginReaderSave();
   }
@@ -511,13 +513,12 @@ export struct HuaweiDocWorkspace {
           IconButton({ icon: $r('app.media.ic_plus'), label: '新建手写笔记', onAction: () => this.createDocument() })
           IconButton({ icon: $r('app.media.ic_search'), label: '搜索资料', onAction: () => this.openSearch() })
         }
-        this.documentActions()
+        this.readerControls()
       }.width('100%').height(52).backgroundColor(this.palette().canvas)
-      }
-      if (this.toolbarMinimized) {
-        this.floatingStylusDock()
       } else {
-        this.annotationToolbar()
+        Row({ space: 2 }) {
+          this.readerControls()
+        }.width('100%').height(48).justifyContent(FlexAlign.End)
       }
     }.width('100%').alignItems(HorizontalAlign.Center)
       .padding({ left: this.compactTools() ? 4 : 12, right: this.compactTools() ? 4 : 12 }).backgroundColor(this.palette().canvas)
@@ -525,7 +526,18 @@ export struct HuaweiDocWorkspace {
 
 
   @Builder
-  documentActions() {
+  readerControls() {
+        this.addContentButton()
+        if (this.usesCanvasTools()) {
+          Button({ type: ButtonType.Normal }) { AppIcon({ source: $r('app.media.ic_page'), tint: this.palette().inkPrimary }) }
+            .width(44).height(44).padding(0).borderRadius(6).id('ink-paper').backgroundColor(Color.Transparent)
+            .enabled(!this.exitSaving && !this.restoreSourceBusy).accessibilityText('纸张与视图')
+            .onClick(() => { this.penOptionsOpen = false; this.shapeOptionsOpen = false; this.drawingSettingsOpen = false; this.paperOptionsOpen = !this.paperOptionsOpen; })
+            .bindPopup(this.paperOptionsOpen, { builder: this.paperSettingsPanel, placement: Placement.Bottom,
+              popupColor: this.palette().surface, radius: 12, shadow: { radius: 18, color: 'rgba(0,0,0,0.12)', offsetY: 4 },
+              onStateChange: (event) => { if (!event.isVisible) { this.paperOptionsOpen = false; } } })
+        }
+        this.drawingSettingsButton()
         if (!this.paneMode && !this.isPhone) {
           IconButton({ icon: $r('app.media.ic_screenshot'), label: '保存正文截图', onAction: () => this.openOutput('export_image') })
         }
@@ -538,6 +550,7 @@ export struct HuaweiDocWorkspace {
         }.width(44).height(44).padding(0).borderRadius(5).backgroundColor(Color.Transparent).accessibilityText('更多文档操作')
           .enabled(!this.exitSaving && !this.restoreSourceBusy).onClick(() => { this.documentMenuOpen = !this.documentMenuOpen; })
           .bindMenu(this.documentMenuOpen, this.documentMenu, { onDisappear: () => { this.documentMenuOpen = false; } })
+        this.annotationModeButton()
   }
 
   // ------------------------------------------------------------------
@@ -643,6 +656,7 @@ export struct HuaweiDocWorkspace {
   private collapseInkDockAfterStroke(): void {
     if (!this.autoMinimizeToolbar || this.toolbarMinimized || !this.isAnnotateMode || this.exitSaving) { return; }
     this.penOptionsOpen = false;
+    this.shapeOptionsOpen = false;
     this.toolbarMinimized = true;
   }
 
@@ -689,7 +703,7 @@ export struct HuaweiDocWorkspace {
       })
       .parallelGesture(TapGesture({ count: 2, fingers: 1 }).onAction(() => this.openToolSettings(tool)))
       .bindPopup(this.penOptionsOpen && this.isAnnotateMode && this.activeTool() === tool, {
-        builder: this.penSettingsPanel, placement: Placement.Bottom, popupColor: this.palette().surface,
+        builder: this.penSettingsPanel, placement: Placement.Top, popupColor: this.palette().surface,
         radius: 8, shadow: { radius: 16, color: 'rgba(0,0,0,0.10)', offsetY: 4 },
         onStateChange: (event) => { if (!event.isVisible) { this.penOptionsOpen = false; } }
       })
@@ -703,7 +717,6 @@ export struct HuaweiDocWorkspace {
           this.toolButton('pen', $r('app.media.ic_pen'), '普通笔')
           this.toolButton('highlighter', $r('app.media.ic_highlighter'), '荧光笔')
           this.toolButton('eraser', $r('app.media.ic_eraser'), '橡皮')
-          if (this.compactTools()) { this.addContentButton() }
           this.inkHistoryButton(false)
           this.inkHistoryButton(true)
           Divider().vertical(true).height(22).color(this.palette().borderSubtle).margin({ left: 5, right: 5 })
@@ -725,7 +738,7 @@ export struct HuaweiDocWorkspace {
             .enabled(!this.exitSaving && !this.restoreSourceBusy).accessibilityText('图形工具')
             .backgroundColor(this.isAnnotateMode && InkShapePolicy.isShape(this.activeTool()) ? this.palette().accentSoft : Color.Transparent)
             .onClick(() => { this.penOptionsOpen = false; this.paperOptionsOpen = false; this.drawingSettingsOpen = false; this.shapeOptionsOpen = !this.shapeOptionsOpen; })
-            .bindPopup(this.shapeOptionsOpen, { builder: this.shapeSettingsPanel, placement: Placement.Bottom,
+            .bindPopup(this.shapeOptionsOpen, { builder: this.shapeSettingsPanel, placement: Placement.Top,
               popupColor: this.palette().surface, radius: 12, shadow: { radius: 18, color: 'rgba(0,0,0,0.12)', offsetY: 4 },
               onStateChange: (event) => { if (!event.isVisible) { this.shapeOptionsOpen = false; } } })
           if (this.isAnnotateMode && this.activeTool() !== 'eraser' && this.activeTool() !== 'pan') {
@@ -740,25 +753,18 @@ export struct HuaweiDocWorkspace {
               .backgroundColor(this.inkTarget === 'scratchpad' ? this.palette().accentSoft : Color.Transparent).fontColor(this.palette().inkPrimary)
               .accessibilityText('操作随堂稿纸').onClick(() => { this.penOptionsOpen = false; this.inkTarget = 'scratchpad'; })
           }
-          if (this.usesCanvasTools()) {
-            Button({ type: ButtonType.Normal }) { AppIcon({ source: $r('app.media.ic_page'), tint: this.palette().inkPrimary }) }
-              .width(44).height(44).padding(0).borderRadius(6).id('ink-paper').backgroundColor(Color.Transparent)
-              .enabled(!this.exitSaving && !this.restoreSourceBusy).accessibilityText('纸张与视图')
-              .onClick(() => { this.penOptionsOpen = false; this.shapeOptionsOpen = false; this.drawingSettingsOpen = false; this.paperOptionsOpen = !this.paperOptionsOpen; })
-              .bindPopup(this.paperOptionsOpen, { builder: this.paperSettingsPanel, placement: Placement.Bottom,
-                popupColor: this.palette().surface, radius: 12, shadow: { radius: 18, color: 'rgba(0,0,0,0.12)', offsetY: 4 },
-                onStateChange: (event) => { if (!event.isVisible) { this.paperOptionsOpen = false; } } })
-          }
-          if (!this.compactTools()) {
-            Button({ type: ButtonType.Normal }) {
-              AppIcon({ source: $r('app.media.ic_split'), tint: this.splitMode === 'scratchpad' ? this.palette().accent : this.palette().inkSecondary })
-            }.width(44).height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText('切换随堂稿纸')
-              .enabled(!this.exitSaving).onClick(() => this.switchSplitMode(this.splitMode === 'scratchpad' ? 'none' : 'scratchpad'))
-          }
         }
       }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto).layoutWeight(1).height(48)
         .align(Alignment.Start).id('reader-ink-tools')
-      if (!this.compactTools()) { this.addContentButton() }
+    }.width('100%').constraintSize({ maxWidth: 620 }).height(52)
+      .padding({ left: 4, right: 4 }).borderRadius(16).backgroundColor(this.palette().surface)
+      .border({ width: 1, color: this.palette().borderSubtle })
+      .shadow({ radius: 12, color: 'rgba(0,0,0,0.08)', offsetY: 3 })
+      .id('reader-ink-dock')
+  }
+
+  @Builder
+  drawingSettingsButton() {
       Button({ type: ButtonType.Normal }) {
         AppIcon({ source: $r('app.media.ic_settings'), iconSize: 21,
           tint: this.drawingSettingsOpen ? this.palette().accent : this.palette().inkSecondary })
@@ -778,13 +784,6 @@ export struct HuaweiDocWorkspace {
         shadow: { radius: 18, color: 'rgba(0,0,0,0.12)', offsetY: 4 },
         onStateChange: (event) => { if (!event.isVisible) { this.drawingSettingsOpen = false; } }
       })
-      if (this.paneMode) { this.documentActions() }
-      this.annotationModeButton()
-    }.width('100%').constraintSize({ maxWidth: 920 }).height(52)
-      .padding({ left: 4, right: 4 }).borderRadius(16).backgroundColor(this.palette().surface)
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .shadow({ radius: 12, color: 'rgba(0,0,0,0.08)', offsetY: 3 })
-      .margin({ top: 5, bottom: 5 }).id('reader-ink-dock')
   }
 
   @Builder
@@ -1433,27 +1432,26 @@ export struct HuaweiDocWorkspace {
 
   @Builder
   floatingStylusDock() {
-    Row({ space: 4 }) {
-      if (this.isAnnotateMode || this.exitSaving) {
-        Scroll() {
-          Row() {
-            this.inkHistoryButton(false)
-            this.inkHistoryButton(true)
-          }
-        }.layoutWeight(1).height(44).align(Alignment.Start)
-          .scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-      } else {
-        Blank()
+    Column({ space: 8 }) {
+      if (!this.toolbarMinimized) {
+        this.annotationToolbar()
       }
-      this.addContentButton()
-      if (this.paneMode) { this.documentActions() }
-      IconButton({ icon: $r('app.media.ic_pen'), label: '展开批注工具栏', selected: this.isAnnotateMode,
-        onAction: () => { this.toolbarMinimized = false; } })
-      this.annotationModeButton()
-    }.width('100%').constraintSize({ maxWidth: 920 }).height(52)
-      .padding({ left: 4, right: 4 }).borderRadius(22).backgroundColor(this.palette().surface)
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .margin({ top: 5, bottom: 5 }).id('reader-ink-dock-collapsed')
+      Button({ type: ButtonType.Normal }) {
+        AppIcon({ source: $r('app.media.ic_pen'), iconSize: 22,
+          tint: this.isAnnotateMode || !this.toolbarMinimized ? this.palette().accent : this.palette().inkPrimary })
+      }.width(48).height(48).padding(0).borderRadius(24)
+        .backgroundColor(this.toolbarMinimized ? this.palette().surface : this.palette().accentSoft)
+        .border({ width: 1, color: this.palette().borderSubtle })
+        .shadow({ radius: 10, color: 'rgba(0,0,0,0.10)', offsetY: 3 })
+        .accessibilityText(this.toolbarMinimized ? '展开批注工具栏' : '收起批注工具栏')
+        .enabled(!this.exitSaving && !this.restoreSourceBusy)
+        .onClick(() => {
+          this.penOptionsOpen = false;
+          this.shapeOptionsOpen = false;
+          this.toolbarMinimized = !this.toolbarMinimized;
+        })
+    }.width('100%').alignItems(HorizontalAlign.End).padding({ left: 12, right: 12, bottom: 12 })
+      .hitTestBehavior(HitTestMode.Transparent).id('reader-ink-dock-collapsed')
   }
 
   build() {
@@ -1463,6 +1461,7 @@ export struct HuaweiDocWorkspace {
         this.topNavigationBar()
 
         // ---- 2. 主视口区（左文档 + 右分屏）----
+        Stack({ alignContent: Alignment.BottomEnd }) {
         Row() {
           // 左侧主文档 / 试卷 / 稿纸编辑区
           Stack({ alignContent: Alignment.Bottom }) {
@@ -1557,8 +1556,9 @@ export struct HuaweiDocWorkspace {
 
           }
         }
-        .layoutWeight(1)
-        .width('100%')
+        .width('100%').height('100%')
+        this.floatingStylusDock()
+        }.layoutWeight(1).width('100%')
       }
       .width('100%')
       .height('100%')

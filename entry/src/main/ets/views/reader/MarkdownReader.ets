@@ -127,6 +127,7 @@ export struct MarkdownReader {
   @Prop @Watch('onJumpRequest') jumpToken: number = 0;
   /** 待定位的目标行号（0 基），配合 jumpToken 使用 */
   @Prop jumpLine: number = -1;
+  onVisibleLineChange: (noteId: string, line: number) => void = () => {};
   /** 上层用例负责正文与快照持久化，成功后才能更新保存状态 */
   onSaved: (note: NoteItem, content: string, kind?: ReaderSaveKind) => Promise<void> = async () => {};
   onChooseCover: () => void = () => {};
@@ -1015,6 +1016,11 @@ export struct MarkdownReader {
         }
       }, (block: MarkdownBlock, index: number) => this.blockData.key(index))
     }.layoutWeight(1).height('100%').scrollBar(BarState.Auto)
+      .onScrollIndex((start: number) => {
+        if (start >= 0 && start < this.blockData.totalCount()) {
+          this.onVisibleLineChange(this.note.id, this.blockData.getData(start).line + 1);
+        }
+      })
       .cachedCount(2).onAppear(() => this.scheduleJump())
       .id(preview ? `markdown-preview-${this.note.id}` : `markdown-body-${this.note.id}`)
       .backgroundColor(this.palette().surface).clip(true).onClick(() => {})

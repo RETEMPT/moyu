@@ -19,6 +19,7 @@ export struct BottomNavBar {
 
   @StorageProp('flowmindDarkMode') isDarkMode: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
+  @StorageProp('flowmindStudyPreview') studyPreview: boolean = false;
   @State private keyboardVisible: boolean = false;
 
   private windowInstance: window.Window | undefined = undefined;
@@ -26,7 +27,7 @@ export struct BottomNavBar {
   private tabs: BottomTabItem[] = [
     { icon: $r('app.media.ic_home'), label: '记录', navKey: NAV_HOME },
     { icon: $r('app.media.ic_read'), label: '资料', navKey: NAV_LIBRARY },
-    { icon: $r('app.media.ic_chat'), label: '助手', navKey: NAV_CHAT },
+    { icon: $r('app.media.ic_chat'), label: '墨客', navKey: NAV_CHAT },
     { icon: $r('app.media.ic_check'), label: '待办', navKey: NAV_TODO },
     { icon: $r('app.media.ic_graph'), label: '图谱', navKey: NAV_GRAPH }
   ];
@@ -67,7 +68,7 @@ export struct BottomNavBar {
     Button({ type: ButtonType.Normal }) {
       Column({ space: 2 }) {
         AppIcon({ source: tab.icon, iconSize: 20, tint: this.activeNav === tab.navKey ? this.palette().accent : this.palette().inkSecondary })
-        Text(tab.label).fontSize(TypographyTokens.TINY).maxLines(1)
+        Text(tab.navKey === NAV_CHAT && !this.studyPreview ? '学习' : tab.label).fontSize(TypographyTokens.TINY).maxLines(1)
           .fontWeight(this.activeNav === tab.navKey ? FontWeight.Bold : FontWeight.Normal)
           .fontColor(this.activeNav === tab.navKey ? this.palette().inkPrimary : this.palette().inkSecondary)
       }.width('100%').height('100%').justifyContent(FlexAlign.Center)
@@ -77,7 +78,7 @@ export struct BottomNavBar {
     .padding(0)
     .borderRadius(14)
     .backgroundColor(this.activeNav === tab.navKey ? this.palette().activeBg : Color.Transparent)
-    .accessibilityText(tab.label)
+    .accessibilityText(tab.navKey === NAV_CHAT && !this.studyPreview ? '学习' : tab.label)
     .accessibilityDescription(this.activeNav === tab.navKey ? '已选中' : '未选中')
     .onClick(() => {
       if (this.activeNav !== tab.navKey) {

@@ -1,8 +1,6 @@
 import { ColorPalette } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
-import { noteTagStyle } from '../../common/theme/NoteTagStyle';
 import { NoteItem } from '../../common/types/NoteItem';
-import { LibraryPolicy } from '../../services/library/LibraryPolicy';
 import { MemoExcerptPart, MemoFeedPolicy } from '../../services/library/MemoFeedPolicy';
 import { NoteTagPresentation } from '../../services/library/NoteTagPresentation';
 import { AppIcon } from './AppIcon';
@@ -26,17 +24,16 @@ export struct MemoTimelineCard {
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   private palette(): ColorPalette { return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle); }
   private title(): string {
-    return NoteTagPresentation.displayTitle(this.note.title || '', LibraryPolicy.tags(this.note).slice(0, 8)) || '随手记';
+    return NoteTagPresentation.displayTitle(this.note.title || '', MemoFeedPolicy.cardTags(this.note)) || '随手记';
   }
   private timestamp(): string {
-    const time = this.note.createdAt || 0;
+    const time = this.note.createdAt || this.note.updatedAt || 0;
     if (!Number.isFinite(time) || time <= 0) { return '时间未记录'; }
     const date = new Date(time);
     if (!Number.isFinite(date.getTime())) { return '时间未记录'; }
     return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
   }
   private excerptInk(part: MemoExcerptPart): string {
-    if (part.kind === 'tag') { return noteTagStyle(part.text.slice(1), this.isDarkMode).ink; }
     return part.kind === 'reference' ? this.palette().link : this.palette().inkSecondary;
   }
   @Builder
@@ -81,9 +78,9 @@ export struct MemoTimelineCard {
         }
       }.width('100%').height(44)
       this.summary(MemoFeedPolicy.excerpt(this.note))
-      if (LibraryPolicy.tags(this.note).length > 0) {
+      if (MemoFeedPolicy.cardTags(this.note).length > 0) {
         Flex({ wrap: FlexWrap.Wrap }) {
-          ForEach(LibraryPolicy.tags(this.note).slice(0, 8), (tag: string) => {
+          ForEach(MemoFeedPolicy.cardTags(this.note), (tag: string) => {
             Button({ type: ButtonType.Normal }) {
               NoteTagBadge({ tag })
             }.height(44).padding(0).margin({ right: 6 }).backgroundColor(Color.Transparent)

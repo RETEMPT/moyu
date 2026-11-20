@@ -25,14 +25,31 @@ assert.deepEqual(sourceFiles.filter(file=>!reached.has(file)).sort(), [],
 const forbidden=/\b(?:AI|AiWorkspace|AssistantText|HuaweiAiSplitPanel|ModelConfigService|ModelProvider|AiModelCatalog|MarkerImportPolicy|SmartEntity|SmartRelation|aiSummary|aiTags|createProvider|NAV_AI)\b|墨客|伴读|大模型|自配 API|模型设置|services\/ai\/|views\/ai\//;
 const inFolder=(folder,file)=>{const relative=path.relative(folder,file);return relative!==''&&relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative);};
 const demoTransport=path.join(sourceRoot,'services/study/StudyAssistantGateway.ets');
+const simulatorUi = new Map([
+  ['common/constants/WorkspaceConstants.ets', /NAV_CHAT: string = 'AI 墨客'/],
+  ['views/layout/Sidebar.ets', /this\.studyPreview \? NAV_CHAT : '学习工具'/],
+  ['views/layout/BottomNavBar.ets', /tab\.navKey === NAV_CHAT && !this\.studyPreview \? '学习' : tab\.label/],
+  ['views/reader/ReaderPairPicker.ets', /if \(this\.studyPreview &&/],
+  ['views/reader/ReaderSplitWorkspace.ets', /if \(this\.studyPreview &&/],
+  ['views/study/StudyAssistantPanel.ets', /else if \(this\.gatewayAvailable\)/],
+  ['views/study/StudyChatWorkspace.ets', /if \(this\.studyPreview\) \{\s*this\.conversationHeader\(\)/]
+]);
+const indexSource = fs.readFileSync(path.join(sourceRoot, 'pages/Index.ets'), 'utf8');
+assert.match(indexSource, /'flowmindStudyPreview', StudyAssistantGateway\.previewEnabled\(\)/);
 for(const file of files(sourceRoot)) {
   const source=fs.readFileSync(file,'utf8');
   // This system capability name belongs to non-generative OCR; it is never user-facing.
-  const checked=source.replaceAll('SystemCapability.AI.OCR.TextRecognition','SystemCapability.OCR.TextRecognition');
+  let checked=source.replaceAll('SystemCapability.AI.OCR.TextRecognition','SystemCapability.OCR.TextRecognition');
+  const demoUiGuard = simulatorUi.get(path.relative(sourceRoot, file).split(path.sep).join('/'));
+  if (demoUiGuard) {
+    assert.match(source, demoUiGuard, `Missing simulator UI gate in ${file}`);
+    checked = checked.replace(/'(?:打开 |收起 )?AI (?:墨客|伴读)'|'墨客'|'收起伴读'|'墨客正在回复…'|'问墨客一个问题…'/g, "'学习'");
+  }
   assert.ok(!forbidden.test(checked),`Removed feature remains in ${path.relative(root,file)}`);
   if(file===demoTransport) {
     assert.deepEqual(source.match(/https?:\/\/[^'"`\s]+/g),['http://10.0.2.2:8765/v1']);
-    assert.ok(source.includes('BuildProfile.DEBUG')&&source.includes('BundleFlag.GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION')&&
+    assert.ok(source.includes('previewEnabled(): boolean { return BuildProfile.DEBUG; }')&&
+      source.includes('if (!BuildProfile.DEBUG)')&&source.includes('BundleFlag.GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION')&&
       source.includes('maxRedirects: 0')&&source.includes('usingProxy: false'),'Simulator gateway must be Debug-only and use its fixed connection');
   } else {
     assert.ok(!/@kit\.NetworkKit|createHttp\(|https:\/\/(?:api\.|openrouter|generativelanguage)/.test(source),`Model transport remains in ${file}`);

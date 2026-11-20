@@ -267,17 +267,19 @@ test('compiled whiteboard click updates the actual eraser button, icon and pen s
 });
 
 for (const type of ['PDF','Image','Handwriting','Canvas']) {
-  test(`compiled ${type} shares the persistent toolbar and lock saves before making ink read-only`,()=>{
+  test(`compiled ${type} expands tools from the pen and saves before making ink read-only`,()=>{
     const ui=renderer();const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',{
       note:{id:'a',title:'资料',type,sourceType:type==='Image'?'image':'pdf',sourceUri:'/files/source'}
-    },'topNavigationBar',v=>{v.pdfSourceReady=true;v.whiteboardReady=true;});
+    },'initialRender',v=>{v.pdfSourceReady=true;v.whiteboardReady=true;});
+    assert.equal(ui.find('普通笔'),undefined);ui.click('展开批注工具栏');
     assert.ok(ui.find('普通笔'));assert.equal(ui.find('普通笔').props.enabled,true);assert.ok(ui.find('解锁批注'));
     ui.click('普通笔');assert.equal(view.isAnnotateMode,true);assert.equal(ui.find('普通笔').props.enabled,true);
     assert.equal(view.penOptionsOpen,false);assert.equal(ui.find('更多笔设置'),undefined);
     ui.click('橡皮');assert.equal(view.activeModal,'');assert.equal(view.penOptionsOpen,false);
     if(type==='Handwriting'||type==='Canvas')assert.equal(view.canvasCommand.action,'eraser');else assert.equal(view.currentTool,'eraser');
     ui.click('锁定只读并保存批注');assert.equal(view.isAnnotateMode,false);assert.equal(view.exitSaving,true);assert.equal(view.exitSaveToken,1);
-    assert.ok(ui.find('普通笔'));assert.equal(ui.find('普通笔').props.enabled,false);
+    assert.equal(ui.find('普通笔'),undefined);
+    assert.equal(ui.find('展开批注工具栏').props.enabled,false);
   });
 }
 
@@ -292,17 +294,17 @@ test('compiled lock returns to document pen after using pan and exposes no float
 test('compiled dedicated whiteboard header omits all filenames and tabs while sharing ink and output tools',()=>{
   const ui=renderer();const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',{
     note:{id:'canvas-global',type:'canvas',title:'内部画布存储名'},isFreeCanvas:true,
-    documentTabs:[{id:'pdf',title:'课本.pdf',type:'PDF'}]},'topNavigationBar',v=>{v.whiteboardReady=true;});
+    documentTabs:[{id:'pdf',title:'课本.pdf',type:'PDF'}]},'initialRender',v=>{v.whiteboardReady=true;});
   assert.equal(ui.find('内部画布存储名'),undefined);assert.equal(ui.find('课本.pdf'),undefined);
   assert.equal([...ui.nodes.values()].some(n=>n.props.id==='reader-tabs'),false);
-  assert.ok(ui.find('保存正文截图'));ui.click('普通笔');assert.equal(view.isAnnotateMode,true);
+  assert.ok(ui.find('保存正文截图'));ui.click('展开批注工具栏');ui.click('普通笔');assert.equal(view.isAnnotateMode,true);
   ui.find('普通笔').props.onDoubleTap();ui.flush();assert.equal(view.penOptionsOpen,true);
 });
 
 test('compiled unloaded source rejects tool activation with feedback and retains read-only mode',()=>{
   const ui=renderer();const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',{
-    note:{id:'broken',type:'PDF',sourceType:'pdf',sourceUri:'/book.pdf'}},'topNavigationBar');
-  ui.click('普通笔');assert.equal(view.isAnnotateMode,false);assert.equal(view.penOptionsOpen,false);
+    note:{id:'broken',type:'PDF',sourceType:'pdf',sourceUri:'/book.pdf'}},'floatingStylusDock');
+  ui.click('展开批注工具栏');ui.click('普通笔');assert.equal(view.isAnnotateMode,false);assert.equal(view.penOptionsOpen,false);
   assert.equal(ui.toasts.length,1);assert.match(ui.toasts[0],/页面读取/);
   assert.equal(ui.find('普通笔').props.opacity,undefined);
 });
@@ -329,8 +331,8 @@ test('compiled memo calendar selects and clears local days and navigates across 
 test('compiled shape popup routes geometry to each source adapter without exposing pen parameters',()=>{
   for(const type of ['PDF','Image','Handwriting','Canvas']) {
     const ui=renderer(),view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',
-      {note:{id:'a',type,title:'资料',sourceType:type==='Image'?'image':'pdf'}},'topNavigationBar',v=>{v.pdfSourceReady=true;v.whiteboardReady=true;});
-    ui.click('图形工具');assert.equal(view.isAnnotateMode,false);
+      {note:{id:'a',type,title:'资料',sourceType:type==='Image'?'image':'pdf'}},'floatingStylusDock',v=>{v.pdfSourceReady=true;v.whiteboardReady=true;});
+    ui.click('展开批注工具栏');ui.click('图形工具');assert.equal(view.isAnnotateMode,false);
     for(const shape of ['直线','箭头','双箭头','矩形','椭圆','三角形','直角三角','平行四边','五边形','五角星']) {
       assert.ok(ui.find('绘制'+shape));
     }
@@ -342,8 +344,9 @@ test('compiled shape popup routes geometry to each source adapter without exposi
 
 test('compiled compact ink dock stays open while configuring and allows collapse, restore and save in a reader pane',()=>{
   const ui=renderer(),view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',
-    {note:{id:'a',type:'Handwriting',title:'手写'},paneMode:true,compactPane:true},'topNavigationBar',v=>{v.whiteboardReady=true;});
-  ui.click('普通笔');ui.click('画笔设置');
+    {note:{id:'a',type:'Handwriting',title:'手写'},paneMode:true,compactPane:true},'initialRender',v=>{v.whiteboardReady=true;});
+  assert.equal(ui.find('撤销当前批注'),undefined);
+  ui.click('展开批注工具栏');ui.click('普通笔');ui.click('画笔设置');
   ui.find('书写后自动收起工具栏').props.onChange(true);ui.flush();
   assert.equal(view.toolbarMinimized,false);assert.ok(ui.find('收起画笔设置'));
   ui.click('收起画笔设置');view.collapseInkDockAfterStroke();ui.flush();
@@ -427,8 +430,8 @@ test('compiled output results show retry for errors and completion only for succ
 
 test('compiled pen settings expand on a second selection and support presets and precise color input',()=>{
   const ui=renderer();const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',
-    {note:{id:'a',type:'PDF',title:'课程'}},'topNavigationBar',v=>{v.pdfSourceReady=true;});
-  ui.click('普通笔');assert.equal(view.penOptionsOpen,false);assert.equal(ui.find('批注颜色 #2563EB'),undefined);
+    {note:{id:'a',type:'PDF',title:'课程'}},'floatingStylusDock',v=>{v.pdfSourceReady=true;});
+  ui.click('展开批注工具栏');ui.click('普通笔');assert.equal(view.penOptionsOpen,false);assert.equal(ui.find('批注颜色 #2563EB'),undefined);
   ui.click('快捷颜色 #2563EB');assert.equal(view.selectedColor,'#2563EB');
   ui.click('普通笔');assert.equal(view.penOptionsOpen,true);assert.ok(ui.find('批注颜色 #2563EB'));
   ui.click('笔宽 6 px');assert.equal(view.selectedWidth,6);ui.click('批注颜色 #2563EB');assert.equal(view.selectedColor,'#2563EB');
@@ -579,8 +582,9 @@ test('compiled phone Markdown toolbar opens explicit output and share dialogs, a
 test('compiled phone handwriting and PDF tools keep a 44vp mode switch with accessible labels and no squeezed status text',()=>{
   for(const type of ['Canvas','PDF']) {
     const ui=renderer();const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',{
-      note:{id:'a',title:'课程',type,sourceType:type==='PDF'?'pdf':undefined}},'topNavigationBar',v=>{v.isPhone=true;v.whiteboardReady=true;v.pdfSourceReady=true;});
+      note:{id:'a',title:'课程',type,sourceType:type==='PDF'?'pdf':undefined}},'initialRender',v=>{v.isPhone=true;v.whiteboardReady=true;v.pdfSourceReady=true;});
     const toggle=ui.find('解锁批注');assert.equal(toggle.props.width,44);assert.equal(toggle.props.height,44);assert.equal(ui.find('只读'),undefined);
+    ui.click('展开批注工具栏');
     for(const tool of ['普通笔','荧光笔','橡皮']) {assert.equal(ui.find(tool).props.height,44);assert.equal(ui.find(tool).props.width,44);}
     ui.click('普通笔');assert.equal(view.isAnnotateMode,true);assert.ok(ui.find('锁定只读并保存批注'));assert.equal(ui.find('可批注'),undefined);
   }
@@ -661,14 +665,14 @@ test('compiled document more contains working scratchpad navigation without remo
   ui.click('更多文档操作'); assert.equal(ui.find('打开 AI 伴读'), undefined);
 });
 
-test('compiled home feed is bounded, text-only and has direct pinned and date filtering', () => {
+test('compiled home feed is bounded, includes PDFs and has direct pinned and date filtering', () => {
   const ui=renderer(),opened=[];
   const notes=Array.from({length:30},(_,i)=>({id:String(i),title:`记录 ${i}`,type:'Markdown',createdAt:i+1,isPinned:i===0}));
   notes.push({id:'pdf',title:'PDF资料',type:'PDF',createdAt:100});
   const view=ui.mount('views/workspace/HomeWorkspace','HomeWorkspace',{recentNotes:notes,onSelectNote:n=>opened.push(n.id)});
   assert.ok(ui.find('打开记录 记录 29'));assert.equal(ui.find('打开记录 记录 0'),undefined);
-  assert.equal(ui.find('打开记录 PDF资料'),undefined);
-  ui.click('显示更多记录 · 已显示 12 / 30');assert.ok(ui.find('打开记录 记录 6'));
+  assert.ok(ui.find('打开记录 PDF资料'));
+  ui.click('显示更多记录 · 已显示 12 / 31');assert.ok(ui.find('打开记录 记录 7'));
   ui.click('置顶');assert.ok(ui.find('打开记录 记录 0'));assert.equal(view.displayNotes().length,1);
   ui.click('打开记录 记录 0');assert.deepEqual(opened,['0']);
   ui.click('按日期与标签筛选');assert.ok(ui.find('记录日历上个月'));
@@ -834,10 +838,10 @@ test('compiled theme cards persist the chosen style and repaint mounted reader, 
   ThemeManager.store = { put: async (key, value) => values.set(key, value), flush: async () => {} };
   const settings = ui.mount('views/settings/SettingsWorkspace', 'SettingsWorkspace', {}, 'themePage');
   const reader = ui.mount('views/reader/huawei/HuaweiDocWorkspace', 'HuaweiDocWorkspace',
-    { note: { id: 'a', type: 'PDF', title: '课本', sourceType: 'pdf' } }, 'topNavigationBar', view => { view.pdfSourceReady = true; });
+    { note: { id: 'a', type: 'PDF', title: '课本', sourceType: 'pdf' } }, 'initialRender', view => { view.pdfSourceReady = true; });
   const dialog = ui.mount('views/reader/huawei/HuaweiDocActionDialog', 'HuaweiDocActionDialog',
     { note: { id: 'a', title: '课本' }, dialogType: 'export_image' });
-  ui.click('解锁批注'); const originalInk = reader.selectedColor;
+  ui.click('展开批注工具栏');ui.click('解锁批注'); const originalInk = reader.selectedColor;
   for (const label of ['白蓝','白青','白绿','白玫','暖砂','墨紫','黑白','雾蓝']) assert.ok(ui.find(`主题配色 ${label}`));
   await ui.click('主题配色 白青'); ui.flush();
   assert.equal(values.get('themeStyle'), 'cyan'); assert.equal(settings.themeStyle, 'cyan'); assert.equal(reader.themeStyle, 'cyan'); assert.equal(dialog.themeStyle, 'cyan');
@@ -1138,7 +1142,7 @@ for (const phone of [false, true]) {
     assert.ok([...ui.children.values()].filter(child => typeof child.beginReaderSave === 'function').every(child => child.isPhone === phone));
     assert.equal([...ui.nodes.values()].filter(node => node.type === 'Text' && node.content === note.title).length, 1);
     assert.equal([...ui.nodes.values()].filter(node => node.props.id === 'reader-tabs').length, 0);
-    assert.ok(ui.find('普通笔')); assert.ok(ui.find('更多文档操作'));
+    assert.equal(ui.find('普通笔'),undefined);assert.ok(ui.find('展开批注工具栏'));assert.ok(ui.find('更多文档操作'));
     ui.click('更多文档操作'); assert.ok(ui.find('保存正文截图')); assert.ok(ui.find('导出笔记文字')); assert.ok(ui.find('分享原 PDF'));
   });
 }
