@@ -81,6 +81,9 @@ import { SmartContent } from '../common/types/SmartContent';
 import { SmartTask } from '../common/types/SmartTask';
 import { SmartCaptureService, SmartCaptureStorage } from '../services/smart/SmartCaptureService';
 import { ReviewCard, PdfTextPage } from '../common/types/StudyTypes';
+import { LearningResult } from '../common/types/LearningResult';
+import { LearningResultFile } from '../services/study/LearningResultFile';
+import { LearningResultPolicy } from '../services/study/LearningResultPolicy';
 import { ReviewStorageService } from '../services/study/ReviewStorageService';
 import { ReviewPolicy } from '../services/study/ReviewPolicy';
 import { StudySourceService } from '../services/study/StudySourceService';
@@ -180,6 +183,8 @@ struct Index {
   @State documentBackToken: number = 0;
   @State readerBackToken: number = 0;
   @State reviewCards: ReviewCard[] = [];
+  @State learningResult: LearningResult | undefined = undefined;
+  @State learningResultNoteId: string = '';
   @State studyVisible: boolean = false;
   @State studyCourse: string = '';
   @State studyCloseToken: number = 0;
@@ -889,16 +894,17 @@ struct Index {
     this.notes = this.notes.slice();
   }
 
-  private openNote(note: NoteItem, preserveCompanion: boolean = false): void {
+  private openNote(note: NoteItem, preserveCompanion: boolean = false, page?: number, line?: number): void {
     if ((this.readingOpen || this.fullScreenDocOpen) && (this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) {
       this.notify('请先完成或重试当前资料保存'); return;
     }
-    if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.openNote(note, preserveCompanion)); return; }
+    if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.openNote(note, preserveCompanion, page, line)); return; }
     const current = this.notes.find((item: NoteItem) => item.id === note.id);
     if (!current) { this.notify('笔记已被移走'); return; }
     note = current;
     if (!preserveCompanion || !ReaderPairPolicy.isReadable(note) || note.id === this.companionNoteId) { this.companionNoteId = ''; }
-    this.sourcePage = ReadingProgressPolicy.page(note);
+    this.sourcePage = page || ReadingProgressPolicy.page(note);
+    this.jumpLine = line !== undefined ? line - 1 : -1;
     if (!WorkspaceNotePolicy.isFreeCanvas(note)) {
       if (this.markReadingOpened !== undefined) { this.markReadingOpened(note.id); }
       else if (this.recordReading !== undefined) { this.recordReading(note.id).catch(() => {}); }
@@ -914,6 +920,7 @@ struct Index {
       });
       this.activeNoteId = note.id;
       this.readingOpen = false;
+      if (page !== undefined) { this.sourceJumpToken++; }
       return;
     }
     // 速记与常规 Markdown 随笔：保持在三栏式 AppShell 内打开
@@ -924,6 +931,7 @@ struct Index {
     this.saveState = SAVE_IDLE;
     this.readerSaveState = SAVE_IDLE;
     this.fullScreenDocOpen = false;
+    if (line !== undefined) { this.jumpToken++; }
     PdfDocumentService.getInstance().clearPageCache();
     this.notes = this.notes.slice();
   }
@@ -1007,10 +1015,37 @@ struct Index {
     if (pageNumber && (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > (note.pageCount || 0))) {
       this.notify('来源页码已无效，请重新核对资料'); return;
     }
-    this.openNote(note);
-    if (pageNumber && this.fullScreenDocOpen) {
-      this.sourcePage = Math.max(1, Math.min(note.pageCount || 1, pageNumber)); this.sourceJumpToken++;
-    } else if (line && this.readingOpen) { this.jumpLine = line - 1; this.jumpToken++; }
+    this.openNote(note, false, pageNumber, line);
+  }
+
+  private jumpInStudyReader(noteId: string, page?: number, line?: number): void {
+    if (this.fullScreenDocOpen && this.fullScreenDocNote.id === noteId && page !== undefined) {
+      if (!Number.isInteger(page) || page < 1 || page > (this.fullScreenDocNote.pageCount || 0)) {
+        this.notify('来源页码已无效，请重新核对资料');
+        return;
+      }
+      this.sourcePage = page;
+      this.sourceJumpToken++;
+    } else if (this.readingOpen && this.readingNote.id === noteId && line !== undefined && line >= 1) {
+      this.jumpLine = line - 1;
+      this.jumpToken++;
+    }
+  }
+
+  private adoptLearningCard(result: LearningResult, noteId: string, index: number): Promise<boolean> {
+    return this.noteMutationQueue.run<boolean>(async () => {
+      const note = this.notes.find((item: NoteItem) => item.id === noteId && !item.deletedAt);
+      if (!note) { throw new Error('所选资料已移除，请重新核对出处。'); }
+      const draft = LearningResultPolicy.locatedCard(result, index, LearningResultPolicy.locate(result, note));
+      const key = await LearningResultFile.adoptionKey(draft);
+      if (this.reviewCards.some((card: ReviewCard) => card.noteId === noteId && card.generatedKey === key)) { return false; }
+      const card = ReviewPolicy.create(note, draft);
+      card.generatedKey = key;
+      const next = this.reviewCards.concat([card]);
+      await this.reviewStorage.save(this.getAbilityContext(), next);
+      this.reviewCards = next;
+      return true;
+    });
   }
 
   private async savePdfText(pages: PdfTextPage[]): Promise<void> {
@@ -1063,7 +1098,8 @@ struct Index {
     return pending !== null ? pending.defaultName : '未命名笔记';
   }
 
-  private async createNote(title: string, type: string = 'Markdown', projectName: string = this.activeSpaceName(), body: string = '', tags: string[] = []): Promise<boolean> {
+  private async createNote(title: string, type: string = 'Markdown', projectName: string = this.activeSpaceName(),
+    body: string = '', tags: string[] = [], openAfterCreate: boolean = true): Promise<boolean> {
     if (this.noteCreateBusy) { return false; }
     this.noteCreateBusy = true;
     this.noteCreateError = '';
@@ -1106,7 +1142,7 @@ struct Index {
     }
     this.rebuildSpaces();
     this.refreshGraph();
-    this.openNote(note);
+    if (openAfterCreate) { this.openNote(note); }
     this.notify('已创建新笔记');
     return true;
   }
@@ -1279,15 +1315,6 @@ struct Index {
     return null;
   }
 
-  private requireNote(identifier: string): NoteItem {
-    const key = identifier.trim().toLowerCase();
-    const byId = this.notes.find((note: NoteItem) => note.id.toLowerCase() === key);
-    if (byId) { return byId; }
-    const matches = this.notes.filter((note: NoteItem) => note.title.toLowerCase() === key);
-    if (matches.length !== 1) { throw new Error(matches.length > 1 ? '标题对应多篇笔记，请指定笔记 ID' : `未找到笔记「${identifier}」，请提供完整标题或 ID`); }
-    return matches[0];
-  }
-
   private async saveLinkedNote(note: NoteItem, writeBody: boolean = false): Promise<void> {
     const previous = this.notes.find((item: NoteItem) => item.id === note.id);
     const context = this.getAbilityContext();
@@ -1311,13 +1338,25 @@ struct Index {
     await this.refreshGraph();
   }
 
-  private async createGraphLink(identifier: string, title: string): Promise<void> {
+  private async createGraphLink(sourceId: string, targetId: string, pendingTitle: string): Promise<void> {
     return this.noteMutationQueue.run<void>(async () => {
-      const note = this.requireNote(identifier);
+      const note = this.notes.find(item => item.id === sourceId && !item.deletedAt);
+      if (!note || !WorkspaceNotePolicy.canUpdateBody(note)) { throw new Error('起点需为资料库中的文字笔记'); }
+      const target = this.notes.find(item => item.id === targetId && !item.deletedAt);
+      if (targetId && !target) { throw new Error('目标笔记已移除，请重新选择'); }
+      if (targetId === sourceId) { throw new Error('请选择另一个节点作为目标'); }
+      const title = (target?.title || pendingTitle).trim();
+      if (!title || /[\[\]|#\r\n]/.test(title)) { throw new Error('目标标题包含双链保留字符，请先调整标题'); }
+      const key = title.toLocaleLowerCase();
+      if (this.notes.some(item => !item.deletedAt && item.id !== targetId &&
+        [item.title, item.id, item.id + '.md'].some(alias => alias.trim().toLocaleLowerCase() === key))) {
+        throw new Error('目标名称匹配其他笔记，请调整标题后重试');
+      }
       const link = `[[${title}]]`;
+      if (note.contentDetail.includes(link) || (targetId && this.linkGraph.backlinks.some(
+        item => item.sourceNoteId === sourceId && item.targetNoteId === targetId))) { return; }
       const updated = WorkspaceNotePolicy.mutate(note, 'update_note',
-        note.contentDetail.includes(link) ? note.contentDetail : `${note.contentDetail}\n\n${link}\n`, note.updatedAt || 0);
-      if (note.contentDetail.includes(link)) { return; }
+        `${note.contentDetail}\n\n${link}\n`, note.updatedAt || 0);
       await this.saveLinkedNote(updated, true);
     });
   }
@@ -1522,7 +1561,7 @@ struct Index {
       const uris = example ? [''] : selectedUri ? [selectedUri] : await this.storage.selectDocumentUris(this.getAbilityContext());
       let first: NoteItem | null = null; let imported: number = 0;
       for (let index = 0; index < uris.length; index++) {
-        if (uris.length > 1) { this.notify(`正在导入 ${index + 1}/${uris.length} 份资料…`); }
+        this.notify(uris.length > 1 ? `正在导入 ${index + 1}/${uris.length} 份资料…` : '正在导入资料…');
         const note = await this.importOneDocument(targetCategory, example, snapshot, uris[index], targetProjectId);
         if (note) { imported++; if (first === null) { first = note; } }
       }
@@ -1543,8 +1582,10 @@ struct Index {
       if (result.status === 'imported' && result.document !== undefined) {
         const document: MarkdownDocument = result.document;
         const now: Date = new Date();
-        const isPdf: boolean = result.noteType === 'PDF' || document.title.toLowerCase().endsWith('.pdf');
+        const isPdf: boolean = result.noteType === 'PDF' || (result.noteType === undefined && document.title.toLowerCase().endsWith('.pdf'));
         const isImage: boolean = result.noteType === 'Image';
+        const officeTag = /\.pptx$/i.test(result.fileName || '') ? 'PPTX 文字版' :
+          /\.docx$/i.test(result.fileName || '') ? 'DOCX 文字版' : '';
         const note: NoteItem = {
           id: document.id,
           title: document.title,
@@ -1553,15 +1594,16 @@ struct Index {
           sourceType: isImage ? 'image' : isPdf ? 'pdf' : 'document',
           sourceUri: result.sourceUri,
           sourceFileName: result.sourceFileName,
+          sourceSha256: result.sourceSha256,
           documentMeta: result.documentMeta,
           pageCount: result.pageCount || 1,
           pageInfo: isImage ? '图片 · 独立批注' : isPdf ? (result.pageCount || 1) + ' 页' : '',
           previewText: document.content.length > 48 ? `${document.content.substring(0, 48)}…` : document.content,
-          tag: isImage ? '图片资料' : isPdf ? 'PDF文献' : '导入',
+          tag: isImage ? '图片资料' : isPdf ? 'PDF文献' : officeTag || '导入',
           tagColor: isPdf ? '#E11D48' : '#2563EB',
           updateTime: this.formatTime(now),
           contentDetail: document.content,
-          tags: isPdf ? ['PDF文献'] : ['导入'],
+          tags: isPdf ? ['PDF文献'] : officeTag ? [officeTag, '导入'] : ['导入'],
           createdAt: now.getTime(),
           updatedAt: now.getTime()
         };
@@ -1579,7 +1621,7 @@ struct Index {
         }
         this.rebuildSpaces();
         this.refreshGraph();
-        this.notify(`已保存到本机资料库：${result.fileName || document.title}`);
+        this.notify(officeTag ? result.message : `已保存到本机资料库：${result.fileName || document.title}`);
         return note;
       } else if (result.status !== 'cancelled') {
         this.notify(result.message);
@@ -1614,7 +1656,7 @@ struct Index {
     target.updateTime = saved.updateTime;
   }
 
-  private handleSaved(note: NoteItem, content: string, kind: ReaderSaveKind = 'markdown'): Promise<void> {
+  private handleSaved(note: NoteItem, content: string, kind: ReaderSaveKind = 'markdown', previousPdfSource?: string): Promise<void> {
     const snapshot = copyNote(note);
     if (kind !== 'reading') { snapshot.updateTime = this.formatTime(new Date()); }
     return this.noteMutationQueue.run<void>(() => this.readerCommits.commit(snapshot, content, {
@@ -1646,7 +1688,7 @@ struct Index {
         }
         if (kind === 'markdown' || (kind === 'handwriting' && (previousTitle !== saved.title || previousContent !== saved.contentDetail))) { this.refreshGraph(); }
       }
-    }, kind === 'markdown' || kind === 'handwriting', kind));
+    }, kind === 'markdown' || kind === 'handwriting', kind, previousPdfSource));
   }
 
   private recordReading(noteId: string, page?: number, visitedAt: number = Date.now()): Promise<void> {
@@ -1665,7 +1707,7 @@ struct Index {
     const replacement = await this.storage.selectReplacementPdf(context, note);
     if (!replacement) { return; }
     try {
-      await this.handleSaved(replacement, replacement.contentDetail, 'pdf-source');
+      await this.handleSaved(replacement, replacement.contentDetail, 'pdf-source', previousSource);
     } catch (error) {
       try { await PdfDocumentService.getInstance().removeManagedPdf(context, replacement.sourceUri || ''); }
       catch { console.warn('关联失败后的 PDF 副本清理失败'); }
@@ -1727,12 +1769,12 @@ struct Index {
   // ==================================================================
 
   @Builder
-  readerWorkspaceContent(readerNote: NoteItem) {
+  readerWorkspaceContent(fullScreen: boolean) {
     ReaderSplitWorkspace({
-      note: readerNote, manageKeyboardMode: false,
+      note: fullScreen ? this.fullScreenDocNote : this.readingNote, manageKeyboardMode: false,
       documentTabs: this.readerDocuments(),
       secondaryNote: this.pairedDocument(),
-      onOpenSplitPicker: () => this.openPairPicker(readerNote.id),
+      onOpenSplitPicker: () => this.openPairPicker((fullScreen ? this.fullScreenDocNote : this.readingNote).id),
       onSecondaryClosed: () => { this.companionNoteId = ''; },
       onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
       onSplitDocument: (id: string) => { this.splitReaderDocument(id); },
@@ -1746,7 +1788,10 @@ struct Index {
       onReadingPageChange: (noteId: string, page: number, visitedAt: number) => this.recordReading(noteId, page, visitedAt),
       sourceJumpToken: this.sourceJumpToken,
       onExtractPdfText: (noteId: string, page: number) => { this.pdfExtractNoteId = noteId; this.pdfExtractPage = page; },
-      backRequestToken: this.readingOpen ? this.readerBackToken : this.documentBackToken,
+      onStudyCitation: (noteId: string, page?: number, line?: number) => this.jumpInStudyReader(noteId, page, line),
+      onSaveStudyDraft: (note: NoteItem, title: string, body: string) =>
+        this.createNote(title, 'Markdown', note.category, body, ['学习助手'], false),
+      backRequestToken: fullScreen ? this.documentBackToken : this.readerBackToken,
       jumpToken: this.jumpToken, jumpLine: this.jumpLine, onOutlineUpdated: (items: MarkdownOutlineItem[]) => { this.outlineItems = items; },
       onSmartExtract: () => { this.smartExtractVisible = true; },
       onExportText: (note: NoteItem, extension: string) => this.storage.exportDocument(this.getAbilityContext(), note, extension),
@@ -1782,7 +1827,7 @@ struct Index {
         onOpenCapture: () => { this.smartExtractVisible = true; },
         onOpenBackup: () => { this.backupVisible = true; }, onOpenPrivacy: () => { this.privacyVisible = true; } })
     } else if (this.readingOpen) {
-      this.readerWorkspaceContent(this.readingNote)
+      this.readerWorkspaceContent(false)
     } else if (this.activeNav === NAV_HOME) {
       HomeWorkspace({
         memoDraft: this.memoDraft, memoStatus: this.memoDraftStatus, memoSaving: this.memoSaving, memoReady: this.memoReady,
@@ -1837,9 +1882,8 @@ struct Index {
         projects: this.customProjects,
         onSelectNoteById: (noteId: string) => this.openNoteById(noteId),
         onOpenNoteByTitle: (title: string) => this.openNoteByTitle(title),
-        onLinkNodes: (sourceIdentifier: string, targetTitle: string) => {
-          this.createGraphLink(sourceIdentifier, targetTitle);
-        },
+        onLinkNodes: (sourceId: string, targetId: string, targetTitle: string) =>
+          this.createGraphLink(sourceId, targetId, targetTitle),
         onCreateGalaxy: (galaxyName: string) => this.createProject(galaxyName, '#6366F1', '🪐')
       })
       .transition(TransitionEffect.OPACITY.animation({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }))
@@ -2007,7 +2051,7 @@ struct Index {
 
       // ---- 华为风独立全屏文档与稿纸工作台 (PDF / 试卷 / 稿纸手写) ----
       if (this.fullScreenDocOpen) {
-        Column() { this.readerWorkspaceContent(this.fullScreenDocNote) }
+        Column() { this.readerWorkspaceContent(true) }
         .width('100%')
         .height('100%')
         .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: WorkspaceNotePolicy.isFreeCanvas(this.fullScreenDocNote) ? 0 : 8 }))
@@ -2036,16 +2080,20 @@ struct Index {
           })) })
       }
       if (this.studyVisible) {
-        StudySheet({ notes: this.notes, cards: this.reviewCards, course: this.studyCourse,
+        StudySheet({ notes: this.notes, cards: this.reviewCards, course: this.studyCourse, result: this.learningResult,
+          resultNoteId: this.learningResultNoteId,
           closeToken: this.studyCloseToken,
           onClose: () => { this.studyVisible = false; },
+          onResult: (result: LearningResult | undefined) => { this.learningResult = result; },
+          onResultNote: (id: string) => { this.learningResultNoteId = id; },
+          onAdopt: (result: LearningResult, noteId: string, index: number) => this.adoptLearningCard(result, noteId, index),
           onSave: async (cards: ReviewCard[]) => {
             const captured = ReviewPolicy.normalize(cards);
             await this.noteMutationQueue.run<void>(async () => {
               await this.reviewStorage.save(this.getAbilityContext(), captured); this.reviewCards = captured;
             });
           },
-          onSource: (noteId: string, page?: number) => this.openStudySource(noteId, page) })
+          onSource: (noteId: string, page?: number, line?: number) => this.openStudySource(noteId, page, line) })
       }
       if (this.pdfExtractNoteId && this.notes.some((note: NoteItem) => note.id === this.pdfExtractNoteId)) {
         PdfTextSheet({ note: this.notes.find((note: NoteItem) => note.id === this.pdfExtractNoteId)!,
@@ -2057,7 +2105,10 @@ struct Index {
       if (this.searchVisible) {
         QuickSearchDialog({
           notes: this.notes,
-          onSelectSource: (note: NoteItem, page: number) => { this.searchVisible = false; this.openStudySource(note.id, page); },
+          onSelectSource: (note: NoteItem, page?: number, line?: number) => {
+            this.searchVisible = false;
+            this.openStudySource(note.id, page, line);
+          },
           onClose: () => {
             animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.searchVisible = false;

@@ -15,6 +15,7 @@ import { LibraryPolicy } from '../../services/library/LibraryPolicy';
 import { ReadingProgressPolicy, ReadingStatus } from '../../services/document/ReadingProgressPolicy';
 import { MemoTimelineCard } from '../common/MemoTimelineCard';
 import { IconButton } from '../common/IconButton';
+import { NoteTagBadge } from '../common/NoteTagBadge';
 
 @Component
 export struct LibraryWorkspace {
@@ -187,15 +188,10 @@ export struct LibraryWorkspace {
   /** 功能6：标签筛选 chip（可多选高亮） */
   @Builder
   tagChip(tag: string) {
-    Text(tag)
-      .fontSize(TypographyTokens.TINY)
-      .fontColor(this.isTagSelected(tag) ? this.palette().onAccent : this.palette().inkSecondary)
-      .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-      .height(44).textAlign(TextAlign.Center)
-      .borderRadius(5)
-      .backgroundColor(this.isTagSelected(tag) ? this.palette().accent : this.palette().surfaceSubtle)
-      .hoverEffect(HoverEffect.Highlight)
-      .onClick(() => this.toggleTag(tag))
+    Button({ type: ButtonType.Normal }) {
+      NoteTagBadge({ tag, selected: this.isTagSelected(tag) })
+    }.height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText(`筛选标签 ${tag}`)
+      .accessibilityDescription(this.isTagSelected(tag) ? '已选中' : '未选中').onClick(() => this.toggleTag(tag))
   }
 
   @Builder
@@ -214,12 +210,7 @@ export struct LibraryWorkspace {
           if (this.noteTags(note).length > 0) {
             Row({ space: 4 }) {
               ForEach(this.noteTags(note).slice(0, this.isPhone ? 1 : 3), (t: string) => {
-                Text(t)
-                  .fontSize(TypographyTokens.TINY)
-                  .fontColor((note.tagColor || '').length === 0 ? this.palette().inkSecondary : note.tagColor)
-                  .padding({ left: 6, right: 6, top: 1, bottom: 1 })
-                  .borderRadius(4)
-                  .backgroundColor(this.palette().surfaceSubtle)
+                NoteTagBadge({ tag: t, compact: true })
               }, (t: string) => t)
             }
           }
@@ -348,7 +339,7 @@ export struct LibraryWorkspace {
           Text(this.totalCount === 0 ? '资料库还是空的' : '没有匹配的资料')
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().inkSecondary)
-          Text(this.totalCount === 0 ? '导入 PDF、图片或文字，开始整理学习资料。' : '试试其他关键词，或清除筛选。')
+        Text(this.totalCount === 0 ? '导入 PDF、图片、文字或 Office 文字版。' : '试试其他关键词，或清除筛选。')
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().inkMuted)
           if (this.totalCount > 0) {

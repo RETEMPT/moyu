@@ -1,11 +1,65 @@
 import { NoteItem } from '../../common/types/NoteItem';
 import { LibraryPolicy } from './LibraryPolicy';
+import { SourceTextStructure } from '../document/SourceTextStructure';
+import { NoteTagPresentation } from './NoteTagPresentation';
 
 export interface MemoDay { key: string; day: number; count: number; inMonth: boolean; }
 export interface MemoTagCount { tag: string; count: number; }
+type MemoExcerptKind = 'text' | 'tag' | 'reference';
+export interface MemoExcerptPart { text: string; kind: MemoExcerptKind; }
 
 /** Local calendar dates and tags are derived from the same text-only feed. */
 export class MemoFeedPolicy {
+  static excerpt(note: NoteItem): MemoExcerptPart[] {
+    const footerTags = LibraryPolicy.tags(note).slice(0, 8);
+    const source = NoteTagPresentation.displayBody(note.contentDetail || note.previewText || '', footerTags).slice(0, 1600).trim();
+    const rows = SourceTextStructure.scan(source);
+    const first = rows[0]?.text.replace(/^#{1,6}\s+/, '');
+    const parts: MemoExcerptPart[] = [];
+    let remaining = 260;
+    const append = (text: string, kind: MemoExcerptKind): void => {
+      if (!text || remaining <= 0) { return; }
+      const previous = parts[parts.length - 1];
+      let value = text.replace(/\s+/g, ' ');
+      if (!previous || previous.text.endsWith(' ')) { value = value.trimStart(); }
+      value = value.slice(0, remaining).replace(/[\uD800-\uDBFF]$/, '');
+      if (!value) { return; }
+      remaining -= value.length;
+      if (previous && previous.kind === 'text' && kind === 'text') { previous.text += value; }
+      else { parts.push({ text: value, kind }); }
+    };
+    for (let index = first === NoteTagPresentation.displayTitle(note.title || '', footerTags) ? 1 : 0;
+      index < rows.length && remaining > 0; index++) {
+      const row = rows[index];
+      if (row.kind === 'blank' || row.kind === 'divider') { continue; }
+      if (parts.length > 0) { append(' ', 'text'); }
+      if (row.kind === 'code' || row.kind === 'math') { append(row.text.trim(), 'text'); continue; }
+      const line = row.text.trim().replace(/^(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/, '');
+      const tokens = /(`+)(.*?)\1|\[\[([^\]|#]+)(?:\|([^\]]+))?\]\]|\[([^\]]+)\]\([^)]*\)|(^|\s)#([^\s#.,!?;:()[\]{}，。！？；：（）【】《》、*`]+)/g;
+      let start = 0;
+      let match = tokens.exec(line);
+      while (match && remaining > 0) {
+        append(MemoFeedPolicy.cleanExcerptText(line.slice(start, match.index)), 'text');
+        if (match[2] !== undefined) { append(match[2], 'text'); }
+        else if (match[3] !== undefined) { append(match[4]?.trim() || match[3].trim(), 'reference'); }
+        else if (match[5] !== undefined) { append(match[5], 'text'); }
+        else if (!footerTags.includes(match[7])) {
+          append(match[6], 'text');
+          append('#' + match[7], 'tag');
+        }
+        start = tokens.lastIndex;
+        match = tokens.exec(line);
+      }
+      append(MemoFeedPolicy.cleanExcerptText(line.slice(start)), 'text');
+    }
+    if (parts.length) { parts[parts.length - 1].text = parts[parts.length - 1].text.trimEnd(); }
+    return parts;
+  }
+
+  private static cleanExcerptText(text: string): string {
+    return text.replace(/\*\*([^*]+)\*\*|__([^_]+)__/g, '$1$2').replace(/\*([^*]+)\*/g, '$1');
+  }
+
   static dateKey(time: number): string {
     if (!Number.isFinite(time) || time <= 0) { return ''; }
     const date = new Date(time);

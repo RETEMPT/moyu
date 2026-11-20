@@ -7,10 +7,13 @@ import { NoteSearchResult } from '../common/types/NoteSearchResult';
 import { NoteStorageService } from './NoteStorageService';
 import { MarkdownParserService } from './MarkdownParserService';
 import { StudySourceService } from './study/StudySourceService';
+import { LibraryPolicy } from './library/LibraryPolicy';
+import { ReaderPairPolicy } from './document/ReaderPairPolicy';
 
 export interface NoteSearchOptions {
   cancelled?: () => boolean;
   onUnreadable?: (noteId: string) => void;
+  format?: string;
 }
 interface RankedSearchResult { result: NoteSearchResult; rank: number; order: number; }
 
@@ -40,12 +43,14 @@ export class NoteSearchService {
         throw new Error('正则表达式无效，请检查括号和转义，或关闭正则模式。');
       }
     }
+    const entries = notes.filter(note => !note.deletedAt &&
+      (!options.format || LibraryPolicy.type(note) === options.format));
     const results: RankedSearchResult[] = [];
     let next = 0;
     const active = (): boolean => !options.cancelled || !options.cancelled();
     const worker = async (): Promise<void> => {
-      while (active() && next < notes.length) {
-        const order = next++; const note = notes[order];
+      while (active() && next < entries.length) {
+        const order = next++; const note = entries[order];
         let document: MarkdownDocument;
         try { document = await this.storage.read(context, note); }
         catch {
@@ -57,18 +62,22 @@ export class NoteSearchService {
         if (!active()) { return; }
         const parsed: MarkdownParseResult = this.parser.parse(document);
         const titleMatch: boolean = this.matches(note.title, normalizedQuery, regex);
-        const bodyMatch = this.matches(document.content, normalizedQuery, regex);
+        const bodyPosition = this.position(document.content, normalizedQuery, regex);
+        const bodyMatch = bodyPosition >= 0;
         const pageMatch = StudySourceService.pages(note).find((page) => this.matches(page.text, normalizedQuery, regex));
         const contentMatch: boolean = bodyMatch || pageMatch !== undefined;
+        const categoryMatch = this.matches(note.category || '', normalizedQuery, regex);
         const matchedTags: string[] = [];
-        const tags = parsed.tags.map(tag => tag.value).concat(note.tags || [], (note.tag || '').split(/[,，]/));
+        const tags = parsed.tags.map(tag => tag.value).concat(LibraryPolicy.tags(note), (note.tag || '').split(/[,，]/));
         for (const tag of tags) {
-          const value = tag.trim();
-          if (value && this.matches(value, normalizedQuery, regex) && matchedTags.indexOf(value) < 0) {
+          const value = tag.trim().replace(/^#/, '');
+          if (value && (this.matches(value, normalizedQuery, regex) || this.matches('#' + value, normalizedQuery, regex)) &&
+            !matchedTags.includes(value)) {
             matchedTags.push(value);
           }
         }
-        if (titleMatch || contentMatch || matchedTags.length > 0) {
+        if (titleMatch || contentMatch || categoryMatch || matchedTags.length > 0) {
+          const markdown = !!note.type && ReaderPairPolicy.isMarkdown(note);
           const result: NoteSearchResult = {
             noteId: note.id,
             title: parsed.title,
@@ -76,8 +85,11 @@ export class NoteSearchService {
             matchedTitle: titleMatch,
             matchedContent: contentMatch,
             matchedTags,
-            preview: this.preview(!bodyMatch && pageMatch ? pageMatch.text : document.content, normalizedQuery, regex),
-            pageNumber: !bodyMatch && pageMatch ? pageMatch.pageNumber : undefined
+            preview: this.preview(pageMatch ? pageMatch.text : document.content, normalizedQuery, regex),
+            pageNumber: pageMatch?.pageNumber,
+            sourceLine: !pageMatch && bodyMatch && markdown ? document.content.slice(0, bodyPosition).split(/\r\n?|\n/).length : undefined,
+            category: note.category || '',
+            format: note.type ? LibraryPolicy.type(note) : ''
           };
           const exactTitle = !useRegex && note.title.trim().toLocaleLowerCase() === normalizedQuery;
           results.push({ result, order, rank: exactTitle ? 4 : titleMatch ? 3 : matchedTags.length > 0 ? 2 : 1 });
@@ -86,7 +98,7 @@ export class NoteSearchService {
     };
     // Bounded asynchronous reads keep an old request from monopolizing the library or file handles.
     const workers: Promise<void>[] = [];
-    for (let index = 0; index < Math.min(4, notes.length); index++) { workers.push(worker()); }
+    for (let index = 0; index < Math.min(4, entries.length); index++) { workers.push(worker()); }
     await Promise.all(workers);
     if (!active()) { return []; }
     return results.sort((a: RankedSearchResult, b: RankedSearchResult) => b.rank - a.rank || a.order - b.order)
@@ -95,10 +107,12 @@ export class NoteSearchService {
 
   /** 统一匹配：正则模式用 regex.test，否则用大小写不敏感的子串包含 */
   private matches(text: string, normalizedQuery: string, regex: RegExp | null): boolean {
-    if (regex !== null) {
-      return regex.test(text);
-    }
-    return text.toLocaleLowerCase().includes(normalizedQuery);
+    return this.position(text, normalizedQuery, regex) >= 0;
+  }
+
+  private position(text: string, normalizedQuery: string, regex: RegExp | null): number {
+    if (regex) { return regex.exec(text)?.index ?? -1; }
+    return text.toLocaleLowerCase().indexOf(normalizedQuery);
   }
 
   async buildLinkGraph(context: Context, notes: NoteItem[], cancelled: () => boolean = () => false): Promise<LinkGraph> {
@@ -150,18 +164,13 @@ export class NoteSearchService {
   }
 
   private preview(content: string, query: string, regex: RegExp | null = null): string {
-    const normalizedContent: string = content.replace(/\s+/g, ' ').trim();
-    let position: number;
-    if (regex !== null) {
-      const m: RegExpExecArray | null = regex.exec(normalizedContent);
-      position = m !== null ? m.index : -1;
-    } else {
-      position = normalizedContent.toLocaleLowerCase().indexOf(query);
-    }
+    const position = this.position(content, query, regex);
     if (position < 0) {
-      return normalizedContent.substring(0, 120);
+      return content.slice(0, 160).replace(/\s+/g, ' ').trim();
     }
     const start: number = Math.max(0, position - 40);
-    return normalizedContent.substring(start, Math.min(normalizedContent.length, start + 160));
+    const end = Math.min(content.length, Math.max(start + 160, position + 45));
+    return (start > 0 ? '…' : '') + content.slice(start, end).replace(/\s+/g, ' ').trim() +
+      (end < content.length ? '…' : '');
   }
 }

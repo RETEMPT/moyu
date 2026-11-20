@@ -9,6 +9,7 @@ import { MemoFeedPolicy, MemoTagCount } from '../../services/library/MemoFeedPol
 import { QuickMemoComposer } from '../common/QuickMemoComposer';
 import { MemoTimelineCard } from '../common/MemoTimelineCard';
 import { MemoCalendar } from '../common/MemoCalendar';
+import { NoteTagBadge } from '../common/NoteTagBadge';
 
 /** A quiet document page with local composition and bounded record excerpts. */
 @Component
@@ -103,9 +104,11 @@ export struct HomeWorkspace {
       MemoCalendar({ notes: this.recentNotes, selectedDate: this.selectedDate, onSelectDate: this.onSelectDate })
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(MemoFeedPolicy.tags(this.recentNotes).slice(0, 40), (item: MemoTagCount) => {
-          Button('#' + item.tag + ' ' + item.count, { type: ButtonType.Normal }).height(44).fontSize(12)
-            .fontColor(this.palette().inkSecondary).backgroundColor(this.palette().surfaceSubtle).borderRadius(6)
-            .margin({ right: 6, bottom: 6 }).onClick(() => this.onOpenTag(item.tag))
+          Button({ type: ButtonType.Normal }) {
+            NoteTagBadge({ tag: item.tag, count: item.count, selected: this.selectedTag === item.tag })
+          }.height(44).padding(0).backgroundColor(Color.Transparent).margin({ right: 6 })
+            .accessibilityText(`筛选标签 ${item.tag}，${item.count} 条记录`)
+            .accessibilityDescription(this.selectedTag === item.tag ? '已选中' : '未选中').onClick(() => this.onOpenTag(item.tag))
         }, (item: MemoTagCount) => item.tag + ':' + item.count)
       }.width('100%')
     }.width('100%').padding(8).borderRadius(8).backgroundColor(this.palette().surface)

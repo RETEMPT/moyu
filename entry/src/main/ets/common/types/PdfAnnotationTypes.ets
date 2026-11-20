@@ -59,4 +59,5 @@ export interface DocumentAnnotationData {
 }
 
 /** 批注工具栏工具模式 */
-export type AnnotationTool = 'pen' | 'highlighter' | 'eraser' | 'pan' | 'line' | 'rectangle' | 'ellipse' | 'arrow';
+export type AnnotationTool = 'pen' | 'highlighter' | 'eraser' | 'pan' | 'line' | 'rectangle' | 'ellipse' | 'arrow' |
+  'double_arrow' | 'triangle' | 'right_triangle' | 'parallelogram' | 'pentagon' | 'star';

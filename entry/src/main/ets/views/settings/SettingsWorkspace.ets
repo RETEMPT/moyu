@@ -262,8 +262,13 @@ export struct SettingsWorkspace {
       this.paragraph('手机保留底部导航；Pad 使用同一组图标。布局跟随窗口宽度，分屏或小窗口会收为单页。')
       this.heading('系统分享与文件')
       this.paragraph('导入 PDF 会复制到本机资料库，保留外部原文件，重启后可继续阅读。文字整理导入的资料在“外部参考”中查看。系统分享可选择接收方；分享原 PDF 不包含应用内笔迹，完整笔迹可通过资料备份传递。')
-      this.heading('手写笔')
-      this.paragraph('笔在系统中配对。应用处理笔/手指分流、压力、撤销与重做；双击与轻捏依赖 Penkit、笔型号和设备支持，需在支持设备上验收。')
+      this.heading('星闪手写笔')
+      this.paragraph('先在系统中配对兼容的手写笔，再进入手写或批注模式。普通笔的线宽随系统上报的压感变化。可在画笔设置里关闭手指书写，用手指浏览页面。')
+      this.paragraph(canIUse('SystemCapability.Stylus.StylusService') ?
+        '收到笔身手势时，双击可切换橡皮，轻捏可打开画笔工具。可用手势取决于笔型号、设备和系统版本。' :
+        '此设备的橡皮和画笔设置可通过屏幕工具栏操作。')
+      this.heading('导入华为笔记')
+      this.paragraph('在华为笔记导出 PDF 或图片，再到墨语选择「导入资料」。原有笔迹随页面显示，可在上面添加墨语批注。.hinote 文件的打开、原笔画编辑与云同步请在华为笔记内进行。')
       this.heading('文字识别')
       this.paragraph(canIUse('SystemCapability.AI.OCR.TextRecognition') ? '系统声明支持文字识别；可以从图片提取文字，实际效果与图片清晰度有关。' : '此设备未声明系统文字识别能力，可粘贴文字进行本地排版。')
       this.paragraph('资料快传调用系统分享，不申请应用级设备数据同步权限。')

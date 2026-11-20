@@ -12,6 +12,7 @@ export class GraphTopicPolicy {
       if (name) { counts.set(name, 0); }
     }
     for (const note of notes) {
+      if (note.deletedAt) { continue; }
       const name = note.category?.trim() || '未分类';
       counts.set(name, (counts.get(name) || 0) + 1);
     }

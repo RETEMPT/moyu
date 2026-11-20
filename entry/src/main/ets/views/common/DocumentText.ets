@@ -8,6 +8,7 @@ import { MarkdownLinkService } from '../../services/document/MarkdownLinkService
 @Component
 export struct DocumentText {
   @Prop @Watch('refresh') text: string = '';
+  @Prop allowLinks: boolean = true;
   @StorageProp('flowmindDarkMode') dark: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @State blocks: DocumentBlock[] = [];
@@ -21,8 +22,8 @@ export struct DocumentText {
           .fontStyle(span.style === 'italic' ? FontStyle.Italic : FontStyle.Normal)
           .fontFamily(span.style === 'code' ? 'monospace' : 'sans-serif')
           .decoration({ type: span.style === 'strike' ? TextDecorationType.LineThrough : TextDecorationType.None })
-          .fontColor(span.style === 'link' ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).link : span.style === 'code' ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent : ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary)
-          .onClick(() => { if (span.target) { this.openLink(span.target); } })
+          .fontColor(span.style === 'link' && this.allowLinks ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).link : span.style === 'code' ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent : ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary)
+          .onClick(() => { if (span.target && this.allowLinks) { this.openLink(span.target); } })
       })
     }.fontSize(15).lineHeight(24).width('100%').copyOption(CopyOptions.LocalDevice)
   }

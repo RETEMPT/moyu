@@ -124,4 +124,6 @@ export class AnimationTokens {
   static get SCALE_PRESSED(): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 1 : 0.995; }
   static get SCALE_MODAL_ENTER(): number { return AppStorage.get<boolean>('flowmindReduceMotion') === true ? 1 : 0.99; }
   static readonly CURVE_STANDARD: Curve = Curve.EaseOut;
+  static readonly CURVE_SMOOTH: Curve = Curve.Smooth;
+  static readonly CURVE_SPRING: Curve = Curve.FastOutSlowIn;
 }

@@ -7,4 +7,7 @@ export interface NoteSearchResult {
   matchedTags: string[];
   preview: string;
   pageNumber?: number;
+  sourceLine?: number;
+  category?: string;
+  format?: string;
 }

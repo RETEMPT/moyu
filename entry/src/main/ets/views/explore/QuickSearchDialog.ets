@@ -14,6 +14,7 @@ import { NoteSearchService } from '../../services/NoteSearchService';
 import { SearchHistoryService } from '../../services/SearchHistoryService';
 import { IconButton } from '../common/IconButton';
 import { AppIcon } from '../common/AppIcon';
+import { NoteTagBadge } from '../common/NoteTagBadge';
 
 /** 输入停止后再发起检索，避免逐字符读盘 */
 const SEARCH_DEBOUNCE_MS: number = 260;
@@ -31,7 +32,7 @@ export struct QuickSearchDialog {
 
   onClose: () => void = () => {};
   onSelectNote: (note: NoteItem) => void = () => {};
-  onSelectSource: (note: NoteItem, pageNumber: number) => void = () => {};
+  onSelectSource: (note: NoteItem, pageNumber?: number, lineNumber?: number) => void = () => {};
 
   @State keyword: string = '';
   @State results: NoteSearchResult[] = [];
@@ -39,6 +40,7 @@ export struct QuickSearchDialog {
   @State searching: boolean = false;
   @State searchError: string = '';
   @State searchNotice: string = '';
+  @State private format: string = '';
   /** 功能8：正则模式开关，开启后检索按正则匹配 */
   @State regexOn: boolean = false;
   /** 功能8：搜索历史（本地持久化，最新在前） */
@@ -144,7 +146,7 @@ export struct QuickSearchDialog {
     const useRegex: boolean = this.regexOn;
     try {
       const found: NoteSearchResult[] = await this.searchService.search(context, this.notes, keyword, useRegex,
-        { cancelled: () => !active(), onUnreadable: () => { unreadable++; } });
+        { format: this.format, cancelled: () => !active(), onUnreadable: () => { unreadable++; } });
       // 输入或模式可能已经变化，丢弃过期结果
       if (active()) {
         this.results = found;
@@ -161,6 +163,20 @@ export struct QuickSearchDialog {
         this.searching = false;
       }
     }
+  }
+
+  @Builder
+  formatFilter(label: string, value: string) {
+    Button(label, { type: ButtonType.Normal }).height(44).fontSize(13).borderRadius(22)
+      .padding({ left: 12, right: 12 }).fontColor(this.palette().inkPrimary)
+      .backgroundColor(this.format === value ? this.palette().accentSoft : this.palette().surface)
+      .border({ width: 1, color: this.format === value ? this.palette().accent : this.palette().borderSubtle })
+      .accessibilityDescription(this.format === value ? '已选中' : '')
+      .onClick(() => {
+        if (this.format === value) { return; }
+        this.format = value;
+        this.onKeywordChanged(this.keyword);
+      })
   }
 
   private resolveNote(noteId: string): NoteItem | undefined {
@@ -261,7 +277,7 @@ export struct QuickSearchDialog {
         // ---- 搜索输入 ----
         Row({ space: 8 }) {
           AppIcon({ source: $r('app.media.ic_search'), tint: this.palette().inkMuted })
-          TextInput({ text: this.keyword, placeholder: '搜索笔记或标签…' })
+          TextInput({ text: this.keyword, placeholder: '搜索标题、正文、项目或标签' })
             .height(48).accessibilityText('输入搜索关键词')
             .fontSize(TypographyTokens.BODY_LARGE)
             .fontColor(this.palette().inkPrimary)
@@ -297,8 +313,16 @@ export struct QuickSearchDialog {
         .width('100%')
         .padding({ left: 14, right: 14, top: 12, bottom: 12 })
 
-        Text(this.keyword.trim() ? `${this.searching ? '正在搜索' : `${this.results.length} 条匹配`} · ${this.regexOn ? '正则搜索' : '标题、正文与标签'}` : '搜索仅在本机进行')
-          .fontSize(12).fontColor(this.palette().inkSecondary).width('100%').padding({ left: 18, right: 18, bottom: 12 })
+        Scroll() {
+          Row({ space: 6 }) {
+            this.formatFilter('全部', '')
+            this.formatFilter('PDF', 'PDF')
+            this.formatFilter('文本资料', 'Markdown')
+            this.formatFilter('图片', 'Image')
+          }.padding({ left: 16, right: 16 })
+        }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).align(Alignment.Start)
+        Text(this.keyword.trim() ? `${this.searching ? '正在搜索' : `${this.results.length} 条匹配`}${this.regexOn ? ' · 正则搜索' : ''}` : '可定位到文字笔记的命中行，以及已校对的 PDF 页')
+          .fontSize(12).fontColor(this.palette().inkSecondary).width('100%').padding({ left: 18, right: 18, top: 8, bottom: 12 })
 
         Divider()
           .strokeWidth(1)
@@ -372,7 +396,9 @@ export struct QuickSearchDialog {
               ListItem() {
                 Column({ space: 8 }) {
                   Row({ space: 8 }) {
-                    AppIcon({ source: $r('app.media.ic_note'), iconSize: 20, tint: this.palette().accent })
+                    AppIcon({ source: result.format === 'PDF' ? $r('app.media.ic_pdf') :
+                      result.format === 'Image' ? $r('app.media.ic_cover') : $r('app.media.ic_note'),
+                      iconSize: 20, tint: this.palette().accent })
                     Text(result.title)
                       .fontSize(TypographyTokens.BODY_REGULAR)
                       .fontColor(this.palette().inkPrimary)
@@ -380,17 +406,30 @@ export struct QuickSearchDialog {
                       .maxLines(1)
                       .textOverflow({ overflow: TextOverflow.Ellipsis })
                       .layoutWeight(1)
-                    if (result.matchedTags.length > 0) {
-                      Text(result.matchedTags.join(' '))
-                        .fontSize(TypographyTokens.TINY)
-                        .fontColor(this.palette().accent)
-                    }
                   }
                   .width('100%')
 
-                  if (result.pageNumber) { Text(`PDF 第 ${result.pageNumber} 页`).fontSize(12).fontColor(this.palette().accent) }
+                  if (result.category || result.pageNumber || result.sourceLine) {
+                    Row({ space: 8 }) {
+                      if (result.category) {
+                        Text(result.category).fontSize(12).fontColor(this.palette().inkSecondary)
+                          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+                      }
+                      if (result.pageNumber || result.sourceLine) {
+                        Text(result.pageNumber ? `PDF 第 ${result.pageNumber} 页` : `正文第 ${result.sourceLine} 行`)
+                          .fontSize(12).fontColor(this.palette().link)
+                      }
+                    }.width('100%')
+                  }
                   if (result.preview.length > 0) {
                     this.highlightedPreview(result.preview)
+                  }
+                  if (result.matchedTags.length > 0) {
+                    Flex({ wrap: FlexWrap.Wrap }) {
+                      ForEach(result.matchedTags.slice(0, 3), (tag: string) => {
+                        NoteTagBadge({ tag, compact: true }).margin({ right: 6, bottom: 4 })
+                      }, (tag: string) => tag)
+                    }.width('100%')
                   }
                 }
                 .width('100%')
@@ -401,7 +440,9 @@ export struct QuickSearchDialog {
                   const note: NoteItem | undefined = this.resolveNote(result.noteId);
                   if (note !== undefined) {
                     this.recordHistory(this.keyword);
-                    if (result.pageNumber) { this.onSelectSource(note, result.pageNumber); } else { this.onSelectNote(note); }
+                    if (result.pageNumber || result.sourceLine) {
+                      this.onSelectSource(note, result.pageNumber, result.sourceLine);
+                    } else { this.onSelectNote(note); }
                   }
                 })
               }

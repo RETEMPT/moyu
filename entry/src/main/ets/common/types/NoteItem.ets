@@ -37,6 +37,8 @@ export interface NoteItem {
   sourceUri?: string;
   /** documents 目录中的副本文件名，启动时据此恢复当前沙箱路径。 */
   sourceFileName?: string;
+  /** SHA-256 of the original PDF, used to verify a replacement copy. */
+  sourceSha256?: string;
   /** 文档原始来源类型 ('pdf' | 'doc' | 'image' | 'markdown') */
   sourceType?: string;
   /** 真实文档总页数 */

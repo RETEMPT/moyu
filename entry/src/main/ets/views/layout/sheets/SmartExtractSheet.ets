@@ -284,12 +284,18 @@ export struct SmartExtractSheet {
   inputPanel() {
     Column({ space: 12 }) {
       this.hint('1  导入或粘贴 → 2  校对文字 → 3  预览排版 → 4  保存笔记')
+      Row({ space: 6 }) {
+        AppIcon({ source: $r('app.media.ic_check'), iconSize: 14, tint: OcrService.isHardwareSupported() ? this.palette().accent : this.palette().inkMuted })
+        Text(OcrService.isHardwareSupported() ? '端侧 NPU 硬件加速 · 本地离线识别' : '当前设备未提供系统 OCR，支持粘贴文本')
+          .fontSize(TypographyTokens.TINY).fontColor(this.palette().inkSecondary)
+      }.width('100%').justifyContent(FlexAlign.Start)
       Button({ type: ButtonType.Normal }) {
         Row({ space: 8 }) {
           AppIcon({ source: $r('app.media.ic_note'), tint: this.palette().accent })
-          Text('从图片识别文字').fontSize(14)
+          Text('从扫描件 / 图片识别文字 (OCR)').fontSize(14)
         }.justifyContent(FlexAlign.Center).width('100%')
       }.width('100%').height(48)
+        .accessibilityText('从图片识别文字')
         .fontColor(this.palette().inkPrimary).backgroundColor(this.palette().surfaceSubtle)
         .onClick(() => this.pickImageAndOcr())
       Button('导入 PDF / Markdown / TXT').width('100%').height(48)

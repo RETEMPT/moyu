@@ -13,6 +13,11 @@ export class OcrService {
     return OcrService.instance;
   }
 
+  /** 查询底层硬件是否具备鸿蒙原生端侧 NPU 文字识别能力。 */
+  static isHardwareSupported(): boolean {
+    return canIUse('SystemCapability.AI.OCR.TextRecognition');
+  }
+
   async recognizeTextFromUri(imageUri: string): Promise<string> {
     if (imageUri.trim().length === 0) {
       throw new Error('无效的图片路径');

@@ -17,6 +17,10 @@ export struct InkWidthSlider {
         .layoutWeight(1).height(44).selectedColor(this.accentColor || ThemeHelper.paletteOfDark(this.dark, this.style).accent)
         .accessibilityText(`${InkToolPolicy.label(this.tool)}大小，${this.value}`)
         .onChange((value: number) => this.onChange(InkToolPolicy.width(this.tool, value)))
+      Stack({ alignContent: Alignment.Center }) {
+        Circle({ width: Math.min(22, Math.max(3, this.value)), height: Math.min(22, Math.max(3, this.value)) })
+          .fill(this.accentColor || ThemeHelper.paletteOfDark(this.dark, this.style).accent)
+      }.width(26).height(26)
     }.width('100%')
   }
 }

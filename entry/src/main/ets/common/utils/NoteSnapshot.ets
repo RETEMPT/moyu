@@ -9,6 +9,6 @@ export function copyNote(note: NoteItem): NoteItem {
     pageAnnotations: note.pageAnnotations, deletedAt: note.deletedAt, favorite: note.favorite,
     tags: note.tags === undefined ? undefined : note.tags.slice(), createdAt: note.createdAt, updatedAt: note.updatedAt,
     lastReadAt: note.lastReadAt, readPage: note.readPage, isPinned: note.isPinned, sourceUri: note.sourceUri,
-    sourceFileName: note.sourceFileName, sourceType: note.sourceType, pageCount: note.pageCount,
+    sourceFileName: note.sourceFileName, sourceSha256: note.sourceSha256, sourceType: note.sourceType, pageCount: note.pageCount,
     documentMeta: note.documentMeta, pdfTextJson: note.pdfTextJson };
 }

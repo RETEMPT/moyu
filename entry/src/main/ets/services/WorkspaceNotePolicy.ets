@@ -2,8 +2,13 @@ import { NoteItem } from '../common/types/NoteItem';
 import { FREE_CANVAS_ID } from '../common/constants/WorkspaceConstants';
 
 export class WorkspaceNotePolicy {
-  static isFreeCanvas(note: NoteItem): boolean {
-    return note.type.toLowerCase() === 'canvas' && (note.id === FREE_CANVAS_ID || note.id.startsWith(FREE_CANVAS_ID + '-'));
+  static canUpdateBody(note: NoteItem): boolean {
+    return !note.deletedAt && ['markdown', 'text', 'md'].includes(note.type.toLowerCase()) &&
+      !['pdf', 'doc', 'image'].includes(note.sourceType || '');
+  }
+
+  static isFreeCanvas(note?: NoteItem | null): boolean {
+    return Boolean(note && typeof note.type === 'string' && note.type.toLowerCase() === 'canvas' && (note.id === FREE_CANVAS_ID || note.id.startsWith(FREE_CANVAS_ID + '-')));
   }
 
   static createFreeCanvas(occupiedIds: string[], now: number): NoteItem {
@@ -20,8 +25,7 @@ export class WorkspaceNotePolicy {
       next.title = value.trim();
     } else if (operation === 'update_note') {
       if ((note.updatedAt || 0) !== expectedUpdatedAt) { throw new Error('笔记已变化，请重新读取并核对，旧版本未覆盖'); }
-      if (!['markdown', 'text', 'md'].includes(note.type.toLowerCase()) ||
-        ['pdf', 'doc', 'image'].includes(note.sourceType || '')) { throw new Error('仅允许更新文字笔记，原件、PDF 和手写笔迹不会被覆盖'); }
+      if (!WorkspaceNotePolicy.canUpdateBody(note)) { throw new Error('仅允许更新文字笔记，原件、PDF 和手写笔迹不会被覆盖'); }
       if (!value.trim() || value.length > 20000) { throw new Error('正文需为 1–20000 字，请分段整理'); }
       next.contentDetail = value; next.previewText = value.slice(0, 100).replace(/[#*`\n]/g, ' ').trim();
     } else if (operation === 'set_note_flag') {

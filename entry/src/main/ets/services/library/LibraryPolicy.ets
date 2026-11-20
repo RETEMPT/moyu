@@ -25,10 +25,13 @@ export class LibraryPolicy {
   }
 
   static tags(note: NoteItem): string[] {
-    const values: string[] = [note.tag || ''].concat(note.tags || []);
+    const tags = note.tags || [];
+    const legacy = (note.tag || '').trim();
+    // Older smart notes also stored the complete tag list in the single-tag field.
+    const values = tags.length > 1 && legacy === tags.join(', ') ? tags : [legacy].concat(tags);
     const result: string[] = [];
     for (const value of values) {
-      const tag = value.trim();
+      const tag = value.trim().replace(/^#(?=\S)/, '');
       if (tag.length > 0 && !result.includes(tag)) { result.push(tag); }
     }
     return result;

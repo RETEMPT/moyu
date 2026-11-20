@@ -1,65 +1,21 @@
-/**
- * 墨语极简纯白二叉树链接工作台 (GraphWorkspace)
- *
- * 核心设计重塑：
- * 1. 纯白高质感底色：告别沉重生硬的深空星球模拟，采用纯白 (#FFFFFF) 画布搭配微细点阵网格，干净通透
- * 2. 现代二叉树节点卡片 (Binary Tree Cards)：采用 Notion / Miro 风格圆角胶囊卡片，具备类型图标、标题及连接度徽章
- * 3. 平滑三次贝塞尔分支连接 (Cubic Bezier Connectors)：父节点底部平滑连接至子节点顶部，层级分明，天然自洽
- * 4. 丝滑拖拽与弹性拉伸 (Dynamic Node Dragging)：随手拖拽任意节点，引力连线如弹簧般平滑动态拉伸
- * 5. 极简二击直连 (Direct 2-Tap Linking)：点击节点 A 选中，再点击节点 B 即可直接建立双链，彻底摒弃繁杂遮挡的弹窗
- * 6. 轻量悬浮动作条 (Docked Action Pill)：选定节点后在画布底端弹出小巧胶囊条（高度仅 36vp），直达「连线」或「进入笔记」
- * 7. 多主题分类切换：顶部横向胶囊切换不同主题星系（如操作系统、考研数学等），亦可新建分类
- */
-import { curves, promptAction, KeyboardAvoidMode } from '@kit.ArkUI';
+import { promptAction, KeyboardAvoidMode } from '@kit.ArkUI';
 import { ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { Backlink, LinkGraph, UnresolvedLink } from '../../common/types/LinkGraph';
 import { NoteItem } from '../../common/types/NoteItem';
 import { WorkspaceStats } from '../../common/types/WorkspaceStats';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
-import { AppIcon } from '../common/AppIcon';
 import { GraphTopicPolicy } from '../../services/GraphTopicPolicy';
+import { ALL_GRAPH_TOPICS, GraphNode, GraphView, GraphViewPolicy } from '../../services/GraphViewPolicy';
+import { IconButton } from '../common/IconButton';
 
-/** 纯白二叉拓扑节点 */
-export interface GraphNode {
-  noteId: string;
-  label: string;
-  category: string;
-  unresolved: boolean;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  degree: number;
-  level: number;
-  isRoot: boolean;
-}
-
-/** 引力边模型 */
-export interface GraphEdge {
-  a: number;
-  b: number;
-}
-
-/** 图模型 */
-export interface GraphModel {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}
-
-/** 主题分类信息 */
-export interface GalaxyCluster {
+interface GalaxyCluster {
   id: string;
   name: string;
   count: number;
-  color: string;
 }
 
-/** 坐标点 */
-export interface NodePoint {
-  x: number;
-  y: number;
-}
+interface NodePoint { x: number; y: number; }
 
 @Component
 export struct GraphWorkspace {
@@ -70,11 +26,11 @@ export struct GraphWorkspace {
 
   onSelectNoteById: (noteId: string) => void = () => {};
   onOpenNoteByTitle: (title: string) => void = () => {};
-  onLinkNodes: (sourceIdentifier: string, targetTitle: string) => void = () => {};
+  onLinkNodes: (sourceId: string, targetId: string, targetTitle: string) => Promise<void> = async () => {};
   onCreateGalaxy: (galaxyName: string) => Promise<boolean> = async () => false;
 
-  @StorageProp('flowmindDarkMode') @Watch('onGraphChanged') isDarkMode: boolean = false;
-  @StorageProp('flowmindThemeStyle') @Watch('onGraphChanged') themeStyle: string = 'mono';
+  @StorageProp('flowmindDarkMode') @Watch('onThemeChanged') isDarkMode: boolean = false;
+  @StorageProp('flowmindThemeStyle') @Watch('onThemeChanged') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
   private settings: RenderingContextSettings = new RenderingContextSettings(true);
@@ -88,14 +44,15 @@ export struct GraphWorkspace {
   @State selectedNode: GraphNode | null = null;
   @State expandedLinks: boolean = false;
   @State expandedPending: boolean = false;
-  @State filterMode: string = 'all'; // 'all' | 'notes' | 'unresolved'
-  @State activeGalaxy: string = '__all_topics__'; // 'all' | 具体的分类名
-
-  // 连线模式
-  @State linkingMode: boolean = false;
+  @State filterMode: string = 'all';
+  @State activeGalaxy: string = ALL_GRAPH_TOPICS;
+  @State private visibleGraph: GraphView = { nodes: [], edges: [], backlinks: [], unresolvedLinks: [] };
+  @State private focusKey: string = '';
+  @State private focusDepth: number = 1;
+  @State private linkingMode: boolean = false;
+  @State private linkSaving: boolean = false;
   @State linkSourceNode: GraphNode | null = null;
 
-  // 新建主题分类
   @State isCreatingGalaxy: boolean = false;
   @State newGalaxyName: string = '';
   @State galaxySaving: boolean = false;
@@ -106,6 +63,7 @@ export struct GraphWorkspace {
     this.alive = true;
     this.previousKeyboardMode = this.getUIContext().getKeyboardAvoidMode();
     this.getUIContext().setKeyboardAvoidMode(KeyboardAvoidMode.RESIZE);
+    this.rebuildGraph();
   }
 
   aboutToDisappear(): void {
@@ -119,7 +77,7 @@ export struct GraphWorkspace {
     if (!name || name.length > 80) {
       promptAction.showToast({ message: '主题名称需为 1–80 字' }); return;
     }
-    if (this.getGalaxies().some((topic: GalaxyCluster) => topic.id !== '__all_topics__' && topic.name === name)) {
+    if (this.getGalaxies().some((topic: GalaxyCluster) => topic.id !== ALL_GRAPH_TOPICS && topic.name === name)) {
       promptAction.showToast({ message: '主题已存在，请从上方选择' }); return;
     }
     this.galaxySaving = true;
@@ -127,285 +85,99 @@ export struct GraphWorkspace {
       const saved = await this.onCreateGalaxy(name);
       if (!this.alive || !saved) { return; }
       this.activeGalaxy = name;
+      this.focusKey = '';
       this.selectedNode = null;
       this.linkingMode = false;
       this.linkSourceNode = null;
       this.newGalaxyName = '';
       this.isCreatingGalaxy = false;
-      if (this.canvasReady) { this.drawGraph(); }
+      this.rebuildGraph();
     } catch {
       if (this.alive) { promptAction.showToast({ message: '主题保存失败，请重试' }); }
     } finally { if (this.alive) { this.galaxySaving = false; } }
   }
 
-  // 拖动节点坐标暂存 (key: node.label -> NodePoint)
   private nodeCustomPositions: Map<string, NodePoint> = new Map();
   private draggingNode: GraphNode | null = null;
-  private isNodeDragging: boolean = false;
-  private isPanning: boolean = false;
+  private touchStart: NodePoint | null = null;
   private lastTouchX: number = 0;
   private lastTouchY: number = 0;
-  private touchDownTime: number = 0;
+  private hasDragged: boolean = false;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
-  onGraphChanged(): void {
-    if (this.canvasReady) {
-      this.drawGraph();
-    }
-  }
+  onGraphChanged(): void { this.rebuildGraph(); }
 
-  onNotesChanged(): void {
-    if (this.canvasReady) {
-      this.drawGraph();
-    }
-  }
+  onNotesChanged(): void { this.rebuildGraph(); }
 
-  /**
-   * 获取多主题分类列表
-   */
+  onThemeChanged(): void { if (this.canvasReady) { this.drawGraph(); } }
+
   private getGalaxies(): GalaxyCluster[] {
-    const topics = GraphTopicPolicy.topics(this.allNotes, this.projects);
-
-    const clusters: GalaxyCluster[] = [];
-    clusters.push({
-      id: '__all_topics__',
-      name: '全部主题',
-      count: this.allNotes.length,
-      color: this.palette().accent
-    });
-
-    const colors: string[] = ['#3B82F6', '#8B5CF6', '#EC4899', '#10B981', '#F59E0B', '#06B6D4'];
-    let idx: number = 0;
-    topics.forEach((topic) => {
-      clusters.push({
-        id: topic.name,
-        name: topic.name,
-        count: topic.count,
-        color: colors[idx % colors.length]
-      });
-      idx++;
-    });
-
+    const clusters: GalaxyCluster[] = [{
+      id: ALL_GRAPH_TOPICS, name: '全部主题', count: this.allNotes.filter(note => !note.deletedAt).length
+    }];
+    for (const topic of GraphTopicPolicy.topics(this.allNotes, this.projects)) {
+      clusters.push({ id: topic.name, name: topic.name, count: topic.count });
+    }
     return clusters;
   }
 
-  /**
-   * 构建图数据模型
-   */
-  private buildModel(): GraphModel {
-    const rawNodes: GraphNode[] = [];
-    const idIndex: Map<string, number> = new Map();
-    const edges: GraphEdge[] = [];
-
-    // 建立笔记分类速查表
-    const noteCategoryMap: Map<string, string> = new Map();
-    for (let i = 0; i < this.allNotes.length; i++) {
-      const n: NoteItem = this.allNotes[i];
-      const cat: string = (n.category && n.category.trim().length > 0) ? n.category.trim() : '未分类';
-      noteCategoryMap.set(n.id, cat);
-      noteCategoryMap.set(n.title, cat);
+  private rebuildGraph(): void {
+    if (this.focusKey && !this.allNotes.some(note => !note.deletedAt && GraphViewPolicy.noteKey(note.id) === this.focusKey)) {
+      this.focusKey = '';
     }
-
-    const ensureNode = (key: string, noteId: string, label: string, unresolved: boolean): number => {
-      const existing: number | undefined = idIndex.get(key);
-      if (existing !== undefined) {
-        return existing;
-      }
-      const idx: number = rawNodes.length;
-      const category: string = noteCategoryMap.get(noteId) ?? (noteCategoryMap.get(label) ?? '未分类');
-      // 根据文字长度自适应卡片宽度
-      const textLen: number = label.length;
-      const cardW: number = Math.max(160, Math.min(224, textLen * 13 + 66));
-
-      rawNodes.push({
-        noteId: noteId,
-        label: label,
-        category: category,
-        unresolved: unresolved,
-        x: 0,
-        y: 0,
-        w: cardW,
-        h: 44,
-        degree: 0,
-        level: 0,
-        isRoot: false
-      });
-      idIndex.set(key, idx);
-      return idx;
-    };
-
-    // 1. 已建立反向链接
-    for (let i = 0; i < this.graph.backlinks.length; i++) {
-      const l: Backlink = this.graph.backlinks[i];
-      const a: number = ensureNode(`id:${l.sourceNoteId}`, l.sourceNoteId, l.sourceTitle, false);
-      const b: number = ensureNode(`id:${l.targetNoteId}`, l.targetNoteId, l.targetTitle, false);
-      edges.push({ a: a, b: b });
-      rawNodes[a].degree++;
-      rawNodes[b].degree++;
-    }
-
-    // 2. 原初未物化概念
-    for (let i = 0; i < this.graph.unresolvedLinks.length; i++) {
-      const l: UnresolvedLink = this.graph.unresolvedLinks[i];
-      const a: number = ensureNode(`id:${l.sourceNoteId}`, l.sourceNoteId, l.sourceTitle, false);
-      const b: number = ensureNode(`t:${l.target}`, '', l.target, true);
-      edges.push({ a: a, b: b });
-      rawNodes[a].degree++;
-      rawNodes[b].degree++;
-    }
-
-    // 3. 当前分类中未连线的孤岛笔记也纳入画布，方便用户两击建立双链
-    for (let i = 0; i < this.allNotes.length; i++) {
-      const n: NoteItem = this.allNotes[i];
-      const cat: string = (n.category && n.category.trim().length > 0) ? n.category.trim() : '未分类';
-      if (this.activeGalaxy === '__all_topics__' || cat === this.activeGalaxy) {
-        ensureNode(`id:${n.id}`, n.id, n.title, false);
-      }
-    }
-
-    // 4. 若选定了特定分类，仅保留该分类及直连节点
-    if (this.activeGalaxy !== '__all_topics__') {
-      const filteredIndices: Set<number> = new Set();
-      for (let i = 0; i < rawNodes.length; i++) {
-        if (rawNodes[i].category === this.activeGalaxy) {
-          filteredIndices.add(i);
-        }
-      }
-      const filteredEdges: GraphEdge[] = [];
-      for (let i = 0; i < edges.length; i++) {
-        const e: GraphEdge = edges[i];
-        if (filteredIndices.has(e.a) || filteredIndices.has(e.b)) {
-          filteredIndices.add(e.a);
-          filteredIndices.add(e.b);
-          filteredEdges.push(e);
-        }
-      }
-
-      const newNodes: GraphNode[] = [];
-      const oldToNew: Map<number, number> = new Map();
-      rawNodes.forEach((node: GraphNode, oldIdx: number) => {
-        if (filteredIndices.has(oldIdx)) {
-          oldToNew.set(oldIdx, newNodes.length);
-          newNodes.push(node);
-        }
-      });
-
-      const remappedEdges: GraphEdge[] = [];
-      for (let i = 0; i < filteredEdges.length; i++) {
-        const ea: number | undefined = oldToNew.get(filteredEdges[i].a);
-        const eb: number | undefined = oldToNew.get(filteredEdges[i].b);
-        if (ea !== undefined && eb !== undefined) {
-          remappedEdges.push({ a: ea, b: eb });
-        }
-      }
-
-      return { nodes: newNodes, edges: remappedEdges };
-    }
-
-    return { nodes: rawNodes, edges: edges };
+    const graph = GraphViewPolicy.build(this.allNotes, this.graph, {
+      topic: this.activeGalaxy, focus: this.focusKey, depth: this.focusDepth, filter: this.filterMode
+    });
+    const selectedKey = this.selectedNode?.key;
+    const sourceKey = this.linkSourceNode?.key;
+    this.selectedNode = graph.nodes.find(node => node.key === selectedKey) ?? null;
+    this.linkSourceNode = graph.nodes.find(node => node.key === sourceKey) ?? null;
+    this.linkingMode = this.linkSourceNode !== null;
+    this.visibleGraph = graph;
+    if (this.canvasReady) { this.drawGraph(); }
   }
 
-  /**
-   * 类二叉树分支拓扑布局算法
-   */
-  private layoutTree(nodes: GraphNode[], edges: GraphEdge[], cx: number, cy: number, w: number, h: number): void {
-    if (nodes.length === 0) {
-      return;
+  private setFocus(node: GraphNode | null): void {
+    this.focusKey = node?.key ?? '';
+    this.focusDepth = 1;
+    this.filterMode = 'all';
+    this.clearSelection();
+    this.resetView(false);
+    this.rebuildGraph();
+  }
+
+  private clearSelection(): void {
+    this.selectedNode = null;
+    this.linkSourceNode = null;
+    this.linkingMode = false;
+  }
+
+  private layoutNodes(nodes: GraphNode[], cx: number, cy: number, width: number, height: number): void {
+    let root = nodes[0];
+    for (const node of nodes) {
+      node.isRoot = false;
+      if (node.key === this.focusKey || (!this.focusKey && node.degree > root.degree)) { root = node; }
     }
-    if (nodes.length === 1) {
-      const pos: NodePoint | undefined = this.nodeCustomPositions.get(nodes[0].label);
-      nodes[0].x = pos ? pos.x : cx;
-      nodes[0].y = pos ? pos.y : cy;
-      nodes[0].isRoot = true;
-      nodes[0].level = 0;
-      return;
-    }
+    root.isRoot = true;
 
-    // 1. 构建邻接表
-    const adj: Map<number, number[]> = new Map();
-    for (let i = 0; i < nodes.length; i++) {
-      adj.set(i, []);
-    }
-    for (let i = 0; i < edges.length; i++) {
-      const e: GraphEdge = edges[i];
-      if (e.a < nodes.length && e.b < nodes.length) {
-        adj.get(e.a)?.push(e.b);
-        adj.get(e.b)?.push(e.a);
-      }
-    }
-
-    // 2. 确定根节点 Root
-    let rootIdx: number = 0;
-    let maxDegree: number = -1;
-    for (let i = 0; i < nodes.length; i++) {
-      if (this.activeGalaxy !== '__all_topics__' && nodes[i].label.includes(this.activeGalaxy)) {
-        rootIdx = i;
-        break;
-      }
-      if (nodes[i].degree > maxDegree) {
-        maxDegree = nodes[i].degree;
-        rootIdx = i;
-      }
-    }
-
-    // 3. BFS 分层
-    const visited: boolean[] = new Array(nodes.length).fill(false);
-    const queue: number[] = [rootIdx];
-    visited[rootIdx] = true;
-    nodes[rootIdx].isRoot = true;
-    nodes[rootIdx].level = 0;
-
-    const levels: number[][] = [[rootIdx]];
-
-    while (queue.length > 0) {
-      const curr: number = queue.shift()!;
-      const currLevel: number = nodes[curr].level;
-      const neighbors: number[] = adj.get(curr) || [];
-
-      for (let j = 0; j < neighbors.length; j++) {
-        const neighbor: number = neighbors[j];
-        if (!visited[neighbor]) {
-          visited[neighbor] = true;
-          nodes[neighbor].level = currLevel + 1;
-          queue.push(neighbor);
-
-          while (levels.length <= currLevel + 1) {
-            levels.push([]);
-          }
-          levels[currLevel + 1].push(neighbor);
-        }
-      }
-    }
-
-    // 处理孤立节点
-    const unvisited: number[] = [];
-    for (let i = 0; i < nodes.length; i++) {
-      if (!visited[i]) {
-        unvisited.push(i);
-        nodes[i].level = levels.length;
-      }
-    }
-    if (unvisited.length > 0) {
-      levels.push(unvisited);
-    }
-
-    // Put the most connected note at the center and distribute readable cards in two columns.
-    const others: number[] = [];
-    for (let index = 0; index < nodes.length; index++) { if (index !== rootIdx) { others.push(index); } }
-    const columns = w < 580 ? 1 : 2;
-    const rows = Math.ceil(others.length / columns);
-    const gap = Math.max(68, Math.min(108, (h - 100) / Math.max(1, rows - 1))) * this.zoom;
-    const spread = Math.max(174, Math.min(350, w * 0.30)) * this.zoom;
-    const root = nodes[rootIdx]; const rootCustom = this.nodeCustomPositions.get(root.label);
-    root.x = rootCustom ? rootCustom.x : cx;
-    root.y = rootCustom ? rootCustom.y : columns === 1 ? cy - h * 0.32 : cy;
-    for (let index = 0; index < others.length; index++) {
-      const node = nodes[others[index]], custom = this.nodeCustomPositions.get(node.label);
-      node.x = custom ? custom.x : columns === 1 ? cx : cx + (index % 2 === 0 ? -spread : spread);
-      node.y = custom ? custom.y : columns === 1 ? root.y + (index + 1) * gap : cy - (rows - 1) * gap / 2 + Math.floor(index / 2) * gap;
+    const columns = width < 580 ? 1 : 2;
+    const rows = Math.ceil((nodes.length - 1) / columns);
+    const gap = Math.max(68, Math.min(100, (height - 100) / Math.max(1, rows - 1)));
+    const spread = Math.max(164, Math.min(340, width * 0.30));
+    let index = 0;
+    const rootY = columns === 1 && rows > 0 ? -height * 0.32 : 0;
+    for (const node of nodes) {
+      const isRoot = node.key === root.key;
+      const x = isRoot || columns === 1 ? 0 : (index % 2 === 0 ? -spread : spread);
+      const y = isRoot ? rootY : columns === 1 ? rootY + (index + 1) * gap :
+        (Math.floor(index / 2) - (rows - 1) / 2) * gap;
+      const custom = this.nodeCustomPositions.get(node.key);
+      node.x = cx + (custom?.x ?? x) * this.zoom;
+      node.y = cy + (custom?.y ?? y) * this.zoom;
+      if (!isRoot) { index++; }
     }
   }
 
@@ -437,15 +209,13 @@ export struct GraphWorkspace {
     const ny: number = n.y - nh / 2;
     const radius: number = Math.min(8 * this.zoom, nh / 2);
 
-    // 1. 微轻柔投影
     c.fillStyle = this.isDarkMode ? 'rgba(0, 0, 0, 0.35)' : 'rgba(0, 0, 0, 0.05)';
     this.drawRoundRect(c, nx + 1, ny + 2, nw, nh, radius);
     c.fill();
 
-    // 2. 卡片底色 (纯白 / 极简浅灰)
     if (n.isRoot) {
       c.fillStyle = isSelected ? this.palette().activeBg : this.palette().accentSoft;
-    } else if (n.unresolved) {
+    } else if (!n.noteId) {
       c.fillStyle = isSelected
         ? (this.isDarkMode ? '#78350F' : '#FEF3C7')
         : (this.isDarkMode ? '#292524' : '#FFFDF5');
@@ -455,14 +225,13 @@ export struct GraphWorkspace {
     this.drawRoundRect(c, nx, ny, nw, nh, radius);
     c.fill();
 
-    // 3. 边框 (选中为靛蓝主色，根节点为淡紫，未物化为虚线金黄)
     if (isSelected) {
       c.lineWidth = 2.0;
       c.strokeStyle = this.palette().accent;
     } else if (n.isRoot) {
       c.lineWidth = 1.6;
       c.strokeStyle = this.palette().accent;
-    } else if (n.unresolved) {
+    } else if (!n.noteId) {
       c.lineWidth = 1.2;
       c.strokeStyle = '#F59E0B';
     } else {
@@ -472,13 +241,12 @@ export struct GraphWorkspace {
     this.drawRoundRect(c, nx, ny, nw, nh, radius);
     c.stroke();
 
-    // 4. 左侧图标与标题文字
     const fontSize: number = Math.max(11, Math.min(18, 13 * this.zoom));
     c.font = n.isRoot ? `bold ${fontSize}vp sans-serif` : `${fontSize}vp sans-serif`;
 
     const iconX: number = nx + 12 * this.zoom;
     const textY: number = ny + nh / 2 + fontSize * 0.35;
-    c.strokeStyle = n.unresolved ? this.palette().warning : this.palette().accent;
+    c.strokeStyle = !n.noteId ? this.palette().warning : this.palette().accent;
     c.lineWidth = 1.5;
     c.strokeRect(iconX, ny + 14 * this.zoom, 11 * this.zoom, 15 * this.zoom);
     c.beginPath();
@@ -494,7 +262,6 @@ export struct GraphWorkspace {
     c.fillStyle = isDimmed ? this.palette().inkMuted : this.palette().inkPrimary;
     c.fillText(displayLabel, labelX, textY);
 
-    // 5. 右侧连接度徽章 Badge
     if (n.degree > 0) {
       const badgeW: number = 18 * this.zoom;
       const badgeH: number = 15 * this.zoom;
@@ -513,9 +280,6 @@ export struct GraphWorkspace {
     }
   }
 
-  /**
-   * 绘制纯白二叉树画布
-   */
   private drawGraph(): void {
     const c: CanvasRenderingContext2D = this.ctx;
     const w: number = c.width;
@@ -524,7 +288,6 @@ export struct GraphWorkspace {
       return;
     }
 
-    // 1. 纯白高质感画布底色 (暗色模式为优雅暗灰)
     c.clearRect(0, 0, w, h);
     c.fillStyle = this.palette().canvas;
     c.fillRect(0, 0, w, h);
@@ -532,7 +295,6 @@ export struct GraphWorkspace {
     const cx: number = w / 2 + this.panX;
     const cy: number = h / 2 + this.panY;
 
-    // 2. 极简轻柔点阵网格 (Notion / Miro 风格)
     const gridSize: number = 24 * this.zoom;
     if (gridSize >= 12) {
       const offsetX: number = (cx % gridSize + gridSize) % gridSize;
@@ -545,37 +307,23 @@ export struct GraphWorkspace {
       }
     }
 
-    const original: GraphModel = this.buildModel();
-    const nodes: GraphNode[] = [];
-    const mapping: Map<number, number> = new Map();
-    original.nodes.forEach((node: GraphNode, index: number) => {
-      if ((this.filterMode === 'notes' && node.unresolved) || (this.filterMode === 'unresolved' && !node.unresolved)) { return; }
-      mapping.set(index, nodes.length); nodes.push(node);
-    });
-    const edges: GraphEdge[] = [];
-    for (const edge of original.edges) {
-      const a = mapping.get(edge.a), b = mapping.get(edge.b);
-      if (a !== undefined && b !== undefined) { edges.push({ a, b }); }
-    }
-    const model: GraphModel = { nodes, edges };
-
+    const model = this.visibleGraph;
+    const nodes = model.nodes;
     if (nodes.length === 0) {
       c.font = '13vp sans-serif';
       c.fillStyle = this.isDarkMode ? 'rgba(255, 255, 255, 0.45)' : 'rgba(0, 0, 0, 0.45)';
       c.textAlign = 'center';
-      c.fillText('暂无笔记链接。在笔记中书写 [[概念名称]] 即可点亮知识网络。', w / 2, h / 2);
+      c.fillText('当前范围内没有节点', w / 2, h / 2);
       c.textAlign = 'left';
       this.laidOut = [];
       return;
     }
 
-    // 3. 执行类二叉树分支拓扑布局
-    this.layoutTree(nodes, model.edges, cx, cy, w, h);
+    this.layoutNodes(nodes, cx, cy, w, h);
     this.laidOut = nodes;
 
     const selected: GraphNode | null = this.selectedNode;
 
-    // 4. 绘制平滑优雅的类二叉树分支连接线 (Cubic Bezier curves)
     for (let i = 0; i < model.edges.length; i++) {
       const aIdx: number = model.edges[i].a;
       const bIdx: number = model.edges[i].b;
@@ -585,47 +333,36 @@ export struct GraphWorkspace {
       const a: GraphNode = model.nodes[aIdx];
       const b: GraphNode = model.nodes[bIdx];
 
-      // 区分父节点与子节点（根据层级判定流动方向）
-      const parent: GraphNode = a.level <= b.level ? a : b;
-      const child: GraphNode = a.level <= b.level ? b : a;
-
-      const isConnectedToSelected: boolean = selected !== null &&
-        (a.label === selected.label || b.label === selected.label);
-
+      const isConnectedToSelected = selected !== null && (a.key === selected.key || b.key === selected.key);
       c.beginPath();
-      const sideways: boolean = Math.abs(child.x - parent.x) > Math.abs(child.y - parent.y);
-      const direction: number = child.x >= parent.x ? 1 : -1;
-      const startX: number = sideways ? parent.x + direction * parent.w * this.zoom / 2 : parent.x;
-      const startY: number = sideways ? parent.y : parent.y + parent.h * this.zoom / 2;
-      const endX: number = sideways ? child.x - direction * child.w * this.zoom / 2 : child.x;
-      const endY: number = sideways ? child.y : child.y - child.h * this.zoom / 2;
+      const sideways = Math.abs(b.x - a.x) > Math.abs(b.y - a.y);
+      const direction = sideways ? (b.x >= a.x ? 1 : -1) : (b.y >= a.y ? 1 : -1);
+      const startX = sideways ? a.x + direction * a.w * this.zoom / 2 : a.x;
+      const startY = sideways ? a.y : a.y + direction * a.h * this.zoom / 2;
+      const endX = sideways ? b.x - direction * b.w * this.zoom / 2 : b.x;
+      const endY = sideways ? b.y : b.y - direction * b.h * this.zoom / 2;
       c.moveTo(startX, startY);
       if (sideways) { const middle: number = (startX + endX) / 2; c.bezierCurveTo(middle, startY, middle, endY, endX, endY); }
       else { const middle: number = (startY + endY) / 2; c.bezierCurveTo(startX, middle, endX, middle, endX, endY); }
 
       if (isConnectedToSelected) {
-        // 选中高亮能量线
         c.lineWidth = 2.4;
         c.strokeStyle = this.palette().accent;
       } else if (selected !== null) {
-        // 其余淡化
         c.lineWidth = 1.0;
         c.strokeStyle = this.isDarkMode ? 'rgba(148, 163, 184, 0.15)' : 'rgba(203, 213, 225, 0.35)';
       } else {
-        // 常态极简分支灰线
         c.lineWidth = 1.4;
         c.strokeStyle = this.palette().border;
       }
       c.stroke();
 
-      // 在子节点接入点绘制微型连接圆点
       c.beginPath();
       c.arc(endX, endY, 2.5, 0, 6.2832);
       c.fillStyle = isConnectedToSelected ? this.palette().accent : this.palette().inkMuted;
       c.fill();
     }
 
-    // 5. 如果处于直连模式，在起点节点周围绘制轻柔引导光晕
     if (this.linkingMode && this.linkSourceNode !== null) {
       const sw: number = this.linkSourceNode.w * this.zoom + 8;
       const sh: number = this.linkSourceNode.h * this.zoom + 8;
@@ -637,10 +374,9 @@ export struct GraphWorkspace {
       c.stroke();
     }
 
-    // 6. 绘制所有现代卡片节点
     for (let i = 0; i < nodes.length; i++) {
       const n: GraphNode = nodes[i];
-      const isSelected: boolean = selected !== null && selected.label === n.label;
+      const isSelected: boolean = selected !== null && selected.key === n.key;
       const isDimmed: boolean = selected !== null && !isSelected;
       this.drawNodeCard(c, n, isSelected, isDimmed);
     }
@@ -666,48 +402,104 @@ export struct GraphWorkspace {
     this.drawGraph();
   }
 
-  private resetView(): void {
-    this.zoom = 1.0;
+  private resetView(redraw: boolean = true): void {
+    this.zoom = 1;
     this.panX = 0;
     this.panY = 0;
-    this.selectedNode = null;
-    this.linkingMode = false;
-    this.linkSourceNode = null;
     this.nodeCustomPositions.clear();
-    this.drawGraph();
-    promptAction.showToast({ message: '已复位视图' });
+    if (redraw && this.canvasReady) { this.drawGraph(); }
   }
 
-  /**
-   * 执行两个节点建立双链
-   */
-  private executeLinkNodes(source: GraphNode, target: GraphNode): void {
-    if (source.label === target.label) {
-      promptAction.showToast({ message: '不能与自身建立链接' });
+  private async selectNode(node: GraphNode | null): Promise<void> {
+    if (this.linkSaving) { return; }
+    const source = this.linkSourceNode;
+    if (!node) {
+      this.clearSelection();
+    } else if (source) {
+      if (node.key === source.key) {
+        promptAction.showToast({ message: '请选择另一个节点作为目标' });
+        return;
+      }
+      this.linkSaving = true;
+      try {
+        await this.onLinkNodes(source.noteId, node.noteId, node.label);
+        if (!this.alive) { return; }
+        this.clearSelection();
+        this.selectedNode = this.visibleGraph.nodes.find(item => item.key === node.key) ?? null;
+        promptAction.showToast({ message: '已保存笔记链接' });
+      } catch (error) {
+        if (this.alive) {
+          promptAction.showToast({ message: error instanceof Error ? error.message : '链接保存失败，请重试' });
+        }
+      } finally {
+        if (this.alive) { this.linkSaving = false; }
+      }
+    } else {
+      this.selectedNode = node;
+    }
+    if (this.canvasReady) { this.drawGraph(); }
+  }
+
+  private selectByKey(key: string): void {
+    const node = this.visibleGraph.nodes.find(item => item.key === key);
+    if (node) { this.selectNode(node); }
+  }
+
+  private handleCanvasTouch(event: TouchEvent): void {
+    const touch = event.touches[0];
+    if (event.type === TouchType.Cancel || event.touches.length > 1) {
+      this.touchStart = null;
+      this.draggingNode = null;
       return;
     }
-    const sourceIdentifier: string = source.noteId && source.noteId.length > 0 ? source.noteId : source.label;
-    this.onLinkNodes(sourceIdentifier, target.label);
-    promptAction.showToast({ message: `已建立双向链接：${source.label} ↔ ${target.label}` });
-    this.linkingMode = false;
-    this.linkSourceNode = null;
-    this.selectedNode = target;
-    this.drawGraph();
+    if (event.type === TouchType.Down && touch) {
+      this.touchStart = { x: touch.x, y: touch.y };
+      this.lastTouchX = touch.x;
+      this.lastTouchY = touch.y;
+      this.hasDragged = false;
+      this.draggingNode = this.hitTest(touch.x, touch.y);
+      return;
+    }
+    const start = this.touchStart;
+    if (!start) { return; }
+    if (event.type === TouchType.Move && touch) {
+      this.hasDragged = this.hasDragged || Math.hypot(touch.x - start.x, touch.y - start.y) >= 6;
+      if (!this.hasDragged) { return; }
+      const dx = touch.x - this.lastTouchX;
+      const dy = touch.y - this.lastTouchY;
+      const node = this.draggingNode;
+      if (node) {
+        this.nodeCustomPositions.set(node.key, {
+          x: (node.x + dx - this.ctx.width / 2 - this.panX) / this.zoom,
+          y: (node.y + dy - this.ctx.height / 2 - this.panY) / this.zoom
+        });
+      } else {
+        this.panX += dx;
+        this.panY += dy;
+      }
+      this.lastTouchX = touch.x;
+      this.lastTouchY = touch.y;
+      this.drawGraph();
+    } else if (event.type === TouchType.Up) {
+      const end = event.changedTouches[0];
+      if (!this.hasDragged && (!end || Math.hypot(end.x - start.x, end.y - start.y) < 6)) {
+        this.selectNode(this.draggingNode);
+      }
+      this.touchStart = null;
+      this.draggingNode = null;
+    }
   }
 
-  // ------------------------------------------------------------------
-  // UI 构件 (Builders)
-  // ------------------------------------------------------------------
-
   @Builder
-  canvasControl(label: string, onClick: () => void) {
-    Text(label)
-      .fontSize(14)
+  canvasControl(label: string, description: string, onClick: () => void) {
+    Button(label, { type: ButtonType.Normal })
+      .fontSize(12)
+      .padding(0)
       .fontColor(this.palette().inkPrimary)
       .width(44)
       .height(44)
-      .textAlign(TextAlign.Center)
-      .borderRadius(6)
+      .accessibilityText(description)
+      .borderRadius(14)
       .backgroundColor(this.palette().surface)
       .border({ width: 1, color: this.palette().borderSubtle })
       .shadow({ radius: 4, color: 'rgba(0,0,0,0.06)' })
@@ -715,27 +507,16 @@ export struct GraphWorkspace {
       .onClick(onClick)
   }
 
-  @Builder
-  filterPill(mode: string, label: string, count: number) {
-    Row({ space: 4 }) {
-      Text(label)
-        .fontSize(12)
-        .fontWeight(this.filterMode === mode ? FontWeight.Bold : FontWeight.Normal)
-        .fontColor(this.filterMode === mode ? this.palette().accent : this.palette().inkMuted)
-      Text(`${count}`)
-        .fontSize(12)
-        .fontColor(this.filterMode === mode ? this.palette().accent : this.palette().inkMuted)
-    }
-    .padding({ left: 12, right: 12, top: 8, bottom: 8 }).constraintSize({ minHeight: 44 })
-    .borderRadius(5)
-    .backgroundColor(this.filterMode === mode ? this.palette().accentSoft : this.palette().surfaceSubtle)
-    .border({ width: 1, color: this.filterMode === mode ? this.palette().accent : Color.Transparent })
-    .hoverEffect(HoverEffect.Highlight)
-    .onClick(() => {
-      this.filterMode = mode;
-      this.selectedNode = null;
-      this.drawGraph();
-    })
+  private setFilter(filter: string): void {
+    this.filterMode = filter;
+    this.clearSelection();
+    this.rebuildGraph();
+  }
+
+  private setDepth(depth: number): void {
+    this.focusDepth = depth;
+    this.clearSelection();
+    this.rebuildGraph();
   }
 
   /** 多主题分类切换胶囊栏 */
@@ -754,20 +535,20 @@ export struct GraphWorkspace {
               .fontColor(this.activeGalaxy === g.id ? 'rgba(255,255,255,0.85)' : this.palette().inkMuted)
           }
           .padding({ left: 12, right: 12, top: 8, bottom: 8 }).constraintSize({ minHeight: 44 })
-          .borderRadius(5)
+          .borderRadius(22)
           .backgroundColor(this.activeGalaxy === g.id ? this.palette().accent : this.palette().surfaceSubtle)
           .border({ width: 1, color: this.activeGalaxy === g.id ? this.palette().accent : this.palette().borderSubtle })
           .hoverEffect(HoverEffect.Highlight)
+          .enabled(!this.linkSaving)
           .onClick(() => {
             this.activeGalaxy = g.id;
-            this.selectedNode = null;
-            this.linkingMode = false;
-            this.linkSourceNode = null;
-            this.drawGraph();
+            this.focusKey = '';
+            this.clearSelection();
+            this.resetView(false);
+            this.rebuildGraph();
           })
         }, (g: GalaxyCluster) => `cat-${g.id}`)
 
-        // + 新建主题分类
         Row({ space: 3 }) {
           Text('+')
             .fontSize(12)
@@ -783,7 +564,7 @@ export struct GraphWorkspace {
         .hoverEffect(HoverEffect.Highlight)
         .constraintSize({ minHeight: 44 })
         .accessibilityText('新建主题')
-        .enabled(!this.galaxySaving)
+        .enabled(!this.galaxySaving && !this.linkSaving)
         .onClick(() => {
           this.isCreatingGalaxy = true;
         })
@@ -824,11 +605,52 @@ export struct GraphWorkspace {
     .alignItems(HorizontalAlign.Start)
   }
 
+  @Builder
+  scopeButton(label: string, selected: boolean, action: () => void) {
+    Button(label, { type: ButtonType.Normal }).height(44).fontSize(13).borderRadius(22)
+      .fontColor(this.palette().inkPrimary)
+      .backgroundColor(selected ? this.palette().accentSoft : Color.Transparent)
+      .border({ width: 1, color: selected ? this.palette().accent : this.palette().border })
+      .accessibilityDescription(selected ? '已选中' : '')
+      .enabled(!this.linkSaving).onClick(action)
+  }
+
+  @Builder
+  nodeDetails(node: GraphNode) {
+    Column({ space: 8 }) {
+      Row({ space: 8 }) {
+        Column({ space: 3 }) {
+          Text(node.label).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(`${node.noteId ? node.category : '待创建笔记'} · ${node.degree} 条可见连接`)
+            .fontSize(12).fontColor(this.palette().inkSecondary)
+        }.layoutWeight(1).alignItems(HorizontalAlign.Start)
+        IconButton({ icon: $r('app.media.ic_close'), label: '清除图谱选中状态', available: !this.linkSaving,
+          onAction: () => { this.selectNode(null); } })
+      }.width('100%')
+      Flex({ wrap: FlexWrap.Wrap }) {
+        this.scopeButton(node.noteId ? '打开笔记' : '创建笔记', false, () => {
+          if (node.noteId) { this.onSelectNoteById(node.noteId); } else { this.onOpenNoteByTitle(node.label); }
+        })
+        if (node.noteId && this.focusKey !== node.key) {
+          this.scopeButton('查看局部图谱', false, () => this.setFocus(node))
+        }
+        if (node.canLink && !this.linkingMode) {
+          this.scopeButton('建立链接', false, () => {
+            this.linkSourceNode = node;
+            this.linkingMode = true;
+            if (this.canvasReady) { this.drawGraph(); }
+          })
+        }
+      }.width('100%')
+    }.padding(12).width('100%').margin({ bottom: 12 }).borderRadius(16)
+      .backgroundColor(this.palette().surfaceSubtle).alignItems(HorizontalAlign.Start)
+  }
+
   build() {
     Scroll() {
       Column() {
         Column() {
-          // ---- 1. 顶栏标题与统计 ----
           Flex({ direction: this.isPhone ? FlexDirection.Column : FlexDirection.Row, alignItems: ItemAlign.Start }) {
             Column({ space: 4 }) {
               Row({ space: 8 }) {
@@ -849,24 +671,21 @@ export struct GraphWorkspace {
 
             if (!this.isPhone) { Blank() }
 
-            // 过滤选择胶囊
             Row({ space: 6 }) {
-              this.filterPill('all', '全部', this.stats.linkCount + this.stats.unresolvedCount)
-              this.filterPill('notes', '笔记', this.stats.linkCount)
-              this.filterPill('unresolved', '待创建', this.stats.unresolvedCount)
+              this.scopeButton('全部', this.filterMode === 'all', () => this.setFilter('all'))
+              this.scopeButton('已收录', this.filterMode === 'notes', () => this.setFilter('notes'))
+              this.scopeButton('待创建', this.filterMode === 'unresolved', () => this.setFilter('unresolved'))
             }
           }
           .width('100%')
           .margin({ bottom: 12 })
 
-          // ---- 1.1 主题分类横向切换栏 ----
           Row() {
             this.galaxySelectorBar()
           }
           .width('100%')
           .margin({ bottom: 12 })
 
-          // 新建主题分类内联条
           if (this.isCreatingGalaxy) {
             Column({ space: 8 }) {
               Text('新建分类：')
@@ -923,217 +742,52 @@ export struct GraphWorkspace {
             .border({ width: 1, color: this.palette().accent })
           }
 
-          // ---- 2. 纯白极简二叉树链接 Canvas 舞台 ----
+          if (this.focusKey) {
+            Column({ space: 6 }) {
+              Text('局部图谱 · ' + (this.visibleGraph.nodes[0]?.label || '')).fontSize(14).fontColor(this.palette().inkPrimary)
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              Row({ space: 6 }) {
+                this.scopeButton('一跳', this.focusDepth === 1, () => this.setDepth(1))
+                this.scopeButton('两跳', this.focusDepth === 2, () => this.setDepth(2))
+                this.scopeButton('退出局部', false, () => this.setFocus(null))
+              }.width('100%')
+            }.width('100%').alignItems(HorizontalAlign.Start).margin({ bottom: 10 })
+          }
+          if (this.linkingMode && this.linkSourceNode) {
+            Row({ space: 8 }) {
+              Text(this.linkSaving ? '正在保存链接…' : '从「' + this.linkSourceNode.label + '」创建链接，请选择目标节点')
+                .fontSize(13).fontColor(this.palette().inkPrimary).layoutWeight(1)
+              this.scopeButton('取消', false, () => { this.clearSelection(); this.drawGraph(); })
+            }.width('100%').padding(8).margin({ bottom: 8 }).borderRadius(16).backgroundColor(this.palette().accentSoft)
+          }
           Stack({ alignContent: Alignment.TopEnd }) {
             Canvas(this.ctx)
               .width('100%')
-              .height(440)
-              .borderRadius(5)
-              .backgroundColor(this.isDarkMode ? '#0F172A' : '#FFFFFF')
-              .border({ width: 1, color: this.palette().borderSubtle })
-              .shadow({ radius: 8, color: 'rgba(0,0,0,0.04)', offsetY: 2 })
-              .onReady(() => {
-                this.canvasReady = true;
-                this.drawGraph();
-              }).onAreaChange(() => { if (this.canvasReady) { this.drawGraph(); } })
-              .onTouch((event: TouchEvent) => {
-                const touch = event.touches[0];
-                if (!touch) {
-                  return;
-                }
-
-                if (event.type === TouchType.Down) {
-                  this.lastTouchX = touch.x;
-                  this.lastTouchY = touch.y;
-                  this.touchDownTime = Date.now();
-
-                  const hit: GraphNode | null = this.hitTest(touch.x, touch.y);
-                  if (hit !== null) {
-                    this.draggingNode = hit;
-                    this.isNodeDragging = true;
-                    this.isPanning = false;
-                  } else {
-                    this.draggingNode = null;
-                    this.isNodeDragging = false;
-                    this.isPanning = true;
-                  }
-                } else if (event.type === TouchType.Move) {
-                  const dx: number = touch.x - this.lastTouchX;
-                  const dy: number = touch.y - this.lastTouchY;
-
-                  if (this.isNodeDragging && this.draggingNode !== null) {
-                    // 实时拖动节点，平滑拉伸贝塞尔连线
-                    this.draggingNode.x = touch.x;
-                    this.draggingNode.y = touch.y;
-                    const pt: NodePoint = { x: touch.x, y: touch.y };
-                    this.nodeCustomPositions.set(this.draggingNode.label, pt);
-                    this.drawGraph();
-                  } else if (this.isPanning) {
-                    if (Math.hypot(dx, dy) > 3) {
-                      this.panX += dx;
-                      this.panY += dy;
-                      this.lastTouchX = touch.x;
-                      this.lastTouchY = touch.y;
-                      this.drawGraph();
-                    }
-                  }
-                } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-                  const duration: number = Date.now() - this.touchDownTime;
-                  // 短触击 (Tap)：实现直接两击建链或选定节点
-                  if (duration < 280) {
-                    const tappedNode: GraphNode | null = this.hitTest(touch.x, touch.y);
-                    if (tappedNode !== null) {
-                      if (this.linkingMode && this.linkSourceNode !== null) {
-                        // 连线模式中：直接点击第二节点建立链接！
-                        this.executeLinkNodes(this.linkSourceNode, tappedNode);
-                      } else {
-                        // 选定节点：自动作为起点备选
-                        this.selectedNode = tappedNode;
-                        this.linkSourceNode = tappedNode;
-                        this.linkingMode = true;
-                        this.drawGraph();
-                      }
-                    } else {
-                      // 点击空白取消选择
-                      this.selectedNode = null;
-                      this.linkingMode = false;
-                      this.linkSourceNode = null;
-                      this.drawGraph();
-                    }
-                  }
-                  this.isNodeDragging = false;
-                  this.draggingNode = null;
-                  this.isPanning = false;
-                }
-              })
-
-            // 顶部居中：极简连线提示横幅
-            if (this.linkingMode && this.linkSourceNode !== null) {
-              Row({ space: 8 }) {
-                Text('🔗')
-                  .fontSize(13)
-                  .fontColor(this.palette().accent)
-                Text(`已选「${this.linkSourceNode.label}」，点击任意节点建立链接`)
-                  .fontSize(12)
-                  .fontColor(this.palette().inkPrimary)
-                  .fontWeight(FontWeight.Medium)
-                Text('取消')
-                  .fontSize(12)
-                  .fontColor(this.palette().inkMuted)
-                  .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                  .borderRadius(4)
-                  .backgroundColor(this.palette().surfaceSubtle)
-                  .onClick(() => {
-                    this.linkingMode = false;
-                    this.linkSourceNode = null;
-                    this.drawGraph();
-                  })
-              }
-              .padding({ left: 12, right: 10, top: 6, bottom: 6 })
-              .borderRadius(8)
-              .backgroundColor(this.palette().surface)
-              .border({ width: 1, color: this.palette().borderSubtle })
-              .shadow({ radius: 8, color: 'rgba(0,0,0,0.06)' })
-              .margin({ top: 12 })
-              .alignSelf(ItemAlign.Center)
-              .position({ x: '22%', y: 12 })
-            }
-
-            // 右上角极简视口控制器
+              .height(this.isPhone ? 330 : 440)
+              .onReady(() => { this.canvasReady = true; this.drawGraph(); })
+              .onAreaChange(() => { if (this.canvasReady) { this.drawGraph(); } })
+              .onTouch((event: TouchEvent) => this.handleCanvasTouch(event))
+              .accessibilityDescription('图谱画布，下面的连接列表也可用于选择节点')
             Column({ space: 6 }) {
-              this.canvasControl('＋', () => this.applyZoom(this.zoom + 0.2))
-              this.canvasControl('－', () => this.applyZoom(this.zoom - 0.2))
-              this.canvasControl('⤾', () => this.resetView())
-            }
-            .margin({ top: 12, right: 12 })
+              this.canvasControl('＋', '放大图谱', () => this.applyZoom(this.zoom + 0.2))
+              this.canvasControl('－', '缩小图谱', () => this.applyZoom(this.zoom - 0.2))
+              this.canvasControl('重置', '重置图谱视图', () => this.resetView())
+            }.margin({ top: 8, right: 8 })
+          }.width('100%').height(this.isPhone ? 330 : 440).borderRadius(20).clip(true)
+            .border({ width: 1, color: this.palette().border }).margin({ bottom: 12 })
 
-            // 底部居中：轻量悬浮胶囊动作条 (Docked Action Pill，高度仅 36vp，绝不遮挡)
-            if (this.selectedNode !== null) {
-              Row({ space: 10 }) {
-                Row({ space: 5 }) {
-                  Text(this.selectedNode.unresolved ? '✦' : '📄')
-                    .fontSize(14)
-                    .fontColor(this.selectedNode.unresolved ? '#D97706' : this.palette().accent)
-                  Text(this.selectedNode.label)
-                    .fontSize(12)
-                    .fontWeight(FontWeight.Bold)
-                    .fontColor(this.palette().inkPrimary)
-                    .maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                    .constraintSize({ maxWidth: 160 })
-                  Text(`${this.selectedNode.degree}条双链`)
-                    .fontSize(10)
-                    .fontColor(this.palette().inkMuted)
-                    .padding({ left: 5, right: 5, top: 1, bottom: 1 })
-                    .borderRadius(4)
-                    .backgroundColor(this.palette().surfaceSubtle)
-                }
+          if (this.selectedNode) { this.nodeDetails(this.selectedNode) }
 
-                Divider()
-                  .vertical(true)
-                  .height(16)
-                  .color(this.palette().borderSubtle)
-
-                // 快捷直达笔记
-                Row({ space: 4 }) {
-                  Text(this.selectedNode.unresolved ? '✦ 物化' : '进入笔记 →')
-                    .fontSize(12)
-                    .fontWeight(FontWeight.Medium)
-                    .fontColor(this.selectedNode.unresolved ? this.palette().inkPrimary : this.palette().onAccent)
-                }
-                .padding({ left: 10, right: 10, top: 5, bottom: 5 })
-                .borderRadius(6)
-                .backgroundColor(this.selectedNode.unresolved ? this.palette().surfaceSubtle : this.palette().accent)
-                .hoverEffect(HoverEffect.Highlight)
-                .onClick(() => {
-                  if (this.selectedNode !== null) {
-                    if (this.selectedNode.unresolved) {
-                      this.onOpenNoteByTitle(this.selectedNode.label);
-                    } else if (this.selectedNode.noteId.length > 0) {
-                      this.onSelectNoteById(this.selectedNode.noteId);
-                    }
-                  }
-                })
-
-                // 取消选择
-                Text('✕')
-                  .fontSize(12)
-                  .fontColor(this.palette().inkMuted)
-                  .padding(4)
-                  .borderRadius(4)
-                  .hoverEffect(HoverEffect.Highlight)
-                  .onClick(() => {
-                    this.selectedNode = null;
-                    this.linkingMode = false;
-                    this.linkSourceNode = null;
-                    this.drawGraph();
-                  })
-              }
-              .padding({ left: 14, right: 10, top: 6, bottom: 6 })
-              .borderRadius(8)
-              .backgroundColor(this.palette().surface)
-              .border({ width: 1, color: this.palette().borderSubtle })
-              .shadow({ radius: 12, color: 'rgba(0,0,0,0.08)', offsetY: 3 })
-              .alignSelf(ItemAlign.Center)
-              .position({ x: '18%', y: 385 })
-            }
-          }
-          .width('100%')
-          .height(440)
-          .margin({ bottom: 20 })
-
-          // ---- 3. 双链脉络明细抽屉 ----
           Flex({
             direction: this.isPhone ? FlexDirection.Column : FlexDirection.Row,
             justifyContent: FlexAlign.Start
           }) {
-            // ---- 已解析引用 ----
             Column() {
-              this.panelTitle('已建立的连接', this.graph.backlinks.length)
-              if (this.graph.backlinks.length === 0) {
-                this.emptyHint('还没有任何 [[双链]]。在正文中书写 [[笔记标题]] 即可建立连接。')
+              this.panelTitle('已建立的连接', this.visibleGraph.backlinks.length)
+              if (this.visibleGraph.backlinks.length === 0) {
+                this.emptyHint('当前范围内暂无已建立的连接。在正文中书写 [[笔记标题]] 即可建立连接。')
               } else {
-                ForEach(this.expandedLinks ? this.graph.backlinks : this.graph.backlinks.slice(0, 3), (link: Backlink) => {
+                ForEach(this.expandedLinks ? this.visibleGraph.backlinks : this.visibleGraph.backlinks.slice(0, 3), (link: Backlink) => {
                   Column({ space: 3 }) {
                     Row({ space: 6 }) {
                       Text(link.sourceTitle)
@@ -1142,7 +796,7 @@ export struct GraphWorkspace {
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                         .layoutWeight(1)
-                        .onClick(() => this.onSelectNoteById(link.sourceNoteId))
+                        .onClick(() => this.selectByKey(GraphViewPolicy.noteKey(link.sourceNoteId)))
                       Text('→')
                         .fontSize(TypographyTokens.CAPTION)
                         .fontColor(this.palette().inkMuted)
@@ -1152,7 +806,7 @@ export struct GraphWorkspace {
                         .maxLines(1)
                         .textOverflow({ overflow: TextOverflow.Ellipsis })
                         .layoutWeight(1)
-                        .onClick(() => this.onSelectNoteById(link.targetNoteId))
+                        .onClick(() => this.selectByKey(GraphViewPolicy.noteKey(link.targetNoteId)))
                     }
                     .width('100%')
 
@@ -1171,7 +825,7 @@ export struct GraphWorkspace {
                   .hoverEffect(HoverEffect.Highlight)
                 }, (link: Backlink, index: number) => `${index}-${link.sourceNoteId}-${link.targetNoteId}-${link.label}`)
               }
-              if (this.graph.backlinks.length > 3) {
+              if (this.visibleGraph.backlinks.length > 3) {
                 Button(this.expandedLinks ? '收起连接' : '查看全部连接').height(44).fontSize(12).fontColor(this.palette().accent).backgroundColor(Color.Transparent)
                   .onClick(() => { this.expandedLinks = !this.expandedLinks; })
               }
@@ -1185,13 +839,12 @@ export struct GraphWorkspace {
             .border({ width: 1, color: this.palette().borderSubtle })
             .margin(this.isPhone ? { bottom: 14 } : { right: 12 })
 
-            // ---- 原初星云（待创建概念） ----
             Column() {
-              this.panelTitle('待创建的笔记', this.graph.unresolvedLinks.length)
-              if (this.graph.unresolvedLinks.length === 0) {
-                this.emptyHint('所有双链都已指向真实笔记，知识网络闭合自洽。')
+              this.panelTitle('待创建的笔记', this.visibleGraph.unresolvedLinks.length)
+              if (this.visibleGraph.unresolvedLinks.length === 0) {
+                this.emptyHint('当前范围内暂无待创建的笔记。')
               } else {
-                ForEach(this.expandedPending ? this.graph.unresolvedLinks : this.graph.unresolvedLinks.slice(0, 3), (link: UnresolvedLink) => {
+                ForEach(this.expandedPending ? this.visibleGraph.unresolvedLinks : this.visibleGraph.unresolvedLinks.slice(0, 3), (link: UnresolvedLink) => {
                   Row({ space: 8 }) {
                     Text('○')
                       .fontSize(12)
@@ -1199,7 +852,7 @@ export struct GraphWorkspace {
                     Column({ space: 5 }) {
                       Text(link.target).fontSize(14).fontColor(this.palette().inkPrimary).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
                       Text(`来自 ${link.sourceTitle}`).fontSize(12).fontColor(this.palette().inkMuted).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-                    }.layoutWeight(1).alignItems(HorizontalAlign.Start).onClick(() => this.onOpenNoteByTitle(link.target))
+                    }.layoutWeight(1).alignItems(HorizontalAlign.Start).onClick(() => this.selectByKey(GraphViewPolicy.pendingKey(link.target)))
                     Text('创建')
                       .fontSize(12)
                       .fontColor(this.palette().accent)
@@ -1214,7 +867,7 @@ export struct GraphWorkspace {
                   .hoverEffect(HoverEffect.Highlight)
                 }, (link: UnresolvedLink, index: number) => `${index}-${link.sourceNoteId}-${link.target}`)
               }
-              if (this.graph.unresolvedLinks.length > 3) {
+              if (this.visibleGraph.unresolvedLinks.length > 3) {
                 Button(this.expandedPending ? '收起待创建笔记' : '查看全部待创建笔记').height(44).fontSize(12).fontColor(this.palette().accent).backgroundColor(Color.Transparent)
                   .onClick(() => { this.expandedPending = !this.expandedPending; })
               }
