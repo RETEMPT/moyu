@@ -1,7 +1,7 @@
-import { SmartContent } from '../../common/types/SmartContent';
+import { SmartContent } from './SmartContent';
 import { SourceTextParser } from './SourceTextParser';
-import { LocalTextFormatter } from './LocalTextFormatter';
-import { SMART_INPUT_LIMIT } from '../../common/constants/ContentLimits';
+import { LocalTextFormatter } from '../../../entry/src/main/ets/services/smart/LocalTextFormatter';
+import { SMART_INPUT_LIMIT } from '../../../entry/src/main/ets/common/constants/ContentLimits';
 export type SmartLayoutStyle = 'faithful' | 'study';
 export { SMART_INPUT_LIMIT };
 /** Source-preserving local formatting and explicit task extraction. */

@@ -1,5 +1,5 @@
-import { SmartTask } from '../../common/types/SmartTask';
-import { SourceTextLine } from '../document/SourceTextStructure';
+import { SmartTask } from './SmartTask';
+import { SourceTextLine } from '../../../entry/src/main/ets/services/document/SourceTextStructure';
 
 /** GFM checkboxes and explicit actions only; every candidate retains its source line.
  * These rules intentionally prefer missed suggestions over invented obligations.

@@ -201,7 +201,7 @@ export struct StudyAssistantPanel {
     if (!payload || this.active === false || this.busy || !model || !this.validPairing()) { return; }
     const generation = ++this.generation;
     this.busy = true;
-    this.status = '正在生成，仍可在阅读区查看原文。';
+    this.status = '正在生成…';
     this.scroller.scrollEdge(Edge.Top);
     try {
       const result = await this.gateway.generate(payload, this.pairingCode.trim(), model);
@@ -272,10 +272,6 @@ export struct StudyAssistantPanel {
         Column({ space: 3 }) {
           Text(model.label).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
             .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
-          if (model.id === 'deepseek-flash' || model.id === 'deepseek-v4-pro') {
-            Text(model.id === 'deepseek-flash' ? '日常问答和选页摘要' : '复杂问题和长资料综合整理')
-              .fontSize(12).fontColor(this.palette().inkSecondary)
-          }
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
         if (this.selectedModel === model.id) {
           AppIcon({ source: $r('app.media.ic_check'), iconSize: 18, tint: this.palette().accent })
@@ -297,9 +293,6 @@ export struct StudyAssistantPanel {
       Text('选择模型').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
       if (this.models.length > 0) {
         ForEach(this.models, (model: StudyGatewayModel) => { this.modelOption(model) }, (model: StudyGatewayModel) => model.id)
-        if (this.model()?.agent) {
-          Text('Agent 可在已确认发送的片段中检索资料。').fontSize(12).fontColor(this.palette().inkSecondary)
-        }
         this.action(this.pairingOpen ? '收起配对设置' : '更改网关配对码', false, !this.connecting,
           () => { this.pairingOpen = !this.pairingOpen; })
       }
@@ -332,8 +325,6 @@ export struct StudyAssistantPanel {
       }.width('100%')
       Column({ space: 8 }) {
         Text('资料范围').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
-        Text(ReaderPairPolicy.isPdf(this.note) ? '结束页留空时仅选起始页。' : '结束行留空时选至文末。')
-          .fontSize(12).fontColor(this.palette().inkSecondary)
         Row({ space: 8 }) {
           TextInput({ placeholder: ReaderPairPolicy.isPdf(this.note) ? '起始页' : '起始行', text: this.start })
             .height(44).type(InputType.Number).maxLength(8).layoutWeight(1)
@@ -366,8 +357,7 @@ export struct StudyAssistantPanel {
     Column({ space: 10 }) {
       Text('发送预览').fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
       Text(this.rangeLabel() + ' · ' + payload.sources.length + ' 个原文片段').fontSize(13).fontColor(this.palette().inkSecondary)
-      Text('确认后，以下内容会经电脑网关发送给 ' + (this.model()?.label || '所选模型') + '。')
-        .fontSize(13).fontColor(this.palette().inkSecondary)
+      Text(this.model()?.label || '').fontSize(13).fontColor(this.palette().inkSecondary)
       Text(payload.goal).fontSize(14).fontColor(this.palette().inkPrimary)
         .textSelectable(TextSelectableMode.SELECTABLE_UNFOCUSABLE)
       ForEach(payload.sources, (source: StudyAssistantFragment) => {
@@ -405,8 +395,6 @@ export struct StudyAssistantPanel {
                 .fontColor(this.palette().inkSecondary)
               if (this.citationLabel(citation)) {
                 this.action(this.citationLabel(citation), false, true, () => this.jump(citation))
-              } else {
-                Text('此引文在当前资料中无法唯一定位').fontSize(12).fontColor(this.palette().inkMuted)
               }
             }.padding(10).borderRadius(12).backgroundColor(this.palette().surfaceSubtle)
               .width('100%').alignItems(HorizontalAlign.Start)
@@ -445,7 +433,7 @@ export struct StudyAssistantPanel {
           if (this.busy) {
             this.action('停止等待', false, true, () => {
               this.stopRequest();
-              this.status = '已停止等待，电脑上的请求可能仍在处理。';
+              this.status = '';
             })
           } else if (this.pending) {
             this.preview(this.pending)
@@ -454,7 +442,7 @@ export struct StudyAssistantPanel {
           } else if (this.gatewayAvailable) {
             this.composer()
           } else {
-            Text('当前版本未启用电脑网关').fontSize(14).fontColor(this.palette().inkSecondary).width('100%')
+            this.action('连接网关', true, true, () => { this.status = '请安装启用 StudyDemo 的调试包'; })
             if (ReaderPairPolicy.isPdf(this.note) && this.note.sourceUri) {
               this.action('提取当前页文字', false, true, () => this.onExtract(this.sourcePage))
             }

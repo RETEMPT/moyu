@@ -2,8 +2,10 @@ import { Context } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
 import { NoteCoverService } from './NoteCoverService';
 import { preferences } from '@kit.ArkData';
-import { fileIo, picker } from '@kit.CoreFileKit';
+import { fileIo, fileUri, picker } from '@kit.CoreFileKit';
 import { NoteItem } from '../common/types/NoteItem';
+import { copyNote } from '../common/utils/NoteSnapshot';
+import { WorkspaceNotePolicy } from './WorkspaceNotePolicy';
 import { SpaceFolder } from '../common/types/SpaceFolder';
 import { DocumentTransferResult, MarkdownDocument } from '../common/types/MarkdownDocument';
 import { PdfDocumentService } from './document/PdfDocumentService';
@@ -16,6 +18,7 @@ import BuildProfile from 'BuildProfile';
 import { ImageDocumentPolicy } from './document/ImageDocumentPolicy';
 import { ImageDocumentService } from './document/ImageDocumentService';
 import { OfficeDocumentService } from './document/OfficeDocumentService';
+import { TextDocumentService } from './document/TextDocumentService';
 import { DocumentSourceKind, DocumentSourceLocation, DocumentSourcePolicy } from './document/DocumentSourcePolicy';
 
 const PREFERENCES_NAME: string = 'flowmind_notes';
@@ -231,24 +234,29 @@ export class NoteStorageService {
     }
   }
 
-  async selectDocumentUris(context: Context, limit: number = 20): Promise<string[]> {
+  async selectDocumentUris(context: Context, limit: number = 20, textSources: boolean = false): Promise<string[]> {
     const options = new picker.DocumentSelectOptions();
     options.maxSelectNumber = Math.max(1, Math.min(20, limit));
-    options.fileSuffixFilters = ['支持的资料|.pdf,.md,.markdown,.txt,.docx,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.gif',
+    options.fileSuffixFilters = textSources ? ['可用于对话的文件|.pdf,.md,.markdown,.txt,.docx,.pptx'] :
+      ['支持的资料|.pdf,.md,.markdown,.txt,.docx,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.gif',
       'PDF|.pdf', '文字|.md,.markdown,.txt', 'Office 文字版|.docx,.pptx', '图片|.png,.jpg,.jpeg,.webp,.bmp,.gif'];
     return new picker.DocumentViewPicker(context).select(options);
   }
 
+  isStudyFile(uri: string): boolean {
+    return /\.(pdf|md|markdown|txt|docx|pptx)$/i.test(this.fileNameFromUri(uri));
+  }
+
   /** All document entry points materialize a local source before publishing an import. */
-  async importDocumentUri(context: Context, uri: string): Promise<DocumentTransferResult> {
+  async importDocumentUri(context: Context, uri: string, progress: (message: string) => void = () => {}): Promise<DocumentTransferResult> {
+    const fileName: string = this.fileNameFromUri(uri);
     try {
-      const fileName: string = this.fileNameFromUri(uri);
       const id: string = `import_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
 
       const office = /\.(docx|pptx)$/i.test(fileName);
       if (this.isTextDocument(fileName) || office) {
         const content: string = office ? await OfficeDocumentService.read(uri, /\.pptx$/i.test(fileName)) :
-          await fileIo.readText(uri);
+          await TextDocumentService.read(uri);
         const note: NoteItem = this.noteFromImportedFile(id, fileName, content);
         await this.ensureInitialized(context);
         await this.writeMarkdown(note.id, content);
@@ -262,8 +270,10 @@ export class NoteStorageService {
       }
 
       if (/\.pdf$/i.test(fileName)) {
-        const savedPath = await PdfDocumentService.getInstance().savePdfToSandbox(context, uri, fileName);
-        return await this.importPdfCopy(context, savedPath, fileName, id, true);
+        const service = PdfDocumentService.getInstance();
+        service.bindContext(context);
+        const copy = await service.copyPdfToSandbox(context, uri, progress);
+        return await this.importPdfCopy(context, copy.path, fileName, id, copy.sha256, progress);
       }
       if (ImageDocumentPolicy.extension(fileName)) {
         const imported = await ImageDocumentService.importFile(context, uri, fileName);
@@ -286,8 +296,9 @@ export class NoteStorageService {
         message: `${fileName} 格式不受支持`
       };
     } catch (error) {
-      console.error(`文件导入失败: ${JSON.stringify(error)}`);
-      return { status: 'failed', message: error instanceof Error ? error.message : '文件导入失败，请检查文件权限或重试' };
+      const message = error instanceof Error ? error.message : '文件导入失败，请检查文件权限或重试';
+      console.error('文件导入失败: ' + message);
+      return { status: 'failed', fileName, message };
     }
   }
 
@@ -336,21 +347,17 @@ export class NoteStorageService {
   }
 
   private async importPdfCopy(context: Context, savedPath: string, fileName: string, id: string,
-    metadataOnly: boolean = false): Promise<DocumentTransferResult> {
+    sourceSha256: string = '', progress: (message: string) => void = () => {}): Promise<DocumentTransferResult> {
     const service = PdfDocumentService.getInstance();
     let count: number;
-    let sourceSha256: string = '';
-    let checksumError: Error | undefined;
-    const checksum = service.fingerprint(savedPath).then((value: string): void => {
-      sourceSha256 = value;
-    }).catch((error: Error): void => { checksumError = error; });
     try {
-      // Both operations read the durable copy. Wait for both before committing or removing it.
-      count = (await service.validateImport(savedPath, metadataOnly).finally(() => checksum)).pageCount;
-      if (!sourceSha256) { throw checksumError ?? new Error('PDF 文件校验失败，请重试'); }
+      progress('正在读取 PDF 页数…');
+      count = (await service.validateImport(savedPath, sourceSha256.length > 0)).pageCount;
+      if (!sourceSha256) { sourceSha256 = await service.fingerprint(savedPath); }
     } catch (error) {
       try { await service.removeManagedPdf(context, savedPath); } catch { /* 不残留失败导入文件 */ }
-      return { status: 'failed', message: error instanceof Error ? error.message : 'PDF 读取失败' };
+      const reason = error instanceof Error ? error.message : '请用系统文件管理器确认原件可以打开';
+      return { status: 'failed', fileName, message: `PDF 读取失败：${reason}` };
     }
     const note: NoteItem = {
       id: id, title: fileName.replace(/\.pdf$/i, ''), category: '未分类', type: 'PDF',
@@ -359,6 +366,7 @@ export class NoteStorageService {
       sourceUri: savedPath, sourceFileName: savedPath.split('/').pop(), sourceSha256, sourceType: 'pdf', pageCount: count
     };
     try {
+      progress('正在保存资料…');
       await this.ensureInitialized(context);
       await this.writeMarkdown(note.id, note.contentDetail);
     } catch (error) {
@@ -377,9 +385,11 @@ export class NoteStorageService {
     const uris = await new picker.DocumentViewPicker(context).select(options);
     if (!uris.length) { return null; }
     const service = PdfDocumentService.getInstance();
-    const path = await service.savePdfToSandbox(context, uris[0], this.fileNameFromUri(uris[0]));
+    service.bindContext(context);
+    const copy = await service.copyPdfToSandbox(context, uris[0]);
+    const path = copy.path;
     try {
-      const fingerprint = await service.fingerprint(path);
+      const fingerprint = copy.sha256;
       const previousPath = note.sourceUri || '';
       if (note.sourceSha256 && fingerprint !== note.sourceSha256) {
         throw new Error('所选 PDF 与这份资料的原文件不同。请选择原文件，其他资料可单独导入。');
@@ -492,7 +502,20 @@ export class NoteStorageService {
 
   private async saveSnapshot(notes: NoteItem[]): Promise<void> {
     NoteIdentity.requireNotes(notes);
-    const json = JSON.stringify(notes);
+    let sanitizedNotes = notes;
+    if (notes.some((item: NoteItem) => WorkspaceNotePolicy.isFreeCanvas(item) && (item.strokes !== '[]' || item.scratchpadStrokes !== '[]'))) {
+      sanitizedNotes = notes.map((item: NoteItem) => {
+        if (WorkspaceNotePolicy.isFreeCanvas(item) && (item.strokes !== '[]' || item.scratchpadStrokes !== '[]')) {
+          const clean = copyNote(item);
+          clean.strokes = '[]';
+          clean.scratchpadStrokes = '[]';
+          clean.previewText = '自由白板';
+          return clean;
+        }
+        return item;
+      });
+    }
+    const json = JSON.stringify(sanitizedNotes);
     let prefs: preferences.Preferences | null = this.notePreferences;
     if (prefs === null) {
       const context: Context | null = this.storageContext;
@@ -668,8 +691,10 @@ export class NoteStorageService {
         local = (await ImageDocumentService.importFile(context, source, this.fileNameFromUri(source))).path;
       } else {
         const service = PdfDocumentService.getInstance();
-        local = await service.savePdfToSandbox(context, source, this.fileNameFromUri(source));
-        sha256 = await service.fingerprint(local);
+        service.bindContext(context);
+        const copy = await service.copyPdfToSandbox(context, source);
+        local = copy.path;
+        sha256 = copy.sha256;
         if (note.sourceSha256 && sha256 !== note.sourceSha256) { throw new Error('原 PDF 校验值不一致'); }
         try {
           await service.validateImport(local);
@@ -876,6 +901,11 @@ export class NoteStorageService {
   }
 
   private fileNameFromUri(uri: string): string {
+    if (!/^[a-z][a-z\d+.-]*:\/\//i.test(uri)) { return uri.split('/').pop() || 'document'; }
+    try {
+      const name = new fileUri.FileUri(uri).name;
+      if (name.length > 0) { return name; }
+    } catch { /* Some providers do not support FileUri metadata. */ }
     const cleanUri: string = uri.split(/[?#]/)[0];
     const parts: string[] = cleanUri.split('/');
     const name = parts[parts.length - 1] || 'document';

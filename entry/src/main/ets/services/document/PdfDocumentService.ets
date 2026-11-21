@@ -8,7 +8,7 @@
  *   4. 原文失败时报告错误，不展示替代的模拟页面
  */
 import { Context } from '@kit.AbilityKit';
-import { deviceInfo } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { image } from '@kit.ImageKit';
@@ -33,6 +33,9 @@ export interface RenderedPdfPage {
   aspectRatio: number;
 }
 
+export interface SavedPdfCopy { path: string; sha256: string; }
+const COPY_CHUNK_BYTES: number = 1024 * 1024;
+
 interface CachedPage {
   path: string;
   stamp: string;
@@ -49,6 +52,7 @@ export class PdfDocumentService {
   private debugPreview: DebugPdfPreviewService = new DebugPdfPreviewService();
   private nativeLoader: NativePdfLoader = new NativePdfLoader();
   private nativeUnavailable: boolean = false;
+  private readonly offlineSources: Set<string> = new Set();
   // The reader keeps only visible pages alive. Reusing a page across a tab switch or a short
   // scroll-back avoids another full parse of the source file. Ownership is transferred out of
   // this cache to exactly one PdfPageBackground, which releases it when it leaves the viewport.
@@ -63,7 +67,7 @@ export class PdfDocumentService {
 
   private async tryNative(path: string, action: string, page: number, cancelled: () => boolean,
     endPage: number = -1): Promise<NativePdfResult | null> {
-    if (this.nativeUnavailable || !canIUse('SystemCapability.OfficeService.PDFService.Core')) { return null; }
+    if (this.nativeUnavailable || this.offlineSources.has(path) || !canIUse('SystemCapability.OfficeService.PDFService.Core')) { return null; }
     const result = await this.nativeLoader.run(path, action, page, cancelled, endPage);
     if (!result.unavailable) { return result; }
     this.nativeUnavailable = true;
@@ -77,56 +81,82 @@ export class PdfDocumentService {
     return PdfDocumentService.instance;
   }
 
-  /**
-   * 将外部选择的 PDF 复制到应用沙箱的 documents 目录
-   */
-  async savePdfToSandbox(context: Context, srcUri: string, targetName: string): Promise<string> {
+  /** Stream the authorized URI into a staged file while hashing the exact bytes written. */
+  async copyPdfToSandbox(context: Context, srcUri: string, progress: (message: string) => void = () => {}): Promise<SavedPdfCopy> {
     const docDir: string = `${context.filesDir}/documents`;
     this.ensureDirectory(docDir);
-
-    const sanitizedName = targetName.replace(/[\\/:*?"<>|]/g, '_');
-    const destPath: string = `${docDir}/${Date.now()}_${Math.floor(Math.random() * 1000000)}_${sanitizedName}`;
-
-    let srcFile: fs.File;
-    try { srcFile = fs.openSync(srcUri, fs.OpenMode.READ_ONLY); }
+    const destPath = `${docDir}/pdf_${Date.now()}_${Math.floor(Math.random() * 1000000000)}.pdf`;
+    const stagedPath = destPath + '.part';
+    let source: fs.File;
+    try { source = await fs.open(srcUri, fs.OpenMode.READ_ONLY); }
     catch { throw new Error('所选 PDF 无法打开，请确认文件仍可访问后重新选择'); }
+
+    let expected = 0;
     try {
-      const expectedSize = fs.statSync(srcFile.fd).size;
-      if (expectedSize <= 0) { throw new Error('PDF 文件为空'); }
-      await fs.copyFile(srcFile.fd, destPath);
-      const copy = fs.openSync(destPath, fs.OpenMode.READ_WRITE);
+      // File providers may expose a readable descriptor before reporting its size.
+      try { expected = (await fs.stat(source.fd)).size; } catch { /* Read through EOF. */ }
+      const target = await fs.open(stagedPath, fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      let sha256: string;
       try {
-        if (fs.statSync(copy.fd).size !== expectedSize) { throw new Error('PDF 复制不完整'); }
-        await fs.fsync(copy.fd);
-      } finally { fs.closeSync(copy); }
-      return destPath;
+        progress('正在复制 PDF…');
+        sha256 = await this.hashPdfBytes(source.fd, expected, target.fd, progress);
+        await fs.fsync(target.fd);
+      } finally { await fs.close(target); }
+      await fs.rename(stagedPath, destPath);
+      return { path: destPath, sha256: sha256 };
     } catch (error) {
-      try { fs.unlinkSync(destPath); } catch { /* 未创建目标 */ }
-      throw new Error(error instanceof Error ? `PDF 复制失败：${error.message}` : 'PDF 复制失败，请检查存储空间或文件权限');
+      try { await fs.unlink(stagedPath); } catch { /* No staged file or cleanup unavailable. */ }
+      if ((error as BusinessError).code === 13900025) { throw new Error('PDF 复制失败：设备存储空间不足'); }
+      const reason = error instanceof Error && error.message ? error.message : '请检查存储空间或文件权限';
+      throw new Error(`PDF 复制失败：${reason}`);
     } finally {
-      fs.closeSync(srcFile);
+      try { await fs.close(source); } catch { /* The selected file was opened read-only. */ }
     }
   }
 
-  /** Hash the saved copy in chunks so large PDFs do not require a second copy in memory. */
+  /** Hash a previously imported file using the same sequential read as new imports. */
   async fingerprint(path: string): Promise<string> {
     const file = await fs.open(path, fs.OpenMode.READ_ONLY);
     try {
-      const size = fs.statSync(file.fd).size;
-      if (size <= 0) { throw new Error('PDF 文件为空'); }
-      const md = cryptoFramework.createMd('SHA256');
-      const buffer = new ArrayBuffer(Math.min(size, 256 * 1024));
-      let offset = 0;
-      while (offset < size) {
-        const read = await fs.read(file.fd, buffer, { offset, length: Math.min(size - offset, buffer.byteLength) });
-        if (read <= 0) { throw new Error('PDF 未完整读取，请重试'); }
-        await md.update({ data: new Uint8Array(buffer, 0, read) });
-        offset += read;
-      }
-      if (fs.statSync(file.fd).size !== size) { throw new Error('PDF 在校验时发生变化，请重试'); }
-      const hash = await md.digest();
-      return Array.from(hash.data).map((byte: number) => byte.toString(16).padStart(2, '0')).join('');
+      return await this.hashPdfBytes(file.fd, (await fs.stat(file.fd)).size);
     } finally { await fs.close(file); }
+  }
+
+  private async hashPdfBytes(sourceFd: number, expected: number, targetFd: number = -1,
+    progress: (message: string) => void = () => {}): Promise<string> {
+    const md = cryptoFramework.createMd('SHA256');
+    const buffer = new ArrayBuffer(COPY_CHUNK_BYTES);
+    let total = 0;
+    let lastStep = 0;
+    for (;;) {
+      // HarmonyOS offsets are relative to the current file pointer. Let read advance it.
+      const read = await fs.read(sourceFd, buffer);
+      if (read === 0) { break; }
+      total += read;
+      if (expected > 0 && total > expected) { throw new Error('原 PDF 在读取时大小发生变化'); }
+      if (targetFd >= 0) {
+        let written = await fs.write(targetFd, buffer, { length: read });
+        while (written > 0 && written < read) {
+          const next = await fs.write(targetFd, buffer.slice(written, read));
+          if (next <= 0) { break; }
+          written += next;
+        }
+        if (written !== read) { throw new Error('本地副本未完整写入'); }
+        const step = expected > 0 ? Math.floor(total / expected * 20) : Math.floor(total / (4 * COPY_CHUNK_BYTES));
+        if (step > lastStep) {
+          lastStep = step;
+          progress(expected > 0 ? `正在复制 PDF · ${step * 5}%` : `正在复制 PDF · 已复制 ${step * 4} MiB`);
+        }
+      }
+      await md.update({ data: new Uint8Array(buffer, 0, read) });
+    }
+    if (total === 0) { throw new Error('PDF 文件为空'); }
+    if (expected > 0 && (total !== expected || (await fs.stat(sourceFd)).size !== expected)) {
+      throw new Error('原 PDF 未完整读取或大小发生变化');
+    }
+    if (targetFd >= 0 && (await fs.stat(targetFd)).size !== total) { throw new Error('本地副本大小不一致'); }
+    const hash = await md.digest();
+    return Array.from(hash.data).map((byte: number) => byte.toString(16).padStart(2, '0')).join('');
   }
 
   /** A readable damaged legacy copy cannot establish the original file's identity. */
@@ -168,7 +198,14 @@ export class PdfDocumentService {
     // An info probe is an explicit re-read of the source (import, extraction, replacement).
     // Drop retained page bitmaps so a rewritten file can never be served from the cache.
     this.evictPages(filePath);
-    const result = await this.tryNative(filePath, 'info', 0, cancelled);
+    let result: NativePdfResult | null = null;
+    let nativeFailure: Error | undefined;
+    try { result = await this.tryNative(filePath, 'info', 0, cancelled); }
+    catch (error) {
+      if (!(error instanceof Error) || cancelled() ||
+        (pdfFailureKind(error.message) !== 'damaged' && !error.message.includes('读取超时'))) { throw error as Error; }
+      nativeFailure = error;
+    }
     if (result !== null) {
       return { filePath, fileName: filePath.split('/').pop() || 'document.pdf', fileSize: result.fileSize, pageCount: result.pageCount };
     }
@@ -177,9 +214,17 @@ export class PdfDocumentService {
     if (count > 0) {
       return { filePath, fileName: filePath.split('/').pop() || 'document.pdf', fileSize: size, pageCount: count };
     }
-    const offline = await LocalPdfEngine.getInstance().inspect(filePath, cancelled);
-    if (!Number.isInteger(offline.pageCount) || (offline.pageCount || 0) <= 0 || (offline.pageCount || 0) > 10000) { throw new Error('PDF 页数无效或超过 10000 页'); }
-    return { filePath, fileName: filePath.split('/').pop() || 'document.pdf', fileSize: size, pageCount: offline.pageCount! };
+    let pageCount: number;
+    try { pageCount = (await LocalPdfEngine.getInstance().inspect(filePath, cancelled)).pageCount ?? 0; }
+    catch (error) {
+      if (nativeFailure !== undefined && error instanceof Error && pdfFailureKind(error.message) === 'engine') {
+        throw new Error(`${nativeFailure.message}；${error.message}`);
+      }
+      throw error as Error;
+    }
+    if (!Number.isInteger(pageCount) || pageCount <= 0 || pageCount > 10000) { throw new Error('PDF 页数无效或超过 10000 页'); }
+    if (nativeFailure !== undefined) { this.offlineSources.add(filePath); }
+    return { filePath, fileName: filePath.split('/').pop() || 'document.pdf', fileSize: size, pageCount: pageCount };
   }
 
   async renderPageAsync(filePath: string, pageIndex: number, cancelled: () => boolean = () => false): Promise<RenderedPdfPage> {
@@ -296,6 +341,7 @@ export class PdfDocumentService {
   /** Cleanup may only touch direct files created inside our PDF directory. */
   async removeManagedPdf(context: Context, filePath: string): Promise<void> {
     this.evictPages(filePath);
+    this.offlineSources.delete(filePath);
     const prefix = `${context.filesDir}/documents/`;
     const name = filePath.startsWith(prefix) ? filePath.substring(prefix.length) : '';
     if (!name || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) { return; }

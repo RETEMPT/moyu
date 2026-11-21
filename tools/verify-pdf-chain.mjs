@@ -62,21 +62,22 @@ function viewMethod(relative, name, globals = {}) {
 function platform({ shortCopy = false, syncFails = false, renderFails = false, parseResult = 0,
   pageCount = 2, selection = 'file://picked/course.pdf', writeFails = false, flushFails = false,
   nativeMissing = false, nativeKitUnavailable = false, debug = true, offlineInfo, offlineError, damagedSource,
-  nativeExecutor, pixelBytes = 2 * 1024 * 1024, deviceType = 'phone' } = {}) {
+  nativeExecutor, pixelBytes = 2 * 1024 * 1024, deviceType = 'phone', unknownSize = false, shortWrites = false,
+  renameFails = false, diskFull = false, pickerName } = {}) {
   const calls = [];
   const bitmap = label => ({ getPixelBytesNumber: () => pixelBytes, release: async () => calls.push(label) });
   let inWorker = false;
   const files = new Map([['file://picked/course.pdf', Buffer.from(fixture)]]);
   const directories = new Set(['/sandbox']);
-  const descriptors = new Map(); let nextFd = 1;
+  const descriptors = new Map(); const positions = new Map(); let nextFd = 1;
   const filePath = input => typeof input === 'number' ? descriptors.get(input) : input;
   const open = (file, mode) => {
     if (mode & 4) files.set(file, Buffer.alloc(0));
     if (!files.has(file)) throw Error('missing file');
-    const fd = nextFd++; descriptors.set(fd, file); calls.push(['open', file]); return { fd };
+    const fd = nextFd++; descriptors.set(fd, file); positions.set(fd, 0); calls.push(['open', file]); return { fd };
   };
   const close = input => { const fd = typeof input === 'number' ? input : input.fd;
-    calls.push(['close', descriptors.get(fd)]); descriptors.delete(fd); };
+    calls.push(['close', descriptors.get(fd)]); descriptors.delete(fd); positions.delete(fd); };
   const unlink = file => { calls.push(['unlink', file]); files.delete(file); };
   const fileIo = {
     OpenMode: { READ_ONLY: 0, READ_WRITE: 1, WRITE_ONLY: 2, CREATE: 4, TRUNC: 8 },
@@ -84,24 +85,47 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
     access: async file => directories.has(file) || files.has(file),
     mkdirSync: directory => directories.add(directory), mkdir: async directory => directories.add(directory),
     statSync: input => ({ size: files.get(filePath(input))?.length || 0 }),
-    stat: async input => ({ size: files.get(filePath(input))?.length || 0 }),
+    stat: async input => {
+      const file = filePath(input);
+      if (unknownSize && file === selection) throw Error('provider does not report a size');
+      return { size: files.get(file)?.length || 0 };
+    },
     readSync: (fd, buffer) => { const bytes = files.get(filePath(fd)); new Uint8Array(buffer).set(bytes); return bytes.length; },
     read: async (fd, buffer, { offset = 0, length = buffer.byteLength } = {}) => {
-      const bytes = files.get(filePath(fd)).subarray(offset, offset + length);
+      const file = filePath(fd);
+      const source = files.get(file);
+      const start = positions.get(fd) + offset;
+      const bytes = (shortCopy && file === selection ? source.subarray(0, 10) : source).subarray(start, start + length);
       new Uint8Array(buffer).set(bytes);
+      positions.set(fd, start + bytes.length);
       return bytes.length;
     },
     openSync: open, open: async (file, mode) => open(file, mode),
     closeSync: close, close: async file => close(file),
-    copyFile: async (fd, dest) => { calls.push(['copy', dest]); const bytes = files.get(filePath(fd));
-      files.set(dest, Buffer.from(shortCopy ? bytes.subarray(0, 10) : bytes)); },
     fsync: async fd => { calls.push(['sync', filePath(fd)]); if (syncFails) throw Error('sync failed'); },
     fsyncSync: fd => calls.push(['sync', filePath(fd)]),
     unlinkSync: unlink, unlink: async file => unlink(file),
-    write: async (fd, content) => { if (writeFails) throw Error('disk full');
-      files.set(filePath(fd), Buffer.from(content)); return Buffer.byteLength(content); },
+    write: async (fd, content, { length } = {}) => {
+      const file = filePath(fd);
+      const bytes = Buffer.from(content).subarray(0, length);
+      if (file.endsWith('.pdf.part')) {
+        if (diskFull) throw Object.assign(new Error('disk full'), { code: 13900025 });
+        const count = shortWrites && bytes.length > 1 ? Math.floor(bytes.length / 2) : bytes.length;
+        files.set(file, Buffer.concat([files.get(file), bytes.subarray(0, count)]));
+        return count;
+      }
+      if (writeFails) throw Error('disk full');
+      files.set(file, bytes);
+      return bytes.length;
+    },
     writeSync: (fd, data) => { files.set(filePath(fd), Buffer.from(data)); return data.byteLength; },
-    rename: async (from, to) => { files.set(to, files.get(from)); files.delete(from); },
+    rename: async (from, to) => {
+      if (from.endsWith('.pdf.part')) {
+        if (renameFails) throw Error('rename failed');
+        calls.push(['publish-pdf', to]);
+      }
+      files.set(to, files.get(from)); files.delete(from);
+    },
     readText: async file => files.get(file).toString()
   };
   class PdfDocument {
@@ -122,7 +146,7 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
   const preferences = new Map();
   const mocks = {
     [path.resolve(root, `${base}services/document/LocalPdfEngine.ets`)]: {
-      pdfFailureKind: message => message.includes('损坏') ? 'damaged' : 'other',
+      pdfFailureKind: message => message.includes('离线阅读组件') ? 'engine' : message.includes('损坏') ? 'damaged' : 'other',
       LocalPdfEngine: { getInstance: () => ({
       bindContext() {},
       cover: async file => {
@@ -156,7 +180,8 @@ function platform({ shortCopy = false, syncFails = false, renderFails = false, p
         createPixelMap: async () => bitmap('debug-bitmap-release'),
         release: async () => calls.push('debug-image-release') };
     } } },
-    '@kit.CoreFileKit': { fileIo, picker: { DocumentViewPicker, DocumentSelectOptions: class {} } },
+    '@kit.CoreFileKit': { fileIo, picker: { DocumentViewPicker, DocumentSelectOptions: class {} },
+      fileUri: { FileUri: class { get name() { return pickerName ?? ''; } } } },
     '@kit.PDFKit': nativeMissing ? {} : { pdfService: { PdfDocument, PdfMatrix: class {},
       ParseResult: { PARSE_SUCCESS: 0, PARSE_ERROR_PASSWORD: 3 } } },
     '@kit.ArkTS': { taskpool: { execute: async (fn, ...args) => {
@@ -220,7 +245,7 @@ test('a preexisting example in the recycle bin is not recreated when its install
   p.preferences.set('trash', JSON.stringify([note({ id: 'debug-pdf-demo-v1' })]));
   assert.equal((await p.storage.ensureDebugPdf(context, [])).length, 0);
   assert.equal(p.preferences.get('debug_pdf_demo_v1'), true);
-  assert.ok(!p.calls.some(call => Array.isArray(call) && call[0] === 'copy'));
+  assert.ok(!p.calls.some(call => Array.isArray(call) && call[0] === 'publish-pdf'));
 });
 
 test('failed example snapshot leaves the existing library intact and cleans only the uncommitted example', async () => {
@@ -243,7 +268,7 @@ test('release neither seeds nor permits bundled preview imports or rendering', a
 const context = { filesDir: '/sandbox' };
 test('missing PDF Kit routes real metadata and page rendering through the offline adapter', async () => {
   const p=platform({nativeMissing:true,debug:false,offlineInfo:{pageCount:549}});
-  const source=await p.pdf.savePdfToSandbox(context,'file://picked/course.pdf','course.pdf');
+  const { path: source } = await p.pdf.copyPdfToSandbox(context, 'file://picked/course.pdf');
   p.pdf.bindContext(context);
   assert.equal((await p.pdf.getPdfInfo(source)).pageCount,549);
   const page=await p.pdf.renderPageAsync(source,274);assert.equal(page.aspectRatio,2/3);
@@ -278,13 +303,13 @@ test('PDFKit startup failure degrades to the offline engine without probing the 
 });
 test('offline capability failures preserve their cause without claiming the source is missing', async () => {
   const p=platform({nativeMissing:true,debug:false,offlineError:'离线阅读组件连接失败'});
-  const source=await p.pdf.savePdfToSandbox(context,'file://picked/course.pdf','course.pdf');p.pdf.bindContext(context);
+  const { path: source } = await p.pdf.copyPdfToSandbox(context, 'file://picked/course.pdf');p.pdf.bindContext(context);
   await assert.rejects(p.pdf.getPdfInfo(source),/离线阅读组件连接失败/);
   assert.ok(p.files.has(source));assert.equal(p.descriptors.size,0);
 });
 test('offline page cancellation prevents native or offline rendering from starting', async () => {
   const p=platform({nativeMissing:true,debug:false,offlineInfo:{pageCount:2}});
-  const source=await p.pdf.savePdfToSandbox(context,'file://picked/course.pdf','course.pdf');p.pdf.bindContext(context);
+  const { path: source } = await p.pdf.copyPdfToSandbox(context, 'file://picked/course.pdf');p.pdf.bindContext(context);
   await assert.rejects(p.pdf.renderPageAsync(source,0,()=>true),/页面已离开/);
   assert.ok(!p.calls.some(c=>Array.isArray(c)&&c[0]==='offline-page'));
 });
@@ -294,15 +319,45 @@ const note = changes => ({ id: 'existing-pdf', title: '课程原件', category: 
   pdfTextJson: '[{"pageNumber":1,"text":"旧文字"}]', ...changes });
 
 test('real PDF fixture is copied byte-for-byte, synced and returned as a durable source', async () => {
-  const p = platform(); const source = await p.pdf.savePdfToSandbox(context, 'file://picked/course.pdf', 'course.pdf');
+  const p = platform(); const { path: source, sha256 } = await p.pdf.copyPdfToSandbox(context, 'file://picked/course.pdf');
   assert.ok(p.files.get(source).equals(fixture)); assert.match(source, /^\/sandbox\/documents\//);
-  assert.ok(p.calls.some(call => call[0] === 'sync' && call[1] === source)); assert.equal(p.descriptors.size, 0);
+  assert.equal(sha256, createHash('sha256').update(fixture).digest('hex'));
+  assert.ok(p.calls.some(call => call[0] === 'sync' && call[1] === source + '.part'));
+  assert.ok(!p.files.has(source + '.part')); assert.equal(p.descriptors.size, 0);
 });
 
-for (const failure of [{ shortCopy: true }, { syncFails: true }]) {
+test('multi-chunk picker import preserves all bytes with relative file pointers and short writes', async () => {
+  const selection = 'file://provider/109?access=granted';
+  const name = '离散数学（第六版） #课程.pdf';
+  const p = platform({ selection, pickerName: name, unknownSize: true, shortWrites: true });
+  const bytes = Buffer.concat([fixture, Buffer.alloc(1024 * 1024, 12), Buffer.alloc(1024 * 1024, 98), Buffer.from('end')]);
+  p.files.set(selection, bytes);
+  const stages = [];
+  const result = await p.storage.importDocumentUri(context, selection, message => stages.push(message));
+  assert.equal(result.status, 'imported');
+  assert.equal(result.document.title, '离散数学（第六版） #课程');
+  assert.match(result.sourceFileName, /^pdf_\d+_\d+\.pdf$/);
+  assert.deepEqual(p.files.get(result.sourceUri), bytes);
+  assert.equal(result.sourceSha256, createHash('sha256').update(bytes).digest('hex'));
+  assert.deepEqual(stages, ['正在复制 PDF…', '正在读取 PDF 页数…', '正在保存资料…']);
+  assert.equal(p.calls.filter(call => call[0] === 'open' && call[1] === result.sourceUri).length, 0);
+  assert.equal(p.descriptors.size, 0);
+});
+
+test('a native parser rejection falls back to offline validation and opens the imported pages there', async () => {
+  const p = platform({ parseResult: 1, debug: false, offlineInfo: { pageCount: 273 } });
+  const result = await p.storage.importDocument(context);
+  assert.equal(result.status, 'imported');
+  assert.equal(result.pageCount, 273);
+  await (await p.pdf.renderPageAsync(result.sourceUri, 12)).pixelMap.release();
+  assert.equal(p.calls.filter(call => call[0] === 'native-load').length, 1);
+  assert.ok(p.calls.some(call => call[0] === 'offline-page' && call[2] === 12));
+});
+
+for (const failure of [{ shortCopy: true }, { syncFails: true }, { renameFails: true }, { diskFull: true }]) {
   test(`failed durable PDF copy removes its partial source: ${Object.keys(failure)[0]}`, async () => {
     const p = platform(failure);
-    await assert.rejects(p.pdf.savePdfToSandbox(context, 'file://picked/course.pdf', 'course.pdf'), /复制失败/);
+    await assert.rejects(p.pdf.copyPdfToSandbox(context, 'file://picked/course.pdf'), failure.diskFull ? /存储空间不足/ : /复制失败/);
     assert.equal([...p.files.keys()].filter(file => file.startsWith('/sandbox/documents/')).length, 0);
     assert.equal(p.descriptors.size, 0); assert.ok(p.files.get('file://picked/course.pdf').equals(fixture));
   });
@@ -373,7 +428,7 @@ test('legacy picker references get independent owned copies and survive revocati
   const reloaded = await p.storage.load(context, []);
   assert.match(reloaded[0].sourceUri, /^\/sandbox\/documents\//);
   assert.notEqual(reloaded[1].sourceUri, reloaded[0].sourceUri);
-  assert.equal(p.calls.filter(call => call[0] === 'copy').length, 2);
+  assert.equal(p.calls.filter(call => call[0] === 'publish-pdf').length, 2);
   assert.ok(p.files.has(legacy.sourceUri)); p.files.delete(legacy.sourceUri);
   const restarted = await p.restartStorage().load(context, []);
   assert.ok(p.files.get(restarted[0].sourceUri).equals(fixture));
@@ -408,7 +463,7 @@ test('malformed local filenames never redirect a PDF into a different directory'
     p.preferences.set('notes', JSON.stringify([legacy]));
     p.files.set('/sandbox/notes/existing-pdf.md', Buffer.from(legacy.contentDetail));
     const reloaded = await p.storage.load(context, []);
-    assert.equal(reloaded[0].sourceUri, legacy.sourceUri); assert.ok(!p.calls.some(call => call[0] === 'copy'));
+    assert.equal(reloaded[0].sourceUri, legacy.sourceUri); assert.ok(!p.calls.some(call => call[0] === 'publish-pdf'));
   }
 });
 
@@ -438,7 +493,7 @@ test('a note write failure does not leave a phantom PDF import', async () => {
 test('cancelled replacement never mutates the existing note or creates a source', async () => {
   const p = platform({ selection: '' }); const existing = note(); const before = plain(existing);
   assert.equal(await p.storage.selectReplacementPdf(context, existing), null); assert.deepEqual(existing, before);
-  assert.ok(!p.calls.some(call => call[0] === 'copy'));
+  assert.ok(!p.calls.some(call => call[0] === 'publish-pdf'));
 });
 
 test('replacement preserves note identity and annotations but invalidates old extracted text', async () => {
@@ -483,7 +538,7 @@ test('a damaged pre-fingerprint PDF can be re-linked while a readable different 
 
 test('PDF fingerprint hashes every chunk and releases the file descriptor', async () => {
   const p = platform();
-  const bytes = Buffer.concat([Buffer.alloc(256 * 1024, 11), Buffer.alloc(256 * 1024, 32), Buffer.alloc(3, 90)]);
+  const bytes = Buffer.concat([Buffer.alloc(1024 * 1024, 11), Buffer.alloc(1024 * 1024, 32), Buffer.alloc(3, 90)]);
   const file = '/sandbox/documents/long.pdf';
   p.files.set(file, bytes);
   assert.equal(await p.pdf.fingerprint(file), createHash('sha256').update(bytes).digest('hex'));

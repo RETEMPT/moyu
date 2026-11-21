@@ -10,32 +10,8 @@ export interface MemoExcerptPart { text: string; kind: MemoExcerptKind; }
 
 /** The date feed includes text notes and imported documents. */
 export class MemoFeedPolicy {
-  private static tokens(): RegExp {
-    return /(`+)(.*?)\1|\[\[([^\]|#]+)(?:\|([^\]]+))?\]\]|\[([^\]]+)\]\([^)]*\)|(^|\s)#([^\s#.,!?;:()[\]{}，。！？；：（）【】《》、*`]+)|\$[^$]+\$/g;
-  }
-
   static cardTags(note: NoteItem): string[] {
-    const tags = LibraryPolicy.tags(note).slice(0, 8);
-    if (LibraryPolicy.type(note) !== 'Markdown' || tags.length >= 8) { return tags; }
-    const source = note.contentDetail || note.previewText || '';
-    if (!source.includes('#')) { return tags; }
-    const keys = new Set<string>(tags.map((tag: string) => tag.toLowerCase()));
-    const pattern = MemoFeedPolicy.tokens();
-    for (const row of SourceTextStructure.scan(source)) {
-      if (row.kind === 'code' || row.kind === 'math' || !row.text.includes('#')) { continue; }
-      pattern.lastIndex = 0;
-      let match = pattern.exec(row.text);
-      while (match) {
-        const tag = match[7];
-        if (tag !== undefined && !keys.has(tag.toLowerCase())) {
-          tags.push(tag);
-          if (tags.length >= 8) { return tags; }
-          keys.add(tag.toLowerCase());
-        }
-        match = pattern.exec(row.text);
-      }
-    }
-    return tags;
+    return LibraryPolicy.tags(note).slice(0, 8);
   }
 
   static excerpt(note: NoteItem): MemoExcerptPart[] {
@@ -66,7 +42,7 @@ export class MemoFeedPolicy {
       if (parts.length > 0) { append(' ', 'text'); }
       if (row.kind === 'code' || row.kind === 'math') { append(row.text.trim(), 'text'); continue; }
       const line = row.text.trim().replace(/^(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/, '');
-      const tokens = MemoFeedPolicy.tokens();
+      const tokens = NoteTagPresentation.bodyTokens();
       let start = 0;
       let match = tokens.exec(line);
       while (match && remaining > 0) {
@@ -95,21 +71,25 @@ export class MemoFeedPolicy {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
   static query(notes: NoteItem[], date: string = '', tag: string = '', pinned: boolean = false): NoteItem[] {
+    const tagKey = LibraryPolicy.tagKey(tag);
     return LibraryPolicy.query(notes, { sort: 'create', ascending: false, pinnedFirst: false }).filter((note: NoteItem) => {
       const type = LibraryPolicy.type(note);
       return (type === 'Markdown' || type === 'PDF' || type === '图片') &&
         (!date || MemoFeedPolicy.dateKey(note.createdAt || note.updatedAt || 0) === date) &&
-        (!pinned || note.isPinned === true) && (!tag || MemoFeedPolicy.cardTags(note).includes(tag));
+        (!pinned || note.isPinned === true) && (!tagKey ||
+          MemoFeedPolicy.cardTags(note).some((value: string) => LibraryPolicy.tagKey(value) === tagKey));
     });
   }
   static tags(notes: NoteItem[]): MemoTagCount[] {
-    const counts = new Map<string, number>();
+    const counts = new Map<string, MemoTagCount>();
     MemoFeedPolicy.query(notes).forEach((note: NoteItem) => {
-      MemoFeedPolicy.cardTags(note).forEach((tag: string) => counts.set(tag, (counts.get(tag) || 0) + 1));
+      MemoFeedPolicy.cardTags(note).forEach((tag: string) => {
+        const key = LibraryPolicy.tagKey(tag);
+        const previous = counts.get(key);
+        counts.set(key, { tag: previous?.tag || tag, count: (previous?.count || 0) + 1 });
+      });
     });
-    const tags: MemoTagCount[] = [];
-    counts.forEach((count: number, tag: string) => tags.push({ tag, count }));
-    return tags.sort((a: MemoTagCount, b: MemoTagCount) => b.count - a.count || a.tag.localeCompare(b.tag));
+    return Array.from(counts.values()).sort((a: MemoTagCount, b: MemoTagCount) => b.count - a.count || a.tag.localeCompare(b.tag));
   }
   static month(notes: NoteItem[], year: number, month: number): MemoDay[] {
     const counts = new Map<string, number>();

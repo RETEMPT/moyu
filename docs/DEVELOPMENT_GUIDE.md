@@ -1,6 +1,6 @@
 # 墨语开发指南
 
-更新于 2026-11-20。源码基线为 1.2.0（1020000），面向 HarmonyOS 手机和平板。接手前阅读[产品范围](../PRODUCT_SCOPE.md)、[代码规范](CODE_STANDARDS.md)和[架构](ARCHITECTURE.md)。
+更新于 2026-11-21。源码基线为 1.2.1（1020100），面向 HarmonyOS 手机和平板。接手前阅读[产品范围](../PRODUCT_SCOPE.md)、[代码规范](CODE_STANDARDS.md)和[架构](ARCHITECTURE.md)。
 
 ## 环境与可复现构建
 
@@ -25,6 +25,8 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 
 构建与设备运行是独立步骤，不把自动编译当作真实设备交互验证。
 
+StudyDemo 由 `deploy_hap.bat -StudyDemo` 构建并安装。脚本会在安装前验证所选 HAP 的网络权限。联调需启动同一源码版本的电脑网关，配对步骤见[模拟器使用说明](../cloud/ai/README.md)。
+
 ## 工程地图
 
 | 目录／文件 | 责任 |
@@ -45,13 +47,13 @@ node tools/verify-project.mjs --compiled --typescript "<同一 SDK 的 typescrip
 
 ## 关键用例如何走通
 
-**导入**：系统选择器返回用户授权文件 → 原件复制到应用目录 → 解析及封面准备 → 在统一变更队列中基于最新资料提交 → 持久化成功后更新界面。最多 20 份顺序处理，批次可部分成功；失败不删除之前成功资料。
+**导入**。系统选择器返回用户授权的 URI。PDF 按文件描述符顺序读取，边复制边计算 SHA-256，校验字节数并同步后将临时文件改名为本机原件。读取页数成功后保存正文和资料索引，打开阅读器时再渲染页面。PDF Kit 不可用、无法解析或读取超时时，使用离线 PDF.js。最多选 20 份，逐份处理，单份失败时清理该次创建的文件。普通导入、重新关联和旧 URI 迁移共用 PDF 复制流程。 [华为文件选择指南](https://developer.huawei.com/consumer/en/doc/HarmonyOS-Guides/select-user-file/)
 
 **编辑／批注**：工作台发出有类型的提交 → `ReaderCommitService` 读取最新资料 → `ReaderCommitPolicy` 按区域合并自身字段 → 正文／元数据保存 → 成功发布。退出等候在途保存；失败保留脏状态。正文文件与 RDB 不是联合事务，跨文件断电恢复仍需补齐。
 
 **资料与项目回收**：`WorkspaceLifecycle` 生成计划 → 同一 RDB 事务保存资料、项目及两类回收记录 → 发布新状态。彻底删除先写 pending deletion 记录，再幂等清理文件；失败下次重试，不删除仍有引用的附件。
 
-**OCR 与整理**：系统能力检测 → 页／图片文字识别 → 人工校对 → 规则结构化 → 原文和预览 → 用户选择待办 → 保存。提取页数与字数限制见[排版规则](LOCAL_TEXT_LAYOUT.md)；不是云端生成。
+**OCR 与整理**。选择单份文件后按格式提取文字。扫描页和图片使用系统 OCR，结果在本机整理为 Markdown，供编辑、预览及保存。格式支持和提取边界见[排版规则](LOCAL_TEXT_LAYOUT.md)。
 
 **备份与分享**。资料库批量选择和备份页共享资料包生成逻辑。系统分享接收通过 `EntryAbility.onCreate` 或 `onNewWant` 处理 `sendData`，仅打开单份 `.flowmind.json` 文件。临时授权有效期间分块读取并关闭文件，TaskPool 校验成功后将资料包交给接收预览。文件选择器使用同一个读取与校验流程。用户确认后，恢复服务逐份创建本机副本。资料包上限为 32 MB，单附件上限为 16 MB，范围包括选中的资料和题卡。设备发现由系统分享面板提供。[华为接收分享指南](https://developer.huawei.com/consumer/en/doc/harmonyos-guides/share-interface-description/)
 

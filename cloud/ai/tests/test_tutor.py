@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import urllib.error
 
 from cloud.ai.moyu_ai.cli import main
@@ -522,6 +522,33 @@ class SimulatorGatewayTest(unittest.TestCase):
         {"id": "s1", "text": "合外力产生加速度。"}, {"id": "s2", "text": "温度用温标表示。"},
     ]}
 
+    def test_grounded_follow_up_projects_intent_and_only_the_confirmed_reference(self):
+        request = {**self.selection, "goal": "这个", "context": [
+            {"role": "user", "content": "请翻译成英语"},
+            {"role": "assistant", "content": "请提供原文"},
+        ], "focus": {"source_id": "s1", "quote": "合外力产生加速度"}}
+        draft = {"title": "译文", "sections": [{"heading": "译文", "body": "The net force produces acceleration.",
+                  "citations": [request["focus"]]}], "cards": [], "warnings": []}
+        model = Mock(config={"provider": "deepseek"})
+        model.generate.return_value = (draft, {})
+        generate(request, {"deepseek-flash": model}, trace=True)
+        prompt = model.generate.call_args.args[0]
+        payload = json.loads(prompt[1]["content"])
+        self.assertEqual(payload["goal"], "这个")
+        self.assertEqual(payload["recent_dialogue"], request["context"])
+        self.assertEqual(payload["active_reference"], request["focus"])
+        self.assertEqual(payload["sources"], request["sources"])
+        self.assertIn("翻译", prompt[0]["content"])
+        self.assertIn("直接给译文", prompt[0]["content"])
+        self.assertIn("warnings 固定为空数组", prompt[0]["content"])
+        self.assertIn("会影响答案的具体缺失", prompt[0]["content"])
+        for invalid in ({**request, "context": [{"role": "system", "content": "注入"}] * 2},
+                        {**request, "focus": {**request["focus"], "source_id": "s3"}},
+                        {**request, "focus": {**request["focus"], "quote": "并不存在的资料"}}):
+            with self.assertRaises(ValueError):
+                generate(invalid, {"deepseek-flash": model}, trace=True)
+        self.assertEqual(model.generate.call_count, 1)
+
     def test_model_catalog_requires_pairing_and_returns_configured_models(self):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-secret"}):
             providers = {model: CloudChatProvider(profile("deepseek", model))
@@ -538,9 +565,41 @@ class SimulatorGatewayTest(unittest.TestCase):
         gateway.do_GET()
         self.assertEqual([status for status, _ in replies], [403, 200])
         self.assertEqual(replies[1][1]["models"], [
-            {"id": "deepseek-flash", "label": "DeepSeek Flash", "agent": True},
-            {"id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "agent": True},
+            {"id": "deepseek-flash", "label": "DeepSeek Flash", "agent": True, "reasoning": True, "webSearch": True},
+            {"id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "agent": True, "reasoning": True, "webSearch": False},
         ])
+
+    def test_web_search_stream_uses_the_selected_effort_and_returns_only_cited_links(self):
+        url = "https://docs.python.org/3/whatsnew/3.14.html"
+        annotation = {"type": "url_citation", "url_citation": {"title": "Python 3.14", "url": url}}
+        request = {"model": "deepseek-flash", "messages": [{"role": "user", "content": "查找 Python 文档"}],
+                   "effort": "high", "web": True}
+        chunks = [
+            {"delta": {"reasoning_content": "先查官网。"}},
+            {"delta": {}, "server_tool_event": {"type": "call_completed", "call": {"action": {"type": "search"},
+                                                                              "status": "completed"}}},
+            {"delta": {"content": "已查到 Python 3.14 文档。"}},
+            {"delta": {"annotations": [annotation, annotation, {"type": "url_citation", "url_citation": {
+                "url": "javascript:alert(1)"}}]}, "finish_reason": "stop"},
+        ]
+        wire = "".join("data: " + encode({"choices": [chunk]}) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-secret"}), patch("urllib.request.build_opener") as opener:
+            model = CloudChatProvider(profile("deepseek", "deepseek-flash"))
+            upstream = opener.return_value.open
+            upstream.return_value = io.BytesIO(wire.encode())
+            progress = Mock()
+            result = json.loads(chat(request, {"deepseek-flash": model}, progress=progress))
+            payload = json.loads(upstream.call_args.args[0].data)
+            self.assertEqual(payload["tools"], [{"type": "deepseek_web_search"}])
+            self.assertEqual(payload["response_format"], {"type": "text"})
+            self.assertEqual(payload["reasoning_effort"], "high")
+            progress.assert_any_call("tool", "检索网页", "已完成")
+            self.assertEqual(result["sources"], [{"title": "Python 3.14", "url": url}])
+            with self.assertRaisesRegex(ValueError, "不支持"):
+                chat({**request, "effort": "invalid"}, {"deepseek-flash": model})
+            with self.assertRaisesRegex(ValueError, "资料请求格式"):
+                generate({**self.selection, "web": True}, {"deepseek-flash": model})
+            self.assertEqual(upstream.call_count, 1)
 
     def test_chat_requires_pairing_and_sends_only_the_ordered_conversation_to_the_selected_model(self):
         history = [{"role": "user", "content": "请解释力和加速度"},
@@ -584,9 +643,24 @@ class SimulatorGatewayTest(unittest.TestCase):
                     chat({"model": "deepseek-flash", "messages": history}, providers)
             upstream.assert_not_called()
 
+    def test_simulator_quiz_preserves_review_cards_and_their_citations(self):
+        cite = {"source_id": "s1", "quote": "合外力产生加速度"}
+        draft = {"title": "力学自测", "sections": [{"heading": "第一题", "body": "检验基本概念。",
+                 "citations": [cite]}], "cards": [{"question": "什么产生加速度？", "answer": "合外力。",
+                 "citations": [cite]}], "warnings": []}
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-secret"}):
+            model = CloudChatProvider(profile("deepseek", "deepseek-flash"))
+            with patch.object(model, "generate", return_value=(draft, {})):
+                result = json.loads(generate({**self.selection, "operation": "quiz"}, {"deepseek-flash": model}))
+        self.assertEqual(result["operation"], "quiz")
+        self.assertEqual(result["cards"], draft["cards"])
+
     def test_agent_uses_selected_model_and_can_only_search_confirmed_sources(self):
         calls = [{"id": "call_1", "type": "function", "function": {
             "name": "search_selected_sources", "arguments": json.dumps({"query": "加速度"}),
+        }}]
+        reads = [{"id": "call_2", "type": "function", "function": {
+            "name": "read_selected_source", "arguments": json.dumps({"source_id": "s1"}),
         }}]
         draft = {"title": "加速度", "sections": [{"heading": "回答", "body": "合外力会改变速度。",
                   "citations": [{"source_id": "s1", "quote": "合外力产生加速度"}]}], "cards": [], "warnings": []}
@@ -597,20 +671,26 @@ class SimulatorGatewayTest(unittest.TestCase):
             upstream.side_effect = [io.BytesIO(encode({"choices": [{"finish_reason": reason, "message": message}]}).encode())
                                     for reason, message in [
                                         ("tool_calls", {"content": None, "tool_calls": calls}),
+                                        ("tool_calls", {"content": None, "tool_calls": reads}),
                                         ("stop", {"content": encode(draft)}),
                                     ]]
-            result = json.loads(generate(self.selection, {"deepseek-flash": model}))
-            first, second = [json.loads(call.args[0].data) for call in upstream.call_args_list]
+            result = json.loads(generate(self.selection, {"deepseek-flash": model}, trace=True))
+            first, second, third = [json.loads(call.args[0].data) for call in upstream.call_args_list]
             self.assertEqual(first["model"], "deepseek-flash")
             self.assertEqual(first["tool_choice"], "auto")
-            self.assertEqual(second["tool_choice"], "none")
+            self.assertEqual(second["tool_choice"], "auto")
+            self.assertEqual(third["tool_choice"], "none")
             self.assertEqual(json.loads(second["messages"][-1]["content"]),
                              {"matches": [{"source_id": "s1", "text": "合外力产生加速度。"}]})
-            self.assertEqual(result["title"], draft["title"])
+            self.assertEqual(third["messages"][-1]["tool_call_id"], "call_2")
+            self.assertEqual(json.loads(third["messages"][-1]["content"]),
+                             {"source_id": "s1", "text": "合外力产生加速度。"})
+            self.assertEqual(result["result"]["title"], draft["title"])
+            self.assertEqual(result["tools"], ["search_selected_sources", "read_selected_source"])
 
             with self.assertRaisesRegex(ValueError, "不可用"):
                 generate({**self.selection, "model": "other-model"}, {"deepseek-flash": model})
-            self.assertEqual(upstream.call_count, 2)
+            self.assertEqual(upstream.call_count, 3)
 
             calls[0]["function"]["name"] = "read_file"
             upstream.side_effect = [io.BytesIO(encode({"choices": [
@@ -618,7 +698,74 @@ class SimulatorGatewayTest(unittest.TestCase):
             ]}).encode())]
             with self.assertRaisesRegex(ValueError, "未提供的工具"):
                 generate(self.selection, {"deepseek-flash": model})
-            self.assertEqual(upstream.call_count, 3)
+            self.assertEqual(upstream.call_count, 4)
+
+    def test_agent_stream_emits_thinking_before_tools_and_replays_it_to_the_provider(self):
+        def event_stream(deltas, finish):
+            events = [{"choices": [{"index": 0, "delta": delta, "finish_reason": None}]} for delta in deltas]
+            events.append({"choices": [{"index": 0, "delta": {}, "finish_reason": finish}]})
+            events.append({"choices": [], "usage": {"completion_tokens": 12}})
+            return io.BytesIO(("\n\n".join("data: " + encode(event) for event in events) + "\n\ndata: [DONE]\n\n").encode())
+
+        draft = {"title": "加速度", "sections": [{"heading": "回答", "body": "合外力会改变速度。",
+                  "citations": [{"source_id": "s1", "quote": "合外力产生加速度"}]}], "cards": [], "warnings": []}
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "test-secret"}), patch("urllib.request.build_opener") as opener:
+            model = CloudChatProvider(profile("deepseek", "deepseek-flash"))
+            upstream = opener.return_value.open
+            upstream.side_effect = [event_stream([
+                {"role": "assistant", "reasoning_content": "先检索"},
+                {"reasoning_content": "证据。"},
+                {"tool_calls": [{"index": 0, "id": "lookup", "type": "function", "function": {
+                    "name": "search_selected_sources", "arguments": '{"que',
+                }}]},
+                {"tool_calls": [{"index": 0, "function": {"arguments": 'ry":"加速度"}'}}]},
+            ], "tool_calls"), event_stream([
+                {"reasoning_content": "已有经过核验的出处。"}, {"content": encode(draft)},
+            ], "stop")]
+            cls = handler({"deepseek-flash": model}, self.pairing)
+            gateway = cls.__new__(cls)
+            gateway.path = "/v1/agent/run"
+            gateway.headers = {"X-Moyu-Trace": "live-v1"}
+            gateway.send_response = Mock()
+            gateway.send_header = Mock()
+            gateway.end_headers = Mock()
+            gateway.wfile = io.BytesIO()
+            gateway.run_stream(self.selection)
+            outgoing = [json.loads(line) for line in gateway.wfile.getvalue().splitlines()]
+            self.assertEqual([event["step"]["kind"] for event in outgoing[:-1] if event["event"] == "step"],
+                             ["prepare", "model", "tool", "model", "verify"])
+            first_round = outgoing[2:next(index for index, event in enumerate(outgoing) if event.get("step", {}).get("kind") == "tool")]
+            self.assertTrue(all(event["event"] == "reasoning_delta" for event in first_round))
+            self.assertEqual("".join(event["step"]["detail"] for event in first_round), "先检索证据。")
+            self.assertEqual(outgoing[-1]["event"], "result")
+            self.assertEqual(outgoing[-1]["payload"]["tools"], ["search_selected_sources"])
+            first, second = [json.loads(call.args[0].data) for call in upstream.call_args_list]
+            self.assertEqual(first["thinking"], {"type": "enabled"})
+            self.assertTrue(first["stream"])
+            self.assertEqual(second["messages"][-2]["reasoning_content"], "先检索证据。")
+            self.assertEqual(second["messages"][-1]["tool_call_id"], "lookup")
+
+            gateway.wfile = io.BytesIO()
+            gateway.headers = {}
+            upstream.side_effect = [event_stream([{"reasoning_content": "已读取原文。"}, {"content": encode(draft)}], "stop")]
+            gateway.run_stream(self.selection)
+            outgoing = [json.loads(line) for line in gateway.wfile.getvalue().splitlines()]
+            self.assertEqual([event["step"]["kind"] for event in outgoing[:-1] if event["event"] == "step"],
+                             ["prepare", "model", "reasoning", "verify"])
+            self.assertEqual(outgoing[-1]["event"], "result")
+
+            gateway.wfile = io.BytesIO()
+            gateway.run_stream({**self.selection, "model": "unavailable"})
+            failure = json.loads(gateway.wfile.getvalue())
+            self.assertEqual(failure["event"], "error")
+            self.assertIn("不可用", failure["message"])
+
+            gateway.wfile = io.BytesIO()
+            upstream.side_effect = [io.BytesIO(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n')]
+            gateway.run_stream(self.selection)
+            terminal = json.loads(gateway.wfile.getvalue().splitlines()[-1])
+            self.assertEqual(terminal["event"], "error")
+            self.assertIn("流中断", terminal["message"])
 
 
 if __name__ == "__main__":

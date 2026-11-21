@@ -32,7 +32,7 @@ const simulatorUi = new Map([
   ['views/reader/ReaderPairPicker.ets', /if \(this\.studyPreview &&/],
   ['views/reader/ReaderSplitWorkspace.ets', /if \(this\.studyPreview &&/],
   ['views/study/StudyAssistantPanel.ets', /else if \(this\.gatewayAvailable\)/],
-  ['views/study/StudyChatWorkspace.ets', /if \(this\.studyPreview\) \{\s*this\.conversationHeader\(\)/]
+  ['views/study/StudyChatWorkspace.ets', /build\(\) \{\s*Stack\([^\n]*\) \{\s*if \(this\.studyPreview\) \{\s*Row\(\)/]
 ]);
 const indexSource = fs.readFileSync(path.join(sourceRoot, 'pages/Index.ets'), 'utf8');
 assert.match(indexSource, /'flowmindStudyPreview', StudyAssistantGateway\.previewEnabled\(\)/);

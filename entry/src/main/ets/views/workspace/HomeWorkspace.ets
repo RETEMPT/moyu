@@ -6,6 +6,7 @@ import { readingRenderKey } from '../../common/utils/ForEachKeys';
 import { NAV_LIBRARY } from '../../common/constants/WorkspaceConstants';
 import { ReadingProgressPolicy } from '../../services/document/ReadingProgressPolicy';
 import { MemoFeedPolicy, MemoTagCount } from '../../services/library/MemoFeedPolicy';
+import { LibraryPolicy } from '../../services/library/LibraryPolicy';
 import { QuickMemoComposer } from '../common/QuickMemoComposer';
 import { MemoTimelineCard } from '../common/MemoTimelineCard';
 import { MemoCalendar } from '../common/MemoCalendar';
@@ -21,6 +22,7 @@ export struct HomeWorkspace {
   @Prop memoStatus: string = '';
   @Prop memoSaving: boolean = false;
   @Prop memoReady: boolean = false;
+  @Prop importing: boolean = false;
   onMemoChange: (value: string) => void = () => {};
   onSaveMemo: () => void = () => {};
   onRetryMemoDraft: () => void = () => {};
@@ -77,8 +79,10 @@ export struct HomeWorkspace {
     const notes = this.displayNotes();
     return index === 0 || this.dayStart(notes[index]) !== this.dayStart(notes[index - 1]);
   }
+  private isSelectedTag(tag: string): boolean { return LibraryPolicy.tagKey(this.selectedTag) === LibraryPolicy.tagKey(tag); }
+
   @Builder
-  quickAction(icon: Resource, label: string, action: () => void) {
+  quickAction(icon: Resource, label: string, action: () => void, enabled: boolean = true) {
     Button({ type: ButtonType.Normal }) {
       Row({ space: 10 }) {
         AppIcon({ source: icon, iconSize: 24, tint: this.palette().inkPrimary })
@@ -86,7 +90,7 @@ export struct HomeWorkspace {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
       }.width('100%')
     }.width('100%').height(48).padding({ left: 8, right: 8 }).borderRadius(5).backgroundColor(Color.Transparent)
-      .hoverEffect(HoverEffect.Highlight)
+      .hoverEffect(HoverEffect.Highlight).enabled(enabled)
       .accessibilityText(label).onClick(action)
   }
   @Builder
@@ -105,10 +109,10 @@ export struct HomeWorkspace {
       Flex({ wrap: FlexWrap.Wrap }) {
         ForEach(MemoFeedPolicy.tags(this.recentNotes).slice(0, 40), (item: MemoTagCount) => {
           Button({ type: ButtonType.Normal }) {
-            NoteTagBadge({ tag: item.tag, count: item.count, selected: this.selectedTag === item.tag })
+            NoteTagBadge({ tag: item.tag, count: item.count, selected: this.isSelectedTag(item.tag) })
           }.height(44).padding(0).backgroundColor(Color.Transparent).margin({ right: 6 })
             .accessibilityText(`筛选标签 ${item.tag}，${item.count} 条记录`)
-            .accessibilityDescription(this.selectedTag === item.tag ? '已选中' : '未选中').onClick(() => this.onOpenTag(item.tag))
+            .accessibilityDescription(this.isSelectedTag(item.tag) ? '已选中' : '未选中').onClick(() => this.onOpenTag(item.tag))
         }, (item: MemoTagCount) => item.tag + ':' + item.count)
       }.width('100%')
     }.width('100%').padding(8).borderRadius(8).backgroundColor(this.palette().surface)
@@ -141,7 +145,10 @@ export struct HomeWorkspace {
         GridRow({ columns: this.singleColumn ? 2 : 4, gutter: 8 }) {
           GridCol() { this.quickAction($r('app.media.ic_new_note'), '新建笔记', () => this.onCreateNote()) }
           GridCol() { this.quickAction($r('app.media.ic_pen'), '手写笔记', () => this.onCreateHandwriting()) }
-          GridCol() { this.quickAction($r('app.media.ic_import'), '导入资料', () => this.onImportDocument()) }
+          GridCol() {
+            this.quickAction($r('app.media.ic_import'), this.importing ? '导入中…' : '导入资料',
+              () => this.onImportDocument(), !this.importing)
+          }
           GridCol() { this.quickAction($r('app.media.ic_text_page'), '文字整理', () => this.onSmartExtract()) }
         }.width('100%')
         QuickMemoComposer({ text: this.memoDraft, status: this.memoStatus, saving: this.memoSaving, ready: this.memoReady,

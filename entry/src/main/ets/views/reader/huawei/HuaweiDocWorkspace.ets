@@ -24,6 +24,18 @@ import { SAVE_IDLE, SAVE_SAVING, SAVE_FAILED } from '../../../common/constants/W
 
 export type SplitModeType = 'none' | 'scratchpad';
 
+class InkDockColors {
+  static readonly surface: string = '#20252D';
+  static readonly border: string = '#485364';
+  static readonly control: string = '#303946';
+  static readonly icon: string = '#F2F5FA';
+  static readonly secondary: string = '#CAD3DF';
+  static readonly selection: string = '#34547E';
+  static readonly focus: string = '#A7CAFF';
+  static readonly launcher: string = '#E5EEFC';
+  static readonly launcherIcon: string = '#245AA5';
+}
+
 @Component
 export struct HuaweiDocWorkspace {
   @Require @Prop @Watch('onNoteChanged') note: NoteItem;
@@ -75,6 +87,7 @@ export struct HuaweiDocWorkspace {
     if (this.jumpDialogOpen) { this.jumpDialogOpen = false; return; }
     if (this.exitDialogOpen) { if (!this.exitSaving) { this.exitDialogOpen = false; } return; }
     if (this.exitSaving || this.restoreSourceBusy) { return; }
+    if (this.isFreeCanvas) { this.onClose(); return; }
     if (this.toolbarMinimized === false) { this.toolbarMinimized = true; return; }
     if (this.isAnnotateMode || this.documentDirty || this.scratchpadDirty || this.splitMode !== 'none' ||
       this.pendingReadingPage > 0 || this.readingWritePending) { this.saveDestination = 'close'; this.beginReaderSave(); }
@@ -262,6 +275,7 @@ export struct HuaweiDocWorkspace {
 
   private returnToReading(): void {
     if (this.exitSaving || !this.isAnnotateMode) { return; }
+    if (this.isFreeCanvas) { this.onClose(); return; }
     this.isAnnotateMode = false;
     this.penOptionsOpen = false;
     this.toolbarMinimized = true;
@@ -288,6 +302,10 @@ export struct HuaweiDocWorkspace {
   }
 
   private beginReaderSave(): void {
+    if (this.isFreeCanvas) {
+      if (this.saveDestination === 'close') { this.onClose(); }
+      return;
+    }
     if (this.exitSaving) { return; }
     this.exitSaving = true;
     this.isAnnotateMode = false;
@@ -307,6 +325,7 @@ export struct HuaweiDocWorkspace {
 
   private saveForHost(): void {
     if (this.exitSaving || this.restoreSourceBusy || this.outputBusy) { this.onHostSaveFinished(false, this.note.id, this.hostSaveToken); return; }
+    if (this.isFreeCanvas) { this.onHostSaveFinished(true, this.note.id, this.hostSaveToken); return; }
     this.saveDestination = 'host'; this.beginReaderSave();
   }
 
@@ -600,7 +619,16 @@ export struct HuaweiDocWorkspace {
   }
   private changeInkEraserMode(value: string): void {
     if ((value !== 'area' && value !== 'stroke') || !this.isAnnotateMode || this.exitSaving || this.restoreSourceBusy) { return; }
-    if (this.usesCanvasTools()) { this.sendCanvasCommand('eraserMode', value); }
+    if (this.usesCanvasTools()) {
+      if (this.inkTarget === 'scratchpad') {
+        this.scratchpadInk = { tool: this.scratchpadInk.tool, width: this.scratchpadInk.width, color: this.scratchpadInk.color,
+          fingerDrawing: this.scratchpadInk.fingerDrawing, eraserMode: value, paperStyle: this.scratchpadInk.paperStyle };
+      } else {
+        this.documentInk = { tool: this.documentInk.tool, width: this.documentInk.width, color: this.documentInk.color,
+          fingerDrawing: this.documentInk.fingerDrawing, eraserMode: value, paperStyle: this.documentInk.paperStyle };
+      }
+      this.sendCanvasCommand('eraserMode', value);
+    }
     else { this.pdfEraserMode = value; }
   }
   private undoInk(): void { if (this.usesCanvasTools()) { this.sendCanvasCommand('undo'); } else { this.undoTrigger++; } }
@@ -640,6 +668,9 @@ export struct HuaweiDocWorkspace {
   private openToolSettings(tool: AnnotationTool): void {
     if (tool === 'pan' || !this.prepareInkAction()) { return; }
     this.selectInkTool(tool);
+    this.drawingSettingsOpen = false;
+    this.shapeOptionsOpen = false;
+    this.paperOptionsOpen = false;
     this.toolbarMinimized = false;
     this.colorInput = this.activeColor().toUpperCase();
     this.penOptionsOpen = true;
@@ -654,10 +685,21 @@ export struct HuaweiDocWorkspace {
   }
 
   private collapseInkDockAfterStroke(): void {
-    if (!this.autoMinimizeToolbar || this.toolbarMinimized || !this.isAnnotateMode || this.exitSaving) { return; }
-    this.penOptionsOpen = false;
-    this.shapeOptionsOpen = false;
+    if (!this.autoMinimizeToolbar || this.toolbarMinimized || !this.isAnnotateMode || this.exitSaving ||
+      this.penOptionsOpen || this.shapeOptionsOpen || this.drawingSettingsOpen || this.paperOptionsOpen) { return; }
     this.toolbarMinimized = true;
+  }
+
+  private inkDockTransition(): TransitionEffect {
+    return TransitionEffect.asymmetric(
+      TransitionEffect.OPACITY
+        .combine(TransitionEffect.translate({ x: 16, y: 10 }))
+        .combine(TransitionEffect.scale({ x: 0.94, y: 0.96, centerX: '100%', centerY: '100%' }))
+        .animation({ duration: AnimationTokens.duration(210), curve: AnimationTokens.CURVE_SPRING }),
+      TransitionEffect.OPACITY
+        .combine(TransitionEffect.translate({ x: 10, y: 8 }))
+        .animation({ duration: AnimationTokens.duration(140), curve: Curve.EaseIn })
+    );
   }
 
   private widthPresets(): number[] {
@@ -683,15 +725,15 @@ export struct HuaweiDocWorkspace {
   toolButton(tool: AnnotationTool, icon: Resource, label: string) {
     Button({ type: ButtonType.Normal }) {
       Stack({ alignContent: Alignment.BottomEnd }) {
-        AppIcon({ source: icon, iconSize: 23, tint: this.isAnnotateMode && this.activeTool() === tool ? this.palette().accent : this.palette().inkPrimary })
+        AppIcon({ source: icon, iconSize: 23, tint: InkDockColors.icon })
         if (tool === 'eraser') {
           Text(this.activeEraserMode() === 'area' ? '区' : '笔')
-            .fontSize(8).fontColor(this.palette().inkMuted).padding({ left: 2, right: 1 })
+            .fontSize(8).fontColor(InkDockColors.secondary).padding({ left: 2, right: 1 })
         }
       }.width(28).height(28)
     }.width(44).height(44).padding(0).borderRadius(5)
       .id(`ink-tool-${tool}`)
-      .backgroundColor(this.isAnnotateMode && this.activeTool() === tool ? this.palette().accentSoft : Color.Transparent)
+      .backgroundColor(this.isAnnotateMode && this.activeTool() === tool ? InkDockColors.selection : Color.Transparent)
       .enabled(!this.exitSaving && !this.restoreSourceBusy)
       .accessibilityText(label)
       .accessibilityDescription(this.isAnnotateMode && this.activeTool() === tool ? '已选中，再点按可打开设置' : '点按选用')
@@ -709,6 +751,17 @@ export struct HuaweiDocWorkspace {
       })
   }
 
+  private showQuickInkColors(): boolean {
+    return this.isAnnotateMode && this.activeTool() !== 'eraser' && this.activeTool() !== 'pan';
+  }
+
+  private inkDockWidth(): number {
+    const colors = this.showQuickInkColors() ? 3 : 0;
+    const scratchpad = this.splitMode === 'scratchpad';
+    const gaps = 7 + colors + (scratchpad ? 3 : 0);
+    return 7 * 44 + 11 + colors * 52 + (scratchpad ? 125 : 0) + gaps * (this.compactTools() ? 0 : 3) + 10;
+  }
+
   @Builder
   annotationToolbar() {
     Row({ space: 2 }) {
@@ -719,47 +772,42 @@ export struct HuaweiDocWorkspace {
           this.toolButton('eraser', $r('app.media.ic_eraser'), '橡皮')
           this.inkHistoryButton(false)
           this.inkHistoryButton(true)
-          Divider().vertical(true).height(22).color(this.palette().borderSubtle).margin({ left: 5, right: 5 })
-          if (this.activeTool() === 'eraser') {
-            Button((this.activeEraserMode() === 'area' ? '区域擦除' : '笔画擦除') + ' ▾', { type: ButtonType.Normal })
-              .height(44).padding({ left: 10, right: 10 }).borderRadius(6).fontSize(12)
-              .fontColor(this.palette().inkSecondary).backgroundColor(this.palette().surfaceSubtle)
-              .enabled(!this.exitSaving && !this.restoreSourceBusy).accessibilityText('选择橡皮擦除方式')
-              .onClick(() => this.openToolSettings('eraser'))
-          }
+          Divider().vertical(true).width(1).height(22).color(InkDockColors.border).margin({ left: 5, right: 5 })
           Button({ type: ButtonType.Normal }) {
-            AppIcon({ source: $r('app.media.ic_hand'), tint: !this.isAnnotateMode || this.activeTool() === 'pan' ? this.palette().accent : this.palette().inkSecondary })
+            AppIcon({ source: $r('app.media.ic_hand'), tint: InkDockColors.icon })
           }.width(44).height(44).padding(0).borderRadius(6).enabled(!this.exitSaving)
-            .backgroundColor(!this.isAnnotateMode || this.activeTool() === 'pan' ? this.palette().accentSoft : Color.Transparent)
+            .backgroundColor(!this.isAnnotateMode || this.activeTool() === 'pan' ? InkDockColors.selection : Color.Transparent)
             .accessibilityText('拖动页面').onClick(() => { if (this.isAnnotateMode) { this.selectInkTool('pan'); } })
           Button({ type: ButtonType.Normal }) {
-            AppIcon({ source: $r('app.media.ic_shape'), iconSize: 23, tint: this.isAnnotateMode && InkShapePolicy.isShape(this.activeTool()) ? this.palette().accent : this.palette().inkPrimary })
+            AppIcon({ source: $r('app.media.ic_shape'), iconSize: 23, tint: InkDockColors.icon })
           }.width(44).height(44).padding(0).borderRadius(6).id('ink-shapes')
             .enabled(!this.exitSaving && !this.restoreSourceBusy).accessibilityText('图形工具')
-            .backgroundColor(this.isAnnotateMode && InkShapePolicy.isShape(this.activeTool()) ? this.palette().accentSoft : Color.Transparent)
+            .backgroundColor(this.isAnnotateMode && InkShapePolicy.isShape(this.activeTool()) ? InkDockColors.selection : Color.Transparent)
             .onClick(() => { this.penOptionsOpen = false; this.paperOptionsOpen = false; this.drawingSettingsOpen = false; this.shapeOptionsOpen = !this.shapeOptionsOpen; })
             .bindPopup(this.shapeOptionsOpen, { builder: this.shapeSettingsPanel, placement: Placement.Top,
               popupColor: this.palette().surface, radius: 12, shadow: { radius: 18, color: 'rgba(0,0,0,0.12)', offsetY: 4 },
               onStateChange: (event) => { if (!event.isVisible) { this.shapeOptionsOpen = false; } } })
-          if (this.isAnnotateMode && this.activeTool() !== 'eraser' && this.activeTool() !== 'pan') {
+          if (this.showQuickInkColors()) {
             ForEach(this.inkColors().slice(0, 3), (color: string) => { this.colorOption(color, true) }, (color: string) => color)
           }
           if (this.splitMode === 'scratchpad') {
-            Divider().vertical(true).height(22).color(this.palette().borderSubtle).margin({ left: 6, right: 6 })
-            Button('正文', { type: ButtonType.Normal }).height(44).fontSize(12)
-              .backgroundColor(this.inkTarget === 'document' ? this.palette().accentSoft : Color.Transparent).fontColor(this.palette().inkPrimary)
+            Divider().vertical(true).width(1).height(22).color(InkDockColors.border).margin({ left: 6, right: 6 })
+            Button('正文', { type: ButtonType.Normal }).width(56).height(44).fontSize(12)
+              .backgroundColor(this.inkTarget === 'document' ? InkDockColors.selection : Color.Transparent).fontColor(InkDockColors.icon)
               .accessibilityText('操作正文批注').onClick(() => { this.penOptionsOpen = false; this.inkTarget = 'document'; })
-            Button('稿纸', { type: ButtonType.Normal }).height(44).fontSize(12)
-              .backgroundColor(this.inkTarget === 'scratchpad' ? this.palette().accentSoft : Color.Transparent).fontColor(this.palette().inkPrimary)
+            Button('稿纸', { type: ButtonType.Normal }).width(56).height(44).fontSize(12)
+              .backgroundColor(this.inkTarget === 'scratchpad' ? InkDockColors.selection : Color.Transparent).fontColor(InkDockColors.icon)
               .accessibilityText('操作随堂稿纸').onClick(() => { this.penOptionsOpen = false; this.inkTarget = 'scratchpad'; })
           }
         }
-      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto).layoutWeight(1).height(48)
-        .align(Alignment.Start).id('reader-ink-tools')
-    }.width('100%').constraintSize({ maxWidth: 620 }).height(52)
-      .padding({ left: 4, right: 4 }).borderRadius(16).backgroundColor(this.palette().surface)
-      .border({ width: 1, color: this.palette().borderSubtle })
-      .shadow({ radius: 12, color: 'rgba(0,0,0,0.08)', offsetY: 3 })
+      }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Auto).width('100%').height(48)
+        .align(Alignment.Start).scrollBarColor(InkDockColors.secondary).id('reader-ink-tools')
+    }.width(this.inkDockWidth()).constraintSize({ maxWidth: '100%' }).height(52)
+      .justifyContent(FlexAlign.End)
+      .padding({ left: 5, right: 5 }).borderRadius(15).backgroundColor(InkDockColors.surface)
+      .border({ width: 1, color: InkDockColors.border })
+      .shadow({ radius: 18, color: 'rgba(12,18,28,0.30)', offsetY: 5 })
+      .transition(this.inkDockTransition())
       .id('reader-ink-dock')
   }
 
@@ -979,10 +1027,12 @@ export struct HuaweiDocWorkspace {
   @Builder
   colorOption(color: string, quick: boolean = false) {
     Button({ type: ButtonType.Normal }) {
-      Circle({ width: 25, height: 25 }).fill(color).stroke(this.activeColor().toUpperCase() === color ? this.palette().accent : this.palette().border)
+      Circle({ width: 25, height: 25 }).fill(color).stroke(this.activeColor().toUpperCase() === color ?
+        (quick ? InkDockColors.focus : this.palette().accent) : (quick ? InkDockColors.secondary : this.palette().border))
         .strokeWidth(this.activeColor().toUpperCase() === color ? 3 : 1)
     }.width(52).height(44).padding(0).borderRadius(5)
-      .backgroundColor(this.activeColor().toUpperCase() === color ? this.palette().accentSoft : Color.Transparent)
+      .backgroundColor(this.activeColor().toUpperCase() === color ?
+        (quick ? InkDockColors.selection : this.palette().accentSoft) : Color.Transparent)
       .accessibilityText((quick ? '快捷颜色 ' : '批注颜色 ') + color).onClick(() => { this.colorInput = color; this.changeInkColor(color); })
   }
 
@@ -1139,7 +1189,7 @@ export struct HuaweiDocWorkspace {
         MenuItem({ content: '分享原始图片', startIcon: $r('app.media.ic_share') }).onClick(() => this.openOutput('share_image'))
         MenuItem({ content: '导出原始图片', startIcon: $r('app.media.ic_export') }).onClick(() => this.openOutput('export_original'))
       }
-      MenuItem({ content: '画笔设置' }).enabled(this.isAnnotateMode && !this.exitSaving).onClick(() => {
+      MenuItem({ content: '当前批注工具设置' }).enabled(this.isAnnotateMode && !this.exitSaving).onClick(() => {
         this.documentMenuOpen = false; this.openToolSettings(this.activeTool() === 'eraser' ? 'eraser' : this.activeTool() === 'highlighter' ? 'highlighter' : 'pen');
       })
       MenuItem({ content: '新建手写笔记', startIcon: $r('app.media.ic_plus') }).onClick(() => { this.documentMenuOpen = false; this.createDocument(); })
@@ -1422,7 +1472,7 @@ export struct HuaweiDocWorkspace {
   @Builder
   inkHistoryButton(redo: boolean) {
     Button({ type: ButtonType.Normal }) {
-      AppIcon({ source: redo ? $r('app.media.ic_redo') : $r('app.media.ic_undo'), tint: this.palette().inkSecondary })
+      AppIcon({ source: redo ? $r('app.media.ic_redo') : $r('app.media.ic_undo'), tint: InkDockColors.secondary })
     }.width(44).height(44).padding(0).backgroundColor(Color.Transparent)
       .enabled(this.isAnnotateMode && !this.exitSaving && !this.restoreSourceBusy)
       .opacity(this.isAnnotateMode ? 1 : 0.65)
@@ -1437,12 +1487,13 @@ export struct HuaweiDocWorkspace {
         this.annotationToolbar()
       }
       Button({ type: ButtonType.Normal }) {
-        AppIcon({ source: $r('app.media.ic_pen'), iconSize: 22,
-          tint: this.isAnnotateMode || !this.toolbarMinimized ? this.palette().accent : this.palette().inkPrimary })
-      }.width(48).height(48).padding(0).borderRadius(24)
-        .backgroundColor(this.toolbarMinimized ? this.palette().surface : this.palette().accentSoft)
-        .border({ width: 1, color: this.palette().borderSubtle })
-        .shadow({ radius: 10, color: 'rgba(0,0,0,0.10)', offsetY: 3 })
+        AppIcon({ source: this.toolbarMinimized ? $r('app.media.ic_pen') : $r('app.media.ic_close'), iconSize: 22,
+          tint: this.toolbarMinimized && !this.isDarkMode ? InkDockColors.launcherIcon : InkDockColors.icon })
+      }.width(48).height(48).padding(0).borderRadius(12)
+        .backgroundColor(this.toolbarMinimized && !this.isDarkMode ? InkDockColors.launcher : InkDockColors.selection)
+        .border({ width: 1, color: this.toolbarMinimized && !this.isDarkMode ? '#C9DAF4' : InkDockColors.border })
+        .shadow({ radius: 10, color: 'rgba(12,18,28,0.16)', offsetY: 3 })
+        .id('reader-ink-dock-toggle')
         .accessibilityText(this.toolbarMinimized ? '展开批注工具栏' : '收起批注工具栏')
         .enabled(!this.exitSaving && !this.restoreSourceBusy)
         .onClick(() => {

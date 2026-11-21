@@ -15,7 +15,7 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
   },
   {
     "title": "原文整理",
-    "body": "校对后的文字通过本地规则识别明确标题、段落、列表和待办，保留原文供核对。合并图片断行由你主动选择，处理结果可预览和编辑。保存前选择需要添加的待办并确认日期。资料导入支持 PDF、普通 Markdown、TXT、PNG、JPG／JPEG、WebP、BMP、GIF。DOCX 和 PPTX 在本机提取文字并保存为 Markdown。选择学习结果 JSON 后，应用在本机核对关联资料和引文，由你决定是否采纳题卡。"
+    "body": "文字识别与排版处理你主动选择的一份文件，在本机提取文字并整理为 Markdown。你可以预览、编辑，再决定是否保存为笔记。资料导入支持 PDF、普通 Markdown、TXT、PNG、JPG／JPEG、WebP、BMP、GIF。DOCX 和 PPTX 在本机提取文字并保存为 Markdown。选择学习结果 JSON 后，应用在本机核对关联资料和引文，由你决定是否采纳题卡。"
   },
   {
     "title": "主动系统分享",
@@ -39,6 +39,6 @@ export const PRIVACY_SECTIONS: PrivacySection[] = [
   },
   {
     "title": "发布信息与隐私咨询",
-    "body": "开发版本的发布主体、隐私咨询联系方式与在线政策尚未填写，暂不能提交应用市场。项目反馈：github.com/RETEMPT/moyu/issues；请勿公开私人资料和密钥。说明更新日期：2026-11-20。"
+    "body": "开发版本的发布主体、隐私咨询联系方式与在线政策尚未填写，暂不能提交应用市场。项目反馈：github.com/RETEMPT/moyu/issues；请勿公开私人资料和密钥。说明更新日期：2026-11-21。"
   }
 ];

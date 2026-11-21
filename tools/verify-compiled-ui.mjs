@@ -133,7 +133,7 @@ function renderer() {
       return value instanceof Property ? value.get() : value;
     } }),
     registerNamedRoute: (factory, _, route) => routes.set(route.pagePath, factory),
-    SynchedPropertySimpleOneWayPU: Property, SynchedPropertyObjectOneWayPU: Property,
+    SynchedPropertySimpleOneWayPU: Property, SynchedPropertyObjectOneWayPU: Property, SynchedPropertyObjectTwoWayPU: Property,
     SubscriberManager: { Get: () => ({ delete() {} }) },
     ViewStackProcessor: { StartGetAccessRecordingFor() {}, StopGetAccessRecording() {} },
     $r: name => ({ resourceName: name }),
@@ -143,8 +143,10 @@ function renderer() {
     setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
     animateTo: (_, action) => action(), RenderingContextSettings: inert, CanvasRenderingContext2D: inert, OffscreenCanvas: inert, Scroller: inert, TextAreaController: inert, NavPathStack: inert,
     TransitionEffect: new Proxy({}, { get: (_, key) => {
-      const effect = { combine() { return this; }, animation() { return this; } };
-      return key === 'OPACITY' ? effect : () => effect;
+      const effect = (...parameters) => ({ key, parameters, combined: [],
+        combine(other) { this.combined.push(other); return this; },
+        animation(options) { this.options = options; return this; } });
+      return key === 'OPACITY' ? effect() : effect;
     } }),
     SourceTool: { Finger: 1, Pen: 2 }, TouchType: { Down: 0, Up: 1, Move: 2, Cancel: 3 } };
   for (const name of ['Web', 'Button', 'Column', 'Row', 'Text', 'Span', 'Blank', 'Image', 'Stack', 'Scroll', 'TextInput', 'TextArea',
@@ -154,6 +156,7 @@ function renderer() {
     'GestureMode', 'GestureDirection', 'GesturePriority', 'GestureJudgeResult', 'ScrollAlign', 'TransitionEdge', 'ModifierKey', 'ImageFit', 'ImageInterpolation', 'SliderStyle', 'FlexWrap', 'FlexDirection', 'ItemAlign', 'ResponseType', 'VerticalAlign', 'InputType', 'FontStyle', 'TextDecorationType', 'CopyOptions', 'ToggleType', 'SafeAreaType', 'KeyType']) globals[name] = enums;
   const realViews = new Set(['views/layout/sheets/NewProjectSheet', 'views/common/IconButton', 'views/common/AppIcon', 'views/common/InkWidthSlider', 'views/common/DocumentText',
     'views/reader/HandwritingCanvas', 'views/reader/InkCanvasSurface', 'views/common/DocumentPreview', 'views/common/DocumentCover', 'views/workspace/GraphWorkspace', 'views/layout/BottomNavBar', 'views/settings/SettingsWorkspace',
+    'views/study/StudyWorkspacePanels',
     'views/reader/huawei/HuaweiDocWorkspace', 'views/reader/ReaderPairPicker', 'views/reader/ReaderSplitWorkspace', 'views/reader/ReaderWorkspace', 'views/layout/sheets/NoteMenuSheet', 'views/layout/sheets/RenameNoteSheet', 'views/layout/sheets/MoveNoteSheet', 'views/layout/sheets/SheetScaffold', 'views/reader/huawei/HuaweiDocActionDialog', 'views/reader/MarkdownReader', 'views/reader/pdf/PdfAnnotatorView', 'views/reader/pdf/PdfPageCanvas', 'views/layout/AppShell', 'views/layout/GlobalTopBar', 'views/layout/Sidebar', 'views/brand/BrandMark', 'views/workspace/HomeWorkspace', 'views/workspace/LibraryWorkspace', 'views/workspace/TodoWorkspace', 'views/workspace/TrashWorkspace', 'views/explore/QuickSearchDialog', 'views/layout/sheets/SmartExtractSheet', 'views/study/StudyBackupSheet', 'views/study/StudySheet']);
   function load(relative, compiled = realViews.has(relative)) {
     const key = `${compiled}:${relative}`; if (modules.has(key)) return modules.get(key).exports;
@@ -169,6 +172,9 @@ function renderer() {
       if (specifier === '@ohos:graphics.drawing') return { default: { BlendMode: { SRC_IN: 'SRC_IN' },
         ColorFilter: { createBlendModeColorFilter: (color, mode) => ({ color, mode }) } } };
       if (specifier === '@ohos:web.webview') return { default: { WebviewController: inert } };
+      if (specifier === '@ohos:data.uniformTypeDescriptor') {
+        return { default: { UniformDataType: { FILE_URI: 'general.file-uri', FILE: 'general.file' } } };
+      }
       if (specifier.startsWith('@kit.') || specifier.startsWith('@ohos:')) return new Proxy({}, { get: () => inert });
       const match = specifier.match(/&&&entry\/src\/main\/ets\/(.*?)&/);
       const dependency = match?.[1] || (specifier.startsWith('.') ? path.posix.normalize(path.posix.join(path.posix.dirname(relative), specifier)) : '');
@@ -268,8 +274,9 @@ test('compiled whiteboard click updates the actual eraser button, icon and pen s
 
 for (const type of ['PDF','Image','Handwriting','Canvas']) {
   test(`compiled ${type} expands tools from the pen and saves before making ink read-only`,()=>{
-    const ui=renderer();const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',{
-      note:{id:'a',title:'资料',type,sourceType:type==='Image'?'image':'pdf',sourceUri:'/files/source'}
+    const ui=renderer(), states=[];const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',{
+      note:{id:'a',title:'资料',type,sourceType:type==='Image'?'image':'pdf',sourceUri:'/files/source'},
+      onSaveStateChange: state => states.push(state)
     },'initialRender',v=>{v.pdfSourceReady=true;v.whiteboardReady=true;});
     assert.equal(ui.find('普通笔'),undefined);ui.click('展开批注工具栏');
     assert.ok(ui.find('普通笔'));assert.equal(ui.find('普通笔').props.enabled,true);assert.ok(ui.find('解锁批注'));
@@ -277,11 +284,133 @@ for (const type of ['PDF','Image','Handwriting','Canvas']) {
     assert.equal(view.penOptionsOpen,false);assert.equal(ui.find('更多笔设置'),undefined);
     ui.click('橡皮');assert.equal(view.activeModal,'');assert.equal(view.penOptionsOpen,false);
     if(type==='Handwriting'||type==='Canvas')assert.equal(view.canvasCommand.action,'eraser');else assert.equal(view.currentTool,'eraser');
-    ui.click('锁定只读并保存批注');assert.equal(view.isAnnotateMode,false);assert.equal(view.exitSaving,true);assert.equal(view.exitSaveToken,1);
+    ui.click('锁定只读并保存批注');assert.equal(view.isAnnotateMode,false);assert.equal(view.exitSaveToken,1);
+    assert.ok(states.includes('保存中'));
     assert.equal(ui.find('普通笔'),undefined);
-    assert.equal(ui.find('展开批注工具栏').props.enabled,false);
+    assert.equal(ui.find('展开批注工具栏').props.enabled,!view.exitSaving);
   });
 }
+
+test('compiled ink dock anchors a dark animated strip to the same toggle and honors reduced motion',()=>{
+  const ui=renderer();
+  const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',{
+    note:{id:'a',title:'资料',type:'PDF'},compactPane:true
+  });
+  const findById=id=>[...ui.nodes.values()].find(node=>node.props.id===id);
+  const launcher=findById('reader-ink-dock-toggle');
+  assert.equal(launcher.props.backgroundColor,'#E5EEFC');
+  assert.equal(findById('reader-ink-dock'),undefined);
+  ui.click('展开批注工具栏');
+  assert.equal(findById('reader-ink-dock-toggle'),launcher);
+  assert.equal(launcher.props.accessibilityText,'收起批注工具栏');
+  const dock=findById('reader-ink-dock');
+  assert.equal(dock.props.backgroundColor,'#20252D');
+  assert.equal(dock.props.width,329);
+  assert.equal(ui.find('拖动页面').props.backgroundColor,'#34547E');
+  const [open,close]=dock.props.transition.parameters;
+  assert.equal(open.options.duration,210);
+  assert.deepEqual(open.combined.map(effect=>effect.key),['translate','scale']);
+  assert.equal(open.combined[1].parameters[0].centerX,'100%');
+  assert.equal(close.options.duration,140);
+  assert.equal(close.combined[0].key,'translate');
+  ui.click('收起批注工具栏');
+  assert.equal(findById('reader-ink-dock'),undefined);
+  assert.equal(view.isAnnotateMode,false);
+  ui.storage.setOrCreate('flowmindReduceMotion',true);
+  ui.storage.setOrCreate('flowmindDarkMode',true);
+  ui.click('展开批注工具栏');
+  const darkDock=findById('reader-ink-dock');
+  assert.equal(darkDock.props.backgroundColor,'#20252D');
+  assert.deepEqual(darkDock.props.transition.parameters.map(effect=>effect.options.duration),[0,0]);
+  view.backRequestToken++;ui.flush();
+  assert.equal(view.toolbarMinimized,true);
+  assert.equal(findById('reader-ink-dock-toggle'),launcher);
+});
+
+test('compiled chat composer enables send as the draft changes and refreshes the connected model label',()=>{
+  const ui=renderer();
+  ui.storage.setOrCreate('flowmindStudyPreview',true);
+  const view=ui.mount('views/study/StudyChatWorkspace','StudyChatWorkspace',{
+    session:{pairingCode:'',model:'',models:[],history:[],conversation:{id:'a',draft:'',messages:[]}}
+  });
+  assert.equal(ui.find('发送').props.enabled,false);
+  assert.ok(ui.find('连接网关'));
+  assert.equal(ui.find('研读工坊'),undefined);
+  const field=[...ui.nodes.values()].find(node=>node.props.id==='study-chat-question');
+  field.props.onChange('你好');ui.flush();
+  assert.equal(ui.find('发送').props.enabled,true);
+  view.session={...view.session,model:'deepseek-flash',models:[{id:'deepseek-flash',label:'DeepSeek Flash',reasoning:true,webSearch:true}]};ui.flush();
+  assert.ok(ui.find('DeepSeek Flash'));
+  assert.equal(ui.find('连接网关'),undefined);
+  ui.click('联网');assert.ok(ui.find('联网已开启'));
+  ui.click('思考 · 标准');ui.click('深入');assert.equal(view.effort,'high');
+  view.session={...view.session,conversation:{...view.session.conversation,attachments:['fixture']}};ui.flush();
+  assert.equal(ui.find('联网已开启'),undefined);
+  field.props.onChange('');ui.flush();assert.equal(ui.find('发送').props.enabled,false);
+});
+
+test('compiled chat shares a single left session toggle and lets a workspace be deleted without deleting its conversations',()=>{
+  const ui=renderer();
+  ui.storage.setOrCreate('flowmindStudyPreview',true);
+  const view=ui.mount('views/study/StudyChatWorkspace','StudyChatWorkspace',{
+    session:{pairingCode:'',model:'',models:[],history:[{id:'b',name:'第二个会话',workspaceId:'course',draft:'',messages:[]}],
+      conversation:{id:'a',name:'第一会话',workspaceId:'course',draft:'草稿',messages:[]},workspaces:[{id:'course',name:'课程讨论'}]}
+  },'initialRender',v=>{v.viewport=1024;});
+  assert.ok(ui.find('切换会话菜单'));
+  for(const label of ['切换会话栏','打开应用导航','保存对话为笔记','研读工坊']) assert.equal(ui.find(label),undefined);
+  ui.click('会话操作 第一会话');ui.click('重命名会话');
+  [...ui.nodes.values()].find(node=>node.props.id==='study-session-name').props.onChange('课程讨论草稿');ui.flush();
+  ui.click('保存名称');assert.equal(view.session.conversation.name,'课程讨论草稿');
+  const chooseGroup=label=>{
+    const choice=[...ui.nodes.values()].find(node=>node.type==='Button'&&node.content===label&&typeof node.props.onClick==='function');
+    assert.ok(choice);choice.props.onClick();ui.flush();
+  };
+  ui.click('会话操作 课程讨论草稿');ui.click('移动到工作区');chooseGroup('未分组');
+  assert.equal(view.session.conversation.workspaceId,'');assert.equal(view.session.history[0].workspaceId,'course');
+  ui.click('会话操作 课程讨论草稿');ui.click('移动到工作区');chooseGroup('课程讨论');
+  assert.equal(view.session.conversation.workspaceId,'course');
+  ui.click('工作区操作 课程讨论');ui.click('删除工作区');ui.click('确认删除');
+  assert.equal(view.session.workspaces.length,0);
+  assert.equal(view.session.conversation.workspaceId,'');assert.equal(view.session.history[0].workspaceId,'');
+  ui.click('会话操作 第二个会话');ui.click('删除会话');ui.click('取消');
+  assert.equal(view.session.history.length,1);
+  ui.click('会话操作 第二个会话');ui.click('删除会话');ui.click('确认删除');
+  assert.equal(view.session.history.length,0);assert.equal(view.session.conversation.draft,'草稿');
+});
+
+test('compiled reference pane passes the citation line to a read-only Markdown reader',()=>{
+  const ui=renderer();
+  ui.mount('views/study/StudyWorkspacePanels','StudyReferencePane',{
+    note:{id:'reference-note',type:'Markdown',title:'参考'},
+    reference:{noteId:'reference-note',line:7,quote:'实际引用',revision:3}
+  });
+  const reader=[...ui.children.values()].find(view=>view.note?.id==='reference-note'&&typeof view.enterEdit==='function');
+  assert.ok(reader);assert.equal(reader.jumpLine,6);assert.equal(reader.jumpToken,3);
+  assert.ok(ui.find('实际引用'));assert.equal(ui.find('编辑笔记'),undefined);
+  reader.enterEdit();assert.equal(reader.isEditing,false);
+});
+
+test('compiled study answers hide legacy footer warnings and retain their original citation links',()=>{
+  const ui=renderer();let opened;
+  for(const name of ['LearningResultPolicy','StudyWorkspaceSources']) {
+    const path='services/study/'+name;
+    ui.service(path,ui.load(path,true));
+  }
+  const citation={source_id:'s1',quote:'引用原文'};
+  const entry={result:{job_id:'fixture',sources:[{id:'s1',text:'首行\n引用原文'}],sections:[
+    {heading:'译文',body:'正文',citations:[citation]},
+    {heading:'适用范围',body:'原文缺少第二步。',citations:[citation]}
+  ],warnings:['旧版附加提示']},
+    locations:[{sourceId:'s1',noteId:'note',title:'课程资料.md',line:6,offset:0}]};
+  ui.mount('views/study/StudyWorkspacePanels','StudyGroundedContent',{entry,onOpen:(_entry,value)=>{opened=value;}});
+  assert.ok(ui.find('课程资料.md'));assert.ok(ui.find('· 第 7 行'));
+  assert.equal(ui.find('译文').props.fontSize,20);assert.equal(ui.find('适用范围').props.fontSize,17);
+  const limitText=[...ui.children.values()].find(child=>child.text==='原文缺少第二步。');
+  assert.equal(limitText?.chatLayout,true);limitText.aboutToAppear();ui.flush();
+  assert.ok(ui.find('原文缺少第二步。'));assert.equal(ui.find('旧版附加提示'),undefined);
+  assert.deepEqual(entry.result.warnings,['旧版附加提示']);
+  ui.click('课程资料.md · 第 7 行');assert.equal(opened?.quote,citation.quote);
+});
 
 test('compiled lock returns to document pen after using pan and exposes no floating duplicate button',()=>{
   const ui=renderer();const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',{
@@ -309,12 +438,17 @@ test('compiled unloaded source rejects tool activation with feedback and retains
   assert.equal(ui.find('普通笔').props.opacity,undefined);
 });
 
-test('compiled document sidebar keeps project expansion, home navigation and collapse connected',()=>{
+test('compiled sidebar separates project navigation, expansion and management from utility pages',()=>{
   const ui=renderer(),calls=[];
-  ui.mount('views/layout/Sidebar','Sidebar',{activeNav:'首页',spaces:[{id:'math',name:'课程笔记',count:0,isOpen:false,notes:[]}],
-    onSelectNav:key=>calls.push(key),onToggleSpace:key=>calls.push(key),onToggleSidebar:()=>calls.push('collapse')});
+  ui.mount('views/layout/Sidebar','Sidebar',{activeNav:'首页',spaces:[{id:'math',name:'课程笔记',count:1,isOpen:false,
+    notes:[{id:'lesson',title:'离散数学',type:'PDF'}]}],
+    onSelectNav:key=>calls.push(key),onSelectSpace:key=>calls.push('select:'+key),onToggleSpace:key=>calls.push('toggle:'+key),
+    onOpenSheet:kind=>calls.push(kind),onToggleSidebar:()=>calls.push('collapse')});
   assert.ok(ui.find('主页'));assert.equal(ui.find('记录日历上个月'),undefined);
-  ui.click('项目 课程笔记，0 份资料');ui.click('资料库');ui.click('收起侧栏');assert.deepEqual(calls,['math','资料库','collapse']);
+  assert.equal(ui.find('搜索笔记、文件或内容'),undefined);
+  ui.click('项目操作 课程笔记');ui.click('项目 课程笔记，1 份资料');ui.click('展开项目 课程笔记');
+  ui.click('知识图谱');ui.click('回收站');ui.click('收起侧栏');
+  assert.deepEqual(calls,['project_menu','select:math','toggle:math','图谱','回收站','collapse']);
 });
 
 test('compiled memo calendar selects and clears local days and navigates across a year boundary',()=>{
@@ -348,12 +482,12 @@ test('compiled compact ink dock stays open while configuring and allows collapse
   assert.equal(ui.find('撤销当前批注'),undefined);
   ui.click('展开批注工具栏');ui.click('普通笔');ui.click('画笔设置');
   ui.find('书写后自动收起工具栏').props.onChange(true);ui.flush();
-  assert.equal(view.toolbarMinimized,false);assert.ok(ui.find('收起画笔设置'));
+  view.collapseInkDockAfterStroke();ui.flush();assert.equal(view.toolbarMinimized,false);assert.ok(ui.find('收起画笔设置'));
   ui.click('收起画笔设置');view.collapseInkDockAfterStroke();ui.flush();
   assert.equal(view.toolbarMinimized,true);assert.ok(ui.find('锁定只读并保存批注'));
   ui.click('展开批注工具栏');assert.equal(view.toolbarMinimized,false);assert.equal(view.isAnnotateMode,true);
   ui.click('画笔设置');ui.click('折叠工具栏为笔坞');
-  ui.click('更多文档操作');ui.click('画笔设置');assert.equal(view.toolbarMinimized,false);assert.equal(view.penOptionsOpen,true);
+  ui.click('更多文档操作');ui.click('当前批注工具设置');assert.equal(view.toolbarMinimized,false);assert.equal(view.penOptionsOpen,true);
   ui.click('收起笔设置');ui.click('画笔设置');ui.click('折叠工具栏为笔坞');
   ui.click('锁定只读并保存批注');assert.equal(view.isAnnotateMode,false);assert.equal(view.exitSaveToken,1);
 });
@@ -509,12 +643,23 @@ test('compiled folder sharing bounds expansion while folder selection includes f
 });
 
 test('compiled library keeps views direct and secondary filters in one expandable panel',()=>{
-  const ui=renderer();const view=ui.mount('views/workspace/LibraryWorkspace','LibraryWorkspace',{notes:[],totalCount:0});
+  const ui=renderer();let created=0;const focus=[];
+  const view=ui.mount('views/workspace/LibraryWorkspace','LibraryWorkspace',{notes:[],
+    projectName:'课程资料',onCreateNote:()=>created++});
+  assert.ok(ui.find('课程资料'));assert.ok(ui.find('0 份资料'));
+  assert.ok(ui.find('这个项目还没有资料'));assert.equal(ui.find('清除筛选'),undefined);
+  view.getUIContext=()=>({getFocusController:()=>({requestFocus:id=>focus.push(id)})});
+  view.focusSearch();
+  assert.deepEqual(focus,['library-search-field']);
   assert.equal(ui.find('更新时间'),undefined);assert.ok(ui.find('显示方式：列表'));assert.equal(ui.find('阅读状态：阅读中'),undefined);
-  assert.equal(ui.find('导入资料').props.height,44);assert.equal(ui.find('搜索资料标题、正文与标签').props.height,48);
+  assert.equal(ui.find('导入资料').props.height,44);assert.equal(ui.find('搜索资料标题、正文与标签').props.height,46);
   ui.click('资料筛选与排序');assert.equal(view.optionsExpanded,true);assert.ok(ui.find('更新时间'));assert.ok(ui.find('阅读状态：阅读中'));
   assert.ok(ui.find('还没有标签，在正文中输入 #标签 即可创建。'));
   ui.click('资料筛选与排序');assert.equal(view.optionsExpanded,false);assert.equal(ui.find('更新时间'),undefined);
+  ui.click('更多资料库操作');
+  for(const entry of ['知识图谱','回收站','使用指引']) assert.equal(ui.find(entry),undefined);
+  assert.equal(ui.find('批量管理').props.enabled,false);
+  ui.click('新建笔记');assert.equal(created,1);assert.equal(ui.find('新建笔记'),undefined);
 });
 
 test('compiled quick memo composer keeps text on errors, sends one explicit save and disables empty or busy submission',()=>{
@@ -530,13 +675,67 @@ test('compiled quick memo composer keeps text on errors, sends one explicit save
 test('compiled library connects persistent display choices and reading filters to actual visible data',()=>{
   const ui=renderer(),calls=[];
   const note={id:'a',title:'随手记一',type:'Markdown',category:'随手记',tag:'复习',tags:['复习'],contentDetail:'记录正文',previewText:'记录正文',updateTime:'今天',createdAt:1,updatedAt:1};
-  const view=ui.mount('views/workspace/LibraryWorkspace','LibraryWorkspace',{notes:[note],allNotes:[note],totalCount:1,
-    onViewModeChange:mode=>calls.push(mode),onOpenTag:tag=>calls.push(tag)});
-  ui.click('显示方式：时间流');assert.deepEqual(calls,['timeline']);
-  view.viewMode='timeline';ui.flush();assert.ok(ui.find('文字记录按创建时间倒序排列'));assert.ok(ui.find('打开记录 随手记一'));
+  const other={...note,id:'b',title:'历史记录',category:'另一项目',tag:'历史',tags:['历史']};
+  const view=ui.mount('views/workspace/LibraryWorkspace','LibraryWorkspace',{
+    notes:[note,other],projectName:'随手记',readingStatus:'unread',
+    onViewModeChange:mode=>calls.push(mode),
+    onTagsChange:tags=>{calls.push(tags[0]);view.selectedTags=tags;},
+    onReadingStatusChange:status=>{view.readingStatus=status;},
+    onResetFilters:()=>{view.selectedTags=[];view.readingStatus='all';}
+  });
+  ui.click('显示方式：时间流');assert.deepEqual(calls,['timeline']);assert.equal(view.readingStatus,'unread');
+  view.viewMode='timeline';ui.flush();assert.ok(ui.find('打开记录 随手记一'));
+  ui.click('资料筛选与排序');assert.ok(ui.find('资料按创建时间倒序排列'));
+  assert.ok(ui.find('筛选标签 复习'));assert.equal(ui.find('筛选标签 历史'),undefined);
+  ui.click('资料筛选与排序');
   ui.click('查看标签 复习');assert.deepEqual(calls,['timeline','复习']);
+  assert.equal(view.projectName,'随手记');assert.equal(view.readingStatus,'unread');
   view.viewMode='list';ui.flush();ui.click('资料筛选与排序');ui.click('阅读状态：阅读中');assert.equal(view.displayNotes().length,0);assert.ok(ui.find('没有匹配的资料'));
   ui.click('清除筛选');assert.equal(view.displayNotes().length,1);
+  view.selectedTags=['复习'];view.readingStatus='unread';view.batchMode=true;view.selectedIds=['a'];
+  view.scopeToken++;ui.flush();
+  assert.equal(view.readingStatus,'unread');assert.deepEqual(Array.from(view.selectedTags),['复习']);
+  assert.equal(view.optionsExpanded,false);assert.equal(view.batchMode,false);assert.equal(view.selectedIds.length,0);
+  view.displayBusy=true;view.importing=true;ui.flush();
+  assert.equal(ui.find('显示方式：书架').props.enabled,false);assert.equal(ui.find('导入资料').props.enabled,false);
+  ui.click('资料筛选与排序');assert.equal(ui.find('更新时间').props.enabled,false);
+});
+
+test('compiled library batch selection follows the full filtered result beyond the first page',()=>{
+  const ui=renderer(),moves=[];
+  const notes=Array.from({length:43},(_,index)=>({id:`n${index}`,title:`资料 ${index}`,type:'PDF'}));
+  const view=ui.mount('views/workspace/LibraryWorkspace','LibraryWorkspace',{
+    notes,onBatchMove:ids=>moves.push(Array.from(ids))
+  });
+  ui.click('更多资料库操作');ui.click('批量管理');ui.click('全选结果');
+  assert.equal(view.selectedIds.length,43);
+  view.searchText='资料 42';ui.flush();assert.deepEqual(Array.from(view.selectedIds),['n42']);
+  ui.click('移动分类');assert.deepEqual(moves,[['n42']]);
+  view.searchText='';ui.flush();assert.deepEqual(Array.from(view.selectedIds),['n42']);
+  view.notes=notes.slice(0,42);ui.flush();assert.equal(view.selectedIds.length,0);
+  assert.equal(ui.find('移动分类'),undefined);
+});
+
+test('compiled bookshelf lays out paper covers by content width and displays their real metadata',()=>{
+  const ui=renderer();
+  const notes=[
+    {id:'c',title:'离散数学',type:'PDF',sourceType:'pdf',pageCount:273},
+    {id:'a',title:'数据结构',type:'PDF',sourceType:'pdf',pageCount:345},
+    {id:'b',title:'课堂笔记',type:'Markdown'}
+  ];
+  const view=ui.mount('views/workspace/LibraryWorkspace','LibraryWorkspace',{
+    notes:notes.map(note=>({...note,category:'课程资料'})),projectName:'课程资料'
+  });
+  const viewport=[...ui.nodes.values()].find(node=>node.type==='Scroll'&&typeof node.props.onAreaChange==='function');
+  assert.ok(viewport);
+  for(const [width,columns] of [[300,1],[400,2],[800,3],[1060,4]]) {
+    viewport.props.onAreaChange({}, {width});ui.flush();assert.equal(view.shelfColumns,columns);
+  }
+  const backgrounds=()=>[...ui.nodes.values()].filter(node=>node.type==='Stack').map(node=>node.props.backgroundColor);
+  assert.ok(['#E7E9DF','#F0EBE2','#EAE5F0'].every(color=>backgrounds().includes(color)));
+  assert.ok(ui.find('PDF · 273 页'));assert.equal(ui.find('0 页'),undefined);
+  ui.storage.setOrCreate('flowmindDarkMode',true);ui.flush();
+  assert.ok(['#2B3029','#332E26','#302C36'].every(color=>backgrounds().includes(color)));
 });
 
 test('compiled home more button opens a working menu without opening the note',()=>{
@@ -564,8 +763,8 @@ test('compiled timeline distinguishes exam, course and focus tags and forwards t
   }
   assert.equal(ui.find('查看标签 期末统考').props.height,44);
   assert.equal(ui.find('#期末统考'),undefined);
-  assert.ok(ui.find('#数学'));assert.ok(ui.find('概率论笔记'));
-  ui.click('查看标签 期末统考');ui.click('阅读摘要 复习安排');assert.deepEqual(calls,[tags[0],note.id]);
+  assert.equal(ui.find('#数学'),undefined);assert.ok(ui.find('查看标签 数学'));assert.ok(ui.find('概率论笔记'));
+  ui.click('查看标签 期末统考');ui.click('查看标签 数学');ui.click('阅读摘要 复习安排');assert.deepEqual(calls,[tags[0],'数学',note.id]);
   ui.storage.setOrCreate('flowmindDarkMode',true);ui.flush();
   assert.notDeepEqual(tags.map(tag=>ui.find(tag).props.fontColor),colors);
 });
@@ -696,17 +895,23 @@ for (const singleColumn of [true, false]) {
 }
 
 test('compiled shell preserves docked and overlay collapse rules across window sizes', () => {
-  const ui = renderer();
-  const shell = ui.mount('views/layout/AppShell', 'AppShell', { sidebarCollapsed: false });
+  const ui = renderer(); let backs = 0;
+  const shell = ui.mount('views/layout/AppShell', 'AppShell', { sidebarCollapsed: false, activeNav: '资料库', onBack: () => backs++ });
   for (const width of [360, 600, 839, 840, 1199, 1200]) {
     shell.updateLayout(width); ui.flush();
     assert.equal(shell.isSidebarDocked(), width >= 840);
     assert.equal(shell.isSidebarOverlay(), width < 840);
     assert.equal(ui.storage.get('flowmindSingleColumn'), width < 840);
+    assert.equal(Boolean(ui.find('打开导航')), width < 840);
+    assert.equal(ui.find('搜索笔记'), undefined);
     shell.sidebarCollapsed = true; ui.flush();
     assert.equal(shell.isSidebarDocked(), false); assert.equal(shell.isSidebarOverlay(), false);
     shell.sidebarCollapsed = false; ui.flush();
   }
+  assert.equal(ui.find('返回上一页'), undefined);
+  shell.canGoBack = true; ui.flush();
+  ui.click('返回上一页'); assert.equal(backs, 1);
+  shell.activeNav = '待办'; ui.flush(); assert.ok(ui.find('搜索笔记'));
 });
 
 test('compiled page model subscription preserves readiness for tools but invalidates a different page', () => {
@@ -728,7 +933,7 @@ test('compiled shared surface delivers PDF input to normalized strokes and block
       v.pageWidth=100;v.pageHeight=200;v.sourceReady=true;v.isAnnotateMode=true;
     });
   const surface=[...ui.nodes.values()].find(n=>n.type==='Stack'&&n.props.onTouch);
-  surface.props.onTouch(inkEvent(0,20,40));surface.props.onTouch(inkEvent(1,60,120));
+  surface.props.onTouch(inkEvent(0,20,40));surface.props.onTouch(inkEvent(2,60,120));surface.props.onTouch(inkEvent(1,0,0));
   assert.equal(strokes.length,1);assert.equal(strokes[0].pageIndex,2);assert.equal(strokes[0].points[0].u,0.2);
   assert.equal(strokes[0].points.at(-1).v,0.6);view.isAnnotateMode=false;ui.flush();
   assert.equal(surface.props.hitTestBehavior,'None','read-only ink must not block source recovery buttons or page scrolling');
@@ -739,9 +944,10 @@ test('compiled shared surface delivers whiteboard input without changing its per
   const ui=renderer();const view=ui.mount('views/reader/HandwritingCanvas','HandwritingCanvas',{
     note:{id:'ink',title:'课堂'},showToolbar:false},'initialRender',v=>{v.zoomScale=1;v.canvasWidth=600;v.canvasHeight=600;});
   const surface=[...ui.nodes.values()].find(n=>n.type==='Stack'&&n.props.onTouch);
-  surface.props.onTouch(inkEvent(0,80,90));surface.props.onTouch(inkEvent(1,120,130));
+  surface.props.onTouch(inkEvent(0,80,90));surface.props.onTouch(inkEvent(2,120,130));surface.props.onTouch(inkEvent(1,0,0));
   assert.equal(view.strokes.length,1);assert.equal(view.strokes[0].points[0].x,80);assert.equal(view.strokes[0].points[0].y,90);
-  assert.equal(view.strokes[0].referenceWidth,1200);view.readOnly=true;ui.flush();
+  assert.equal(view.strokes[0].referenceWidth,1200);assert.equal(view.strokes[0].points.at(-1).x,120);
+  view.readOnly=true;ui.flush();
   surface.props.onTouch(inkEvent(0,80,90));surface.props.onTouch(inkEvent(1,120,130));assert.equal(view.strokes.length,1);
 });
 
@@ -795,21 +1001,17 @@ test('compiled local preview retains headings and code and refreshes without str
   view.text='# 更新原文';view.refresh();ui.flush();assert.ok(ui.find('更新原文'));assert.equal(ui.find('x = 12'),undefined);
 });
 
-test('compiled extraction exposes source evidence and refreshes confirmed dates while keeping task identity', () => {
-  const ui = renderer();
-  const task = { id: 'task', title: '复习第三章', deadline: '下周五', priority: 'medium', sourceLine: 2, sourceText: '- [ ] 下周五复习第三章' };
-  const view = ui.mount('views/layout/sheets/SmartExtractSheet', 'SmartExtractSheet', {}, 'resultPanel', v => {
-    v.result = { id: 'capture', title: '课程', rawMarkdown: '# 课程\n- [ ] 下周五复习第三章', summary: '',
-      tags: [], entities: [], relations: [], tasks: [task], createdAt: new Date(2026, 9, 16).getTime() };
-    v.title = '课程'; v.body = '# 课程'; v.tasks = [task]; v.selectedTaskIds = ['task']; v.resultTab = 'source';
-  });
-  assert.ok(ui.find('原文第 2 行：- [ ] 下周五复习第三章'));
-  assert.equal(view.pendingDates(), true);
-  const input = [...ui.nodes.values()].find(node => node.type === 'TextInput' && node.content?.placeholder?.startsWith('日期：'));
-  assert.ok(input); input.props.onChange('2026-10-23'); ui.flush();
-  assert.equal(view.pendingDates(), false); assert.ok(ui.find('2026-10-23'));
-  assert.equal(view.tasks[0].id, 'task'); assert.equal(view.tasks[0].sourceLine, 2);
-  assert.equal(ui.find('已选待办还有待确认日期，请修改日期或取消勾选。'), undefined);
+test('compiled single-file recognition keeps an editable preview and saves the exact Markdown', async () => {
+  const ui=renderer(),writes=[];let closed=0;
+  ui.storage.delete=()=>{};
+  ui.mount('views/layout/sheets/SmartExtractSheet','SmartExtractSheet',{
+    onCommit:async(title,markdown)=>{writes.push([title,markdown]);return true;},onClose:()=>closed++
+  },'initialRender',view=>{view.title='课程';view.markdown='# 正文';});
+  for(const label of ['保留原文','学习笔记','合并图片断行','导入 PDF / Markdown / TXT'])assert.equal(ui.find(label),undefined);
+  ui.click('编辑 Markdown');
+  const editor=[...ui.nodes.values()].find(node=>node.type==='TextArea');
+  editor.props.onChange('# 修订');ui.flush();
+  await ui.click('保存为 Markdown');assert.deepEqual(writes,[['课程','# 修订']]);assert.equal(closed,1);
 });
 
 test('compiled search shows readable errors, refreshes retry state and provides 44vp controls', () => {
@@ -846,9 +1048,9 @@ test('compiled theme cards persist the chosen style and repaint mounted reader, 
   await ui.click('主题配色 白青'); ui.flush();
   assert.equal(values.get('themeStyle'), 'cyan'); assert.equal(settings.themeStyle, 'cyan'); assert.equal(reader.themeStyle, 'cyan'); assert.equal(dialog.themeStyle, 'cyan');
   assert.equal(ui.find('主题配色 白青').props.accessibilityDescription, '已选中');
-  assert.equal(ui.find('普通笔').props.backgroundColor, '#E0F4F3'); assert.equal(ui.find('保存 PNG').props.backgroundColor, '#08777E');
+  assert.equal(ui.find('普通笔').props.backgroundColor, '#34547E'); assert.equal(ui.find('保存 PNG').props.backgroundColor, '#08777E');
   const pen = ui.find('普通笔'); const penIcon = [...ui.nodes.values()].find(node => node.type === 'Image' && node.parents.includes(pen.id));
-  assertIconTint(penIcon, '#08777E'); assert.equal(reader.selectedColor, originalInk);
+  assertIconTint(penIcon, '#F2F5FA'); assert.equal(reader.selectedColor, originalInk);
   ui.storage.setOrCreate('flowmindDarkMode', true); ui.flush();
   assert.equal(reader.themeStyle, 'cyan'); assert.equal(ui.find('保存 PNG').props.backgroundColor, '#84D4D7'); assert.equal(reader.selectedColor, originalInk);
 });
@@ -962,7 +1164,7 @@ for(const mode of ['shelf','list','timeline']) {
   test(`compiled library ${mode} offers a separate bottom action target without opening the document`,()=>{
     const ui=renderer(),opened=[],menus=[];
     const note={id:'a',title:'课程',type:'Markdown',category:'数学',tag:'复习',tags:['复习'],previewText:'摘要',contentDetail:'正文',updateTime:'今天'};
-    const view=ui.mount('views/workspace/LibraryWorkspace','LibraryWorkspace',{notes:[note],allNotes:[note],totalCount:1,viewMode:mode,
+    const view=ui.mount('views/workspace/LibraryWorkspace','LibraryWorkspace',{notes:[note],viewMode:mode,
       onSelectNote:item=>opened.push(item.id),onOpenNoteMenu:item=>menus.push([item.id,item.title])});
     const more=ui.find('资料操作 课程');assert.equal(more.props.width,44);assert.equal(more.props.height,44);
     assert.ok(!more.parents.some(id=>ui.nodes.get(id)?.props.onClick),'action buttons must not be inside a document click target');
@@ -1000,18 +1202,20 @@ test('compiled classification preserves its form on failure and can move a docum
   await ui.click('归类到 未分类');assert.equal(closed,1);assert.deepEqual(calls,[['a','未分类'],['a','未分类']]);
 });
 
-test('compiled PDF eraser exposes direct area and stroke mode selection with current-mode feedback',()=>{
+test('compiled PDF eraser opens both modes from the selected eraser without another toolbar button',()=>{
   const ui=renderer();const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',
-    {note:{id:'pdf',title:'课程',type:'PDF'}},'topNavigationBar',v=>{v.pdfSourceReady=true;});
-  ui.click('橡皮');assert.ok(ui.find('选择橡皮擦除方式'));ui.click('选择橡皮擦除方式');
+    {note:{id:'pdf',title:'课程',type:'PDF'}},'initialRender',v=>{v.pdfSourceReady=true;});
+  ui.click('展开批注工具栏');
+  ui.click('橡皮');assert.equal(ui.find('选择橡皮擦除方式'),undefined);ui.click('橡皮');
   ui.click('笔画擦除');assert.equal(view.pdfEraserMode,'stroke');assert.equal(ui.find('笔画擦除').props.accessibilityDescription,'已选中');
   ui.click('区域擦除');assert.equal(view.pdfEraserMode,'area');assert.equal(ui.find('区域擦除').props.accessibilityDescription,'已选中');
 });
 
 test('compiled scratchpad mode selection targets its own canvas and does not change the PDF eraser',()=>{
   const ui=renderer();const view=ui.mount('views/reader/huawei/HuaweiDocWorkspace','HuaweiDocWorkspace',
-    {note:{id:'pdf',title:'课程',type:'PDF'}},'topNavigationBar',v=>{v.pdfSourceReady=true;v.isAnnotateMode=true;v.splitMode='scratchpad';v.inkTarget='scratchpad';v.scratchpadInk={...v.scratchpadInk,tool:'eraser'};});
-  ui.click('选择橡皮擦除方式');ui.click('笔画擦除');
+    {note:{id:'pdf',title:'课程',type:'PDF'}},'initialRender',v=>{v.pdfSourceReady=true;v.isAnnotateMode=true;v.splitMode='scratchpad';v.inkTarget='scratchpad';v.scratchpadInkTool='eraser';v.scratchpadInk={...v.scratchpadInk,tool:'eraser'};});
+  ui.click('展开批注工具栏');
+  ui.click('橡皮');ui.click('笔画擦除');
   assert.equal(view.canvasCommand.target,'scratchpad');assert.equal(view.canvasCommand.action,'eraserMode');assert.equal(view.canvasCommand.value,'stroke');assert.equal(view.pdfEraserMode,'area');
 });
 
@@ -1068,6 +1272,8 @@ for (const secondary of [false, true]) {
       generatePageModels: count => Array.from({ length: count }, (_, pageIndex) => ({ pageIndex }))
     }) } });
     const index = ui.entry('pages/Index');
+    index.activeNav = secondary ? '待办' : '首页';
+    const backLabel = secondary ? '返回待办' : '返回主页';
     index.notes = secondary ? [companion, note] : [note];
     index.fullScreenDocNote = index.notes[0];
     index.fullScreenDocOpen = true;
@@ -1094,7 +1300,7 @@ for (const secondary of [false, true]) {
     page.props.onRestoreSource();
     ui.flush();
     assert.ok(ui.find('选择原文件'));
-    ui.click('返回资料库');
+    ui.click(backLabel);
     assert.equal(ui.find('选择原文件'), undefined);
     assert.equal(index.fullScreenDocOpen, true);
 
@@ -1116,7 +1322,7 @@ for (const secondary of [false, true]) {
     const choosing = ui.click('选择原文件');
     assert.equal(ui.find('正在关联…').props.enabled, false);
     assert.equal(ui.find('取消').props.enabled, false);
-    ui.click('返回资料库');
+    ui.click(backLabel);
     assert.ok(ui.find('正在关联…'));
     finish();
     await choosing;

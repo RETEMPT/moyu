@@ -4,7 +4,7 @@ import { common } from '@kit.AbilityKit';
 import { AnimationTokens, ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { AppIcon } from '../common/AppIcon';
-import { NAV_HOME, NAV_LIBRARY, NAV_TODO, NAV_GRAPH, NAV_CHAT } from '../../common/constants/WorkspaceConstants';
+import { NAV_HOME, NAV_LIBRARY, NAV_TODO, NAV_FAVORITE, NAV_CHAT } from '../../common/constants/WorkspaceConstants';
 
 interface BottomTabItem {
   icon: Resource;
@@ -26,10 +26,10 @@ export struct BottomNavBar {
   private active: boolean = false;
   private tabs: BottomTabItem[] = [
     { icon: $r('app.media.ic_home'), label: '记录', navKey: NAV_HOME },
-    { icon: $r('app.media.ic_read'), label: '资料', navKey: NAV_LIBRARY },
+    { icon: $r('app.media.ic_folder'), label: '资料', navKey: NAV_LIBRARY },
     { icon: $r('app.media.ic_chat'), label: '墨客', navKey: NAV_CHAT },
     { icon: $r('app.media.ic_check'), label: '待办', navKey: NAV_TODO },
-    { icon: $r('app.media.ic_graph'), label: '图谱', navKey: NAV_GRAPH }
+    { icon: $r('app.media.ic_star'), label: '收藏', navKey: NAV_FAVORITE }
   ];
 
   private onAvoidAreaChange = (options: window.AvoidAreaOptions): void => {

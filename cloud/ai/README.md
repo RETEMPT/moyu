@@ -24,9 +24,12 @@ CLI 需要 Python 3.10+ 和标准库 SQLite。模型名称由使用者从供应�
 
 模拟器里的墨语负责原文阅读、范围选择、发送预览、引文回跳和本地笔记。电脑上的 Python 网关提供模型列表，转发已确认的文字和问题，调用选定模型并核验返回的引文。网关与 CLI、MCP 共用供应商适配和结果契约。
 
-1. 在电脑上配置 `DEEPSEEK_API_KEY`，并确保运行网关的终端能读取该环境变量。在仓库根目录启动 Python 3.10+ 网关。
+可使用仓库中的 `cloud/ai/`，也可解压同版本发布页的电脑端工具 ZIP，在解压目录启动网关。需要从源码构建 StudyDemo 时，请使用同版本仓库。 [GitHub 版本与附件](https://github.com/RETEMPT/moyu/releases)
+
+1. 在电脑上打开 PowerShell 7，进入仓库根目录。将 DeepSeek 密钥读入当前终端，再启动 Python 3.10+ 网关。
 
    ```powershell
+   $env:DEEPSEEK_API_KEY = Read-Host 'DeepSeek API Key' -MaskInput
    python -X utf8 -m cloud.ai.moyu_ai.simulator_gateway
    ```
 
@@ -36,19 +39,23 @@ CLI 需要 Python 3.10+ 和标准库 SQLite。模型名称由使用者从供应�
    & (Join-Path $env:USERPROFILE '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe') -X utf8 -m cloud.ai.moyu_ai.simulator_gateway
    ```
 
-2. 保持网关终端打开。另开终端，从仓库根目录构建演示 HAP，按平时的签名和安装方式部署到 DevEco 模拟器。下列命令仅在本次 Debug HAP 构建中添加网络权限。切换回常规构建时重新清理再构建，避免沿用上一次的产物。
+2. 保持网关终端打开。另开终端，从仓库根目录构建并部署 StudyDemo 到 DevEco 模拟器。`-StudyDemo` 会在 Debug HAP 中添加网络权限，安装前也会验证所选 HAP 包含该权限。
 
    ```powershell
-   .\build_hap.bat -BuildMode debug -StudyDemo -Clean
+   .\deploy_hap.bat -StudyDemo
    ```
 
-3. 从侧栏或底栏进入「AI 墨客」，输入网关终端显示的配对码并选择模型。打开 PDF 或 Markdown／TXT 后，也可从阅读器顶栏或分屏选择中进入「AI 伴读」。两个入口共享当前配对。伴读支持问答、摘要和周报，发送前可核对原文范围。PDF 可先用「提取待校对页」。点回答的引用跳到原文后，可以用「返回原位置」回到刚才阅读的页或段落。
+3. 从侧栏或底栏进入「AI 墨客」，点顶部「连接网关」，输入网关终端显示的配对码并连接。点模型名称可切换模型或重新配对。打开 PDF 或 Markdown／TXT 后，也可从阅读器进入「AI 伴读」。两个入口共享当前配对。
+
+顶部左侧菜单展开会话和工作区。会话旁的省略号提供重命名、移动和删除。删除工作区后，已有会话移到未分组。点输入框「＋」可以选择本机文件或已有资料，也可以从支持文件拖放的鸿蒙应用把文件拖入输入框。PDF 附件可在输入框旁选择页码并提取文字。确认发送前可检查每段将发送的原文。点击带文件名和页码或行号的引用链接会在右侧打开原文，窄屏显示覆盖式阅读窗。
+
+DeepSeek 模型的输入框提供「思考」菜单，可选快速、标准和深入。DeepSeek Flash 的普通对话还可显式开启「联网」。网关使用 DeepSeek 提供的网页搜索工具，回答下方显示服务返回的网页出处，点击才打开浏览器。选择本地附件或打开引用时，问答只走已确认的原文链路。 [DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/) · [DeepSeek 网页工具](https://api-docs.deepseek.com/guides/web_tools/)
 
 模拟器通过 `10.0.2.2:8765` 访问电脑的回环地址。网关只监听 `127.0.0.1:8765`，每次启动生成新配对码。模型密钥只在电脑进程环境中，网关不保留学习内容和会话。已确认的文字和目标会送给指定的云服务，可能产生 API 费用。默认列出两款 DeepSeek 模型，可重复指定 `--model` 来配置列表。切换供应商时重启网关并使用新的配对码。停止等待会关闭 App 的请求，网关已发出的请求可能继续完成。
 
-阅读器内选择 DeepSeek 后，Agent 可以在一次工具调用轮次内检索已确认的片段，结果经过逐字引文核验。独立对话发送本次问题和最多六轮近期对话，合计最多 7000 个 UTF-16 单元。消息发送后立即显示，网关完成请求后显示完整回答。可停止等待、修改失败的问题或重试。新建对话后可从会话记录切回之前的对话，点「保存对话为笔记」可写入本机资料库。独立 MCP 工具提供笔记本检索、题卡与学习计划。
+使用 DeepSeek 研读附件时，Agent 可以进行最多两轮工具调用，包括检索已确认的片段和读取选定原文。展开运行轨迹可在生成时看到模型逐步返回的思考，工具执行后会显示结果，引用核验通过后才会显示带引用的回答。停止后可以查看已收到的步骤、修改问题或重新运行。无附件对话发送本次问题和最多六轮无资料的近期对话，合计最多 7000 个 UTF-16 单元。对话、草稿和工作区保存在本机。
 
-[DevEco 模拟器访问电脑网络](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/ide-emulator-access-network-V13/) · [DeepSeek JSON 输出](https://api-docs.deepseek.com/guides/json_mode/) · [DeepSeek 工具调用](https://api-docs.deepseek.com/guides/tool_calls/)
+[DevEco 模拟器访问电脑网络](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides-V13/ide-emulator-access-network-V13/) · [DeepSeek Harness 的事件与运行流程](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md#turn-flow) · [DeepSeek 流式思考与工具调用](https://api-docs.deepseek.com/guides/thinking_mode/)
 
 ## 电脑端独立工具
 

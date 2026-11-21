@@ -1,6 +1,6 @@
 {
-  "version": 6,
-  "updatedAt": "2026-11-20",
+  "version": 7,
+  "updatedAt": "2026-11-21",
   "sections": [
     {
       "title": "当前产品范围",
@@ -16,7 +16,7 @@
     },
     {
       "title": "原文整理",
-      "body": "校对后的文字通过本地规则识别明确标题、段落、列表和待办，保留原文供核对。合并图片断行由你主动选择，处理结果可预览和编辑。保存前选择需要添加的待办并确认日期。资料导入支持 PDF、普通 Markdown、TXT、PNG、JPG／JPEG、WebP、BMP、GIF。DOCX 和 PPTX 在本机提取文字并保存为 Markdown。选择学习结果 JSON 后，应用在本机核对关联资料和引文，由你决定是否采纳题卡。"
+      "body": "文字识别与排版处理你主动选择的一份文件，在本机提取文字并整理为 Markdown。你可以预览、编辑，再决定是否保存为笔记。资料导入支持 PDF、普通 Markdown、TXT、PNG、JPG／JPEG、WebP、BMP、GIF。DOCX 和 PPTX 在本机提取文字并保存为 Markdown。选择学习结果 JSON 后，应用在本机核对关联资料和引文，由你决定是否采纳题卡。"
     },
     {
       "title": "主动系统分享",

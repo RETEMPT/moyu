@@ -23,7 +23,7 @@ export class OcrService {
       throw new Error('无效的图片路径');
     }
     if (!canIUse('SystemCapability.AI.OCR.TextRecognition')) {
-      throw new Error('此设备未提供系统文字识别，可粘贴文字完成本地排版');
+      throw new Error('此设备不支持系统图片文字识别，可选择含文字层的 PDF 或文字文档');
     }
     let file: fs.File | null = null;
     let source: image.ImageSource | null = null;
@@ -33,17 +33,22 @@ export class OcrService {
       source = image.createImageSource(file.fd);
       const info = await source.getImageInfo();
       // 控制手机解码内存，保持比例与文字细节。
-      const ratio = Math.min(1, 3200 / Math.max(info.size.width, info.size.height));
-      pixelMap = await source.createPixelMap({ editable: false,
-        desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
-        desiredSize: { width: Math.max(1, Math.round(info.size.width * ratio)),
-          height: Math.max(1, Math.round(info.size.height * ratio)) } });
-      const result = await textRecognition.recognizeText({ pixelMap: pixelMap });
-      const text = OcrService.resultText(result);
-      if (text.length === 0) {
-        throw new Error('未识别到文字，请选择清晰图片或手动粘贴文字');
+      const longest = Math.max(info.size.width, info.size.height);
+      const pixelLimit = Math.sqrt(6000000 / (info.size.width * info.size.height));
+      const first = Math.min(1, 3200 / longest, pixelLimit);
+      const detailed = Math.min(1, 4000 / longest, pixelLimit);
+      const scales = detailed > first ? [first, detailed] : [first];
+      for (const ratio of scales) {
+        pixelMap = await source.createPixelMap({ editable: false,
+          desiredPixelFormat: image.PixelMapFormat.RGBA_8888,
+          desiredSize: { width: Math.max(1, Math.round(info.size.width * ratio)),
+            height: Math.max(1, Math.round(info.size.height * ratio)) } });
+        const text = await this.recognizePixelMap(pixelMap);
+        if (text) { return text; }
+        await pixelMap.release();
+        pixelMap = null;
       }
-      return text;
+      throw new Error('未识别到文字，请选择更清晰的图片');
     } finally {
       if (pixelMap !== null) {
         try { await pixelMap.release(); } catch { /* 已释放 */ }
@@ -60,16 +65,16 @@ export class OcrService {
   /** Caller retains ownership of a rendered PDF page and must release it. */
   async recognizePixelMap(pixelMap: image.PixelMap): Promise<string> {
     if (!canIUse('SystemCapability.AI.OCR.TextRecognition')) { throw new Error('此设备未提供系统文字识别'); }
-    const result = await textRecognition.recognizeText({ pixelMap: pixelMap });
+    const result = await textRecognition.recognizeText({ pixelMap: pixelMap }, { isDirectionDetectionSupported: true });
     return OcrService.resultText(result);
   }
 
   private static resultText(result: textRecognition.TextRecognitionResult): string {
     const text = result && typeof result.value === 'string' ? result.value.trim() : '';
-    if (text.length === 0 || !Array.isArray(result.blocks)) { return text; }
+    if (!result || !Array.isArray(result.blocks)) { return text; }
     const blocks = result.blocks.map((block: textRecognition.TextBlock) => block.value.trim())
       .filter((value: string) => value.length > 0).join('\n\n');
     // Keep the SDK's order. Use paragraph boundaries only if all recognized characters match.
-    return blocks.replace(/\s/g, '') === text.replace(/\s/g, '') ? blocks : text;
+    return !text || blocks.replace(/\s/g, '') === text.replace(/\s/g, '') ? blocks : text;
   }
 }

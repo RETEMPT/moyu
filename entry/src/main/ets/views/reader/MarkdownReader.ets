@@ -115,6 +115,7 @@ export struct MarkdownReader {
   @Prop @Watch('handleBackRequest') backRequestToken: number = 0;
   @Prop @Watch('saveForHost') saveRequestToken: number = 0;
   @Prop inputLocked: boolean = false;
+  @Prop readingOnly: boolean = false;
   @Prop companionPane: boolean = false;
   @Prop compactPane: boolean = false;
   @Prop showBackButton: boolean = true;
@@ -539,7 +540,7 @@ export struct MarkdownReader {
 
   /** 进入编辑模式并弹出键盘 */
   private enterEdit(): void {
-    if (this.documentLoading) { return; }
+    if (this.documentLoading || this.readingOnly) { return; }
     animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
       this.isEditing = true;
     });
@@ -879,7 +880,7 @@ export struct MarkdownReader {
   build() {
     Stack({ alignContent: Alignment.Bottom }) {
     Column() {
-      this.editorToolbar()
+      if (!this.readingOnly) { this.editorToolbar() }
       Column() {
       // ---- 固定头部：工具栏 + 大标题 + 元数据 ----
       Column() {

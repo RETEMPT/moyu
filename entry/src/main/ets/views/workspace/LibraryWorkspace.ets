@@ -2,9 +2,9 @@
  * 资料库视图
  *
  * 统一封面书架、资料列表与文字时间流，复用纯查询策略。
- * 持久化显示设置由 Index 装配，临时筛选留在本组件。
+ * Index 保存可恢复的筛选，组件统一计算结果并管理当前列表的选择。
  */
-import { AnimationTokens, ColorPalette, LayoutTokens, TypographyTokens } from '../../common/constants/DesignTokens';
+import { AnimationTokens, ColorPalette, LayoutTokens, LibraryColors, TypographyTokens } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { DocumentPreview } from '../common/DocumentPreview';
@@ -20,21 +20,24 @@ import { NoteTagBadge } from '../common/NoteTagBadge';
 
 @Component
 export struct LibraryWorkspace {
-  @Prop @Watch('onQueryChanged') notes: NoteItem[] = [];
-  @Prop @Watch('pruneSelection') allNotes: NoteItem[] = [];
-  @Prop totalCount: number = 0;
-  @Prop searchText: string = '';
-  @Prop activeFilter: string = FILTER_ALL;
-  @Prop @Watch('clearImportFilters') importToken: number = 0;
+  @Prop @Watch('pruneSelection') notes: NoteItem[] = [];
+  @Prop @Watch('onQueryChanged') projectName: string = '';
+  @Prop @Watch('onQueryChanged') searchText: string = '';
+  @Prop @Watch('onQueryChanged') activeFilter: string = FILTER_ALL;
+  @Prop @Watch('onQueryChanged') selectedTags: string[] = [];
+  @Prop @Watch('onQueryChanged') readingStatus: ReadingStatus = 'all';
+  @Prop @Watch('resetScope') scopeToken: number = 0;
   @Prop activeNoteId: string = '';
-  @Prop viewMode: string = 'shelf';
+  @Prop @Watch('onQueryChanged') viewMode: string = 'shelf';
+  @Prop displayBusy: boolean = false;
+  @Prop importing: boolean = false;
   @Prop sortKey: string = 'update';
   @Prop sortAsc: boolean = false;
   onViewModeChange: (view: string) => void = () => {};
   onSortChange: (key: string, ascending: boolean) => void = () => {};
   onResetFilters: () => void = () => {};
-  onOpenTag: (tag: string) => void = () => {};
-
+  onTagsChange: (tags: string[]) => void = () => {};
+  onReadingStatusChange: (status: ReadingStatus) => void = () => {};
   onSearchChange: (value: string) => void = () => {};
   onFilterChange: (filter: string) => void = () => {};
   onSelectNote: (note: NoteItem) => void = () => {};
@@ -42,8 +45,6 @@ export struct LibraryWorkspace {
   onCreateNote: () => void = () => {};
   onImportDocument: () => void = () => {};
   onOpenBackup: () => void = () => {};
-  onOpenGuide: () => void = () => {};
-  onOpenTrash: () => void = () => {};
   onBatchMove: (ids: string[]) => void = () => {};
   onBatchShare: (ids: string[]) => void = () => {};
   onBatchTrash: (ids: string[]) => Promise<void> = async () => {};
@@ -52,24 +53,27 @@ export struct LibraryWorkspace {
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
 
-  @State selectedTags: string[] = [];
   @State optionsExpanded: boolean = false;
-  @State readingStatus: ReadingStatus = 'all';
   @State visibleCount: number = 40;
   @State shelfColumns: number = 2;
   @State private batchMode: boolean = false;
   @State private batchBusy: boolean = false;
   @State private selectedIds: string[] = [];
+  @State private libraryMenuOpen: boolean = false;
   private cachedSource: NoteItem[] | null = null;
   private cachedQuery: string = '';
   private cachedNotes: NoteItem[] = [];
+  private tagSource: NoteItem[] | null = null;
+  private tagScope: string = '';
+  private tagLabels: string[] = [];
 
-  private onQueryChanged(): void { this.visibleCount = 40; }
+  private onQueryChanged(): void { this.visibleCount = 40; this.pruneSelection(); }
 
   private pruneSelection(): void {
     if (this.selectedIds.length === 0) { return; }
-    const available = new Set(this.allNotes.map((note: NoteItem) => note.id));
-    this.selectedIds = this.selectedIds.filter((id: string) => available.has(id));
+    const available = new Set(this.displayNotes().map((note: NoteItem) => note.id));
+    const selected = this.selectedIds.filter((id: string) => available.has(id));
+    if (selected.length !== this.selectedIds.length) { this.selectedIds = selected; }
   }
 
   private selectNote(id: string): void {
@@ -102,12 +106,20 @@ export struct LibraryWorkspace {
   }
 
   private setSort(key: string): void {
-    this.onSortChange(key, key === 'title');
+    if (!this.displayBusy && key !== this.sortKey) { this.onSortChange(key, key === 'title'); }
   }
 
   /** 从当前笔记里收集去重标签，作为筛选 chip 的数据源 */
   private availableTags(): string[] {
-    return LibraryPolicy.availableTags(this.allNotes.length > 0 ? this.allNotes : this.notes);
+    const scope = JSON.stringify([this.projectName, this.activeFilter, this.selectedTags]);
+    if (this.tagSource !== this.notes || this.tagScope !== scope) {
+      this.tagSource = this.notes;
+      this.tagScope = scope;
+      const labels = LibraryPolicy.availableTags(this.notes, this.projectName, this.activeFilter);
+      const keys = new Set(labels.map((tag: string) => LibraryPolicy.tagKey(tag)));
+      this.tagLabels = labels.concat(this.selectedTags.filter((tag: string) => !keys.has(LibraryPolicy.tagKey(tag))));
+    }
+    return this.tagLabels;
   }
 
   /** 一篇笔记的标签列表：优先 tags[]，回退到单值 tag。 */
@@ -118,60 +130,66 @@ export struct LibraryWorkspace {
   /** 标签过滤（OR）+ 排序后的实际展示列表。 */
   private displayNotes(): NoteItem[] {
     const timeline = !this.batchMode && this.viewMode === 'timeline';
-    const query = JSON.stringify(this.selectedTags) + this.sortKey + this.sortAsc + this.readingStatus + timeline;
+    const query = JSON.stringify([this.projectName, this.searchText, this.activeFilter, this.selectedTags,
+      this.sortKey, this.sortAsc, this.readingStatus, timeline]);
     if (this.cachedSource === this.notes && this.cachedQuery === query) { return this.cachedNotes; }
     this.cachedSource = this.notes; this.cachedQuery = query;
-    this.cachedNotes = LibraryPolicy.query(this.notes, { tags: this.selectedTags,
+    this.cachedNotes = LibraryPolicy.query(this.notes, { category: this.projectName, keyword: this.searchText,
+      type: this.activeFilter, tags: this.selectedTags,
       sort: timeline ? 'create' : this.sortKey, ascending: timeline ? false : this.sortAsc,
       status: this.readingStatus, pinnedFirst: !timeline });
     return this.cachedNotes;
   }
 
   private isTagSelected(tag: string): boolean {
-    for (let i = 0; i < this.selectedTags.length; i++) {
-      if (this.selectedTags[i] === tag) {
-        return true;
-      }
-    }
-    return false;
+    const key = LibraryPolicy.tagKey(tag);
+    return this.selectedTags.some((item: string) => LibraryPolicy.tagKey(item) === key);
   }
 
   private toggleTag(tag: string): void {
-    const next: string[] = [];
-    let removed: boolean = false;
-    for (let i = 0; i < this.selectedTags.length; i++) {
-      if (this.selectedTags[i] === tag) {
-        removed = true;
-        continue;
-      }
-      next.push(this.selectedTags[i]);
-    }
-    if (!removed) {
-      next.push(tag);
-    }
-    this.selectedTags = next;
-    this.visibleCount = 40;
+    const key = LibraryPolicy.tagKey(tag);
+    this.onTagsChange(this.isTagSelected(tag) ?
+      this.selectedTags.filter((item: string) => LibraryPolicy.tagKey(item) !== key) : this.selectedTags.concat(tag));
   }
 
   private resetFilters(): void {
-    this.clearImportFilters();
     this.onResetFilters();
   }
 
-  private clearImportFilters(): void {
-    this.selectedTags = []; this.readingStatus = 'all'; this.visibleCount = 40;
+  private resetScope(): void {
+    this.visibleCount = 40;
+    this.optionsExpanded = false;
+    this.batchMode = false;
+    this.selectedIds = [];
+    this.libraryMenuOpen = false;
+  }
+
+  private hasFilters(): boolean {
+    return this.searchText.trim().length > 0 || this.activeFilter !== FILTER_ALL ||
+      this.selectedTags.length > 0 || this.readingStatus !== 'all';
+  }
+
+  private focusSearch(): void {
+    this.getUIContext().getFocusController().requestFocus('library-search-field');
+  }
+
+  private shelfTone(id: string): number {
+    let tone = 0;
+    for (let index = 0; index < id.length; index++) { tone = (tone + id.charCodeAt(index)) % 3; }
+    return tone;
   }
 
   @Builder
   viewChip(view: string, label: string) {
-    Button(label, { type: ButtonType.Normal }).height(44).fontSize(12).borderRadius(5)
-      .padding({ left: 12, right: 12 }).fontColor(this.viewMode === view ? this.palette().inkPrimary : this.palette().inkSecondary)
-      .backgroundColor(Color.Transparent)
-      .border({ width: { bottom: this.viewMode === view ? 2 : 0 }, color: this.palette().inkPrimary })
-      .accessibilityText('显示方式：' + label).onClick(() => {
-        if (view === 'timeline') { this.readingStatus = 'all'; }
-        this.visibleCount = 40; this.onViewModeChange(view);
-      })
+    Button(label, { type: ButtonType.Normal }).height(44).fontSize(13).borderRadius(7)
+      .padding({ left: this.isPhone ? 9 : 14, right: this.isPhone ? 9 : 14 })
+      .fontColor(this.viewMode === view ? this.palette().inkPrimary : this.palette().inkSecondary)
+      .fontWeight(this.viewMode === view ? FontWeight.Medium : FontWeight.Normal)
+      .backgroundColor(this.viewMode === view ?
+        (this.isDarkMode ? this.palette().activeBg : LibraryColors.search) : Color.Transparent)
+      .accessibilityDescription(this.viewMode === view ? '已选中' : '')
+      .enabled(!this.displayBusy).accessibilityText('显示方式：' + label)
+      .onClick(() => { if (view !== this.viewMode) { this.onViewModeChange(view); } })
   }
 
   @Builder
@@ -180,8 +198,9 @@ export struct LibraryWorkspace {
       .padding({ left: 10, right: 10 })
       .fontColor(this.readingStatus === key ? this.palette().inkPrimary : this.palette().inkSecondary)
       .backgroundColor(this.readingStatus === key ? this.palette().activeBg : Color.Transparent)
+      .accessibilityDescription(this.readingStatus === key ? '已选中' : '未选中')
       .accessibilityText('阅读状态：' + label)
-      .onClick(() => { this.readingStatus = key; this.visibleCount = 40; })
+      .onClick(() => this.onReadingStatusChange(key))
   }
 
   @Builder
@@ -192,18 +211,22 @@ export struct LibraryWorkspace {
 
   @Builder
   shelfCard(note: NoteItem) {
-    Column({ space: 8 }) {
-      DocumentPreview({ note }).width('100%').height(210)
+    Column({ space: 4 }) {
+      DocumentPreview({ note, shelfTone: this.shelfTone(note.id), compact: this.isPhone })
+        .width('100%').aspectRatio(1.56).borderRadius(7).clip(true)
         .accessibilityText(`打开资料 ${note.title}，${ReadingProgressPolicy.label(note)}`).onClick(() => this.onSelectNote(note))
       Row({ space: 4 }) {
-        Text(note.title).fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
-          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1).onClick(() => this.onSelectNote(note))
+        Column({ space: 3 }) {
+          Text(note.title).fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.palette().inkPrimary)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+          Text(LibraryPolicy.type(note) + (note.pageCount && note.pageCount > 0 ? ` · ${note.pageCount} 页` : ''))
+            .fontSize(12).fontColor(this.palette().inkMuted).width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.layoutWeight(1).padding({ left: 3 }).alignItems(HorizontalAlign.Start).onClick(() => this.onSelectNote(note))
         this.noteActions(note)
-      }.width('100%').alignItems(VerticalAlign.Bottom)
-    }.width('100%').padding(10).borderRadius(5)
-      .backgroundColor(note.id === this.activeNoteId ? this.palette().activeBg : this.palette().surface)
-      .border({ width: 1, color: this.palette().borderSubtle })
-
+      }.width('100%').alignItems(VerticalAlign.Center)
+    }.width('100%').padding(10).borderRadius(11)
+      .backgroundColor(note.id === this.activeNoteId ? this.palette().activeBg : Color.Transparent)
+      .border({ width: 1, color: this.palette().border })
   }
 
   @Builder
@@ -215,6 +238,7 @@ export struct LibraryWorkspace {
       .height(44).constraintSize({ minWidth: 54 }).textAlign(TextAlign.Center)
       .borderRadius(5)
       .backgroundColor(label === this.activeFilter ? this.palette().activeBg : Color.Transparent)
+      .accessibilityDescription(label === this.activeFilter ? '已选中' : '未选中')
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => this.onFilterChange(label))
   }
@@ -228,6 +252,8 @@ export struct LibraryWorkspace {
       .padding({ left: 10, right: 10, top: 5, bottom: 5 })
       .height(44).textAlign(TextAlign.Center).borderRadius(5)
       .backgroundColor(key === this.sortKey ? this.palette().activeBg : Color.Transparent)
+      .accessibilityDescription(key === this.sortKey ? '已选中' : '未选中')
+      .enabled(!this.displayBusy)
       .hoverEffect(HoverEffect.Highlight)
       .onClick(() => this.setSort(key))
   }
@@ -314,6 +340,16 @@ export struct LibraryWorkspace {
   }
 
   @Builder
+  libraryActions() {
+    Menu() {
+      MenuItem({ content: '新建笔记' }).onClick(() => { this.libraryMenuOpen = false; this.onCreateNote(); })
+      MenuItem({ content: '批量管理' }).enabled(this.displayNotes().length > 0).onClick(() => {
+        this.libraryMenuOpen = false; this.batchMode = true; this.visibleCount = 40;
+      })
+    }
+  }
+
+  @Builder
   batchRow(note: NoteItem) {
     Button({ type: ButtonType.Normal }) {
       Row({ space: 10 }) {
@@ -334,58 +370,79 @@ export struct LibraryWorkspace {
 
   build() {
     Column() {
-      Column({ space: 8 }) {
-        Row({ space: 8 }) {
-          Text('资料库').fontSize(this.isPhone ? 28 : TypographyTokens.TITLE_HERO).fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary).layoutWeight(1)
+      Column({ space: 14 }) {
+        Row({ space: 6 }) {
+          Column({ space: 4 }) {
+            Text(this.projectName || '资料库').fontSize(this.isPhone ? 27 : 37)
+              .fontFamily('serif').fontWeight(FontWeight.Bold).fontColor(this.palette().inkPrimary)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+            Text(`${this.displayNotes().length} 份资料`).fontSize(12).fontColor(this.palette().inkMuted).width('100%')
+          }.layoutWeight(1).alignItems(HorizontalAlign.Start)
           if (!this.batchMode) {
             Button({ type: ButtonType.Normal }) {
+              AppIcon({ source: $r('app.media.ic_more'), iconSize: 18, tint: this.palette().inkSecondary })
+            }.width(44).height(44).padding(0).borderRadius(8).backgroundColor(Color.Transparent)
+              .accessibilityText('更多资料库操作').onClick(() => { this.libraryMenuOpen = !this.libraryMenuOpen; })
+              .bindMenu(this.libraryMenuOpen, this.libraryActions, { onDisappear: () => { this.libraryMenuOpen = false; } })
+            Button(this.importing ? '导入中…' : '导入资料', { type: ButtonType.Normal }).height(44).fontSize(14).borderRadius(8)
+              .padding({ left: this.isPhone ? 10 : 20, right: this.isPhone ? 10 : 20 })
+              .fontColor(this.palette().onAccent).backgroundColor(this.palette().accent)
+              .enabled(!this.importing).accessibilityText('导入资料').onClick(() => this.onImportDocument())
+            Button({ type: ButtonType.Normal }) {
               AppIcon({ source: $r('app.media.ic_share'), iconSize: 20, tint: this.palette().inkSecondary })
-            }.width(44).height(44).padding(0).borderRadius(6).backgroundColor(this.palette().surface)
-              .border({ width: 1, color: this.palette().borderSubtle }).accessibilityText('备份与快传')
+            }.width(44).height(44).padding(0).borderRadius(8).backgroundColor(Color.Transparent)
+              .border({ width: 1, color: this.palette().inkSecondary }).accessibilityText('备份与快传')
               .onClick(() => this.onOpenBackup())
           }
-          Button('导入资料', { type: ButtonType.Normal }).height(44).fontSize(13).borderRadius(6)
-            .padding({ left: 12, right: 12 }).fontColor(this.palette().inkSecondary).backgroundColor(this.palette().surface)
-            .border({ width: 1, color: this.palette().borderSubtle }).accessibilityText('导入资料').onClick(() => this.onImportDocument())
-          Button('新建', { type: ButtonType.Normal }).height(44).fontSize(13).borderRadius(6)
-            .padding({ left: 14, right: 14 }).fontColor(this.palette().surface).backgroundColor(this.palette().inkPrimary)
-            .onClick(() => this.onCreateNote())
         }.width('100%')
-        Row({ space: 6 }) {
-          if (this.batchMode) {
+        if (this.batchMode) {
+          Row({ space: 6 }) {
             Text(`已选 ${this.selectedIds.length} 份`).fontSize(14).fontColor(this.palette().inkPrimary).layoutWeight(1)
             this.manageButton(this.allResultsSelected() ? '取消全选' : '全选结果',
               () => this.selectResults(), !this.batchBusy && this.displayNotes().length > 0)
             this.manageButton('完成', () => { this.batchMode = false; this.selectedIds = []; this.visibleCount = 40; }, !this.batchBusy)
-          } else {
-            this.manageButton('使用指引', this.onOpenGuide)
-            this.manageButton('回收站', this.onOpenTrash)
-            this.manageButton('批量管理', () => { this.batchMode = true; this.visibleCount = 40; }, this.totalCount > 0)
-          }
-        }.width('100%')
-        TextInput({ text: this.searchText, placeholder: '搜索标题、正文与 #标签' })
-          .fontSize(14).fontColor(this.palette().inkPrimary).placeholderColor(this.palette().inkMuted)
-          .backgroundColor(this.palette().surface).border({ width: 1, color: this.palette().borderSubtle })
-          .borderRadius(6).height(48).accessibilityText('搜索资料标题、正文与标签').width('100%')
-          .onChange((value: string) => this.onSearchChange(value))
-        Row({ space: 0 }) {
+          }.width('100%')
+        }
+        Row({ space: 8 }) {
+          AppIcon({ source: $r('app.media.ic_search'), iconSize: 18, tint: this.palette().inkSecondary })
+          TextInput({ text: this.searchText, placeholder: '搜索资料' })
+            .fontSize(14).fontColor(this.palette().inkPrimary).placeholderColor(this.palette().inkMuted)
+            .backgroundColor(Color.Transparent).padding({ left: 0, right: 8 }).height(46)
+            .id('library-search-field').accessibilityText('搜索资料标题、正文与标签').layoutWeight(1)
+            .onChange((value: string) => this.onSearchChange(value))
+        }.width('100%').padding({ left: 12 }).borderRadius(9)
+          .backgroundColor(this.isDarkMode ? this.palette().surfaceSubtle : LibraryColors.search)
+          .keyboardShortcut('f', [ModifierKey.CTRL], () => this.focusSearch())
+        Row({ space: 5 }) {
           if (!this.batchMode) {
-            this.viewChip('shelf', '书架')
-            this.viewChip('list', '列表')
-            this.viewChip('timeline', '时间流')
+            Row({ space: 2 }) {
+              this.viewChip('shelf', '书架')
+              this.viewChip('list', '列表')
+              this.viewChip('timeline', '时间流')
+            }
           }
           Blank()
-          Button(this.selectedTags.length > 0 || this.readingStatus !== 'all' ? '筛选 · 已启用' : '筛选', { type: ButtonType.Normal }).height(44).fontSize(12).padding({ left: 12, right: 12 })
-            .fontColor(this.palette().inkSecondary).backgroundColor(this.optionsExpanded ? this.palette().activeBg : Color.Transparent)
-            .borderRadius(5).accessibilityText('资料筛选与排序').onClick(() => {
+          Button({ type: ButtonType.Normal }) {
+            Row({ space: 7 }) {
+              Path().commands('M2 3 H14 L10 8 V12 L6 14 V8 Z').width(16).height(16)
+                .fill(Color.Transparent).stroke(this.palette().inkPrimary).strokeWidth(1.35)
+              Text('筛选').fontSize(13).fontColor(this.palette().inkPrimary)
+            }
+          }.height(44).padding({ left: 12, right: 12 })
+            .backgroundColor(this.optionsExpanded || this.hasFilters() ? this.palette().activeBg : Color.Transparent)
+            .border({ width: 1, color: this.palette().inkSecondary }).borderRadius(8)
+            .accessibilityText('资料筛选与排序').accessibilityDescription(this.hasFilters() ? '已启用筛选' : '')
+            .onClick(() => {
               animateTo({ duration: AnimationTokens.DURATION_NORMAL, curve: AnimationTokens.CURVE_STANDARD }, () => { this.optionsExpanded = !this.optionsExpanded; });
             })
-        }.width('100%').border({ width: { bottom: 1 }, color: this.palette().borderSubtle })
-        Scroll() {
-          Row({ space: 2 }) {
-            ForEach(NOTE_FILTERS, (filter: string) => { this.filterChip(filter) }, (filter: string) => filter)
-          }
-        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+        }.width('100%').padding({ bottom: 11 }).border({ width: { bottom: 1 }, color: this.palette().border })
+        if (this.optionsExpanded) {
+          Scroll() {
+            Row({ space: 2 }) {
+              ForEach(NOTE_FILTERS, (filter: string) => { this.filterChip(filter) }, (filter: string) => filter)
+            }
+          }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+        }
         if (this.optionsExpanded && (this.batchMode || this.viewMode !== 'timeline')) {
           Scroll() {
             Row({ space: 2 }) {
@@ -395,9 +452,13 @@ export struct LibraryWorkspace {
               this.sortChip('read', '最近打开')
               Button(this.sortAsc ? '↑ 升序' : '↓ 降序', { type: ButtonType.Normal }).height(44).fontSize(12)
                 .padding({ left: 10, right: 10 }).fontColor(this.palette().inkSecondary).backgroundColor(Color.Transparent)
-                .accessibilityText('切换排序方向').onClick(() => this.onSortChange(this.sortKey, !this.sortAsc))
+                .enabled(!this.displayBusy).accessibilityText('切换排序方向').onClick(() => this.onSortChange(this.sortKey, !this.sortAsc))
             }
           }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
+        } else if (this.optionsExpanded) {
+          Text('资料按创建时间倒序排列').fontSize(12).fontColor(this.palette().inkMuted).width('100%').height(44)
+        }
+        if (this.optionsExpanded) {
           Scroll() {
             Row({ space: 2 }) {
               this.statusChip('all', '全部状态')
@@ -406,10 +467,6 @@ export struct LibraryWorkspace {
               this.statusChip('finished', '已到末页')
             }
           }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
-        } else if (!this.batchMode && this.viewMode === 'timeline') {
-          Text('资料按创建时间倒序排列').fontSize(12).fontColor(this.palette().inkMuted).width('100%').height(44)
-        }
-        if (this.optionsExpanded) {
           if (this.availableTags().length > 0) {
             Scroll() {
               Row({ space: 6 }) {
@@ -420,25 +477,23 @@ export struct LibraryWorkspace {
             Text('还没有标签，在正文中输入 #标签 即可创建。').fontSize(12).fontColor(this.palette().inkMuted).width('100%').padding(8)
           }
         }
-        Row() {
-          Text(`${this.displayNotes().length} / ${this.totalCount} 份资料`).fontSize(12).fontColor(this.palette().inkMuted).layoutWeight(1)
-          Button('清除筛选', { type: ButtonType.Normal }).height(44).fontSize(12)
-            .fontColor(this.palette().inkSecondary).backgroundColor(Color.Transparent).onClick(() => this.resetFilters())
-        }.width('100%')
-      }.width('100%').padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: this.isPhone ? 24 : 40 })
+        if (this.hasFilters()) {
+          Row() {
+            Button('清除筛选', { type: ButtonType.Normal }).height(44).fontSize(12)
+              .fontColor(this.palette().inkSecondary).backgroundColor(Color.Transparent).onClick(() => this.resetFilters())
+          }.width('100%').justifyContent(FlexAlign.End)
+        }
+      }.width('100%').padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: this.isPhone ? 14 : 24 })
 
       // ---- 列表 ----
       if (this.displayNotes().length === 0) {
         Column({ space: 8 }) {
-          Text(this.totalCount === 0 ? '资料库还是空的' : '没有匹配的资料')
+          Text(this.hasFilters() ? '没有匹配的资料' : this.projectName ? '这个项目还没有资料' : '资料库还是空的')
             .fontSize(TypographyTokens.BODY_REGULAR)
             .fontColor(this.palette().inkSecondary)
-        Text(this.totalCount === 0 ? '导入 PDF、图片、文字或 Office 文字版。' : '试试其他关键词，或清除筛选。')
+          Text(this.hasFilters() ? '试试其他关键词，或清除筛选。' : '导入 PDF、图片、文字或 Office 文字版。')
             .fontSize(TypographyTokens.CAPTION)
             .fontColor(this.palette().inkMuted)
-          if (this.totalCount > 0) {
-            Button('清除筛选').height(44).onClick(() => this.resetFilters())
-          }
         }
         .width('100%')
         .layoutWeight(1)
@@ -459,9 +514,7 @@ export struct LibraryWorkspace {
           ForEach(this.displayNotes().slice(0, this.visibleCount), (note: NoteItem) => {
             ListItem() {
               MemoTimelineCard({ note, showActions: false, showFooterActions: true, onOpenActions: this.onOpenNoteMenu,
-                onOpen: this.onSelectNote, onTag: (tag: string) => {
-                this.selectedTags = []; this.readingStatus = 'all'; this.onOpenTag(tag);
-              } })
+                onOpen: this.onSelectNote, onTag: (tag: string) => this.onTagsChange([tag]) })
             }
           }, (note: NoteItem) => readingRenderKey(note))
           if (this.visibleCount < this.displayNotes().length) {
@@ -472,7 +525,7 @@ export struct LibraryWorkspace {
       } else if (this.viewMode === 'shelf') {
         Scroll() {
           Column({ space: 12 }) {
-            GridRow({ columns: this.shelfColumns, gutter: 12 }) {
+            GridRow({ columns: this.shelfColumns, gutter: 18 }) {
               ForEach(this.displayNotes().slice(0, this.visibleCount), (note: NoteItem) => {
                 GridCol() { this.shelfCard(note) }
               }, (note: NoteItem) => readingRenderKey(note))
@@ -480,9 +533,12 @@ export struct LibraryWorkspace {
             if (this.visibleCount < this.displayNotes().length) {
               Button('显示更多资料').height(44).onClick(() => { this.visibleCount += 40; })
             }
-          }.width('100%').padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 12, bottom: 20 })
+          }.width('100%').padding({ left: LayoutTokens.gutter(this.isPhone), right: LayoutTokens.gutter(this.isPhone), top: 20, bottom: 20 })
         }.layoutWeight(1).width('100%').align(Alignment.Top)
-          .onAreaChange((_before: Area, after: Area) => { this.shelfColumns = Number(after.width) >= 900 ? 4 : Number(after.width) >= 600 ? 3 : 2; })
+          .onAreaChange((_before: Area, after: Area) => {
+            const contentWidth = Number(after.width) - 2 * LayoutTokens.gutter(this.isPhone);
+            this.shelfColumns = contentWidth >= 970 ? 4 : contentWidth >= 600 ? 3 : contentWidth >= 280 ? 2 : 1;
+          })
       } else {
         List({ space: 8 }) {
           ForEach(this.displayNotes().slice(0, this.visibleCount), (note: NoteItem) => {
@@ -510,6 +566,6 @@ export struct LibraryWorkspace {
     .width('100%')
     .height('100%')
     .constraintSize({ maxWidth: 1080 })
-    .backgroundColor(this.palette().canvas)
+    .backgroundColor(this.isDarkMode ? this.palette().canvas : LibraryColors.paper)
   }
 }

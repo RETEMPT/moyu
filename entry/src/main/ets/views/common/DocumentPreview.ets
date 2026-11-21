@@ -13,6 +13,7 @@ import { DocumentCover } from './DocumentCover';
 export struct DocumentPreview {
   @Prop note: NoteItem;
   @Prop compact: boolean = false;
+  @Prop shelfTone: number = -1;
 
   private pageCount(): number {
     const count: number | undefined = this.note.pageCount;
@@ -25,7 +26,8 @@ export struct DocumentPreview {
       title: this.note.title,
       pageCount: this.pageCount(),
       coverUrl: this.note.coverUrl || '',
-      compact: this.compact
+      compact: this.compact,
+      shelfTone: this.shelfTone
     })
       .width('100%')
       .height('100%')

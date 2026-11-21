@@ -1,16 +1,13 @@
 /**
  * 知识与项目文件资源管理器侧边栏
  *
- * Notion 文档侧栏：
- *   1. 顶部只作品牌标识，首页进入全局导航
- *   2. 快捷搜索 + 首页 / 知识图谱 / 自由白板 / 收藏 / 待办 / 回收站
- *   3. 项目文件资源管理器：细线文件夹、箭头 90° 展开；
- *      折叠状态来自 Index 的 space.isOpen，这里不主动展开任何项目
- *   4. 项目更多菜单、新建项目、收起全部、资料行菜单端口全部保留
+ * 主工作区、项目树和实用工具各有自己的导航区。
+ * 项目名称打开项目，箭头控制文件树，更多按钮打开项目操作。
  */
 import {
   AnimationTokens,
   ColorPalette,
+  LibraryColors,
   LayoutTokens,
   TypographyTokens
 } from '../../common/constants/DesignTokens';
@@ -41,7 +38,6 @@ export struct Sidebar {
   onToggleSpace: (spaceId: string) => void = () => {};
   onCollapseAllSpaces: () => void = () => {};
   onSelectSpace: (spaceId: string) => void = () => {};
-  onOpenSearch: () => void = () => {};
   onSelectNote: (note: NoteItem) => void = () => {};
   onSelectNav: (navKey: string) => void = () => {};
   onOpenSettings: () => void = () => {};
@@ -55,7 +51,6 @@ export struct Sidebar {
   @StorageProp('flowmindIsPhone') isPhone: boolean = false;
   @StorageProp('flowmindStudyPreview') studyPreview: boolean = false;
   @State pressedItemId: string = '';
-  private suppressRowClick: boolean = false;
 
   private palette(): ColorPalette {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
@@ -63,7 +58,7 @@ export struct Sidebar {
 
   /** 抽屉宽度：手机窄屏按屏宽百分比，避免几乎盖满；宽屏用固定宽度。 */
   private drawerWidth(): Length {
-    return this.isPhone ? '94%' : LayoutTokens.SIDEBAR_WIDTH;
+    return this.isPhone ? '84%' : LayoutTokens.SIDEBAR_WIDTH;
   }
 
   // ------------------------------------------------------------------
@@ -84,88 +79,40 @@ export struct Sidebar {
   @Builder
   projectRow(space: SpaceFolder) {
     Column() {
-      // ---- 项目节点行：细线文件夹 + 克制展开动画 ----
-      Row({ space: 6 }) {
-        AppIcon({ source: $r('app.media.ic_chevron_right'), iconSize: 13, tint: this.palette().inkMuted })
-          .rotate({ angle: space.isOpen ? 90 : 0 })
-          .animation({ duration: AnimationTokens.duration(140), curve: Curve.EaseInOut })
-
-        AppIcon({
-          source: projectIcon(space.icon || ''), iconSize: 17,
-          tint: this.palette().inkSecondary
-        })
-
-        // 项目名称
-        Text(space.name)
-          .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontWeight(space.id === this.activeSpaceId ? FontWeight.Medium : FontWeight.Normal)
-          .fontColor(space.id === this.activeSpaceId ? this.palette().inkPrimary : this.palette().inkSecondary)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-
-
+      Row({ space: 0 }) {
         Button({ type: ButtonType.Normal }) {
-          AppIcon({ source: $r('app.media.ic_more'), iconSize: 15, tint: this.palette().inkMuted })
-        }.width(44).height(44).padding(0).borderRadius(8).backgroundColor(Color.Transparent)
-          .accessibilityText('项目操作 ' + space.name)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.suppressRowClick = true;
-            this.onOpenSheet('project_menu', space, null);
-          })
+          Row({ space: 10 }) {
+            AppIcon({ source: projectIcon(space.icon || ''), iconSize: 19, tint: this.palette().inkSecondary })
+            Text(space.name).fontSize(TypographyTokens.BODY_REGULAR).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+              .fontWeight(space.id === this.activeSpaceId ? FontWeight.Medium : FontWeight.Normal)
+              .fontColor(space.id === this.activeSpaceId ? this.palette().inkPrimary : this.palette().inkSecondary)
+          }.width('100%')
+        }.layoutWeight(1).height(ROW_HEIGHT).padding({ left: 10, right: 2 }).backgroundColor(Color.Transparent)
+          .accessibilityText('项目 ' + space.name + '，' + space.count + ' 份资料')
+          .accessibilityDescription(space.id === this.activeSpaceId ? '已选中' : '')
+          .hoverEffect(HoverEffect.Highlight).onClick(() => this.onSelectSpace(space.id))
+        if (space.notes && space.notes.length > 0) {
+          Button({ type: ButtonType.Normal }) {
+            AppIcon({ source: $r('app.media.ic_chevron_right'), iconSize: 13, tint: this.palette().inkMuted })
+              .rotate({ angle: space.isOpen ? 90 : 0 })
+              .animation({ duration: AnimationTokens.duration(140), curve: Curve.EaseInOut })
+          }.width(44).height(44).padding(0).backgroundColor(Color.Transparent)
+            .accessibilityText((space.isOpen ? '收起项目 ' : '展开项目 ') + space.name)
+            .onClick(() => this.onToggleSpace(space.id))
+        }
+        IconButton({ icon: $r('app.media.ic_more'), label: '项目操作 ' + space.name, compact: true,
+          onAction: () => this.onOpenSheet('project_menu', space, null) })
       }
       .width('100%')
       .height(ROW_HEIGHT)
-      .padding({ left: 8, right: 2 })
-      .borderRadius(6)
+      .borderRadius(8)
       .backgroundColor(space.id === this.activeSpaceId ? this.palette().activeBg : Color.Transparent)
-      .accessibilityText('项目 ' + space.name + '，' + space.count + ' 份资料')
-      .accessibilityDescription(space.isOpen ? '已展开' : '已折叠')
-      .hoverEffect(HoverEffect.Highlight)
-      // 单点整行切换展开/收起并激活选中；不主动展开任何项目。
-      .onClick(() => {
-        if (this.suppressRowClick) {
-          this.suppressRowClick = false;
-          return;
-        }
-        this.onToggleSpace(space.id);
-        this.onSelectSpace(space.id);
-      })
-      // 长按保留项目菜单端口，不做放大 / 阴影位移。
-      .gesture(
-        LongPressGesture({ repeat: false, duration: 480 })
-          .onAction(() => {
-            this.onOpenSheet('project_menu', space, null);
-          })
-      )
-
-      // ---- 下辖子资料文件列表（仍由 Index 的 isOpen 状态决定） ----
-      if (space.isOpen) {
-        Column({ space: 0 }) {
-          if (!space.notes || space.notes.length === 0) {
-            Row({ space: 4 }) {
-              Text('＋')
-                .fontSize(TypographyTokens.TINY)
-                .fontColor(this.palette().inkMuted)
-              Text('新建资料')
-                .fontSize(TypographyTokens.CAPTION)
-                .fontColor(this.palette().inkMuted)
-            }
-            .width('100%')
-            .height(32)
-            .padding({ left: 30, right: 8 })
-            .borderRadius(6)
-            .accessibilityText('在项目 ' + space.name + ' 中新建资料')
-            .hoverEffect(HoverEffect.Highlight)
-            .onClick(() => {
-              this.onOpenSheet('new_content', space, null);
-            })
-          } else {
-            ForEach(space.notes, (note: NoteItem) => {
-              this.fileRow(note, space.name)
-            }, (note: NoteItem) => noteRenderKey(note))
-          }
+      if (space.isOpen && space.notes && space.notes.length > 0) {
+        Column() {
+          ForEach(space.notes, (note: NoteItem) => {
+            this.fileRow(note)
+          }, (note: NoteItem) => noteRenderKey(note))
         }
         .width('100%')
         .padding({ top: 1, bottom: 2 })
@@ -181,64 +128,28 @@ export struct Sidebar {
   }
 
   @Builder
-  fileRow(note: NoteItem, projectName: string) {
-    Row({ space: 6 }) {
-      // 文件类型专属图标（彩色）
-      AppIcon({ source: documentIcon(note.type), iconSize: 16, tint: this.palette().inkSecondary })
-
-      // 文件标题
-      Text(note.title)
-        .fontSize(TypographyTokens.CAPTION)
-        .fontColor(note.id === this.activeNoteId ? this.palette().inkPrimary : this.palette().inkSecondary)
-        .fontWeight(note.id === this.activeNoteId ? FontWeight.Medium : FontWeight.Normal)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .layoutWeight(1)
-
-      // 更多操作菜单按钮 (···)
+  fileRow(note: NoteItem) {
+    Row() {
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 6 }) {
+          AppIcon({ source: documentIcon(note.type), iconSize: 16, tint: this.palette().inkSecondary })
+          Text(note.title).fontSize(TypographyTokens.CAPTION).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+            .fontColor(note.id === this.activeNoteId ? this.palette().inkPrimary : this.palette().inkSecondary)
+        }.width('100%')
+      }.layoutWeight(1).height(FILE_ROW_HEIGHT).backgroundColor(Color.Transparent).padding({ left: 30, right: 5 })
+        .accessibilityText('打开 ' + note.title).hoverEffect(HoverEffect.Highlight)
+        .onClick(() => this.onSelectNote(note))
+        .gesture(LongPressGesture({ repeat: false, duration: 480 }).onAction(() => this.onOpenSheet('note_menu', null, note)))
       if (note.id === this.activeNoteId) {
-        Text('···')
-          .fontSize(TypographyTokens.BODY_REGULAR)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.palette().inkPrimary)
-          .width(22)
-          .height(20)
-          .textAlign(TextAlign.Center)
-          .borderRadius(4)
-          .backgroundColor(this.palette().surfaceSubtle)
-          .hoverEffect(HoverEffect.Highlight)
-          .onClick(() => {
-            this.suppressRowClick = true;
-            this.onOpenSheet('note_menu', null, note);
-          })
-      } else if (note.tag && note.tag.length > 0) {
-        Text(note.tag)
-          .fontSize(TypographyTokens.TINY)
-          .fontColor(this.palette().inkMuted)
-          .maxLines(1)
+        IconButton({ icon: $r('app.media.ic_more'), label: '资料操作 ' + note.title, compact: true,
+          onAction: () => this.onOpenSheet('note_menu', null, note) })
       }
     }
     .width('100%')
     .height(FILE_ROW_HEIGHT)
-    .padding({ left: 32, right: 6 })
     .borderRadius(6)
     .backgroundColor(note.id === this.activeNoteId ? this.palette().activeBg : Color.Transparent)
-    .hoverEffect(HoverEffect.Highlight)
-    // 短按：打开阅读/编辑并选中
-    .onClick(() => {
-      if (this.suppressRowClick) {
-        this.suppressRowClick = false;
-        return;
-      }
-      this.onSelectNote(note);
-    })
-    // 长按：呼出文件操作菜单，不做位移
-    .gesture(
-      LongPressGesture({ repeat: false, duration: 480 })
-        .onAction(() => {
-          this.onOpenSheet('note_menu', null, note);
-        })
-    )
   }
 
   // ------------------------------------------------------------------
@@ -261,6 +172,7 @@ export struct Sidebar {
     .borderRadius(5)
     .backgroundColor(this.activeNav === navKey ? this.palette().activeBg : Color.Transparent)
     .accessibilityText(label)
+    .accessibilityDescription(this.activeNav === navKey ? '已选中' : '')
     .scale({
       x: this.getItemScale(`nav-${navKey}`),
       y: this.getItemScale(`nav-${navKey}`)
@@ -284,9 +196,11 @@ export struct Sidebar {
   @Builder
   treeSectionHeader() {
     Row({ space: 0 }) {
-      Text('私人页面').fontSize(12).fontColor(this.palette().inkMuted).fontWeight(FontWeight.Medium)
+      Text('项目').fontSize(12).fontColor(this.palette().inkMuted).fontWeight(FontWeight.Medium)
         .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      IconButton({ icon: $r('app.media.ic_chevron_up'), label: '收起所有项目', compact: true, onAction: this.onCollapseAllSpaces })
+      if (this.spaces.some((space: SpaceFolder) => space.isOpen && space.count > 0)) {
+        IconButton({ icon: $r('app.media.ic_chevron_up'), label: '收起所有项目', compact: true, onAction: this.onCollapseAllSpaces })
+      }
       IconButton({ icon: $r('app.media.ic_plus'), label: '新建项目', compact: true, onAction: this.onOpenCreateProject })
     }.width('100%').height(44).padding({ left: 8, right: 0 }).margin({ bottom: 2 })
   }
@@ -306,77 +220,36 @@ export struct Sidebar {
         Row({ space: 8 }) {
           BrandMark({ markSize: 22 })
           Text('墨语')
-            .fontSize(TypographyTokens.BODY_LARGE)
+            .fontSize(21)
             .fontColor(this.palette().inkPrimary)
-            .fontWeight(FontWeight.Medium)
+            .fontWeight(FontWeight.Bold)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
           IconButton({ icon: $r('app.media.ic_menu'), label: '收起侧栏', compact: true, onAction: this.onToggleSidebar })
         }
         .width('100%')
-        .height(44)
+        .height(54)
         .padding({ left: 10, right: 8 })
-        .margin({ bottom: 4 })
-
-        // ---- 快速搜索入口 ----
-        Row({ space: 8 }) {
-          AppIcon({ source: $r('app.media.ic_search'), iconSize: 20, tint: this.palette().inkSecondary })
-          Text('搜索')
-            .fontSize(TypographyTokens.BODY_REGULAR)
-            .fontColor(this.palette().inkMuted)
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-            .layoutWeight(1)
-        }
-        .width('100%')
-        .height(44)
-        .padding({ left: 10, right: 10 })
-        .borderRadius(5)
-        .backgroundColor(this.palette().surfaceSubtle)
-        .accessibilityText('搜索笔记、文件或内容')
-        .hoverEffect(HoverEffect.Highlight)
-        .onClick(() => this.onOpenSearch())
-        .margin({ bottom: 8 })
+        .margin({ bottom: 10 })
 
         // ---- 全局核心功能导航 ----
-        Column({ space: 2 }) {
-          this.navRow($r('app.media.ic_home'), '主页', NAV_HOME)
-          this.navRow($r('app.media.ic_chat'), this.studyPreview ? NAV_CHAT : '学习工具', NAV_CHAT)
-          this.navRow($r('app.media.ic_read'), '资料库', NAV_LIBRARY)
-          this.navRow($r('app.media.ic_star'), '收藏', NAV_FAVORITE)
-          this.navRow($r('app.media.ic_check'), '待办', NAV_TODO)
-        }
-        .width('100%')
-        .margin({ bottom: 18 })
-
-        Divider()
-          .strokeWidth(1)
-          .color(this.palette().borderSubtle)
-          .margin({ top: 2, bottom: 2 })
-
-        // 私人项目树在所有工作区均可达。
-          this.treeSectionHeader()
-
-          // 项目树滚动容器
-          Scroll() {
-            Column() {
-                ForEach(this.spaces, (space: SpaceFolder) => {
-                  this.projectRow(space)
-                }, (space: SpaceFolder) => spaceRenderKey(space))
-                Button({ type: ButtonType.Normal }) {
-                  Row({ space: 8 }) {
-                    AppIcon({ source: $r('app.media.ic_plus'), iconSize: 16, tint: this.palette().inkMuted })
-                    Text('新建项目').fontSize(13).fontColor(this.palette().inkSecondary)
-                  }.width('100%')
-                }.width('100%').height(44).padding({ left: 10, right: 10 }).borderRadius(5).backgroundColor(Color.Transparent)
-                  .accessibilityText('添加私人项目').onClick(() => this.onOpenCreateProject())
-            }
-            .width('100%')
-          }
-          .layoutWeight(1)
-          .align(Alignment.TopStart)
-          .scrollBar(BarState.Off)
+        Scroll() {
+          Column() {
+            Column({ space: 4 }) {
+              this.navRow($r('app.media.ic_home'), '主页', NAV_HOME)
+              this.navRow($r('app.media.ic_folder'), '资料库', NAV_LIBRARY)
+              this.navRow($r('app.media.ic_chat'), this.studyPreview ? NAV_CHAT : '学习工具', NAV_CHAT)
+              this.navRow($r('app.media.ic_check'), '待办', NAV_TODO)
+              this.navRow($r('app.media.ic_star'), '收藏', NAV_FAVORITE)
+            }.width('100%').margin({ bottom: 12 })
+            Divider().strokeWidth(1).color(this.palette().border)
+            this.treeSectionHeader()
+            ForEach(this.spaces, (space: SpaceFolder) => {
+              this.projectRow(space)
+            }, (space: SpaceFolder) => spaceRenderKey(space))
+          }.width('100%')
+        }.layoutWeight(1).align(Alignment.TopStart).scrollBar(BarState.Off)
 
         Column({ space: 0 }) {
           this.navRow($r('app.media.ic_graph'), '知识图谱', NAV_GRAPH)
@@ -409,7 +282,7 @@ export struct Sidebar {
     }
     .width(this.drawerWidth())
     .height('100%')
-    .backgroundColor(this.palette().sidebar)
+    .backgroundColor(this.isDarkMode ? this.palette().sidebar : LibraryColors.sidebar)
     .border({ width: { right: 1 }, color: { right: this.palette().borderSubtle } })
   }
 }

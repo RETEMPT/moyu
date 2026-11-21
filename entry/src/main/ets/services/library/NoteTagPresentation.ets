@@ -2,6 +2,10 @@ import { SourceTextStructure } from '../document/SourceTextStructure';
 
 /** Presentation only. Keep raw Markdown and original line coordinates for editing and citations. */
 export class NoteTagPresentation {
+  static bodyTokens(): RegExp {
+    return /(`+)(.*?)\1|\[\[([^\]|#]+)(?:\|([^\]]+))?\]\]|\[([^\]]+)\]\([^)]*\)|(^|\s)#([^\s#.,!?;:()[\]{}，。！？；：（）【】《》、*`]+)|\$[^$]+\$/g;
+  }
+
   static displayBody(source: string, tags: string[]): string {
     if (!tags.length || !source.includes('#')) { return source; }
     const known = NoteTagPresentation.keys(tags);

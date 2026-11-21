@@ -77,8 +77,14 @@ export const DarkColors: ColorPalette = {
   tagBg: '#2C2C2A'
 };
 
+export class LibraryColors {
+  static readonly paper: string = '#FAF9F7';
+  static readonly sidebar: string = '#F0EFED';
+  static readonly search: string = '#EEEDEA';
+}
+
 export class LayoutTokens {
-  static readonly SIDEBAR_WIDTH: number = 328;
+  static readonly SIDEBAR_WIDTH: number = 256;
   static readonly CONTEXT_PANEL_WIDTH: number = 280;
   static readonly CONTENT_MAX_WIDTH: number = 840;
 

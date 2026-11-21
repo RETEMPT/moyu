@@ -1,6 +1,9 @@
+import { FILTER_ALL } from '../../common/constants/WorkspaceConstants';
 import { NoteItem } from '../../common/types/NoteItem';
 import { StudySourceService } from '../study/StudySourceService';
 import { ReadingProgressPolicy, ReadingStatus } from '../document/ReadingProgressPolicy';
+import { SourceTextStructure } from '../document/SourceTextStructure';
+import { NoteTagPresentation } from './NoteTagPresentation';
 
 export interface LibraryQuery {
   keyword?: string;
@@ -15,6 +18,8 @@ export interface LibraryQuery {
 
 /** Shared, immutable query for the library and home shelf. No file reads during rendering. */
 export class LibraryPolicy {
+  static tagKey(tag: string): string { return tag.trim().replace(/^#(?=\S)/, '').toLowerCase(); }
+
   static type(note: NoteItem): string {
     const type = note.type.toLowerCase();
     if (note.sourceType === 'image' || type === 'image') { return '图片'; }
@@ -30,33 +35,62 @@ export class LibraryPolicy {
     // Older smart notes also stored the complete tag list in the single-tag field.
     const values = tags.length > 1 && legacy === tags.join(', ') ? tags : [legacy].concat(tags);
     const result: string[] = [];
+    const seen = new Set<string>();
     for (const value of values) {
       const tag = value.trim().replace(/^#(?=\S)/, '');
-      if (tag.length > 0 && !result.includes(tag)) { result.push(tag); }
+      if (tag.length > 0 && !seen.has(tag.toLowerCase())) { seen.add(tag.toLowerCase()); result.push(tag); }
+    }
+    const source = note.contentDetail || note.previewText || '';
+    if (!/(?:^|\s)#[^\s#]/.test(source) || LibraryPolicy.type(note) !== 'Markdown') { return result; }
+    const pattern = NoteTagPresentation.bodyTokens();
+    for (const row of SourceTextStructure.scan(source)) {
+      if (row.kind === 'code' || row.kind === 'math' || !row.text.includes('#')) { continue; }
+      pattern.lastIndex = 0;
+      let match = pattern.exec(row.text);
+      while (match) {
+        const tag = match[7];
+        if (tag !== undefined && !seen.has(tag.toLowerCase())) {
+          seen.add(tag.toLowerCase());
+          result.push(tag);
+        }
+        match = pattern.exec(row.text);
+      }
     }
     return result;
   }
 
-  static availableTags(notes: NoteItem[]): string[] {
-    const values: Set<string> = new Set();
-    for (const note of notes) { LibraryPolicy.tags(note).forEach((tag: string) => values.add(tag)); }
-    return Array.from(values).sort((a: string, b: string) => a.localeCompare(b));
+  static availableTags(notes: NoteItem[], category: string = '', type: string = ''): string[] {
+    const values = new Map<string, string>();
+    for (const note of notes) {
+      if (!LibraryPolicy.inScope(note, category, type)) { continue; }
+      for (const tag of LibraryPolicy.tags(note)) {
+        const key = LibraryPolicy.tagKey(tag);
+        if (!values.has(key)) { values.set(key, tag); }
+      }
+    }
+    return Array.from(values.values()).sort((a: string, b: string) => a.localeCompare(b));
+  }
+
+  private static inScope(note: NoteItem, category: string, type: string): boolean {
+    return !note.deletedAt && (!category || note.category === category) &&
+      (!type || type === FILTER_ALL || LibraryPolicy.type(note) === type);
   }
 
   static query(notes: NoteItem[], options: LibraryQuery): NoteItem[] {
     const keyword = (options.keyword || '').trim().toLowerCase();
     const tagQuery = keyword.startsWith('#') && keyword.length > 1;
+    const tagText = tagQuery ? keyword.substring(1) : keyword;
+    const selectedTags = new Set((options.tags || []).map((tag: string) => LibraryPolicy.tagKey(tag)));
     const result = notes.filter((note: NoteItem): boolean => {
-      if (note.deletedAt || (options.category && note.category !== options.category)) { return false; }
-      if (options.type && options.type !== '全部' && LibraryPolicy.type(note) !== options.type) { return false; }
+      if (!LibraryPolicy.inScope(note, options.category || '', options.type || '')) { return false; }
       if (options.status && options.status !== 'all' && ReadingProgressPolicy.status(note) !== options.status) { return false; }
-      const tags = LibraryPolicy.tags(note);
-      if (options.tags && options.tags.length && !options.tags.some((tag: string) => tags.includes(tag))) { return false; }
-      if (!keyword) { return true; }
-      if (tagQuery) { return tags.some((tag: string) => tag.toLowerCase().includes(keyword.substring(1))); }
-      if ([note.title, note.previewText, note.category, note.contentDetail].some((text: string) => (text || '').toLowerCase().includes(keyword)) ||
-        tags.some((tag: string) => tag.toLowerCase().includes(keyword))) { return true; }
-      return StudySourceService.pages(note).some((page) => page.text.toLowerCase().includes(keyword));
+      const textMatches = !keyword || (!tagQuery && [note.title, note.previewText, note.category, note.contentDetail]
+        .some((text: string) => (text || '').toLowerCase().includes(keyword)));
+      if (textMatches && selectedTags.size === 0) { return true; }
+      const tags = LibraryPolicy.tags(note).map((tag: string) => LibraryPolicy.tagKey(tag));
+      if (selectedTags.size > 0 && !tags.some((tag: string) => selectedTags.has(tag))) { return false; }
+      return textMatches || tags.some((tag: string) => tag.includes(tagText)) ||
+        (!tagQuery && StudySourceService.pages(note).some((page) => page.text.toLowerCase().includes(keyword)));
     });
     result.sort((a: NoteItem, b: NoteItem): number => {
       if (options.pinnedFirst && (a.isPinned === true) !== (b.isPinned === true)) { return a.isPinned === true ? -1 : 1; }

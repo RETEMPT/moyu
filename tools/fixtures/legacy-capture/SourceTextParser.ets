@@ -1,6 +1,6 @@
-import { SmartContent } from '../../common/types/SmartContent';
-import { LocalTextFormatter } from './LocalTextFormatter';
-import { SourceTextStructure } from '../document/SourceTextStructure';
+import { SmartContent } from './SmartContent';
+import { LocalTextFormatter } from '../../../entry/src/main/ets/services/smart/LocalTextFormatter';
+import { SourceTextStructure } from '../../../entry/src/main/ets/services/document/SourceTextStructure';
 import { ExplicitTaskExtractor } from './ExplicitTaskExtractor';
 
 /** 只提取原文明示的标题和任务，不补写事实或猜测日期。 */

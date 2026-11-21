@@ -2,7 +2,8 @@
 param(
     [string]$Target = '',
     [string]$StudioDir = 'E:\devecostudio-windows-26.0.0.821\devecostudio-windows-26.0.0.821\DevEco Studio',
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$StudyDemo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -83,14 +84,8 @@ try {
 
     if (-not $SkipBuild) {
         Write-Host '[2/4] Building HAP...'
-        $env:PATH = (Join-Path $StudioDir 'jbr\bin') + ';' + $env:PATH
-        $env:DEVECO_SDK_HOME = Join-Path $StudioDir 'sdk'
-        $hvigor = Join-Path $StudioDir 'tools\hvigor\bin\hvigorw.bat'
-        Push-Location -LiteralPath $projectDirectory
-        try {
-            & $hvigor assembleHap --mode module -p module=entry@default -p product=default
-            if ($LASTEXITCODE -ne 0) { throw 'HAP build failed.' }
-        } finally { Pop-Location }
+        & (Join-Path $PSScriptRoot 'build-hap.ps1') -StudioDir $StudioDir -StudyDemo:$StudyDemo
+        if ($LASTEXITCODE -ne 0) { throw 'HAP build failed.' }
     } else {
         Write-Host '[2/4] Using existing HAP (-SkipBuild).'
     }
@@ -105,6 +100,18 @@ try {
         $hapPath = $signedPath
     }
     if (-not (Test-Path -LiteralPath $hapPath -PathType Leaf)) { throw "HAP not found: $hapPath" }
+    if ($StudyDemo) {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($hapPath)
+        try {
+            $manifest = New-Object System.IO.StreamReader($archive.GetEntry('module.json').Open())
+            try { $package = $manifest.ReadToEnd() | ConvertFrom-Json }
+            finally { $manifest.Dispose() }
+            if (-not $package.app.debug -or 'ohos.permission.INTERNET' -notin $package.module.requestPermissions.name) {
+                throw 'The selected HAP is missing the StudyDemo permission. Run deploy_hap.bat -StudyDemo to rebuild it.'
+            }
+        } finally { $archive.Dispose() }
+    }
     Write-Host "[3/4] Installing $hapPath (replace, keep application data)..."
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         Wait-ForTarget -ConnectKey $Target

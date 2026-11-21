@@ -9,6 +9,7 @@ import { MarkdownLinkService } from '../../services/document/MarkdownLinkService
 export struct DocumentText {
   @Prop @Watch('refresh') text: string = '';
   @Prop allowLinks: boolean = true;
+  @Prop chatLayout: boolean = false;
   @StorageProp('flowmindDarkMode') dark: boolean = false;
   @StorageProp('flowmindThemeStyle') themeStyle: string = 'mono';
   @State blocks: DocumentBlock[] = [];
@@ -25,7 +26,7 @@ export struct DocumentText {
           .fontColor(span.style === 'link' && this.allowLinks ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).link : span.style === 'code' ? ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent : ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary)
           .onClick(() => { if (span.target && this.allowLinks) { this.openLink(span.target); } })
       })
-    }.fontSize(15).lineHeight(24).width('100%').copyOption(CopyOptions.LocalDevice)
+    }.fontSize(this.chatLayout ? 16 : 15).lineHeight(this.chatLayout ? 27 : 24).width('100%').copyOption(CopyOptions.LocalDevice)
   }
   private async openLink(target: string): Promise<void> {
     try { await MarkdownLinkService.open(this.getUIContext().getHostContext() as common.UIAbilityContext, target); }
@@ -34,12 +35,13 @@ export struct DocumentText {
   @Builder
   block(block: DocumentBlock) {
     if (block.kind === 'heading') {
-      Text(block.text).fontSize(block.level === 1 ? 20 : block.level === 2 ? 17 : 15)
+      Text(block.text).fontSize((block.level === 1 ? 20 : block.level === 2 ? 17 : 15) + (this.chatLayout ? 2 : 0))
         .fontWeight(FontWeight.Bold).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).inkPrimary)
-        .width('100%').margin({ top: 6, bottom: 2 }).copyOption(CopyOptions.LocalDevice)
+        .width('100%').margin({ top: this.chatLayout ? 10 : 6, bottom: 2 }).copyOption(CopyOptions.LocalDevice)
     } else if (block.kind === 'list') {
       Row({ space: 8 }) {
-        Text(block.marker).fontSize(14).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent).width(24).margin({ top: 2 })
+        Text(block.marker).fontSize(14).fontColor(ThemeHelper.paletteOfDark(this.dark, this.themeStyle).accent)
+          .width(24).margin({ top: this.chatLayout ? 4 : 2 })
         Column() { this.inline(block.text) }.layoutWeight(1)
       }.width('100%').alignItems(VerticalAlign.Top)
     } else if (block.kind === 'table') {
@@ -71,7 +73,7 @@ export struct DocumentText {
     else { this.inline(block.text) }
   }
   build() {
-    Column({ space: 8 }) {
+    Column({ space: this.chatLayout ? 10 : 8 }) {
       ForEach(this.blocks, (block: DocumentBlock) => { this.block(block) },
         (block: DocumentBlock, index: number) => `${index}-${block.kind}-${block.text}`)
     }.width('100%').alignItems(HorizontalAlign.Start)

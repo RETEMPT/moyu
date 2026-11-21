@@ -13,6 +13,7 @@ export struct StudySheet {
   @Prop cards: ReviewCard[] = [];
   @Prop course: string = '';
   @Prop initialNoteId: string = '';
+  @Prop initialWeakOnly: boolean = false;
   @Prop result: LearningResult | undefined = undefined;
   @Prop resultNoteId: string = '';
   @Prop @Watch('closeRequested') closeToken: number = 0;
@@ -44,7 +45,10 @@ export struct StudySheet {
   @State discardWarning: boolean = false;
   @State asOf: number = 0;
   private alive: boolean = true;
-  aboutToAppear(): void { this.alive = true; this.asOf = Date.now(); this.noteId = this.initialNoteId || this.availableNotes()[0]?.id || ''; }
+  aboutToAppear(): void {
+    this.alive = true; this.asOf = Date.now(); this.noteId = this.initialNoteId || this.availableNotes()[0]?.id || '';
+    if (this.initialWeakOnly) { this.weakOnly = true; this.tab = 0; }
+  }
   aboutToDisappear(): void { this.alive = false; }
   private closeRequested(): void {
     if (this.busy) { return; }

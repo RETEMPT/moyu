@@ -34,6 +34,14 @@
 /release/evidence/
 /tmp/
 /.v/
+/.codegenie/
+/.codex-remote-attachments/
+/archive/
+/design/
+/PROJECT_MEMORY.md
+/moyu_text.txt
+/release/competition.json
+/release/*.template.json
 **/__pycache__/
 *.pyc
 

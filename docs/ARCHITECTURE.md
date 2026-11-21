@@ -1,6 +1,6 @@
 # 当前分层架构与数据保存
 
-当前源码版本为 1.2.0（1020000）。本文描述本地功能、持久化和去中心化同步方向。应用与模拟器联调的能力边界见[产品范围](../PRODUCT_SCOPE.md)，收费网站、公开资料库与云 AI 见[独立规划](WEB_PLATFORM_PLAN.md)。
+当前源码版本为 1.2.1（1020100）。本文描述本地功能、持久化和去中心化同步方向。应用与模拟器联调的能力边界见[产品范围](../PRODUCT_SCOPE.md)，收费网站、公开资料库与云 AI 见[独立规划](WEB_PLATFORM_PLAN.md)。
 
 ```mermaid
 flowchart TD
@@ -31,9 +31,24 @@ flowchart TD
 
 `pages/Index.ets` 持有当前工作空间状态并装配端口；`views` 通过属性和回调展示状态；`services` 提供纯策略、用例和系统能力适配；`common` 保存类型、常量、主题与无平台工具。下层不反向引用视图。
 
+侧栏、手机底栏和页面内入口共用 `WorkspaceNavigation`。主导航选择一个工作区，页面内跳转记录来源。返回资料库时恢复项目、搜索词、资料类型、标签和阅读状态，项目已删除时回到全库。阅读器按来源显示返回按钮。AI 墨客在本机保存会话、运行轨迹、草稿、工作区和附件 ID。引用在会话旁复用只读 Markdown 或 PDF 阅读器。网关配对保留在当前运行会话。导入完成后保留当前资料库筛选。用户切页后仍可从完成提示打开资料。
+
+### 学习 Agent 请求链路
+
+墨客参考 Harness 的会话投影、请求快照和模型／工具循环。当前鸿蒙版从已保存的对话派生请求，并通过模拟器网关执行。 [Harness 会话](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/subsystems/session.md) · [Harness Agent Loop 源码](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/agent-loop/src/agent.ts)
+
+1. `StudyChatWorkspace` 从当前会话接收问题。资料问答优先使用已选附件。只有打开引用且附件为空时，才把当前引用所在资料纳入待确认范围。
+2. `StudyWorkspaceSources` 按当前范围选出片段，再投影同会话的近期问答。带引用的历史回答只有在旧片段仍与本次确认的资料、位置和正文完全对应时才复用。发送预览展示实际正文和近期对话。确认时使用同一份快照。
+3. `StudyAssistantGateway` 发送问题、已确认片段、近期问答和当前引用。电脑网关验证角色顺序、长度与片段范围，模型据此理解追问。工具限定为检索和读取本次确认的片段，工具结果随下一轮模型请求返回。
+4. 网关核验引用后返回最终答案。客户端把回答、轨迹和原文位置作为同一轮保存，点击引文定位 Markdown 行或 PDF 页。中断的运行保留已收到的轨迹供查看和重试。
+
+普通会话可设置思考深度。DeepSeek Flash 开启联网后，网关使用供应商网页工具，解析返回的网页出处，并在回答下显示标题链接。确认本地资料的问答走独立入口。回答优先呈现正文与引用，资料缺失直接说明其对答案的影响。
+
+后续对齐 Harness 的顺序是先把运行、失败和取消记录做成可恢复的会话事件，再把工具注册和完成结果从模型适配器分离。两项改造都从现有会话数据验证连续追问、来源切换和恢复行为。 [Harness 运行流程](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md#turn-flow)
+
 自由白板、手写笔记、PDF 和图片复用 HuaweiDocWorkspace 的工具栏、工具设置和保存出口。InkCanvasSurface 共用纸纹、已保存笔迹、实时笔迹三层画布及触摸／尺寸／就绪事件；HandwritingCanvas 保留世界坐标笔迹适配，PdfPageCanvas 保留页内归一化坐标适配。原文件背景由各自适配器负责；共用组件不读取或改写原件，不迁移旧笔迹格式。
 
-识别与排版拆为 OcrService、DocumentExtractService、SourceTextStructure、LocalTextFormatter、ExplicitTaskExtractor 和 SmartCaptureService。文件提取有页数与字数限制；排版只依据原文结构，保存前验证所选日期。普通文字导入与备份恢复是不同入口。
+`FileMarkdownService` 按文件格式读取文字，调用 `OcrService` 识别图片或扫描页，使用 `DocumentExtractService` 分批读取 PDF。`TextDocumentService` 通过授权文件描述符读取 Markdown 和 TXT。`SourceTextStructure` 和 `LocalTextFormatter` 保留代码、公式与原文结构，生成可编辑的 Markdown 预览。普通资料导入、文字识别与备份恢复各有入口。
 
 ## 持久化
 
@@ -89,7 +104,7 @@ Python 导出经人工采纳的 v1 结果。原生 `LearningResultPanel` 负责�
 
 ## 记录时间线与视觉
 
-首页视觉以 Notion 为主，记录行为保留 Memos 的本地方式；HomeWorkspace 不绑定资料库显示模式；文字记录、日期及标签筛选由 MemoFeedPolicy 统一派生。Index 持有日期／标签筛选并连接 AppShell → HomeWorkspace → MemoCalendar，成功保存后清除日期和标签过滤。只有本机 Markdown 记录进入时间线，PDF／图片／手写仍在资料库；项目树全局可达，日期和标签通过首页筛选打开。时间流只渲染有界纯文本摘要，长文排版在阅读器中执行。主题入口统一纸面底色，强调色沿用原设置。
+首页视觉以 Notion 为主，记录行为保留 Memos 的本地方式。HomeWorkspace 独立于资料库显示模式，以 MemoFeedPolicy 按创建时间汇总 Markdown、PDF 和图片。时间线和资料库共用标签提取，正文里的标签可直接用来筛选，代码和公式中的井号保留原义。Index 持有首页日期与标签过滤。项目树全局可达。时间流只渲染有界纯文本摘要，长文排版在阅读器中执行。主题入口统一纸面底色，强调色沿用原设置。
 
 ## 2026-10-18 代码检查与修复
 

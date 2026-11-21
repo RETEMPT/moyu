@@ -2,7 +2,7 @@
 
 当前应用使用 HarmonyOS 的 ArkUI、ArkData、CoreFileKit、PDF Kit、CoreVisionKit 文字识别、Penkit、系统分享与设备连接能力。
 
-应用没有广告、分析统计、第三方帐号或支付 SDK。本地规则排版与原文待办提取由工程内的 SourceTextStructure、SourceTextParser 和 LocalTextFormatter 完成；普通 Markdown、TXT 与 PDF 导入使用本地服务，系统 OCR 能力继续保留。范围以 [产品声明](../PRODUCT_SCOPE.md) 为准。
+应用没有广告、分析统计、第三方帐号或支付 SDK。本地规则排版由工程内的 `SourceTextStructure` 和 `LocalTextFormatter` 完成。普通 Markdown、TXT 与 PDF 导入使用本地服务，图片和扫描页使用系统 OCR。范围以[产品声明](../PRODUCT_SCOPE.md)为准。
 
 图标与封面为工程内自有素材，项目许可证为 MIT。示例资料仅用于调试，不包含在 release 包中。提交截图应使用自行创作或具有授权的资料。隐私与类别资质仍需按实际发布地区核对。
 

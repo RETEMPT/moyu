@@ -1,7 +1,7 @@
-import { SmartContent } from '../../common/types/SmartContent';
-import { SmartTask } from '../../common/types/SmartTask';
-import { NoteItem } from '../../common/types/NoteItem';
-import { TodoItem } from '../../common/types/TodoItem';
+import { SmartContent } from './SmartContent';
+import { SmartTask } from './SmartTask';
+import { NoteItem } from '../../../entry/src/main/ets/common/types/NoteItem';
+import { TodoItem } from '../../../entry/src/main/ets/common/types/TodoItem';
 import { SmartNoteBuilder } from './SmartNoteBuilder';
 
 /** 平台存储通过接口注入，可独立验证失败与重试的写入顺序。 */

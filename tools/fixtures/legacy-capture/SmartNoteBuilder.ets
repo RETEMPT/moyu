@@ -1,7 +1,7 @@
-import { SmartContent } from '../../common/types/SmartContent';
-import { SmartTask } from '../../common/types/SmartTask';
-import { NoteItem } from '../../common/types/NoteItem';
-import { TodoItem } from '../../common/types/TodoItem';
+import { SmartContent } from './SmartContent';
+import { SmartTask } from './SmartTask';
+import { NoteItem } from '../../../entry/src/main/ets/common/types/NoteItem';
+import { TodoItem } from '../../../entry/src/main/ets/common/types/TodoItem';
 
 /** 预览与保存共用正文生成逻辑，保留可追溯的原文。 */
 export class SmartNoteBuilder {

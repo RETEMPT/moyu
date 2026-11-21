@@ -9,11 +9,11 @@
  * 内容区与上下文面板通过 @BuilderParam 插槽注入，外壳只负责布局与响应式决策。
  */
 
-import { ColorPalette, LayoutTokens, AnimationTokens } from '../../common/constants/DesignTokens';
+import { ColorPalette, LayoutTokens, AnimationTokens, LibraryColors } from '../../common/constants/DesignTokens';
 import { ThemeHelper } from '../../common/theme/ThemeHelper';
 import { NoteItem } from '../../common/types/NoteItem';
 import { SpaceFolder } from '../../common/types/SpaceFolder';
-import { SAVE_IDLE, NAV_SETTINGS } from '../../common/constants/WorkspaceConstants';
+import { SAVE_IDLE, NAV_HOME, NAV_LIBRARY, NAV_SETTINGS } from '../../common/constants/WorkspaceConstants';
 import { GlobalTopBar } from './GlobalTopBar';
 import { Sidebar } from './Sidebar';
 import { BottomNavBar } from './BottomNavBar';
@@ -21,6 +21,7 @@ import { BottomNavBar } from './BottomNavBar';
 @Component
 export struct AppShell {
   @Prop breadcrumb: string[] = [];
+  @Prop canGoBack: boolean = false;
   @Prop saveState: string = SAVE_IDLE;
   @Prop spaces: SpaceFolder[] = [];
 
@@ -29,8 +30,11 @@ export struct AppShell {
   @Prop activeNoteId: string = '';
   @Prop sidebarCollapsed: boolean = false;
   @Prop contextPanelOpen: boolean = false;
+  @Prop studyWorkspace: boolean = false;
+  @Prop studyNavigationOpen: boolean = false;
 
   onToggleSidebar: () => void = () => {};
+  onBack: () => void = () => {};
   onToggleContext: () => void = () => {};
   onLayoutModeChange: (singleColumn: boolean, threeColumn: boolean) => void = () => {};
   onOpenSearch: () => void = () => {};
@@ -80,24 +84,27 @@ export struct AppShell {
     return ThemeHelper.paletteOfDark(this.isDarkMode, this.themeStyle);
   }
 
+  private isLibraryWorkspace(): boolean { return this.activeNav === NAV_LIBRARY && !this.activeNoteId; }
+
   /** 侧边栏是否常驻（双栏 / 三栏且未折叠） */
   private isSidebarDocked(): boolean {
-    return (this.isTwoColumn || this.isThreeColumn) && !this.sidebarCollapsed;
+    return !this.studyWorkspace && (this.isTwoColumn || this.isThreeColumn) && !this.sidebarCollapsed;
   }
 
   /** 侧边栏是否以浮层形式呈现（单栏且未折叠） */
   private isSidebarOverlay(): boolean {
-    return !this.isTwoColumn && !this.isThreeColumn && !this.sidebarCollapsed;
+    return this.studyWorkspace ? this.studyNavigationOpen :
+      !this.isTwoColumn && !this.isThreeColumn && !this.sidebarCollapsed;
   }
 
   /** 上下文面板是否常驻（仅三栏） */
   private isContextDocked(): boolean {
-    return this.activeNav !== NAV_SETTINGS && this.activeNoteId.length > 0 && this.isThreeColumn && this.contextPanelOpen;
+    return !this.studyWorkspace && this.activeNav !== NAV_SETTINGS && this.activeNoteId.length > 0 && this.isThreeColumn && this.contextPanelOpen;
   }
 
   /** 上下文面板是否以浮层形式呈现（单栏 / 双栏） */
   private isContextOverlay(): boolean {
-    return this.activeNav !== NAV_SETTINGS && this.activeNoteId.length > 0 && !this.isThreeColumn && this.contextPanelOpen;
+    return !this.studyWorkspace && this.activeNav !== NAV_SETTINGS && this.activeNoteId.length > 0 && !this.isThreeColumn && this.contextPanelOpen;
   }
 
   @Builder
@@ -111,7 +118,6 @@ export struct AppShell {
       onToggleSpace: this.onToggleSpace,
       onCollapseAllSpaces: this.onCollapseAllSpaces,
       onSelectSpace: this.onSelectSpace,
-      onOpenSearch: this.onOpenSearch,
       onSelectNote: this.onSelectNote,
       onSelectNav: this.onSelectNav,
       onOpenSettings: this.onOpenSettings,
@@ -137,16 +143,23 @@ export struct AppShell {
         }
 
         Column() {
-          GlobalTopBar({
-            breadcrumb: this.breadcrumb,
-            saveState: this.saveState,
-            contextPanelOpen: this.contextPanelOpen,
-            showContextToggle: this.activeNav !== NAV_SETTINGS && this.activeNoteId.length > 0 && (this.isTwoColumn || this.isThreeColumn || this.isPhone),
-            onToggleSidebar: this.onToggleSidebar,
-            onToggleContext: this.onToggleContext,
-            onOpenSearch: this.onOpenSearch,
-            onBreadcrumbClick: this.onBreadcrumbClick
-          })
+          if (!this.studyWorkspace) {
+            GlobalTopBar({
+              breadcrumb: this.breadcrumb,
+              libraryStyle: this.isLibraryWorkspace(),
+              showSidebarToggle: !this.isSidebarDocked(),
+              showSearch: !this.activeNoteId && this.activeNav !== NAV_HOME && !this.isLibraryWorkspace(),
+              canGoBack: this.canGoBack,
+              onBack: this.onBack,
+              saveState: this.saveState,
+              contextPanelOpen: this.contextPanelOpen,
+              showContextToggle: this.activeNav !== NAV_SETTINGS && this.activeNoteId.length > 0 && (this.isTwoColumn || this.isThreeColumn || this.isPhone),
+              onToggleSidebar: this.onToggleSidebar,
+              onToggleContext: this.onToggleContext,
+              onOpenSearch: this.onOpenSearch,
+              onBreadcrumbClick: this.onBreadcrumbClick
+            })
+          }
 
           Column() {
             this.content()
@@ -154,9 +167,9 @@ export struct AppShell {
           .width('100%')
           .layoutWeight(1)
           .alignItems(HorizontalAlign.Center)
-          .backgroundColor(this.palette().canvas)
+          .backgroundColor(this.isLibraryWorkspace() && !this.isDarkMode ? LibraryColors.paper : this.palette().canvas)
 
-          if (this.isPhone) {
+          if (this.isPhone && !this.studyWorkspace) {
             BottomNavBar({
               activeNav: this.activeNav,
               onSelectNav: this.onSelectNav

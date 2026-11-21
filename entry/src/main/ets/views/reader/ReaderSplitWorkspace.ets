@@ -25,6 +25,7 @@ interface CitationOrigin { noteId: string; page?: number; line?: number; }
 /** A split owns navigation and save barriers. Each pane keeps its format-specific reader and data. */
 @Component
 export struct ReaderSplitWorkspace {
+  @Prop backLabel: string = '返回资料库';
   @Require @Prop note: NoteItem;
   @Prop secondaryNote: NoteItem | null = null;
   @Prop documentTabs: NoteItem[] = [];
@@ -199,7 +200,7 @@ export struct ReaderSplitWorkspace {
   @Builder
   tabs() {
     Row({ space: 4 }) {
-      IconButton({ icon: $r('app.media.ic_back'), label: '返回资料库', compact: true, available: !this.busy, onAction: () => this.requestBack() })
+      IconButton({ icon: $r('app.media.ic_back'), label: this.backLabel, compact: true, available: !this.busy, onAction: () => this.requestBack() })
       if (WorkspaceNotePolicy.isFreeCanvas(this.note) && !this.secondaryNote) {
         Blank()
       } else {
@@ -233,6 +234,7 @@ export struct ReaderSplitWorkspace {
       }
       IconButton({ icon: $r('app.media.ic_search'), label: '搜索并打开资料', compact: true, available: !this.busy,
         onAction: () => this.saveBefore(this.onSearchNotes) })
+        .keyboardShortcut('f', [ModifierKey.CTRL], () => this.saveBefore(this.onSearchNotes))
       if (this.studyPreview && (this.assistantOpen || ReaderPairPolicy.isPdf(this.note) || ReaderPairPolicy.isMarkdown(this.note))) {
         if (this.phone) {
           IconButton({ icon: $r('app.media.ic_chat'), label: this.assistantOpen ? '收起 AI 伴读' : 'AI 伴读',

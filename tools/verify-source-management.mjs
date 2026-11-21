@@ -127,14 +127,14 @@ function platform(options = {}) {
       if (pdfInstance === null) { pdfInstance = new MockPdfDocumentService(); }
       return pdfInstance;
     }
-    async savePdfToSandbox(context, source, targetName) {
+    bindContext() {}
+    async copyPdfToSandbox(context, source) {
       const bytes = files.get(source);
       if (!bytes) { throw Error(`missing source: ${source}`); }
-      const name = targetName.replace(/[\\/:*?"<>|]/g, '_');
-      const target = `${context.filesDir}/documents/${Date.now()}_${++copyCounter}_${name}`;
+      const target = `${context.filesDir}/documents/pdf_${Date.now()}_${++copyCounter}.pdf`;
       files.set(target, Buffer.from(bytes));
       state.copyCalls.push([source, target]);
-      return target;
+      return { path: target, sha256: createHash('sha256').update(bytes).digest('hex') };
     }
     async validateImport(target) {
       state.validateCalls.push(target);

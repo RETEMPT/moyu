@@ -41,7 +41,7 @@ record('release_debug_samples', 'project', ['**/debug-pdf-preview/**','**/exampl
 record('local_rules_only', 'project', config.productMode === 'local-study' && config.systemOcr === true &&
   !permissions.includes('ohos.permission.INTERNET') &&
   !fs.existsSync(path.join(root, 'entry/src/main/ets/services/ai/ModelProvider.ets')) &&
-  !read('entry/src/main/ets/services/smart/SmartExtractService.ets').includes('createProvider'), '本地规则整理；无模型服务或联网权限');
+  !read('entry/src/main/ets/services/smart/FileMarkdownService.ets').includes('createProvider'), '本地规则整理；无模型服务或联网权限');
 record('public_identity', 'submission', typeof config.publisher === 'string' && config.publisher.trim().length > 0 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(config.supportEmail || '') &&
   Number.isInteger(config.privacyResponseWorkingDays) && config.privacyResponseWorkingDays > 0 && config.privacyResponseWorkingDays <= 15, '填写与 AGC 一致的真实发布者、有效客服邮箱及隐私回复期限');
 record('public_privacy', 'submission', /^https:\/\/[^\s@]+$/i.test(config.privacyUrl || '') && !/example\.(com|org)|localhost|待填写/.test(config.privacyUrl), '填写已托管且可公开访问的 HTTPS 隐私政策网址，提交前人工核对全文');

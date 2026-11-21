@@ -42,9 +42,8 @@ import { PdfDocumentService } from '../services/document/PdfDocumentService';
 import { LocalPdfEngineHost } from '../views/reader/pdf/LocalPdfEngineHost';
 import { NoteCoverService } from '../services/NoteCoverService';
 import { NoteSearchService } from '../services/NoteSearchService';
-import { LibraryPolicy } from '../services/library/LibraryPolicy';
 import { LibraryPreferencesService, LibraryPreferences } from '../services/library/LibraryPreferencesService';
-import { ReadingProgressPolicy } from '../services/document/ReadingProgressPolicy';
+import { ReadingProgressPolicy, ReadingStatus } from '../services/document/ReadingProgressPolicy';
 import { MemoDraftService } from '../services/library/MemoDraftService';
 import { QuickMemoService, MemoDraft } from '../services/library/QuickMemoService';
 import { TodoStorageService } from '../services/TodoStorageService';
@@ -78,9 +77,6 @@ import { MoveNoteSheet } from '../views/layout/sheets/MoveNoteSheet';
 import { NameNoteSheet } from '../views/layout/sheets/NameNoteSheet';
 import { SmartExtractSheet } from '../views/layout/sheets/SmartExtractSheet';
 import { NoteCoverSheet } from '../views/layout/sheets/NoteCoverSheet';
-import { SmartContent } from '../common/types/SmartContent';
-import { SmartTask } from '../common/types/SmartTask';
-import { SmartCaptureService, SmartCaptureStorage } from '../services/smart/SmartCaptureService';
 import { ReviewCard, PdfTextPage } from '../common/types/StudyTypes';
 import { LearningResult } from '../common/types/LearningResult';
 import { LearningResultFile } from '../services/study/LearningResultFile';
@@ -89,7 +85,9 @@ import { ReviewStorageService } from '../services/study/ReviewStorageService';
 import { ReviewPolicy } from '../services/study/ReviewPolicy';
 import { StudySourceService } from '../services/study/StudySourceService';
 import { StudySheet } from '../views/study/StudySheet';
-import { StudyChatSession, StudyChatWorkspace, withStudyGatewaySelection } from '../views/study/StudyChatWorkspace';
+import { StudyChatHistory, StudyChatSession, StudyChatWorkspace, withStudyGatewaySelection } from '../views/study/StudyChatWorkspace';
+import { AtomicTextFile } from '../services/storage/AtomicTextFile';
+import { fileIo } from '@kit.CoreFileKit';
 import { StudyAssistantGateway, StudyGatewaySelection } from '../services/study/StudyAssistantGateway';
 import { PdfTextSheet } from '../views/study/PdfTextSheet';
 import { StudyBackupSheet } from '../views/study/StudyBackupSheet';
@@ -98,6 +96,7 @@ import { StudyRestoreService } from '../services/study/StudyRestoreService';
 import { ReaderCommitService } from '../services/document/ReaderCommitService';
 import { PrivacySheet } from '../views/settings/PrivacySheet';
 import { DocumentImportStatus } from '../views/common/DocumentImportStatus';
+import { WorkspaceLocation, WorkspaceNavigation } from '../services/WorkspaceNavigation';
 
 /** 命名弹层待提交的「新建笔记」意图。projectName 为空表示落在当前空间（全局新建）。 */
 interface PendingNoteCreate {
@@ -132,6 +131,9 @@ struct Index {
   @State settingsExitToken: number = 0;
   @State settingsOpenToken: number = 0;
   private settingsExitAction: (() => void) | null = null;
+  @State private workspaceTrail: WorkspaceLocation[] = [];
+  private navigationRevision: number = 0;
+  private contextDocked: boolean = false;
   @State activeSpaceId: string = '';
   @State activeNoteId: string = '';
   @State sidebarCollapsed: boolean = false;
@@ -141,6 +143,8 @@ struct Index {
   // ---- 资料库筛选 ----
   @State searchText: string = '';
   @State activeFilter: string = FILTER_ALL;
+  @State private libraryTags: string[] = [];
+  @State private libraryReadingStatus: ReadingStatus = 'all';
 
   // ---- 本地数据 ----
   @State customProjects: SpaceFolder[] = [];
@@ -192,8 +196,15 @@ struct Index {
   @State learningResult: LearningResult | undefined = undefined;
   @State learningResultNoteId: string = '';
   @State studyVisible: boolean = false;
-  @State chatSession: StudyChatSession = { pairingCode: '', models: [], model: '',
+  @State @Watch('queueChatHistory') chatSession: StudyChatSession = { pairingCode: '', models: [], model: '',
     conversation: { id: 'chat-initial', messages: [], draft: '' }, history: [] };
+  private chatHistoryPath: string = '';
+  private chatHistoryTimer: number = -1;
+  private chatHistoryFile: AtomicTextFile = new AtomicTextFile();
+  @State studyNavigationOpen: boolean = false;
+  @State studyReferenceOpen: boolean = false;
+  @State studyReferenceCloseToken: number = 0;
+  @State studyWeakOnly: boolean = false;
   @State studyCourse: string = '';
   @State studyCloseToken: number = 0;
   @State backupVisible: boolean = false;
@@ -223,7 +234,7 @@ struct Index {
   @State private documentImportStatus: string = '';
   @State private documentImportError: boolean = false;
   @State private documentImportNoteId: string = '';
-  @State private libraryImportToken: number = 0;
+  @State private libraryScopeToken: number = 0;
   @State noteCreateError: string = '';
   /** 新建项目对话框 */
   @State createProjectOpen: boolean = false;
@@ -271,7 +282,58 @@ struct Index {
   }
 
   private dismissNavigationOverlay(): void {
-    if (this.singleColumn) { this.sidebarCollapsed = true; this.contextPanelOpen = false; }
+    this.studyNavigationOpen = false;
+    if (this.singleColumn) { this.sidebarCollapsed = true; }
+    if (!this.contextDocked) { this.contextPanelOpen = false; }
+  }
+
+  private currentWorkspace(): WorkspaceLocation {
+    return this.activeNav === NAV_LIBRARY ?
+      WorkspaceNavigation.location(NAV_LIBRARY, this.activeSpaceId, this.searchText, this.activeFilter,
+        this.libraryTags, this.libraryReadingStatus) :
+      WorkspaceNavigation.location(this.activeNav);
+  }
+
+  private applyWorkspace(location: WorkspaceLocation): void {
+    this.navigationRevision++;
+    this.activeNav = location.page;
+    this.activeSpaceId = this.spaces.some((space: SpaceFolder) => space.id === location.projectId) ? location.projectId : '';
+    this.searchText = location.query;
+    this.activeFilter = location.filter;
+    this.libraryTags = location.tags;
+    this.libraryReadingStatus = location.readingStatus;
+    if (location.page === NAV_LIBRARY) { this.libraryScopeToken++; }
+  }
+
+  private leaveReader(): void {
+    if (this.readingOpen) { this.closeReading(); }
+    else if (this.fullScreenDocOpen) { this.closeFullScreenReader(); }
+  }
+
+  private navigateWorkspace(page: string, returnToOrigin: boolean = false, projectId: string = '', query: string = ''): void {
+    if (page === NAV_SETTINGS) { this.openSettings(); return; }
+    if (page !== NAV_CANVAS && !WorkspaceNavigation.isPage(page)) { return; }
+    this.afterSettingsExit(() => {
+      this.dismissNavigationOverlay();
+      if (page === NAV_CANVAS) { this.navigationRevision++; this.openFreeCanvas(); return; }
+      if (page === this.activeNav && projectId === this.activeSpaceId && !query) {
+        this.leaveReader();
+        return;
+      }
+      const destination = WorkspaceNavigation.location(page, projectId, query);
+      this.workspaceTrail = WorkspaceNavigation.trail(this.workspaceTrail, this.currentWorkspace(), destination, returnToOrigin);
+      this.leaveReader();
+      this.applyWorkspace(destination);
+    });
+  }
+
+  private backWorkspace(): boolean {
+    const previous = this.workspaceTrail[this.workspaceTrail.length - 1];
+    if (!previous && this.activeNav === NAV_HOME) { return false; }
+    if (previous) { this.workspaceTrail = this.workspaceTrail.slice(0, -1); }
+    this.dismissNavigationOverlay();
+    this.applyWorkspace(previous || WorkspaceNavigation.location(NAV_HOME));
+    return true;
   }
 
   onBackPress(): boolean {
@@ -288,12 +350,13 @@ struct Index {
     if (this.smartExtractVisible) { this.smartExtractCloseToken++; return true; }
     if (this.searchVisible) { this.searchVisible = false; return true; }
     if (this.fullScreenDocOpen) { this.documentBackToken++; return true; }
-    if (this.singleColumn && this.contextPanelOpen) { this.contextPanelOpen = false; return true; }
+    if (this.studyNavigationOpen) { this.studyNavigationOpen = false; return true; }
+    if (this.activeNav === NAV_CHAT && this.studyReferenceOpen) { this.studyReferenceCloseToken++; return true; }
+    if (!this.contextDocked && this.contextPanelOpen && this.activeNoteId) { this.contextPanelOpen = false; return true; }
     if (this.singleColumn && !this.sidebarCollapsed) { this.sidebarCollapsed = true; return true; }
     if (this.readingOpen) { this.readerBackToken++; return true; }
     if (this.activeNav === NAV_SETTINGS) { this.settingsBackToken++; return true; }
-    if (this.activeNav !== NAV_HOME) { this.activeNav = NAV_HOME; this.activeSpaceId = ''; return true; }
-    return false;
+    return this.backWorkspace();
   }
 
   private closeReading(): void {
@@ -303,6 +366,7 @@ struct Index {
     }
     this.readingOpen = false;
     this.activeNoteId = '';
+    this.companionNoteId = '';
     this.outlineItems = [];
     this.flushReadingOpens();
     // Reader autosave mutates the shared note in place; refresh the collection identity once
@@ -316,6 +380,7 @@ struct Index {
     this.getUIContext().setKeyboardAvoidMode(this.previousKeyboardMode);
     if (this.readingOpenTimer !== -1) { clearTimeout(this.readingOpenTimer); this.readingOpenTimer = -1; }
     this.flushReadingOpens();
+    if (this.chatHistoryTimer !== -1) { this.flushChatHistory(); }
   }
 
   aboutToAppear(): void {
@@ -353,9 +418,45 @@ struct Index {
     this.backupVisible = true;
   }
 
+  private async loadChatHistory(context: common.UIAbilityContext): Promise<void> {
+    if (!StudyAssistantGateway.previewEnabled()) { return; }
+    const path = context.filesDir + '/study-chat-history.json';
+    try {
+      if (await fileIo.access(path)) {
+        const saved = JSON.parse(await fileIo.readText(path)) as StudyChatHistory;
+        if (!saved?.conversation || !Array.isArray(saved.conversation.messages) ||
+          typeof saved.conversation.draft !== 'string' || typeof saved.conversation.id !== 'string' ||
+          !Array.isArray(saved.history) || !saved.history.every(item => item && typeof item.id === 'string' &&
+            typeof item.draft === 'string' && Array.isArray(item.messages)) ||
+          (saved.workspaces !== undefined && (!Array.isArray(saved.workspaces) || !saved.workspaces.every(group =>
+            group && typeof group.id === 'string' && typeof group.name === 'string')))) {
+          throw new Error('会话存档格式有误');
+        }
+        this.chatSession = { pairingCode: '', model: '', models: [], conversation: saved.conversation,
+          history: saved.history, workspaces: saved.workspaces };
+      }
+      this.chatHistoryPath = path;
+    } catch { this.notify('无法加载会话记录，原文件已保留'); }
+  }
+
+  private queueChatHistory(): void {
+    if (!this.chatHistoryPath) { return; }
+    if (this.chatHistoryTimer !== -1) { clearTimeout(this.chatHistoryTimer); }
+    this.chatHistoryTimer = setTimeout(() => { this.flushChatHistory(); }, 450);
+  }
+
+  private flushChatHistory(): void {
+    if (this.chatHistoryTimer !== -1) { clearTimeout(this.chatHistoryTimer); this.chatHistoryTimer = -1; }
+    const snapshot: StudyChatHistory = { conversation: this.chatSession.conversation, history: this.chatSession.history,
+      workspaces: this.chatSession.workspaces };
+    this.chatHistoryFile.write(this.chatHistoryPath, JSON.stringify(snapshot))
+      .catch(() => { this.notify('会话记录未能保存，可继续对话或另存为笔记'); });
+  }
+
   private async loadWorkspace(): Promise<void> {
     const context: common.UIAbilityContext = this.getAbilityContext();
     PdfDocumentService.getInstance().bindContext(context);
+    await this.loadChatHistory(context);
     try { this.libraryDisplay = await this.libraryPreferences.load(context); }
     catch { this.notify('资料库显示设置读取失败，已使用默认显示；原设置已保留'); }
     let draftReady: boolean = true;
@@ -536,10 +637,6 @@ struct Index {
   // 派生数据
   // ==================================================================
 
-  private filteredNotes(): NoteItem[] {
-    return LibraryPolicy.query(this.notes, { keyword: this.searchText, category: this.activeSpaceName(), type: this.activeFilter });
-  }
-
   private async updateLibraryDisplay(view: string, sort: string, ascending: boolean): Promise<void> {
     if (this.libraryDisplayBusy) { return; }
     this.libraryDisplayBusy = true;
@@ -606,11 +703,6 @@ struct Index {
     finally { this.memoSaving = false; }
   }
 
-  private openMemoTag(tag: string): void {
-    this.searchText = '#' + tag; this.activeFilter = FILTER_ALL; this.activeSpaceId = '';
-    this.activeNav = NAV_LIBRARY;
-  }
-
   private currentBacklinks(): Backlink[] {
     if (!this.readingOpen) {
       return [];
@@ -643,6 +735,8 @@ struct Index {
       const category: string = note.category.length === 0 ? '未分类' : note.category;
       return [category, note.title];
     }
+    const project = this.activeNav === NAV_LIBRARY ? this.activeSpaceName() : '';
+    if (project) { return [NAV_LIBRARY, project]; }
     return [this.activeNav === NAV_CHAT && !StudyAssistantGateway.previewEnabled() ? '学习工具' : this.activeNav];
   }
 
@@ -782,25 +876,16 @@ struct Index {
 
   /** 点击面包屑：分类段 → 回到资料库并按分类筛选；标题段 → 打开文档切换搜索 */
   private onBreadcrumbClick(index: number, segment: string): void {
-    if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.onBreadcrumbClick(index, segment)); return; }
     if (this.readingOpen || this.fullScreenDocOpen) {
       if (index === 0) {
-        if ((this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) { this.notify('请先完成或重试资料保存'); return; }
-        // 点击分类名：关闭当前文档，回到资料库并选中该项目
-        if (this.readingOpen) { this.readingOpen = false; this.activeNoteId = ''; this.notes = this.notes.slice(); }
-        else { this.closeFullScreenReader(); }
-        this.activeNav = NAV_LIBRARY;
-        // 尝试选中对应项目
-        for (let i = 0; i < this.spaces.length; i++) {
-          if (this.spaces[i].name === segment) {
-            this.activeSpaceId = this.spaces[i].id;
-            break;
-          }
-        }
+        const project = this.spaces.find((space: SpaceFolder) => space.name === segment);
+        this.navigateWorkspace(NAV_LIBRARY, true, project?.id || '');
       } else {
         // 点击文档标题：打开快速搜索以便切换文档
         this.searchVisible = true;
       }
+    } else if (index === 0 && this.activeNav === NAV_LIBRARY && this.activeSpaceId) {
+      this.navigateWorkspace(NAV_LIBRARY);
     }
   }
 
@@ -917,6 +1002,17 @@ struct Index {
   }
 
   private closeFullScreenReader(): void {
+    if (WorkspaceNotePolicy.isFreeCanvas(this.fullScreenDocNote)) {
+      this.fullScreenDocNote.strokes = '[]';
+      this.fullScreenDocNote.scratchpadStrokes = '[]';
+      this.fullScreenDocNote.previewText = '自由白板';
+      const canvasNote = this.notes.find((note: NoteItem) => WorkspaceNotePolicy.isFreeCanvas(note));
+      if (canvasNote) {
+        canvasNote.strokes = '[]';
+        canvasNote.scratchpadStrokes = '[]';
+        canvasNote.previewText = '自由白板';
+      }
+    }
     this.flushReadingOpens();
     this.readerSaveState = SAVE_IDLE;
     this.saveState = SAVE_IDLE;
@@ -935,6 +1031,7 @@ struct Index {
     if (this.activeNav === NAV_SETTINGS) { this.afterSettingsExit(() => this.openNote(note, preserveCompanion, page, line)); return; }
     const current = this.notes.find((item: NoteItem) => item.id === note.id);
     if (!current) { this.notify('笔记已被移走'); return; }
+    this.navigationRevision++;
     note = current;
     if (!preserveCompanion || !ReaderPairPolicy.isReadable(note) || note.id === this.companionNoteId) { this.companionNoteId = ''; }
     this.sourcePage = page || ReadingProgressPolicy.page(note);
@@ -1054,7 +1151,7 @@ struct Index {
   private openStudySource(noteId: string, pageNumber?: number, line?: number): void {
     const note = this.notes.find((item: NoteItem) => item.id === noteId);
     if (!note) { this.notify('来源资料已被移除'); return; }
-    if (pageNumber && (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > (note.pageCount || 0))) {
+    if (pageNumber !== undefined && (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > (note.pageCount || 0))) {
       this.notify('来源页码已无效，请重新核对资料'); return;
     }
     this.openNote(note, false, pageNumber, line);
@@ -1088,6 +1185,27 @@ struct Index {
       this.reviewCards = next;
       return true;
     });
+  }
+
+  private async importStudySources(dropped: string[], limit: number): Promise<NoteItem[]> {
+    const imported: NoteItem[] = [];
+    await this.importDocument(CATEGORY_UNFILED, false, false, '', true, imported, dropped, limit);
+    return imported;
+  }
+
+  private async extractStudyPages(id: string, start: number, end: number, cancelled: () => boolean): Promise<void> {
+    const note = this.notes.find((item: NoteItem) => item.id === id && !item.deletedAt);
+    if (!note?.sourceUri || !ReaderPairPolicy.isPdf(note)) { throw new Error('原 PDF 已不可用'); }
+    const source = note.sourceUri;
+    const pages = await PdfDocumentService.getInstance().extractPages(source, start, end, false, cancelled, () => {});
+    if (!pages.some((page: PdfTextPage) => page.text.trim().length >= 4)) { throw new Error('这几页没有文字层。扫描件可在阅读器中先做 OCR。'); }
+    if (cancelled()) { return; }
+    const saved = await this.updateNoteMetadata(id, (current: NoteItem) => {
+      if (current.sourceUri !== source) { throw new Error('原文件已变更，请重试'); }
+      const existing = new Set(StudySourceService.pages(current).map(page => page.pageNumber));
+      current.pdfTextJson = StudySourceService.merge(current, pages.filter((page: PdfTextPage) => !existing.has(page.pageNumber)));
+    });
+    if (!saved) { throw new Error('无法保存提取的文字'); }
   }
 
   private async savePdfText(pages: PdfTextPage[]): Promise<void> {
@@ -1530,32 +1648,6 @@ struct Index {
     } catch (error) { this.notify(error instanceof Error ? error.message : '待办保存失败，请重试'); return false; }
   }
 
-  /**
-   * 将本地整理结果保存为笔记及用户选中的待办。
-   */
-  private async handleCommitSmartExtract(content: SmartContent, selectedTasks: SmartTask[]): Promise<void> {
-    const context = this.getAbilityContext();
-    const persistence: SmartCaptureStorage = {
-      currentNotes: () => this.notes,
-      currentTodos: () => this.todos,
-      writeDocument: async (note: NoteItem) => { await this.storage.create(context, note); },
-      writeNotes: async (notes: NoteItem[]) => {
-        await this.storage.save(notes);
-        this.notes = notes;
-        this.rebuildSpaces();
-      },
-      writeTodos: async (todos: TodoItem[]) => {
-        await this.todoStorage.saveTodos(context, todos);
-        this.todos = todos;
-      }
-    };
-    const note = await this.noteMutationQueue.run<NoteItem>(() => SmartCaptureService.commit(content, selectedTasks, persistence));
-    this.refreshStats();
-    await this.refreshGraph();
-    this.openNote(note);
-    this.notify('已保存「' + content.title + '」与 ' + selectedTasks.length + ' 条待办');
-  }
-
   private async toggleTodo(todo: TodoItem): Promise<void> {
     try {
       await this.noteMutationQueue.run<void>(async () => {
@@ -1592,21 +1684,39 @@ struct Index {
   private async openFreeCanvas(): Promise<void> {
     if (this.freeCanvasOpening) { return; }
     this.freeCanvasOpening = true;
-    const fromNav = this.activeNav; const fromNote = this.activeNoteId;
+    const origin = this.navigationRevision;
     try {
       const existing = this.notes.find((note: NoteItem) => WorkspaceNotePolicy.isFreeCanvas(note));
-      if (existing) { this.openNote(existing); return; }
+      if (existing) {
+        existing.strokes = '[]';
+        existing.scratchpadStrokes = '[]';
+        existing.previewText = '自由白板';
+        if (this.fullScreenDocOpen && this.fullScreenDocNote.id === existing.id) {
+          this.fullScreenDocNote.strokes = '[]';
+          this.fullScreenDocNote.scratchpadStrokes = '[]';
+          this.fullScreenDocNote.previewText = '自由白板';
+        }
+        this.openNote(existing);
+        return;
+      }
       const canvasNote = await this.noteMutationQueue.run<NoteItem>(async () => {
         const current = this.notes.find((note: NoteItem) => WorkspaceNotePolicy.isFreeCanvas(note));
-        if (current) { return current; }
+        if (current) {
+          current.strokes = '[]';
+          current.scratchpadStrokes = '[]';
+          current.previewText = '自由白板';
+          return current;
+        }
         const occupied = this.notes.concat(this.trash).map((note: NoteItem) => note.id);
         const created = WorkspaceNotePolicy.createFreeCanvas(occupied, Date.now());
+        created.strokes = '[]';
+        created.scratchpadStrokes = '[]';
         await this.storage.create(this.getAbilityContext(), created);
         const next = [created].concat(this.notes); await this.storage.save(next); this.notes = next;
         return created;
       });
       this.rebuildSpaces(); this.refreshGraph();
-      if (this.activeNav === fromNav && this.activeNoteId === fromNote) { this.openNote(canvasNote); }
+      if (this.navigationRevision === origin) { this.openNote(canvasNote); }
     } catch (error) {
       console.error('自由白板创建失败: ' + (error instanceof Error ? error.message : '本地存储不可用'));
       this.notify('自由白板暂时无法打开，请检查存储后重试');
@@ -1619,12 +1729,15 @@ struct Index {
    * @param targetCategory 导入后归入的项目名，默认「未分类」
    */
   private async importDocument(targetCategory: string = '未分类', example: boolean = false, snapshot: boolean = false,
-    selectedUri: string = ''): Promise<NoteItem | null> {
+    selectedUri: string = '', stayInWorkspace: boolean = false, studyAttachments: NoteItem[] | null = null,
+    dropped: string[] = [], pickLimit: number = 20): Promise<NoteItem | null> {
     if (this.documentImportBusy) { return null; }
     this.documentImportBusy = true;
+    const origin = this.navigationRevision;
     const targetProjectId = this.spaces?.find((space: SpaceFolder) => space.name === targetCategory)?.id || '';
     try {
-      const uris = example ? [''] : selectedUri ? [selectedUri] : await this.storage.selectDocumentUris(this.getAbilityContext());
+      const uris = example ? [''] : selectedUri ? [selectedUri] : dropped.length ? Array.from(new Set(dropped)).slice(0, pickLimit) :
+        await this.storage.selectDocumentUris(this.getAbilityContext(), pickLimit, studyAttachments !== null);
       if (!uris.length) { return null; }
       this.documentImportError = false;
       this.documentImportNoteId = '';
@@ -1632,9 +1745,15 @@ struct Index {
       let imported = 0;
       const failures: string[] = [];
       for (let index = 0; index < uris.length; index++) {
-        this.documentImportStatus = uris.length > 1 ? `正在导入 ${index + 1}/${uris.length} 份资料…` : '正在导入资料…';
+        const prefix = uris.length > 1 ? `${index + 1}/${uris.length} · ` : '';
+        this.documentImportStatus = prefix + '正在导入资料…';
         try {
-          const note = await this.importOneDocument(targetCategory, example, snapshot, uris[index], targetProjectId);
+          if (studyAttachments !== null && !this.storage.isStudyFile(uris[index])) {
+            throw new Error('对话支持 PDF、文字和 Office 文档');
+          }
+          const note = await this.importOneDocument(targetCategory, example, snapshot, uris[index], targetProjectId,
+            (message: string): void => { this.documentImportStatus = prefix + message; });
+          if (studyAttachments !== null) { studyAttachments.push(note); }
           imported++;
           if (first === null) { first = note; }
         } catch (error) {
@@ -1644,15 +1763,16 @@ struct Index {
       }
       this.documentImportNoteId = first?.id || '';
       this.documentImportError = failures.length > 0;
-      this.documentImportStatus = uris.length === 1 ? (first ? `已导入「${first.title}」` : failures[0]) :
-        `已导入 ${imported}/${uris.length} 份资料${failures.length ? '。' + failures[0] : ''}`;
-      if (first) { this.memoDateFilter = ''; this.memoTagFilter = ''; }
-      if (first && !selectedUri && !example && !this.fullScreenDocOpen && !this.readingOpen) {
-        this.activeNav = NAV_LIBRARY;
-        this.activeSpaceId = this.spaces?.find((space: SpaceFolder) => space.id === targetProjectId)?.id || '';
-        this.searchText = '';
-        this.activeFilter = FILTER_ALL;
-        this.libraryImportToken++;
+      if (studyAttachments !== null && !this.documentImportError) {
+        // The composer displays the imported attachments as soon as the batch returns.
+        this.documentImportStatus = '';
+      } else {
+        this.documentImportStatus = uris.length === 1 ? (first ? `已导入「${first.title}」` : failures[0]) :
+          `已导入 ${imported}/${uris.length} 份资料${failures.length ? '。' + failures[0] : ''}`;
+      }
+      if (first && this.navigationRevision === origin && this.activeNav !== NAV_LIBRARY && !selectedUri &&
+        !example && !stayInWorkspace && !this.fullScreenDocOpen && !this.readingOpen) {
+        this.navigateWorkspace(NAV_LIBRARY, true, targetProjectId);
       }
       return first;
     } catch (error) {
@@ -1664,11 +1784,12 @@ struct Index {
     finally { this.documentImportBusy = false; }
   }
 
-  private async importOneDocument(targetCategory: string, example: boolean, snapshot: boolean, selectedUri: string, targetProjectId: string = ''): Promise<NoteItem> {
+  private async importOneDocument(targetCategory: string, example: boolean, snapshot: boolean, selectedUri: string,
+    targetProjectId: string = '', progress: (message: string) => void = () => {}): Promise<NoteItem> {
     const context: common.UIAbilityContext = this.getAbilityContext();
     try {
       const result: DocumentTransferResult = example ? await this.storage.importExamplePdf(context, snapshot) :
-        await this.storage.importDocumentUri(context, selectedUri);
+        await this.storage.importDocumentUri(context, selectedUri, progress);
       if (result.status === 'imported' && result.document !== undefined) {
         const document: MarkdownDocument = result.document;
         const now: Date = new Date();
@@ -1714,9 +1835,9 @@ struct Index {
         return note;
       }
       throw new Error(result.fileName && !result.message.includes(result.fileName) ?
-        `「${result.fileName}」${result.message}` : result.message);
+        `${result.message}（${result.fileName}）` : result.message);
     } catch (error) {
-      console.error(`文档导入失败: ${JSON.stringify(error)}`);
+      console.error('文档导入失败: ' + (error instanceof Error ? error.message : '未知原因'));
       throw error instanceof Error ? error : new Error('文档导入失败，请重试');
     }
   }
@@ -1745,6 +1866,10 @@ struct Index {
   }
 
   private handleSaved(note: NoteItem, content: string, kind: ReaderSaveKind = 'markdown', previousPdfSource?: string): Promise<void> {
+    if (WorkspaceNotePolicy.isFreeCanvas(note)) {
+      // 方案 A（即开即净）：自由白板完全作为临时无痕草稿纸，退出与编辑均不落盘任何笔画
+      return Promise.resolve();
+    }
     const snapshot = copyNote(note);
     if (kind !== 'reading') { snapshot.updateTime = this.formatTime(new Date()); }
     return this.noteMutationQueue.run<void>(() => this.readerCommits.commit(snapshot, content, {
@@ -1810,13 +1935,6 @@ struct Index {
     }
   }
 
-  /** Extraction uses the exact persisted source and never relies on a picker grant after import. */
-  private async importExtractSource(uri: string): Promise<NoteItem> {
-    const note = await this.importDocument(CATEGORY_UNFILED, false, false, uri);
-    if (!note) { throw new Error('已有资料正在导入，请稍后重试'); }
-    return note;
-  }
-
   private formatTime(date: Date): string {
     const month: number = date.getMonth() + 1;
     const day: number = date.getDate();
@@ -1829,12 +1947,13 @@ struct Index {
     if ((this.fullScreenDocOpen && this.readerSaveState !== undefined ? this.readerSaveState : this.saveState) !== SAVE_IDLE) {
       this.notify('请先完成或重试文档保存'); return;
     }
-    this.readingOpen = false; this.fullScreenDocOpen = false; this.contextPanelOpen = false;
-    this.readerSaveState = SAVE_IDLE;
-    this.notes = this.notes.slice();
+    const destination = WorkspaceNavigation.location(NAV_SETTINGS);
+    this.workspaceTrail = WorkspaceNavigation.trail(this.workspaceTrail, this.currentWorkspace(), destination, true);
+    this.leaveReader();
+    this.dismissNavigationOverlay();
     this.activeSheet = ''; this.settingsSection = section;
     this.settingsOpenToken++;
-    this.activeNav = NAV_SETTINGS; if (this.singleColumn) { this.sidebarCollapsed = true; }
+    this.applyWorkspace(destination);
   }
 
   private afterSettingsExit(action: () => void): void {
@@ -1845,9 +1964,10 @@ struct Index {
   }
 
   private completeSettingsExit(): void {
+    if (this.activeNav !== NAV_SETTINGS) { return; }
     const action = this.settingsExitAction;
     this.settingsExitAction = null;
-    this.activeNav = NAV_HOME;
+    this.backWorkspace();
     if (action !== null) { action(); }
   }
 
@@ -1859,6 +1979,8 @@ struct Index {
   readerWorkspaceContent(fullScreen: boolean) {
     ReaderSplitWorkspace({
       note: fullScreen ? this.fullScreenDocNote : this.readingNote, manageKeyboardMode: false,
+      backLabel: '返回' + (this.activeNav === NAV_HOME ? '主页' :
+        this.activeNav === NAV_CHAT && !StudyAssistantGateway.previewEnabled() ? '学习工具' : this.activeNav),
       documentTabs: this.readerDocuments(),
       secondaryNote: this.pairedDocument(),
       sharedGateway: { pairingCode: this.chatSession.pairingCode, models: this.chatSession.models, model: this.chatSession.model },
@@ -1911,9 +2033,9 @@ struct Index {
     if (this.activeNav === NAV_SETTINGS) {
       SettingsWorkspace({ initialSection: this.settingsSection, noteCount: this.notes.length, projectCount: this.spaces.length,
         openRequestToken: this.settingsOpenToken,
-        backRequestToken: this.settingsBackToken, onExit: () => { this.activeNav = NAV_HOME; },
+        backRequestToken: this.settingsBackToken, onExit: () => this.completeSettingsExit(),
         exitRequestToken: this.settingsExitToken, onExitConfirmed: () => this.completeSettingsExit(),
-        onOpenLibrary: () => { this.activeNav = NAV_LIBRARY; },
+        onOpenLibrary: () => this.navigateWorkspace(NAV_LIBRARY, true),
         onImportExample: () => this.importDocument('示例资料', true),
         onImportSnapshot: () => this.importDocument('示例资料', true, true),
         onOpenCapture: () => { this.smartExtractVisible = true; },
@@ -1923,6 +2045,7 @@ struct Index {
       this.readerWorkspaceContent(false)
     } else if (this.activeNav === NAV_HOME) {
       HomeWorkspace({
+        importing: this.documentImportBusy,
         memoDraft: this.memoDraft, memoStatus: this.memoDraftStatus, memoSaving: this.memoSaving, memoReady: this.memoReady,
         onMemoChange: (value: string) => this.changeMemoDraft(value),
         onSaveMemo: () => { this.saveQuickMemo(); },
@@ -1941,19 +2064,24 @@ struct Index {
         onTogglePin: (note: NoteItem) => this.togglePinNote(note),
         onToggleFavorite: (note: NoteItem) => this.toggleFavorite(note),
         onDeleteNote: (noteId: string) => this.deleteNote(noteId),
-        onNavigate: (navKey: string) => { this.activeNav = navKey; }
+        onNavigate: (navKey: string) => this.navigateWorkspace(navKey, true)
       })
     } else if (this.activeNav === NAV_LIBRARY) {
       LibraryWorkspace({
-        onOpenTag: (tag: string) => this.openMemoTag(tag),
-        notes: this.filteredNotes(),
-        allNotes: this.notes,
+        projectName: this.activeSpaceName(),
+        notes: this.notes,
+        selectedTags: this.libraryTags, readingStatus: this.libraryReadingStatus,
+        displayBusy: this.libraryDisplayBusy, importing: this.documentImportBusy,
+        onTagsChange: (tags: string[]) => { this.libraryTags = tags; },
+        onReadingStatusChange: (status: ReadingStatus) => { this.libraryReadingStatus = status; },
         viewMode: this.libraryDisplay.view, sortKey: this.libraryDisplay.sort, sortAsc: this.libraryDisplay.ascending,
         onViewModeChange: (view: string) => { this.updateLibraryDisplay(view, this.libraryDisplay.sort, this.libraryDisplay.ascending); },
         onSortChange: (sort: string, ascending: boolean) => { this.updateLibraryDisplay(this.libraryDisplay.view, sort, ascending); },
-        onResetFilters: () => { this.searchText = ''; this.activeFilter = FILTER_ALL; this.activeSpaceId = ''; },
-        importToken: this.libraryImportToken,
-        totalCount: this.notes.length,
+        onResetFilters: () => {
+          this.searchText = ''; this.activeFilter = FILTER_ALL;
+          this.libraryTags = []; this.libraryReadingStatus = 'all';
+        },
+        scopeToken: this.libraryScopeToken,
         searchText: this.searchText,
         activeFilter: this.activeFilter,
         activeNoteId: this.activeNoteId,
@@ -1968,17 +2096,22 @@ struct Index {
         onCreateNote: () => this.requestCreateNote('', 'Markdown', '未命名笔记'),
         onImportDocument: () => this.importDocument(this.activeSpaceName() || '未分类'),
         onOpenBackup: () => this.openBackup(),
-        onOpenGuide: () => { this.activeSheet = 'usage_guide'; },
-        onOpenTrash: () => { this.activeNav = NAV_TRASH; },
         onBatchMove: (ids: string[]) => this.openBatchMove(ids),
         onBatchShare: (ids: string[]) => this.openBackup(ids),
         onBatchTrash: (ids: string[]) => this.trashSelected(ids)
       })
     } else if (this.activeNav === NAV_CHAT) {
-      StudyChatWorkspace({ session: $chatSession,
-        onOpenLearning: () => { this.studyCourse = ''; this.studyVisible = true; },
-        onOpenLibrary: () => { this.activeSpaceId = ''; this.searchText = ''; this.activeFilter = FILTER_ALL; this.activeNav = NAV_LIBRARY; },
-        onSave: (title: string, body: string) => this.createNote(title, 'Markdown', '学习对话', body, ['学习对话'], false) })
+      StudyChatWorkspace({ session: $chatSession, notes: this.notes,
+        canGoBack: this.workspaceTrail.length > 0, onBack: () => { this.onBackPress(); },
+        referenceCloseToken: this.studyReferenceCloseToken,
+        onReferenceChange: (open: boolean) => { this.studyReferenceOpen = open; },
+        importing: this.documentImportBusy,
+        onOpenNavigation: () => { this.studyNavigationOpen = !this.studyNavigationOpen; },
+        onOpenLearning: () => { this.studyCourse = ''; this.studyWeakOnly = false; this.studyVisible = true; },
+        onImport: (uris: string[], limit: number) => this.importStudySources(uris, limit),
+        onExtract: (id: string, start: number, end: number, cancelled: () => boolean) =>
+          this.extractStudyPages(id, start, end, cancelled),
+        onOpenLibrary: () => this.navigateWorkspace(NAV_LIBRARY, true) })
     } else if (this.activeNav === NAV_GRAPH) {
       GraphWorkspace({
         graph: this.linkGraph,
@@ -2058,6 +2191,8 @@ struct Index {
     Stack() {
       AppShell({
         breadcrumb: this.breadcrumb(),
+        canGoBack: this.workspaceTrail.length > 0 && !this.readingOpen && !this.fullScreenDocOpen && this.activeNav !== NAV_SETTINGS,
+        onBack: () => { this.onBackPress(); },
         saveState: this.saveState,
         spaces: this.spaces,
         activeNav: this.activeNav,
@@ -2065,6 +2200,8 @@ struct Index {
         activeNoteId: this.activeNoteId,
         sidebarCollapsed: this.sidebarCollapsed,
         contextPanelOpen: this.contextPanelOpen,
+        studyWorkspace: this.activeNav === NAV_CHAT && !this.readingOpen && !this.fullScreenDocOpen && StudyAssistantGateway.previewEnabled(),
+        studyNavigationOpen: this.studyNavigationOpen,
         // 注意：@BuilderParam 直接传 this.xxx 时，builder 内的 this 会指向子组件 AppShell，
         // 读不到 Index 的状态（曾导致 this.notes.slice 崩溃）。用内联 Builder 箭头函数包裹可保留宿主 this。
         content: () => {
@@ -2077,10 +2214,12 @@ struct Index {
           this.onBreadcrumbClick(index, segment);
         },
         onLayoutModeChange: (singleColumn: boolean, threeColumn: boolean) => {
+          this.contextDocked = threeColumn;
           this.sidebarCollapsed = singleColumn;
           this.contextPanelOpen = threeColumn;
         },
         onToggleSidebar: () => {
+          if (this.studyNavigationOpen) { this.studyNavigationOpen = false; return; }
           animateTo({ duration: AnimationTokens.duration(120), curve: Curve.EaseInOut }, () => {
             this.sidebarCollapsed = !this.sidebarCollapsed;
             if (this.singleColumn && !this.sidebarCollapsed) { this.contextPanelOpen = false; }
@@ -2097,16 +2236,7 @@ struct Index {
             this.searchVisible = true;
           });
         },
-        onSelectNav: (navKey: string) => {
-          this.afterSettingsExit(() => {
-            this.dismissNavigationOverlay();
-            if (navKey === NAV_CANVAS) { this.openFreeCanvas(); return; }
-            this.activeNav = navKey;
-            this.readingOpen = false;
-            this.closeFullScreenReader();
-            this.activeNoteId = '';
-          });
-        },
+        onSelectNav: (navKey: string) => this.navigateWorkspace(navKey, navKey === NAV_GRAPH || navKey === NAV_TRASH),
         onToggleSpace: (spaceId: string) => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
             for (let i = 0; i < this.spaces.length; i++) {
@@ -2126,15 +2256,7 @@ struct Index {
             this.spaces = this.spaces.slice();
           });
         },
-        onSelectSpace: (spaceId: string) => {
-          this.afterSettingsExit(() => {
-            this.dismissNavigationOverlay();
-            this.activeSpaceId = this.activeSpaceId === spaceId ? '' : spaceId;
-            this.activeNav = NAV_LIBRARY;
-            this.readingOpen = false;
-            this.closeFullScreenReader();
-          });
-        },
+        onSelectSpace: (spaceId: string) => this.navigateWorkspace(NAV_LIBRARY, false, spaceId),
         onSelectNote: (note: NoteItem) => this.openNote(note),
         onOpenCreateProject: () => {
           animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
@@ -2190,6 +2312,7 @@ struct Index {
       }
       if (this.studyVisible) {
         StudySheet({ notes: this.notes, cards: this.reviewCards, course: this.studyCourse, result: this.learningResult,
+          initialWeakOnly: this.studyWeakOnly,
           resultNoteId: this.learningResultNoteId,
           closeToken: this.studyCloseToken,
           onClose: () => { this.studyVisible = false; },
@@ -2242,16 +2365,13 @@ struct Index {
 
       if (this.smartExtractVisible) {
         SmartExtractSheet({
-          onImportSource: (uri: string) => this.importExtractSource(uri),
           onClose: () => {
             animateTo({ duration: AnimationTokens.DURATION_FAST, curve: Curve.EaseInOut }, () => {
               this.smartExtractVisible = false;
             });
           },
           closeToken: this.smartExtractCloseToken,
-          onCommit: (content: SmartContent, selectedTasks: SmartTask[]) => {
-            return this.handleCommitSmartExtract(content, selectedTasks);
-          }
+          onCommit: (title: string, markdown: string) => this.createNote(title, 'Markdown', this.activeSpaceName(), markdown)
         })
       }
 

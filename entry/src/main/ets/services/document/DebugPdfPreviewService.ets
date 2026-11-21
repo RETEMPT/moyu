@@ -23,7 +23,9 @@ export class DebugPdfPreviewService {
     const name = filePath.substring(`${this.context.filesDir}/documents/`.length);
     if (!name || name.includes('/') || name.includes('\\')) { return ''; }
     for (const kind of ['course', 'snapshot']) {
-      const expected = this.context.resourceManager.getRawFileContentSync(`example-${kind}.pdf`);
+      let expected: Uint8Array;
+      try { expected = this.context.resourceManager.getRawFileContentSync(`example-${kind}.pdf`); }
+      catch { continue; }
       if (fs.statSync(filePath).size !== expected.byteLength) { continue; }
       const file = fs.openSync(filePath, fs.OpenMode.READ_ONLY);
       try {
